@@ -84,3 +84,53 @@ Input: JSONB array of {id: uuid, trade_category: text}.
 Only updates lines where trade_confirmed is false or null.
 Runs SECURITY DEFINER to bypass per-row RLS on ahs_lines.
 Items with missing id or trade_category are silently skipped.';
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 4. VIEW: v_opname_progress_reconciliation
+--    Cross-references opname claimed % against Gate 4 field progress.
+--    Flags lines where mandor claim diverges significantly from
+--    field-verified installed progress.
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE VIEW v_opname_progress_reconciliation AS
+SELECT
+  ol.id AS line_id,
+  ol.header_id,
+  oh.project_id,
+  oh.contract_id,
+  oh.week_number,
+  ol.boq_item_id,
+  bi.code AS boq_code,
+  bi.label AS boq_label,
+  bi.unit,
+  bi.planned AS budget_volume,
+  -- Mandor's claimed progress
+  COALESCE(ol.verified_pct, ol.cumulative_pct) AS claimed_progress_pct,
+  -- Field-verified progress from Gate 4 progress_entries
+  CASE
+    WHEN bi.planned > 0
+    THEN ROUND((bi.installed / bi.planned) * 100, 1)
+    ELSE 0
+  END AS field_progress_pct,
+  -- Variance: positive = mandor claims MORE than field shows
+  COALESCE(ol.verified_pct, ol.cumulative_pct)
+    - CASE
+        WHEN bi.planned > 0
+        THEN ROUND((bi.installed / bi.planned) * 100, 1)
+        ELSE 0
+      END AS variance_pct,
+  -- Flag
+  CASE
+    WHEN ABS(
+      COALESCE(ol.verified_pct, ol.cumulative_pct)
+      - CASE WHEN bi.planned > 0 THEN ROUND((bi.installed / bi.planned) * 100, 1) ELSE 0 END
+    ) > 20 THEN 'HIGH'
+    WHEN ABS(
+      COALESCE(ol.verified_pct, ol.cumulative_pct)
+      - CASE WHEN bi.planned > 0 THEN ROUND((bi.installed / bi.planned) * 100, 1) ELSE 0 END
+    ) > 10 THEN 'WARNING'
+    ELSE 'OK'
+  END AS variance_flag
+FROM opname_lines ol
+JOIN opname_headers oh ON oh.id = ol.header_id
+JOIN boq_items bi ON bi.id = ol.boq_item_id;
