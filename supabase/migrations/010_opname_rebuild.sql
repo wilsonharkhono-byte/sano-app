@@ -439,3 +439,56 @@ BEGIN
   RETURN v_prior;
 END;
 $$;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 13. VIEW: v_labor_payment_summary
+--     Aggregates opname data per project for Gate 5 reconciliation.
+--     Shows total labor cost vs BoQ budget per mandor and overall.
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE VIEW v_labor_payment_summary AS
+SELECT
+  oh.project_id,
+  mc.id AS contract_id,
+  mc.mandor_name,
+  mc.trade_categories,
+  -- Payment totals across all opnames for this mandor
+  COUNT(oh.id) FILTER (WHERE oh.status IN ('APPROVED', 'PAID')) AS approved_opname_count,
+  COALESCE(SUM(oh.gross_total) FILTER (WHERE oh.status IN ('APPROVED', 'PAID')), 0) AS total_gross,
+  COALESCE(SUM(oh.retention_amount) FILTER (WHERE oh.status IN ('APPROVED', 'PAID')), 0) AS total_retention,
+  COALESCE(SUM(oh.net_this_week) FILTER (WHERE oh.status IN ('APPROVED', 'PAID')), 0) AS total_paid,
+  COALESCE(SUM(oh.kasbon) FILTER (WHERE oh.status IN ('APPROVED', 'PAID')), 0) AS total_kasbon,
+  -- Budget comparison: sum of (budget_volume * boq_labor_rate) across all contract rates
+  COALESCE(budget.total_boq_labor_budget, 0) AS total_boq_labor_budget,
+  COALESCE(budget.total_contracted_budget, 0) AS total_contracted_budget,
+  -- Variance
+  CASE
+    WHEN COALESCE(budget.total_boq_labor_budget, 0) > 0
+    THEN ROUND(
+      ((COALESCE(budget.total_contracted_budget, 0) - budget.total_boq_labor_budget)
+       / budget.total_boq_labor_budget) * 100, 1
+    )
+    ELSE 0
+  END AS contract_vs_boq_variance_pct,
+  -- Latest opname info
+  MAX(oh.week_number) FILTER (WHERE oh.status IN ('APPROVED', 'PAID')) AS latest_approved_week,
+  MAX(oh.opname_date) FILTER (WHERE oh.status IN ('APPROVED', 'PAID')) AS latest_approved_date
+FROM mandor_contracts mc
+LEFT JOIN opname_headers oh ON oh.contract_id = mc.id
+LEFT JOIN LATERAL (
+  SELECT
+    SUM(cr.budget_volume_calc * cr.boq_labor_rate) AS total_boq_labor_budget,
+    SUM(cr.budget_volume_calc * cr.contracted_rate) AS total_contracted_budget
+  FROM (
+    SELECT
+      mcr.boq_labor_rate,
+      mcr.contracted_rate,
+      COALESCE(bi.planned, 0) AS budget_volume_calc
+    FROM mandor_contract_rates mcr
+    JOIN boq_items bi ON bi.id = mcr.boq_item_id
+    WHERE mcr.contract_id = mc.id
+  ) cr
+) budget ON true
+WHERE mc.is_active = true
+GROUP BY oh.project_id, mc.id, mc.mandor_name, mc.trade_categories,
+         budget.total_boq_labor_budget, budget.total_contracted_budget;
