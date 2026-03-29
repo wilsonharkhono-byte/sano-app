@@ -212,6 +212,14 @@ BEGIN
     RAISE EXCEPTION 'Opname line not found: %', p_line_id;
   END IF;
 
+  -- Validate percentage bounds
+  IF p_cumulative_pct IS NOT NULL AND (p_cumulative_pct < 0 OR p_cumulative_pct > 100) THEN
+    RAISE EXCEPTION 'cumulative_pct must be between 0 and 100, got %', p_cumulative_pct;
+  END IF;
+  IF p_verified_pct IS NOT NULL AND (p_verified_pct < 0 OR p_verified_pct > 100) THEN
+    RAISE EXCEPTION 'verified_pct must be between 0 and 100, got %', p_verified_pct;
+  END IF;
+
   v_header_id := v_line.header_id;
 
   -- Log revision if verified_pct is being changed
@@ -230,7 +238,7 @@ BEGIN
 
   -- Compute amounts
   v_effective_pct := COALESCE(p_verified_pct, p_cumulative_pct, v_line.verified_pct, v_line.cumulative_pct, 0) / 100;
-  v_prev_pct := v_line.prev_cumulative_pct / 100;
+  v_prev_pct := COALESCE(v_line.prev_cumulative_pct, 0) / 100;
   v_this_week_pct := GREATEST(0, v_effective_pct - v_prev_pct);
 
   UPDATE opname_lines SET
@@ -325,7 +333,8 @@ DECLARE
   v_fresh_prior_paid NUMERIC;
 BEGIN
   SELECT * INTO v_header
-  FROM opname_headers WHERE id = p_header_id AND status = 'VERIFIED';
+  FROM opname_headers WHERE id = p_header_id AND status = 'VERIFIED'
+  FOR UPDATE;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'Opname not found or not in VERIFIED status';
@@ -349,7 +358,7 @@ BEGIN
     approved_at = now(),
     kasbon = p_kasbon,
     prior_paid = v_fresh_prior_paid,
-    net_this_week = GREATEST(0, net_to_date - v_fresh_prior_paid - p_kasbon)
+    net_this_week = GREATEST(0, COALESCE(net_to_date, 0) - v_fresh_prior_paid - COALESCE(p_kasbon, 0))
   WHERE id = p_header_id;
 END;
 $$;
@@ -393,9 +402,9 @@ BEGIN
   -- We recompute amounts to ensure consistency after any estimator adjustments.
   UPDATE opname_lines SET
     cumulative_amount = budget_volume * contracted_rate
-      * (COALESCE(verified_pct, cumulative_pct) / 100),
+      * (COALESCE(verified_pct, cumulative_pct, 0) / 100),
     this_week_amount = budget_volume * contracted_rate
-      * GREATEST(0, (COALESCE(verified_pct, cumulative_pct) - prev_cumulative_pct) / 100)
+      * GREATEST(0, (COALESCE(verified_pct, cumulative_pct, 0) - COALESCE(prev_cumulative_pct, 0)) / 100)
   WHERE header_id = p_header_id;
 END;
 $$;
@@ -415,6 +424,10 @@ DECLARE
 BEGIN
   SELECT contract_id, week_number INTO v_contract_id, v_week
   FROM opname_headers WHERE id = p_header_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Opname header not found: %', p_header_id;
+  END IF;
 
   SELECT COALESCE(SUM(net_to_date), 0) INTO v_prior
   FROM opname_headers
