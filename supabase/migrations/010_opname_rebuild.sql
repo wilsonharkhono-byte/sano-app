@@ -184,3 +184,245 @@ CREATE TRIGGER trg_recompute_opname_totals
   AFTER INSERT OR UPDATE OR DELETE ON opname_lines
   FOR EACH ROW
   EXECUTE FUNCTION fn_recompute_opname_totals();
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 6. RPC: update_opname_line_progress
+--    Updates a line's progress %, recomputes amounts, logs revisions.
+--    The trigger on opname_lines will auto-recompute header totals.
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION update_opname_line_progress(
+  p_line_id UUID,
+  p_cumulative_pct NUMERIC DEFAULT NULL,
+  p_verified_pct NUMERIC DEFAULT NULL,
+  p_is_tdk_acc BOOLEAN DEFAULT NULL,
+  p_tdk_acc_reason TEXT DEFAULT NULL,
+  p_notes TEXT DEFAULT NULL
+)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_line opname_lines%ROWTYPE;
+  v_effective_pct NUMERIC;
+  v_prev_pct NUMERIC;
+  v_this_week_pct NUMERIC;
+  v_header_id UUID;
+BEGIN
+  SELECT * INTO v_line FROM opname_lines WHERE id = p_line_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Opname line not found: %', p_line_id;
+  END IF;
+
+  v_header_id := v_line.header_id;
+
+  -- Log revision if verified_pct is being changed
+  IF p_verified_pct IS NOT NULL AND p_verified_pct IS DISTINCT FROM v_line.verified_pct THEN
+    INSERT INTO opname_line_revisions (opname_line_id, header_id, changed_by, field_name, old_value, new_value, reason)
+    VALUES (p_line_id, v_header_id, auth.uid(), 'verified_pct',
+            v_line.verified_pct, p_verified_pct, p_notes);
+  END IF;
+
+  -- Log revision if cumulative_pct is being changed
+  IF p_cumulative_pct IS NOT NULL AND p_cumulative_pct IS DISTINCT FROM v_line.cumulative_pct THEN
+    INSERT INTO opname_line_revisions (opname_line_id, header_id, changed_by, field_name, old_value, new_value, reason)
+    VALUES (p_line_id, v_header_id, auth.uid(), 'cumulative_pct',
+            v_line.cumulative_pct, p_cumulative_pct, p_notes);
+  END IF;
+
+  -- Compute amounts
+  v_effective_pct := COALESCE(p_verified_pct, p_cumulative_pct, v_line.verified_pct, v_line.cumulative_pct, 0) / 100;
+  v_prev_pct := v_line.prev_cumulative_pct / 100;
+  v_this_week_pct := GREATEST(0, v_effective_pct - v_prev_pct);
+
+  UPDATE opname_lines SET
+    cumulative_pct = COALESCE(p_cumulative_pct, cumulative_pct),
+    verified_pct = CASE WHEN p_verified_pct IS NOT NULL THEN p_verified_pct ELSE verified_pct END,
+    is_tdk_acc = COALESCE(p_is_tdk_acc, is_tdk_acc),
+    tdk_acc_reason = CASE WHEN p_tdk_acc_reason IS NOT NULL THEN p_tdk_acc_reason ELSE tdk_acc_reason END,
+    notes = CASE WHEN p_notes IS NOT NULL THEN p_notes ELSE notes END,
+    cumulative_amount = v_line.budget_volume * v_line.contracted_rate * v_effective_pct,
+    this_week_amount = v_line.budget_volume * v_line.contracted_rate * v_this_week_pct
+  WHERE id = p_line_id;
+  -- Trigger will auto-recompute header totals
+END;
+$$;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 7. RPC: submit_opname (any project-assigned user)
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION submit_opname(p_header_id UUID)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_project_id UUID;
+BEGIN
+  SELECT project_id INTO v_project_id
+  FROM opname_headers WHERE id = p_header_id AND status = 'DRAFT';
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Opname not found or not in DRAFT status';
+  END IF;
+
+  -- Verify user is assigned to this project
+  IF NOT EXISTS (
+    SELECT 1 FROM project_assignments
+    WHERE project_id = v_project_id AND user_id = auth.uid()
+  ) THEN
+    RAISE EXCEPTION 'User not assigned to this project';
+  END IF;
+
+  UPDATE opname_headers SET
+    status = 'SUBMITTED',
+    submitted_by = auth.uid(),
+    submitted_at = now()
+  WHERE id = p_header_id;
+END;
+$$;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 8. RPC: verify_opname (estimator, admin, principal only)
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION verify_opname(p_header_id UUID, p_notes TEXT DEFAULT NULL)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_project_id UUID;
+  v_role TEXT;
+BEGIN
+  SELECT project_id INTO v_project_id
+  FROM opname_headers WHERE id = p_header_id AND status = 'SUBMITTED';
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Opname not found or not in SUBMITTED status';
+  END IF;
+
+  SELECT role INTO v_role FROM profiles WHERE id = auth.uid();
+  IF v_role NOT IN ('estimator', 'admin', 'principal') THEN
+    RAISE EXCEPTION 'Only estimator, admin, or principal can verify opname';
+  END IF;
+
+  UPDATE opname_headers SET
+    status = 'VERIFIED',
+    verified_by = auth.uid(),
+    verified_at = now(),
+    verifier_notes = COALESCE(p_notes, verifier_notes)
+  WHERE id = p_header_id;
+
+  -- Promote verified_pct: lock in the verified values for next week
+  PERFORM promote_verified_pct(p_header_id);
+END;
+$$;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 9. RPC: approve_opname (admin, principal only)
+--    Refreshes prior_paid before computing final net_this_week.
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION approve_opname(p_header_id UUID, p_kasbon NUMERIC DEFAULT 0)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_header opname_headers%ROWTYPE;
+  v_role TEXT;
+  v_fresh_prior_paid NUMERIC;
+BEGIN
+  SELECT * INTO v_header
+  FROM opname_headers WHERE id = p_header_id AND status = 'VERIFIED';
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'Opname not found or not in VERIFIED status';
+  END IF;
+
+  SELECT role INTO v_role FROM profiles WHERE id = auth.uid();
+  IF v_role NOT IN ('admin', 'principal') THEN
+    RAISE EXCEPTION 'Only admin or principal can approve opname';
+  END IF;
+
+  -- Refresh prior_paid with latest approved data (not frozen at creation)
+  SELECT COALESCE(SUM(net_to_date), 0) INTO v_fresh_prior_paid
+  FROM opname_headers
+  WHERE contract_id = v_header.contract_id
+    AND week_number < v_header.week_number
+    AND status IN ('APPROVED', 'PAID');
+
+  UPDATE opname_headers SET
+    status = 'APPROVED',
+    approved_by = auth.uid(),
+    approved_at = now(),
+    kasbon = p_kasbon,
+    prior_paid = v_fresh_prior_paid,
+    net_this_week = GREATEST(0, net_to_date - v_fresh_prior_paid - p_kasbon)
+  WHERE id = p_header_id;
+END;
+$$;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 10. RPC: mark_opname_paid (admin, principal only)
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION mark_opname_paid(p_header_id UUID)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_role TEXT;
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM opname_headers WHERE id = p_header_id AND status = 'APPROVED'
+  ) THEN
+    RAISE EXCEPTION 'Opname not found or not in APPROVED status';
+  END IF;
+
+  SELECT role INTO v_role FROM profiles WHERE id = auth.uid();
+  IF v_role NOT IN ('admin', 'principal') THEN
+    RAISE EXCEPTION 'Only admin or principal can mark opname as paid';
+  END IF;
+
+  UPDATE opname_headers SET status = 'PAID' WHERE id = p_header_id;
+END;
+$$;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 11. RPC: promote_verified_pct
+--    After verification, lock in the effective % so next week's
+--    initOpnameLines uses the correct prev_cumulative_pct.
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION promote_verified_pct(p_header_id UUID)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+BEGIN
+  -- For lines where estimator set verified_pct, that becomes canonical.
+  -- For lines without verified_pct, cumulative_pct is already canonical.
+  -- The get_prev_line_pct function already uses COALESCE(verified_pct, cumulative_pct).
+  -- We recompute amounts to ensure consistency after any estimator adjustments.
+  UPDATE opname_lines SET
+    cumulative_amount = budget_volume * contracted_rate
+      * (COALESCE(verified_pct, cumulative_pct) / 100),
+    this_week_amount = budget_volume * contracted_rate
+      * GREATEST(0, (COALESCE(verified_pct, cumulative_pct) - prev_cumulative_pct) / 100)
+  WHERE header_id = p_header_id;
+END;
+$$;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 12. RPC: refresh_prior_paid
+--    Recalculates prior_paid for an opname header from current approved data.
+--    Called by approve_opname, but also available standalone.
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION refresh_prior_paid(p_header_id UUID)
+RETURNS NUMERIC LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_contract_id UUID;
+  v_week INT;
+  v_prior NUMERIC;
+BEGIN
+  SELECT contract_id, week_number INTO v_contract_id, v_week
+  FROM opname_headers WHERE id = p_header_id;
+
+  SELECT COALESCE(SUM(net_to_date), 0) INTO v_prior
+  FROM opname_headers
+  WHERE contract_id = v_contract_id
+    AND week_number < v_week
+    AND status IN ('APPROVED', 'PAID');
+
+  UPDATE opname_headers SET prior_paid = v_prior WHERE id = p_header_id;
+  RETURN v_prior;
+END;
+$$;
