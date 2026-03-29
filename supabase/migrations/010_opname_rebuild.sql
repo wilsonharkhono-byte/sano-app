@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS opname_line_revisions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   opname_line_id UUID NOT NULL REFERENCES opname_lines(id) ON DELETE CASCADE,
   header_id UUID NOT NULL REFERENCES opname_headers(id) ON DELETE CASCADE,
+  -- Cascades intentional: revisions are operational audit data, deleted with their parent header.
   changed_by UUID NOT NULL REFERENCES profiles(id),
   field_name TEXT NOT NULL,
   old_value NUMERIC,
@@ -59,8 +60,16 @@ RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
   item JSONB;
 BEGIN
+  -- Validate input is a JSON array
+  IF p_updates IS NULL OR jsonb_typeof(p_updates) != 'array' THEN
+    RAISE EXCEPTION 'apply_detected_trade_categories: p_updates must be a non-null JSON array';
+  END IF;
+
   FOR item IN SELECT * FROM jsonb_array_elements(p_updates)
   LOOP
+    -- Skip items missing required fields rather than crashing
+    CONTINUE WHEN item->>'id' IS NULL OR item->>'trade_category' IS NULL;
+
     UPDATE ahs_lines
     SET trade_category = item->>'trade_category'
     WHERE id = (item->>'id')::UUID
@@ -68,3 +77,10 @@ BEGIN
   END LOOP;
 END;
 $$;
+
+COMMENT ON FUNCTION apply_detected_trade_categories(JSONB) IS
+'Batch update ahs_lines trade_category from detected values.
+Input: JSONB array of {id: uuid, trade_category: text}.
+Only updates lines where trade_confirmed is false or null.
+Runs SECURITY DEFINER to bypass per-row RLS on ahs_lines.
+Items with missing id or trade_category are silently skipped.';
