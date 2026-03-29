@@ -1,0 +1,70 @@
+-- supabase/migrations/010_opname_rebuild.sql
+-- SANO — Opname Architecture Rebuild
+-- Integrates mandor payment with Gate 4 progress and Gate 5 reconciliation.
+-- Moves all payment computation into Postgres RPCs with role enforcement.
+--
+-- Run AFTER 008_labor_opname.sql.
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 1. AUDIT TABLE: opname_line_revisions
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS opname_line_revisions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  opname_line_id UUID NOT NULL REFERENCES opname_lines(id) ON DELETE CASCADE,
+  header_id UUID NOT NULL REFERENCES opname_headers(id) ON DELETE CASCADE,
+  changed_by UUID NOT NULL REFERENCES profiles(id),
+  field_name TEXT NOT NULL,
+  old_value NUMERIC,
+  new_value NUMERIC,
+  reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_opname_line_revisions_line
+  ON opname_line_revisions(opname_line_id);
+CREATE INDEX IF NOT EXISTS idx_opname_line_revisions_header
+  ON opname_line_revisions(header_id);
+
+-- RLS: same access as opname_lines (project-assigned users)
+ALTER TABLE opname_line_revisions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "opname_line_revisions_select" ON opname_line_revisions FOR SELECT
+  USING (EXISTS (
+    SELECT 1 FROM opname_headers oh
+    JOIN project_assignments pa ON pa.project_id = oh.project_id
+    WHERE oh.id = opname_line_revisions.header_id AND pa.user_id = auth.uid()
+  ));
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 2. MISSING INDEXES on ahs_lines
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE INDEX IF NOT EXISTS idx_ahs_lines_trade_category
+  ON ahs_lines(trade_category)
+  WHERE trade_category IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_ahs_lines_line_type_trade
+  ON ahs_lines(line_type, trade_category)
+  WHERE line_type = 'labor';
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 3. BATCH TRADE CATEGORY RPC (replaces serial JS loop)
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION apply_detected_trade_categories(
+  p_updates JSONB  -- array of {"id": "uuid", "trade_category": "text"}
+)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  item JSONB;
+BEGIN
+  FOR item IN SELECT * FROM jsonb_array_elements(p_updates)
+  LOOP
+    UPDATE ahs_lines
+    SET trade_category = item->>'trade_category'
+    WHERE id = (item->>'id')::UUID
+      AND (trade_confirmed = false OR trade_confirmed IS NULL);
+  END LOOP;
+END;
+$$;
