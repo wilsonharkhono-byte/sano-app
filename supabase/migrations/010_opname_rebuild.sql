@@ -134,3 +134,53 @@ SELECT
 FROM opname_lines ol
 JOIN opname_headers oh ON oh.id = ol.header_id
 JOIN boq_items bi ON bi.id = ol.boq_item_id;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 5. TRIGGER: Auto-recompute opname_header totals on line changes
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION fn_recompute_opname_totals()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER AS $$
+DECLARE
+  v_header_id UUID;
+  v_gross NUMERIC;
+  v_ret_pct NUMERIC;
+  v_retention NUMERIC;
+  v_net_to_date NUMERIC;
+  v_prior_paid NUMERIC;
+  v_kasbon NUMERIC;
+BEGIN
+  v_header_id := COALESCE(NEW.header_id, OLD.header_id);
+
+  -- Sum gross from non-rejected lines
+  SELECT COALESCE(SUM(cumulative_amount), 0)
+  INTO v_gross
+  FROM opname_lines
+  WHERE header_id = v_header_id
+    AND is_tdk_acc = false;
+
+  -- Get header payment params
+  SELECT retention_pct, prior_paid, kasbon
+  INTO v_ret_pct, v_prior_paid, v_kasbon
+  FROM opname_headers
+  WHERE id = v_header_id;
+
+  v_retention := v_gross * (v_ret_pct / 100);
+  v_net_to_date := v_gross - v_retention;
+
+  UPDATE opname_headers SET
+    gross_total = v_gross,
+    retention_amount = v_retention,
+    net_to_date = v_net_to_date,
+    net_this_week = GREATEST(0, v_net_to_date - v_prior_paid - v_kasbon)
+  WHERE id = v_header_id;
+
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_recompute_opname_totals ON opname_lines;
+CREATE TRIGGER trg_recompute_opname_totals
+  AFTER INSERT OR UPDATE OR DELETE ON opname_lines
+  FOR EACH ROW
+  EXECUTE FUNCTION fn_recompute_opname_totals();
