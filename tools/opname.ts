@@ -32,7 +32,7 @@ export {
   verifyOpname as verifyOpnameRpc,
   approveOpname as approveOpnameRpc,
   markOpnamePaid as markOpnamePaidRpc,
-  getOpnameProgressFlags,
+  // getOpnameProgressFlags is defined locally below — use opnameRpc.ts for new callers
   getLaborPaymentSummary,
   refreshPriorPaid,
 } from './opnameRpc';
