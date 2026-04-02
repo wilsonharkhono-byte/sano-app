@@ -34,6 +34,7 @@
     "expo-sharing": "^55.0.15-canary-20260327-0789fbc",
     "expo-status-bar": "~3.0.9",
     "npx": "^10.2.2",
+    "pdf-lib": "^1.17.1",
     "react": "^19.1.0",
     "react-dom": "19.1.0",
     "react-native": "^0.81.5",
