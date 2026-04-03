@@ -244,4 +244,456 @@ export class SanoDoc {
       color: C.textSec,
     });
   }
+
+  // ── Text primitives ──────────────────────────────────────────────
+
+  /** Draw a single line of text at current Y, advance cursor. */
+  text(
+    str: string,
+    opts: {
+      size?: number;
+      font?: PDFFont;
+      color?: ReturnType<typeof rgb>;
+      x?: number;
+      maxWidth?: number;
+      lineGap?: number;
+    } = {},
+  ): void {
+    const size = opts.size ?? FS.base;
+    const font = opts.font ?? this.fonts.regular;
+    const color = opts.color ?? C.text;
+    const x = opts.x ?? PDF.ML;
+    const maxWidth = opts.maxWidth ?? PDF.CW;
+    const lineGap = opts.lineGap ?? 4;
+
+    const lines = this._wrapText(str, font, size, maxWidth);
+    for (const line of lines) {
+      this.ensureSpace(size + lineGap);
+      this.page.drawText(line, { x, y: this.y, size, font, color });
+      this.y -= size + lineGap;
+    }
+  }
+
+  /** Word-wrap text to fit within maxWidth. */
+  _wrapText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
+    if (!text) return [''];
+    const words = text.split(' ');
+    const lines: string[] = [];
+    let currentLine = '';
+
+    for (const word of words) {
+      const testLine = currentLine ? `${currentLine} ${word}` : word;
+      const testWidth = font.widthOfTextAtSize(testLine, size);
+      if (testWidth > maxWidth && currentLine) {
+        lines.push(currentLine);
+        currentLine = word;
+      } else {
+        currentLine = testLine;
+      }
+    }
+    if (currentLine) lines.push(currentLine);
+    return lines.length > 0 ? lines : [''];
+  }
+
+  /** Measure text width. */
+  measureText(str: string, font?: PDFFont, size?: number): number {
+    return (font ?? this.fonts.regular).widthOfTextAtSize(str, size ?? FS.base);
+  }
+
+  // ── Section titles & spacing ─────────────────────────────────────
+
+  /** Draw an uppercase section heading with accent underline. */
+  sectionTitle(title: string): void {
+    this.ensureSpace(28);
+    this.y -= 8;
+    this.page.drawText(title.toUpperCase(), {
+      x: PDF.ML,
+      y: this.y,
+      size: FS.md,
+      font: this.fonts.bold,
+      color: C.primary,
+    });
+    this.y -= 5;
+    this.page.drawLine({
+      start: { x: PDF.ML, y: this.y },
+      end: { x: PDF.ML + 80, y: this.y },
+      thickness: 2,
+      color: C.accent,
+    });
+    this.y -= 10;
+  }
+
+  /** Small label text (like subsection eyebrow). */
+  label(str: string): void {
+    this.ensureSpace(14);
+    this.page.drawText(str.toUpperCase(), {
+      x: PDF.ML,
+      y: this.y,
+      size: FS.xs,
+      font: this.fonts.bold,
+      color: C.textSec,
+    });
+    this.y -= 14;
+  }
+
+  /** Vertical spacing. */
+  gap(pts: number = 10): void {
+    this.y -= pts;
+  }
+
+  /** Full-width horizontal rule. */
+  hr(color = C.border, thickness = 0.5): void {
+    this.ensureSpace(6);
+    this.page.drawLine({
+      start: { x: PDF.ML, y: this.y },
+      end: { x: PDF.PAGE_W - PDF.MR, y: this.y },
+      thickness,
+      color,
+    });
+    this.y -= 6;
+  }
+
+  // ── KPI Tiles ────────────────────────────────────────────────────
+
+  /** Draw a row of KPI stat tiles (up to 4). */
+  kpiRow(tiles: Array<{ value: string; label: string; color: ReturnType<typeof rgb> }>): void {
+    const tileCount = tiles.length;
+    const gutter = 10;
+    const tileW = (PDF.CW - gutter * (tileCount - 1)) / tileCount;
+    const tileH = 48;
+    const accentBarW = 3;
+
+    this.ensureSpace(tileH + 8);
+
+    tiles.forEach((tile, i) => {
+      const x = PDF.ML + i * (tileW + gutter);
+      const tileY = this.y - tileH;
+
+      // Background
+      this.page.drawRectangle({
+        x, y: tileY, width: tileW, height: tileH,
+        color: C.surface,
+        borderColor: C.borderLight,
+        borderWidth: 0.5,
+      });
+
+      // Left accent bar
+      this.page.drawRectangle({
+        x, y: tileY, width: accentBarW, height: tileH,
+        color: tile.color,
+      });
+
+      // Value
+      this.page.drawText(String(tile.value), {
+        x: x + accentBarW + 10,
+        y: tileY + tileH - 20,
+        size: FS.xxl,
+        font: this.fonts.bold,
+        color: C.text,
+      });
+
+      // Label
+      this.page.drawText(tile.label.toUpperCase(), {
+        x: x + accentBarW + 10,
+        y: tileY + 8,
+        size: FS.xs,
+        font: this.fonts.bold,
+        color: C.textSec,
+      });
+    });
+
+    this.y -= tileH + 8;
+  }
+
+  // ── Progress Bar ─────────────────────────────────────────────────
+
+  /** Draw a horizontal progress bar with percentage label. */
+  progressBar(
+    value: number,
+    opts: { width?: number; x?: number; label?: string } = {},
+  ): void {
+    const barW = opts.width ?? PDF.CW;
+    const barH = 14;
+    const x = opts.x ?? PDF.ML;
+
+    this.ensureSpace(barH + 6);
+
+    const pct = Math.max(0, Math.min(100, value));
+    const fillColor = pct >= 80 ? C.ok : pct >= 50 ? C.warning : C.critical;
+
+    // Background track
+    this.page.drawRectangle({
+      x, y: this.y - barH, width: barW, height: barH,
+      color: C.surfaceAlt,
+    });
+
+    // Fill
+    if (pct > 0) {
+      this.page.drawRectangle({
+        x, y: this.y - barH,
+        width: barW * (pct / 100), height: barH,
+        color: fillColor,
+      });
+    }
+
+    // Label
+    const labelStr = opts.label ?? `${pct}%`;
+    const labelW = this.fonts.bold.widthOfTextAtSize(labelStr, FS.sm);
+    const labelX = pct > 15 ? x + barW * (pct / 100) - labelW - 4 : x + barW * (pct / 100) + 4;
+    const labelColor = pct > 15 ? C.white : C.text;
+    this.page.drawText(labelStr, {
+      x: labelX,
+      y: this.y - barH + 3,
+      size: FS.sm,
+      font: this.fonts.bold,
+      color: labelColor,
+    });
+
+    this.y -= barH + 6;
+  }
+
+  // ── Metric Rows ──────────────────────────────────────────────────
+
+  /** Draw a label — value row, optionally colored. */
+  metricRow(
+    label: string,
+    value: string,
+    opts: { valueColor?: ReturnType<typeof rgb>; divider?: boolean } = {},
+  ): void {
+    const rowH = 18;
+    this.ensureSpace(rowH);
+
+    this.page.drawText(label, {
+      x: PDF.ML,
+      y: this.y - 11,
+      size: FS.base,
+      font: this.fonts.regular,
+      color: C.textSec,
+    });
+
+    const valW = this.fonts.bold.widthOfTextAtSize(value, FS.base);
+    this.page.drawText(value, {
+      x: PDF.PAGE_W - PDF.MR - valW,
+      y: this.y - 11,
+      size: FS.base,
+      font: this.fonts.bold,
+      color: opts.valueColor ?? C.text,
+    });
+
+    if (opts.divider !== false) {
+      this.page.drawLine({
+        start: { x: PDF.ML, y: this.y - rowH + 2 },
+        end: { x: PDF.PAGE_W - PDF.MR, y: this.y - rowH + 2 },
+        thickness: 0.5,
+        color: C.borderLight,
+      });
+    }
+
+    this.y -= rowH;
+  }
+
+  // ── Table ────────────────────────────────────────────────────────
+
+  /**
+   * Draw a data table with styled header row, alternating row colors,
+   * and automatic page breaks.
+   *
+   * @param columns - Array of { header, width (fraction of CW), align? }
+   * @param rows    - 2D string array of cell values
+   */
+  table(
+    columns: Array<{ header: string; width: number; align?: 'left' | 'right' | 'center' }>,
+    rows: string[][],
+  ): void {
+    const headerH = 20;
+    const rowH = 18;
+    const cellPadX = 6;
+    const cellPadY = 5;
+
+    // Resolve absolute widths from fractions
+    const colWidths = columns.map(c => c.width * PDF.CW);
+
+    // ── Draw header ──
+    const drawHeader = () => {
+      this.ensureSpace(headerH + rowH); // header + at least 1 data row
+
+      let hx = PDF.ML;
+      // Header background
+      this.page.drawRectangle({
+        x: PDF.ML, y: this.y - headerH,
+        width: PDF.CW, height: headerH,
+        color: C.primary,
+      });
+
+      columns.forEach((col, ci) => {
+        const textW = this.fonts.bold.widthOfTextAtSize(col.header, FS.sm);
+        let tx = hx + cellPadX;
+        if (col.align === 'right') tx = hx + colWidths[ci] - textW - cellPadX;
+        else if (col.align === 'center') tx = hx + (colWidths[ci] - textW) / 2;
+
+        this.page.drawText(col.header, {
+          x: tx,
+          y: this.y - headerH + cellPadY + 1,
+          size: FS.sm,
+          font: this.fonts.bold,
+          color: C.white,
+        });
+        hx += colWidths[ci];
+      });
+
+      this.y -= headerH;
+    };
+
+    drawHeader();
+
+    // ── Draw data rows ──
+    rows.forEach((row, ri) => {
+      // Page break check: if not enough space, add page + re-draw header
+      if (this.y - rowH < PDF.BOTTOM) {
+        this.addPage();
+        drawHeader();
+      }
+
+      const rowBg = ri % 2 === 0 ? C.white : C.surfaceAlt;
+      this.page.drawRectangle({
+        x: PDF.ML, y: this.y - rowH,
+        width: PDF.CW, height: rowH,
+        color: rowBg,
+      });
+
+      // Bottom border
+      this.page.drawLine({
+        start: { x: PDF.ML, y: this.y - rowH },
+        end: { x: PDF.PAGE_W - PDF.MR, y: this.y - rowH },
+        thickness: 0.3,
+        color: C.borderLight,
+      });
+
+      let rx = PDF.ML;
+      columns.forEach((col, ci) => {
+        const cellText = (row[ci] ?? '—').substring(0, 60); // truncate long cells
+        const textW = this.fonts.regular.widthOfTextAtSize(cellText, FS.sm);
+        let tx = rx + cellPadX;
+        if (col.align === 'right') tx = rx + colWidths[ci] - textW - cellPadX;
+        else if (col.align === 'center') tx = rx + (colWidths[ci] - textW) / 2;
+
+        this.page.drawText(cellText, {
+          x: tx,
+          y: this.y - rowH + cellPadY,
+          size: FS.sm,
+          font: this.fonts.regular,
+          color: C.text,
+        });
+        rx += colWidths[ci];
+      });
+
+      this.y -= rowH;
+    });
+  }
+
+  // ── Status Badge ─────────────────────────────────────────────────
+
+  /** Draw an inline colored status badge at a specific position. */
+  badge(
+    text: string,
+    x: number,
+    y: number,
+    color: ReturnType<typeof rgb>,
+    bgColor: ReturnType<typeof rgb>,
+  ): void {
+    const padX = 6;
+    const padY = 3;
+    const textW = this.fonts.bold.widthOfTextAtSize(text, FS.xs);
+    const badgeW = textW + padX * 2;
+    const badgeH = FS.xs + padY * 2;
+
+    this.page.drawRectangle({
+      x, y: y - padY,
+      width: badgeW, height: badgeH,
+      color: bgColor,
+    });
+
+    this.page.drawText(text, {
+      x: x + padX,
+      y: y,
+      size: FS.xs,
+      font: this.fonts.bold,
+      color,
+    });
+  }
+
+  // ── Photo embedding ──────────────────────────────────────────────
+
+  /** Embed a photo from a URL. Returns the PDFImage or null on failure. */
+  async embedPhoto(url: string): Promise<PDFImage | null> {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return null;
+      const buffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+
+      // Detect format from magic bytes
+      if (bytes[0] === 0x89 && bytes[1] === 0x50) {
+        return await this.doc.embedPng(bytes);
+      }
+      return await this.doc.embedJpg(bytes);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Draw a grid of photos (fetched from URLs). Max 4 per row. */
+  async photoGrid(
+    urls: Array<string | null | undefined>,
+    opts: { size?: number; perRow?: number } = {},
+  ): Promise<void> {
+    const validUrls = urls.filter(Boolean) as string[];
+    if (validUrls.length === 0) return;
+
+    const thumbSize = opts.size ?? 90;
+    const perRow = opts.perRow ?? 4;
+    const gap = 8;
+    const rowH = thumbSize + gap;
+
+    for (let i = 0; i < validUrls.length; i += perRow) {
+      this.ensureSpace(rowH + 4);
+      const batch = validUrls.slice(i, i + perRow);
+
+      for (let j = 0; j < batch.length; j++) {
+        const img = await this.embedPhoto(batch[j]);
+        const x = PDF.ML + j * (thumbSize + gap);
+
+        if (!img) {
+          // Placeholder for failed photo
+          this.page.drawRectangle({
+            x, y: this.y - thumbSize,
+            width: thumbSize, height: thumbSize,
+            color: C.surfaceAlt,
+            borderColor: C.border,
+            borderWidth: 0.5,
+          });
+          this.page.drawText('Foto tidak tersedia', {
+            x: x + 6,
+            y: this.y - thumbSize / 2 - 4,
+            size: FS.xs,
+            font: this.fonts.regular,
+            color: C.textSec,
+          });
+          continue;
+        }
+
+        this.page.drawImage(img, {
+          x,
+          y: this.y - thumbSize,
+          width: thumbSize,
+          height: thumbSize,
+        });
+      }
+
+      this.y -= rowH;
+    }
+  }
 }
+
+// Re-export rgb for builder files
+export { rgb } from 'pdf-lib';
