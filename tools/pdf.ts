@@ -616,7 +616,204 @@ async function buildAuditList(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
-// (builders defined in subsequent tasks — see Tasks 5–10)
+async function buildAIUsageSummary(sd: SanoDoc, d: any): Promise<void> {
+  sd.kpiRow([
+    { value: String(d.total_chats ?? 0), label: 'Total Chat', color: C.info },
+    { value: String(d.active_users ?? 0), label: 'User Aktif', color: C.ok },
+    { value: `${Math.round((d.total_tokens ?? 0) / 1000)}k`, label: 'Total Token', color: C.accent },
+  ]);
+
+  sd.sectionTitle('Ringkasan Penggunaan AI');
+  sd.metricRow('Total Chat (30 hari)', String(d.total_chats ?? 0));
+  sd.metricRow('User Aktif', String(d.active_users ?? 0));
+  sd.metricRow('Total Token', `${Math.round((d.total_tokens ?? 0) / 1000)}k`);
+  sd.metricRow('Chat Sonnet', String(d.sonnet_chats ?? 0));
+
+  if ((d.by_user ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Penggunaan per User');
+    sd.table(
+      [
+        { header: 'User', width: 0.30 },
+        { header: 'Jumlah Chat', width: 0.20, align: 'right' },
+        { header: 'Total Token', width: 0.25, align: 'right' },
+        { header: 'Chat Sonnet', width: 0.25, align: 'right' },
+      ],
+      (d.by_user ?? []).map((u: any) => [
+        u.user_name ?? '—',
+        String(u.chat_count ?? 0),
+        String(u.total_tokens ?? 0),
+        String(u.sonnet_count ?? 0),
+      ]),
+    );
+  }
+
+  if ((d.daily_trend ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Tren Harian');
+    sd.table(
+      [
+        { header: 'Tanggal', width: 0.30 },
+        { header: 'Jumlah Chat', width: 0.35, align: 'right' },
+        { header: 'Token', width: 0.35, align: 'right' },
+      ],
+      (d.daily_trend ?? []).slice(0, 30).map((row: any) => [
+        fmtDate(row.date),
+        String(row.chat_count ?? 0),
+        String(row.tokens ?? 0),
+      ]),
+    );
+  }
+}
+
+async function buildApprovalSLAUser(sd: SanoDoc, d: any): Promise<void> {
+  sd.kpiRow([
+    { value: String(d.total_queued ?? 0), label: 'Total Queued', color: C.info },
+    { value: String(d.avg_hours ?? 0), label: 'Avg Hours', color: C.accent },
+    { value: String(d.breached ?? 0), label: 'SLA Breached', color: C.critical },
+  ]);
+
+  sd.sectionTitle('Ringkasan SLA Approval');
+  sd.metricRow('Total Di-Queue', String(d.total_queued ?? 0));
+  sd.metricRow('Rata-rata Jam Respons', String(d.avg_hours ?? 0));
+  sd.metricRow('SLA Breach', String(d.breached ?? 0), { valueColor: C.critical });
+
+  if ((d.by_user ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('SLA per User');
+    sd.table(
+      [
+        { header: 'User', width: 0.25 },
+        { header: 'Queued', width: 0.15, align: 'right' },
+        { header: 'Approved', width: 0.15, align: 'right' },
+        { header: 'Rejected', width: 0.15, align: 'right' },
+        { header: 'Avg Hours', width: 0.15, align: 'right' },
+        { header: 'Breach', width: 0.15, align: 'right' },
+      ],
+      (d.by_user ?? []).map((u: any) => [
+        u.user_name ?? '—',
+        String(u.queued ?? 0),
+        String(u.approved ?? 0),
+        String(u.rejected ?? 0),
+        String(u.avg_hours ?? 0),
+        String(u.breached ?? 0),
+      ]),
+    );
+  }
+}
+
+async function buildOperationalEntryDiscipline(sd: SanoDoc, d: any): Promise<void> {
+  sd.kpiRow([
+    { value: fmtPct(d.photo_coverage_pct ?? 0), label: 'Foto Coverage', color: C.accent },
+    { value: String(d.total_entries ?? 0), label: 'Total Entri', color: C.info },
+    { value: String(d.entries_with_photo ?? 0), label: 'Dengan Foto', color: C.ok },
+  ]);
+
+  sd.sectionTitle('Disiplin Entry Operasional');
+  sd.metricRow('Total Entri', String(d.total_entries ?? 0));
+  sd.metricRow('Entri dengan Foto', String(d.entries_with_photo ?? 0), { valueColor: C.ok });
+  sd.metricRow('Photo Coverage', fmtPct(d.photo_coverage_pct ?? 0));
+  sd.gap(4);
+  sd.progressBar(d.photo_coverage_pct ?? 0, { label: `Foto coverage: ${fmtPct(d.photo_coverage_pct ?? 0)}` });
+
+  if ((d.by_user ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Coverage per User');
+    sd.table(
+      [
+        { header: 'User', width: 0.30 },
+        { header: 'Total Entri', width: 0.20, align: 'right' },
+        { header: 'Dengan Foto', width: 0.25, align: 'right' },
+        { header: 'Coverage', width: 0.25, align: 'right' },
+      ],
+      (d.by_user ?? []).map((u: any) => [
+        u.user_name ?? '—',
+        String(u.total ?? 0),
+        String(u.with_photo ?? 0),
+        fmtPct(u.coverage_pct ?? 0),
+      ]),
+    );
+  }
+}
+
+async function buildToolUsageSummary(sd: SanoDoc, d: any): Promise<void> {
+  sd.kpiRow([
+    { value: String(d.total_exports ?? 0), label: 'Total Export', color: C.info },
+    { value: String(d.ai_chats ?? 0), label: 'AI Chat', color: C.accent },
+    { value: String(d.active_exporters ?? 0), label: 'User Export', color: C.ok },
+  ]);
+
+  sd.sectionTitle('Penggunaan Laporan & AI');
+  sd.metricRow('Total Export Laporan', String(d.total_exports ?? 0));
+  sd.metricRow('Total AI Chat', String(d.ai_chats ?? 0));
+  sd.metricRow('User yang Pernah Export', String(d.active_exporters ?? 0));
+
+  if ((d.by_report_type ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Export per Tipe Laporan');
+    sd.table(
+      [
+        { header: 'Tipe Laporan', width: 0.50 },
+        { header: 'Jumlah Export', width: 0.50, align: 'right' },
+      ],
+      (d.by_report_type ?? []).map((r: any) => [
+        r.report_type ?? '—',
+        String(r.count ?? 0),
+      ]),
+    );
+  }
+}
+
+async function buildExceptionHandlingLoad(sd: SanoDoc, d: any): Promise<void> {
+  sd.kpiRow([
+    { value: String(d.total_holds ?? 0), label: 'Hold', color: C.warning },
+    { value: String(d.total_rejects ?? 0), label: 'Reject', color: C.critical },
+    { value: String(d.total_overrides ?? 0), label: 'Override', color: C.info },
+  ]);
+
+  sd.sectionTitle('Beban Penanganan Exception');
+  sd.metricRow('Total Hold', String(d.total_holds ?? 0), { valueColor: C.warning });
+  sd.metricRow('Total Reject', String(d.total_rejects ?? 0), { valueColor: C.critical });
+  sd.metricRow('Total Override', String(d.total_overrides ?? 0));
+
+  if ((d.anomaly_breakdown ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Anomali per Tipe');
+    sd.table(
+      [
+        { header: 'Tipe Anomali', width: 0.40 },
+        { header: 'Jumlah', width: 0.30, align: 'right' },
+        { header: 'Severity Avg', width: 0.30, align: 'right' },
+      ],
+      (d.anomaly_breakdown ?? []).map((a: any) => [
+        a.type ?? '—',
+        String(a.count ?? 0),
+        a.avg_severity ?? '—',
+      ]),
+    );
+  }
+
+  if ((d.by_user ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Beban per User');
+    sd.table(
+      [
+        { header: 'User', width: 0.30 },
+        { header: 'Hold', width: 0.17, align: 'right' },
+        { header: 'Reject', width: 0.18, align: 'right' },
+        { header: 'Override', width: 0.18, align: 'right' },
+        { header: 'Total', width: 0.17, align: 'right' },
+      ],
+      (d.by_user ?? []).map((u: any) => [
+        u.user_name ?? '—',
+        String(u.holds ?? 0),
+        String(u.rejects ?? 0),
+        String(u.overrides ?? 0),
+        String((u.holds ?? 0) + (u.rejects ?? 0) + (u.overrides ?? 0)),
+      ]),
+    );
+  }
+}
 
 // forward declarations populated below
 const BUILDERS: Partial<Record<string, (sd: SanoDoc, d: any) => Promise<void>>> = {};
@@ -631,6 +828,11 @@ BUILDERS['weekly_digest'] = buildWeeklyDigest;
 BUILDERS['payroll_support_summary'] = buildPayrollSupportSummary;
 BUILDERS['client_charge_report'] = buildClientChargeReport;
 BUILDERS['audit_list'] = buildAuditList;
+BUILDERS['ai_usage_summary'] = buildAIUsageSummary;
+BUILDERS['approval_sla_user'] = buildApprovalSLAUser;
+BUILDERS['operational_entry_discipline'] = buildOperationalEntryDiscipline;
+BUILDERS['tool_usage_summary'] = buildToolUsageSummary;
+BUILDERS['exception_handling_load'] = buildExceptionHandlingLoad;
 
 // ── Main export function ──────────────────────────────────────────────
 
