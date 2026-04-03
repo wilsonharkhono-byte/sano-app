@@ -300,6 +300,29 @@ export class SanoDoc {
     return (font ?? this.fonts.regular).widthOfTextAtSize(str, size ?? FS.base);
   }
 
+  /**
+   * Truncate text so it fits within maxWidth (in points).
+   * Appends '…' when text is clipped. Returns the original string if it fits.
+   */
+  _truncateToWidth(text: string, font: PDFFont, size: number, maxWidth: number): string {
+    if (!text) return '';
+    if (font.widthOfTextAtSize(text, size) <= maxWidth) return text;
+    // Binary search for the longest prefix that fits with an ellipsis
+    const ellipsis = '…';
+    let lo = 0;
+    let hi = text.length - 1;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      const candidate = text.substring(0, mid) + ellipsis;
+      if (font.widthOfTextAtSize(candidate, size) <= maxWidth) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return text.substring(0, lo) + ellipsis;
+  }
+
   // ── Section titles & spacing ─────────────────────────────────────
 
   /** Draw an uppercase section heading with accent underline. */
@@ -383,17 +406,26 @@ export class SanoDoc {
         color: tile.color,
       });
 
-      // Value
-      this.page.drawText(String(tile.value), {
-        x: x + accentBarW + 10,
+      // Value — auto-shrink font until it fits inside the tile
+      const valStr = String(tile.value);
+      const valInnerX = x + accentBarW + 10;
+      const valAvailW = tileW - accentBarW - 16;
+      let valSize = FS.xxl;
+      while (valSize > FS.base && this.fonts.bold.widthOfTextAtSize(valStr, valSize) > valAvailW) {
+        valSize -= 1;
+      }
+      this.page.drawText(valStr, {
+        x: valInnerX,
         y: tileY + tileH - 20,
-        size: FS.xxl,
+        size: valSize,
         font: this.fonts.bold,
         color: C.text,
       });
 
-      // Label
-      this.page.drawText(tile.label.toUpperCase(), {
+      // Label — truncate if it overflows the tile
+      const labelAvailW = tileW - accentBarW - 16;
+      const labelStr = this._truncateToWidth(tile.label.toUpperCase(), this.fonts.bold, FS.xs, labelAvailW);
+      this.page.drawText(labelStr, {
         x: x + accentBarW + 10,
         y: tileY + 8,
         size: FS.xs,
@@ -463,7 +495,12 @@ export class SanoDoc {
     const rowH = 18;
     this.ensureSpace(rowH);
 
-    this.page.drawText(label, {
+    const valW = this.fonts.bold.widthOfTextAtSize(value, FS.base);
+    // Leave a minimum 12pt gap between label and right-aligned value
+    const maxLabelW = PDF.CW - valW - 12;
+    const truncLabel = this._truncateToWidth(label, this.fonts.regular, FS.base, maxLabelW);
+
+    this.page.drawText(truncLabel, {
       x: PDF.ML,
       y: this.y - 11,
       size: FS.base,
@@ -471,7 +508,6 @@ export class SanoDoc {
       color: C.textSec,
     });
 
-    const valW = this.fonts.bold.widthOfTextAtSize(value, FS.base);
     this.page.drawText(value, {
       x: PDF.PAGE_W - PDF.MR - valW,
       y: this.y - 11,
@@ -571,7 +607,9 @@ export class SanoDoc {
 
       let rx = PDF.ML;
       columns.forEach((col, ci) => {
-        const cellText = (row[ci] ?? '—').substring(0, 60); // truncate long cells
+        const rawText = row[ci] ?? '—';
+        const availW = colWidths[ci] - cellPadX * 2;
+        const cellText = this._truncateToWidth(rawText, this.fonts.regular, FS.sm, availW);
         const textW = this.fonts.regular.widthOfTextAtSize(cellText, FS.sm);
         let tx = rx + cellPadX;
         if (col.align === 'right') tx = rx + colWidths[ci] - textW - cellPadX;
@@ -682,11 +720,18 @@ export class SanoDoc {
           continue;
         }
 
+        // Scale to fit within thumbSize × thumbSize, preserving aspect ratio
+        const scale = Math.min(thumbSize / img.width, thumbSize / img.height);
+        const drawW = img.width * scale;
+        const drawH = img.height * scale;
+        // Center the image within the square cell
+        const offsetX = (thumbSize - drawW) / 2;
+        const offsetY = (thumbSize - drawH) / 2;
         this.page.drawImage(img, {
-          x,
-          y: this.y - thumbSize,
-          width: thumbSize,
-          height: thumbSize,
+          x: x + offsetX,
+          y: this.y - thumbSize + offsetY,
+          width: drawW,
+          height: drawH,
         });
       }
 
