@@ -434,6 +434,188 @@ async function buildWeeklyDigest(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
+async function buildPayrollSupportSummary(sd: SanoDoc, d: any): Promise<void> {
+  sd.kpiRow([
+    { value: String(d.total_entries ?? 0), label: 'Total Entri', color: C.info },
+    { value: String(d.total_qty ?? 0), label: 'Total Qty', color: C.accent },
+    { value: String((d.by_reporter ?? []).length), label: 'Jumlah Pelapor', color: C.ok },
+  ]);
+
+  sd.sectionTitle('Ringkasan');
+  sd.metricRow('Tujuan', d.purpose ?? '—');
+  sd.metricRow('Total Entri', String(d.total_entries ?? 0));
+  sd.metricRow('Total Qty', String(d.total_qty ?? 0));
+
+  if ((d.by_reporter ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Rekap per Pelapor');
+    sd.table(
+      [
+        { header: 'Pelapor', width: 0.50 },
+        { header: 'Jumlah Entri', width: 0.25, align: 'right' },
+        { header: 'Total Qty', width: 0.25, align: 'right' },
+      ],
+      (d.by_reporter ?? []).map((g: any) => [
+        g.reporter_name ?? '—',
+        String(g.entry_count ?? 0),
+        String(g.total_qty ?? 0),
+      ]),
+    );
+  }
+
+  if ((d.entries ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Detail Entri');
+    sd.table(
+      [
+        { header: 'Tanggal', width: 0.12 },
+        { header: 'Pelapor', width: 0.15 },
+        { header: 'Kode BoQ', width: 0.10 },
+        { header: 'Item', width: 0.20 },
+        { header: 'Qty', width: 0.08, align: 'right' },
+        { header: 'Satuan', width: 0.08 },
+        { header: 'Lokasi', width: 0.12 },
+        { header: 'Catatan', width: 0.15 },
+      ],
+      (d.entries ?? []).slice(0, 100).map((e: any) => [
+        fmtDate(e.created_at),
+        e.reporter_name ?? '—',
+        e.boq_code ?? '—',
+        e.boq_label ?? '—',
+        String(e.quantity ?? 0),
+        e.unit ?? '—',
+        e.location ?? '—',
+        e.note ?? '—',
+      ]),
+    );
+  }
+}
+
+async function buildClientChargeReport(sd: SanoDoc, d: any): Promise<void> {
+  sd.kpiRow([
+    { value: fmtRp(d.grand_total_est_cost ?? 0), label: 'Est. Tagihan VO', color: C.critical },
+    { value: String(d.vo_charges?.items?.length ?? 0), label: 'VO Klien', color: C.warning },
+    { value: String(d.progress_support?.total_entries ?? 0), label: 'Support Entries', color: C.info },
+  ]);
+
+  sd.sectionTitle('Ringkasan Tagihan');
+  sd.metricRow('Tujuan', d.purpose ?? '—');
+  sd.metricRow('Estimasi VO Tagih', fmtRp(d.grand_total_est_cost ?? 0), { valueColor: C.critical });
+  sd.metricRow('Jumlah VO Terkait Klien', String(d.vo_charges?.items?.length ?? 0));
+  sd.metricRow('Support Progress Entries', String(d.progress_support?.total_entries ?? 0));
+
+  if ((d.vo_charges?.items ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('VO Tagihan Klien');
+    sd.table(
+      [
+        { header: 'Tanggal', width: 0.10 },
+        { header: 'Lokasi', width: 0.15 },
+        { header: 'Deskripsi', width: 0.22 },
+        { header: 'Pemohon', width: 0.13 },
+        { header: 'Penyebab', width: 0.12 },
+        { header: 'Est. Biaya', width: 0.14, align: 'right' },
+        { header: 'Status', width: 0.14 },
+      ],
+      (d.vo_charges.items ?? []).map((item: any) => [
+        fmtDate(item.created_at),
+        item.location ?? '—',
+        item.description ?? '—',
+        item.requested_by_name ?? '—',
+        (item.cause ?? '—').replace(/_/g, ' '),
+        item.est_cost != null ? fmtRp(item.est_cost) : '—',
+        (item.status ?? '—').replace(/_/g, ' '),
+      ]),
+    );
+  }
+
+  if ((d.progress_support?.items ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Support Progress');
+    sd.table(
+      [
+        { header: 'Tanggal', width: 0.12 },
+        { header: 'Pelapor', width: 0.15 },
+        { header: 'Kode BoQ', width: 0.12 },
+        { header: 'Item', width: 0.22 },
+        { header: 'Qty', width: 0.10, align: 'right' },
+        { header: 'Satuan', width: 0.08 },
+        { header: 'Lokasi', width: 0.12 },
+        { header: 'Catatan', width: 0.09 },
+      ],
+      (d.progress_support.items ?? []).slice(0, 80).map((item: any) => [
+        fmtDate(item.created_at),
+        item.reporter_name ?? '—',
+        item.boq_code ?? '—',
+        item.boq_label ?? '—',
+        String(item.quantity ?? 0),
+        item.unit ?? '—',
+        item.location ?? '—',
+        item.note ?? '—',
+      ]),
+    );
+  }
+}
+
+async function buildAuditList(sd: SanoDoc, d: any): Promise<void> {
+  sd.kpiRow([
+    { value: String(d.anomalies?.total ?? 0), label: 'Total Anomali', color: C.warning },
+    { value: String(d.audit_cases?.total ?? 0), label: 'Audit Case', color: C.info },
+    { value: String(d.audit_cases?.open ?? 0), label: 'Case Open', color: C.critical },
+  ]);
+
+  sd.sectionTitle('Ringkasan');
+  sd.metricRow('Total Anomali', String(d.anomalies?.total ?? 0));
+  sd.metricRow('Total Audit Case', String(d.audit_cases?.total ?? 0));
+  sd.metricRow('Audit Case Open', String(d.audit_cases?.open ?? 0), { valueColor: C.critical });
+
+  if ((d.anomalies?.items ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Anomali');
+    sd.table(
+      [
+        { header: 'Tanggal', width: 0.12 },
+        { header: 'Event', width: 0.16 },
+        { header: 'Entity', width: 0.12 },
+        { header: 'Entity ID', width: 0.18 },
+        { header: 'Severity', width: 0.12 },
+        { header: 'Deskripsi', width: 0.30 },
+      ],
+      (d.anomalies.items ?? []).map((item: any) => [
+        fmtDate(item.created_at),
+        item.event_type ?? '—',
+        item.entity_type ?? '—',
+        item.entity_id ?? '—',
+        item.severity ?? '—',
+        item.description ?? '—',
+      ]),
+    );
+  }
+
+  if ((d.audit_cases?.items ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Audit Case');
+    sd.table(
+      [
+        { header: 'Tanggal', width: 0.14 },
+        { header: 'Trigger', width: 0.18 },
+        { header: 'Entity', width: 0.14 },
+        { header: 'Entity ID', width: 0.18 },
+        { header: 'Status', width: 0.14 },
+        { header: 'Catatan', width: 0.22 },
+      ],
+      (d.audit_cases.items ?? []).map((item: any) => [
+        fmtDate(item.created_at),
+        item.trigger_type ?? '—',
+        item.entity_type ?? '—',
+        item.entity_id ?? '—',
+        (item.status ?? '—').replace(/_/g, ' '),
+        item.notes ?? '—',
+      ]),
+    );
+  }
+}
+
 // (builders defined in subsequent tasks — see Tasks 5–10)
 
 // forward declarations populated below
@@ -446,6 +628,9 @@ BUILDERS['punch_list'] = buildPunchList;
 BUILDERS['vo_summary'] = buildVoSummary;
 BUILDERS['schedule_variance'] = buildScheduleVariance;
 BUILDERS['weekly_digest'] = buildWeeklyDigest;
+BUILDERS['payroll_support_summary'] = buildPayrollSupportSummary;
+BUILDERS['client_charge_report'] = buildClientChargeReport;
+BUILDERS['audit_list'] = buildAuditList;
 
 // ── Main export function ──────────────────────────────────────────────
 
