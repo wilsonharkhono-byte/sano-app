@@ -367,6 +367,73 @@ async function buildVoSummary(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
+async function buildScheduleVariance(sd: SanoDoc, d: any): Promise<void> {
+  sd.kpiRow([
+    { value: String(d.total_milestones ?? 0), label: 'Total Milestone', color: C.info },
+    { value: String(d.on_track ?? 0), label: 'On Track', color: C.ok },
+    { value: String(d.at_risk ?? 0), label: 'At Risk', color: C.warning },
+    { value: String(d.delayed ?? 0), label: 'Delayed', color: C.critical },
+  ]);
+
+  sd.sectionTitle('Ringkasan');
+  sd.metricRow('Total Milestone', String(d.total_milestones ?? 0));
+  sd.metricRow('On Track / Ahead', String(d.on_track ?? 0), { valueColor: C.ok });
+  sd.metricRow('At Risk', String(d.at_risk ?? 0), { valueColor: C.warning });
+  sd.metricRow('Delayed', String(d.delayed ?? 0), { valueColor: C.critical });
+
+  if ((d.milestones ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Detail Milestone');
+    sd.table(
+      [
+        { header: 'Milestone', width: 0.30 },
+        { header: 'Tgl Rencana', width: 0.15 },
+        { header: 'Tgl Revisi', width: 0.15 },
+        { header: 'Sisa Hari', width: 0.22, align: 'right' },
+        { header: 'Status', width: 0.18 },
+      ],
+      (d.milestones ?? []).map((m: any) => [
+        m.label ?? '—',
+        fmtDate(m.planned_date),
+        fmtDate(m.revised_date),
+        m.days_remaining >= 0
+          ? `${m.days_remaining} hari lagi`
+          : `Terlambat ${Math.abs(m.days_remaining)} hari`,
+        (m.status ?? '—').replace(/_/g, ' '),
+      ]),
+    );
+  }
+}
+
+async function buildWeeklyDigest(sd: SanoDoc, d: any): Promise<void> {
+  sd.kpiRow([
+    { value: String(d.total_activities ?? 0), label: 'Total Aktivitas', color: C.info },
+    { value: fmtPct(d.overall_progress ?? 0), label: 'Progress', color: C.accent },
+  ]);
+
+  sd.sectionTitle('Ringkasan Minggu');
+  sd.metricRow('Periode', `${d.week_start ?? '—'} — ${d.week_end ?? '—'}`);
+  sd.metricRow('Total Aktivitas', String(d.total_activities ?? 0));
+  sd.metricRow('Progress Keseluruhan', fmtPct(d.overall_progress ?? 0));
+
+  if (d.by_flag) {
+    sd.gap(6);
+    sd.sectionTitle('Aktivitas per Flag');
+    Object.entries(d.by_flag).forEach(([flag, count]: any) => {
+      const color = flag === 'CRITICAL' ? C.critical : flag === 'WARNING' ? C.warning : flag === 'OK' ? C.ok : C.info;
+      sd.metricRow(flag, String(count), { valueColor: color });
+    });
+  }
+
+  if (d.by_type) {
+    sd.gap(6);
+    sd.sectionTitle('Aktivitas per Tipe');
+    Object.entries(d.by_type).forEach(([type, count]: any) => {
+      sd.metricRow(type, String(count));
+    });
+  }
+}
+
 // (builders defined in subsequent tasks — see Tasks 5–10)
 
 // forward declarations populated below
@@ -377,6 +444,8 @@ BUILDERS['material_balance'] = buildMaterialBalance;
 BUILDERS['receipt_log'] = buildReceiptLog;
 BUILDERS['punch_list'] = buildPunchList;
 BUILDERS['vo_summary'] = buildVoSummary;
+BUILDERS['schedule_variance'] = buildScheduleVariance;
+BUILDERS['weekly_digest'] = buildWeeklyDigest;
 
 // ── Main export function ──────────────────────────────────────────────
 
