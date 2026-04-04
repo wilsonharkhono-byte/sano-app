@@ -8,48 +8,30 @@
 import { supabase } from './supabase';
 import { AttendanceStatus } from './constants';
 import type { MandorAttendance, AttendanceWeeklySummary, AttendanceAnomaly } from './types';
+import { fetchAllByField, fetchView, rpcNumeric } from './queryHelpers';
 
 // ─── Queries ────────────────────────────────────────────────────────────────
 
 /** Get attendance records for a contract, ordered by date desc */
 export async function getAttendanceByContract(contractId: string): Promise<MandorAttendance[]> {
-  const { data } = await supabase
-    .from('mandor_attendance')
-    .select('*')
-    .eq('contract_id', contractId)
-    .order('attendance_date', { ascending: false });
-  return data ?? [];
+  return fetchAllByField<MandorAttendance>('mandor_attendance', 'contract_id', contractId, 'attendance_date');
 }
 
 /** Get attendance records for a project */
 export async function getAttendanceByProject(projectId: string): Promise<MandorAttendance[]> {
-  const { data } = await supabase
-    .from('mandor_attendance')
-    .select('*')
-    .eq('project_id', projectId)
-    .order('attendance_date', { ascending: false });
-  return data ?? [];
+  return fetchAllByField<MandorAttendance>('mandor_attendance', 'project_id', projectId, 'attendance_date');
 }
 
 /** Get unsettled (VERIFIED) attendance total for a contract */
 export async function getUnsettledAttendanceTotal(contractId: string): Promise<number> {
-  const { data, error } = await supabase.rpc('get_unsettled_attendance_total', {
-    p_contract_id: contractId,
-  });
-  if (error) return 0;
-  return data ?? 0;
+  return rpcNumeric('get_unsettled_attendance_total', { p_contract_id: contractId });
 }
 
 /** Get weekly summary view */
 export async function getAttendanceWeeklySummary(
   contractId: string,
 ): Promise<AttendanceWeeklySummary[]> {
-  const { data } = await supabase
-    .from('v_attendance_weekly_summary')
-    .select('*')
-    .eq('contract_id', contractId)
-    .order('week_start', { ascending: false });
-  return data ?? [];
+  return fetchView<AttendanceWeeklySummary>('v_attendance_weekly_summary', 'contract_id', contractId, 'week_start');
 }
 
 /** Check if a worker count is anomalous for a contract */
