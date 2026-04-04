@@ -262,6 +262,93 @@ export interface HarianAllocationSummary {
   remainingAmount: number;
 }
 
+// ── Supabase Row Shapes (avoid `any` on query results) ───────────────────
+
+/** Row from mandor_contract_rates with joined boq_items */
+interface ContractRateRow {
+  boq_item_id: string;
+  contracted_rate: number;
+  boq_labor_rate: number;
+  unit: string;
+  boq_items?: { code: string; label: string; planned: number; unit: string } | null;
+  [key: string]: unknown;
+}
+
+/** Row from v_labor_boq_rates */
+interface LaborBoqRateRow {
+  boq_item_id: string;
+  boq_code: string;
+  boq_label: string;
+  unit: string;
+  budget_volume: number;
+  labor_rate_per_unit: number;
+}
+
+/** Row from opname_lines with joined boq_items */
+interface OpnameLineRow {
+  boq_items?: { code: string; label: string } | null;
+  [key: string]: unknown;
+}
+
+/** Row from harian_cost_allocations with joined boq_items */
+interface HarianAllocationRow {
+  allocation_pct: number | string;
+  ai_suggested_pct: number | string | null;
+  boq_items?: { code: string; label: string; unit: string } | null;
+  [key: string]: unknown;
+}
+
+/** Row from worker_attendance_entries (export spreadsheet) */
+interface AttendanceExportRow {
+  worker_id: string;
+  worker_name: string;
+  is_present: boolean;
+  regular_pay: number;
+  overtime_pay: number;
+  day_total: number;
+  attendance_date: string;
+}
+
+/** Row from harian_cost_allocations (export spreadsheet) */
+interface AllocationExportRow {
+  allocation_scope: string;
+  allocation_pct: number | string;
+  supervisor_note: string | null;
+  estimator_note: string | null;
+  boq_items?: { code: string; label: string } | null;
+}
+
+/** Row from opname_headers with joined mandor_contracts */
+interface OpnameHeaderRow {
+  week_number: number;
+  week_start: string;
+  week_end: string;
+  opname_date: string;
+  payment_type: string;
+  contract_id: string;
+  status: string;
+  harian_total: number;
+  prior_paid: number;
+  kasbon: number;
+  net_this_week: number;
+  gross_total: number;
+  retention_pct: number;
+  retention_amount: number;
+  net_to_date: number;
+  mandor_contracts?: { mandor_name: string; retention_pct?: number } | null;
+  [key: string]: unknown;
+}
+
+/** Row from boq_items for harian allocation candidates */
+interface BoqCandidateRow {
+  id: string;
+  code: string;
+  label: string;
+  unit: string;
+  planned: number;
+  progress: number;
+}
+
 // ─── Mandor Contract CRUD ─────────────────────────────────────────────────
 
 export async function getMandorContracts(projectId: string): Promise<MandorContract[]> {
@@ -330,7 +417,7 @@ export async function getContractRates(contractId: string): Promise<MandorContra
       .eq('contract_id', contractId),
   ]);
 
-  const existing = ((existingRows ?? []) as any[]).map(row => ({
+  const existing = ((existingRows ?? []) as ContractRateRow[]).map(row => ({
     ...row,
     boq_code: row.boq_items?.code ?? '',
     boq_label: row.boq_items?.label ?? '',
@@ -353,7 +440,7 @@ export async function getContractRates(contractId: string): Promise<MandorContra
         .select('boq_item_id, boq_code, boq_label, unit, budget_volume, labor_rate_per_unit')
         .in('trade_category', tradeCategories)
         .in('boq_item_id', boqIds);
-      laborRows = ((data ?? []) as any[]).map(row => ({
+      laborRows = ((data ?? []) as LaborBoqRateRow[]).map(row => ({
         boq_item_id: row.boq_item_id,
         boq_code: row.boq_code ?? '',
         boq_label: row.boq_label ?? '',
@@ -975,10 +1062,10 @@ export async function getOpnameLines(headerId: string): Promise<OpnameLine[]> {
     .select('*, boq_items(code, label)')
     .eq('header_id', headerId)
     .order('description');
-  return ((data ?? []) as any[]).map(row => ({
+  return ((data ?? []) as OpnameLineRow[]).map(row => ({
     ...row,
     boq_code: row.boq_items?.code ?? undefined,
-    boq_label: row.boq_items?.label ?? row.description,
+    boq_label: row.boq_items?.label ?? (row as Record<string, unknown>).description,
   })) as OpnameLine[];
 }
 
@@ -1015,7 +1102,7 @@ export async function initOpnameLines(
 
   const lines = [];
   for (const rate of rates) {
-    const boqItem = rate.boq_items as any;
+    const boqItem = rate.boq_items as unknown as ContractRateRow['boq_items'];
 
     // Get prev cumulative %
     const { data: prevPct } = await supabase.rpc('get_prev_line_pct', {
@@ -1141,7 +1228,7 @@ export async function getHarianAllocationBoqCandidates(
     .order('code');
 
   const tradeCategories = ((contract.trade_categories ?? []) as TradeCategory[]).filter(Boolean);
-  const baseCandidates = ((boqRows ?? []) as any[]).map(row => ({
+  const baseCandidates = ((boqRows ?? []) as BoqCandidateRow[]).map(row => ({
     id: row.id,
     code: row.code ?? '',
     label: row.label ?? '',
@@ -1162,7 +1249,7 @@ export async function getHarianAllocationBoqCandidates(
     .in('boq_item_id', baseCandidates.map(candidate => candidate.id));
 
   const laborMap = new Map<string, number>();
-  for (const row of (laborRows ?? []) as any[]) {
+  for (const row of (laborRows ?? []) as LaborBoqRateRow[]) {
     const current = laborMap.get(row.boq_item_id) ?? 0;
     laborMap.set(row.boq_item_id, current + Number(row.labor_rate_per_unit ?? 0));
   }
@@ -1188,7 +1275,7 @@ export async function getHarianCostAllocations(
     .eq('header_id', headerId)
     .order('created_at');
 
-  return ((data ?? []) as any[]).map(row => ({
+  return ((data ?? []) as HarianAllocationRow[]).map(row => ({
     ...row,
     allocation_pct: Number(row.allocation_pct ?? 0),
     ai_suggested_pct: row.ai_suggested_pct == null ? null : Number(row.ai_suggested_pct),
@@ -1234,14 +1321,15 @@ export async function saveHarianCostAllocation(params: {
       .select('*, boq_items(code, label, unit)')
       .single();
     if (error) return { error: error.message };
+    const row = data as unknown as HarianAllocationRow;
     return {
       data: {
-        ...(data as any),
-        allocation_pct: Number((data as any).allocation_pct ?? 0),
-        ai_suggested_pct: (data as any).ai_suggested_pct == null ? null : Number((data as any).ai_suggested_pct),
-        boq_code: (data as any).boq_items?.code ?? undefined,
-        boq_label: (data as any).boq_items?.label ?? undefined,
-        boq_unit: (data as any).boq_items?.unit ?? undefined,
+        ...row,
+        allocation_pct: Number(row.allocation_pct ?? 0),
+        ai_suggested_pct: row.ai_suggested_pct == null ? null : Number(row.ai_suggested_pct),
+        boq_code: row.boq_items?.code ?? undefined,
+        boq_label: row.boq_items?.label ?? undefined,
+        boq_unit: row.boq_items?.unit ?? undefined,
       } as HarianCostAllocation,
     };
   }
@@ -1256,14 +1344,15 @@ export async function saveHarianCostAllocation(params: {
     .single();
 
   if (error) return { error: error.message };
+  const row = data as unknown as HarianAllocationRow;
   return {
     data: {
-      ...(data as any),
-      allocation_pct: Number((data as any).allocation_pct ?? 0),
-      ai_suggested_pct: (data as any).ai_suggested_pct == null ? null : Number((data as any).ai_suggested_pct),
-      boq_code: (data as any).boq_items?.code ?? undefined,
-      boq_label: (data as any).boq_items?.label ?? undefined,
-      boq_unit: (data as any).boq_items?.unit ?? undefined,
+      ...row,
+      allocation_pct: Number(row.allocation_pct ?? 0),
+      ai_suggested_pct: row.ai_suggested_pct == null ? null : Number(row.ai_suggested_pct),
+      boq_code: row.boq_items?.code ?? undefined,
+      boq_label: row.boq_items?.label ?? undefined,
+      boq_unit: row.boq_items?.unit ?? undefined,
     } as HarianCostAllocation,
   };
 }
@@ -1377,7 +1466,7 @@ export async function exportOpnameToExcel(
     .eq('id', headerId)
     .single();
 
-  const header = headerRes.data as any;
+  const header = headerRes.data as unknown as OpnameHeaderRow;
   const mandorName = header?.mandor_contracts?.mandor_name ?? '';
   const wb = XLSX.utils.book_new();
   const sheetName = `OPM${header.week_number}`;
@@ -1400,10 +1489,10 @@ export async function exportOpnameToExcel(
       .eq('header_id', headerId)
       .order('created_at');
 
-    const attendance = (attendanceRes.data ?? []) as any[];
-    const allocations = (allocationRes.data ?? []) as any[];
+    const attendance = (attendanceRes.data ?? []) as AttendanceExportRow[];
+    const allocations = (allocationRes.data ?? []) as unknown as AllocationExportRow[];
 
-    const rows: any[][] = [];
+    const rows: (string | number | boolean | null)[][] = [];
     rows.push(['OPNAME HARIAN - UPAH PEKERJA']);
     rows.push([]);
     rows.push(['Pemilik', `: ${ownerName}`]);
@@ -1516,7 +1605,7 @@ export async function exportOpnameToExcel(
 
     const lines = (linesRes.data ?? []) as OpnameLine[];
 
-    const rows: any[][] = [];
+    const rows: (string | number | boolean | null)[][] = [];
     rows.push(['OPNAME PEKERJAAN FISIK']);
     rows.push([]);
     rows.push(['Pemilik', `: ${ownerName}`]);
@@ -1610,9 +1699,9 @@ export async function exportOpnameProgressTemplate(
       .eq('header_id', headerId),
   ]);
 
-  const header = headerRes.data as any;
+  const header = headerRes.data as unknown as OpnameHeaderRow;
   const mandorName = header?.mandor_contracts?.mandor_name ?? '';
-  const lines = ((linesRes.data ?? []) as any[])
+  const lines = ((linesRes.data ?? []) as unknown as (OpnameLine & OpnameLineRow)[])
     .map(row => ({
       ...row,
       boq_code: row.boq_items?.code ?? '',
@@ -1623,7 +1712,7 @@ export async function exportOpnameProgressTemplate(
       || String(a.boq_label ?? '').localeCompare(String(b.boq_label ?? ''), 'id')
     );
 
-  const rows: any[][] = [];
+  const rows: (string | number | boolean | null)[][] = [];
   rows.push(['TEMPLATE IMPORT PROGRESS OPNAME']);
   rows.push(['Isi kolom "Progress (%)" lalu upload kembali di layar Opname.']);
   rows.push(['Sistem akan mencocokkan item dengan Kode BoQ dulu, lalu Uraian Pekerjaan.']);

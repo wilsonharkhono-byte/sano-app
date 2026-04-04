@@ -91,12 +91,15 @@ export async function getAttendanceByDate(
     .eq('attendance_date', date)
     .order('created_at');
 
-  return (data ?? []).map((row: any) => ({
-    ...row,
-    worker_name: row.mandor_workers?.worker_name,
-    skill_level: row.mandor_workers?.skill_level,
-    mandor_workers: undefined,
-  }));
+  return (data ?? []).map((row) => {
+    const r = row as unknown as Record<string, unknown> & { mandor_workers?: { worker_name: string; skill_level: string } };
+    return {
+      ...row,
+      worker_name: r.mandor_workers?.worker_name,
+      skill_level: r.mandor_workers?.skill_level,
+      mandor_workers: undefined,
+    };
+  }) as WorkerAttendanceEntry[];
 }
 
 /** Get attendance entries for a contract in a date range (week view) */
@@ -114,12 +117,15 @@ export async function getAttendanceByWeek(
     .order('attendance_date')
     .order('created_at');
 
-  return (data ?? []).map((row: any) => ({
-    ...row,
-    worker_name: row.mandor_workers?.worker_name,
-    skill_level: row.mandor_workers?.skill_level,
-    mandor_workers: undefined,
-  }));
+  return (data ?? []).map((row) => {
+    const r = row as unknown as Record<string, unknown> & { mandor_workers?: { worker_name: string; skill_level: string } };
+    return {
+      ...row,
+      worker_name: r.mandor_workers?.worker_name,
+      skill_level: r.mandor_workers?.skill_level,
+      mandor_workers: undefined,
+    };
+  }) as WorkerAttendanceEntry[];
 }
 
 /** Get weekly summary view */
@@ -235,7 +241,7 @@ export async function createHarianOpname(params: {
   opnameDate: string;
   weekStart: string;
   weekEnd: string;
-}): Promise<{ data?: any; error?: string }> {
+}): Promise<{ data?: unknown; error?: string }> {
   const { data, error } = await supabase.rpc('create_harian_opname', {
     p_contract_id: params.contractId,
     p_week_number: params.weekNumber,
@@ -250,7 +256,7 @@ export async function createHarianOpname(params: {
 /** Recompute harian opname totals from attendance */
 export async function recomputeHarianOpname(
   headerId: string,
-): Promise<{ data?: any; error?: string }> {
+): Promise<{ data?: unknown; error?: string }> {
   const { data, error } = await supabase.rpc('recompute_harian_opname', {
     p_header_id: headerId,
   });
