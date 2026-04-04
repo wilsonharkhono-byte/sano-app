@@ -13,6 +13,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from './supabase';
 import type { TradeCategory } from './laborTrade';
 import type { ParsedBoqItem, ParsedWorkbook } from './excelParser';
+import { OpnameStatus } from './constants';
 
 // ─── DEPRECATION NOTICE ──────────────────────────────────────────────────────
 // Client-side payment computation functions in this file are DEPRECATED.
@@ -1047,7 +1048,7 @@ export async function createOpnameHeader(
       opname_date: opnameDate,
       retention_pct: retentionPct,
       prior_paid: priorPaid,
-      status: 'DRAFT',
+      status: OpnameStatus.DRAFT,
     })
     .select()
     .single();

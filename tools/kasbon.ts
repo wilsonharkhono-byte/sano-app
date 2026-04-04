@@ -7,6 +7,7 @@
 
 import { supabase } from './supabase';
 import type { Kasbon, KasbonAging } from './types';
+import { KasbonStatus } from './constants';
 
 // ─── Queries ────────────────────────────────────────────────────────────────
 
@@ -85,9 +86,9 @@ export async function approveKasbon(
 /** Format kasbon status for display */
 export function kasbonStatusLabel(status: Kasbon['status']): string {
   switch (status) {
-    case 'REQUESTED': return 'Diajukan';
-    case 'APPROVED':  return 'Disetujui';
-    case 'SETTLED':   return 'Terpotong';
+    case KasbonStatus.REQUESTED: return 'Diajukan';
+    case KasbonStatus.APPROVED:  return 'Disetujui';
+    case KasbonStatus.SETTLED:   return 'Terpotong';
     default:          return status;
   }
 }
@@ -95,9 +96,9 @@ export function kasbonStatusLabel(status: Kasbon['status']): string {
 /** Format kasbon status color */
 export function kasbonStatusColor(status: Kasbon['status']): string {
   switch (status) {
-    case 'REQUESTED': return '#E65100'; // orange
-    case 'APPROVED':  return '#1565C0'; // blue
-    case 'SETTLED':   return '#3D8B40'; // green
+    case KasbonStatus.REQUESTED: return '#E65100'; // orange
+    case KasbonStatus.APPROVED:  return '#1565C0'; // blue
+    case KasbonStatus.SETTLED:   return '#3D8B40'; // green
     default:          return '#524E49';
   }
 }

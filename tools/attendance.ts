@@ -6,6 +6,7 @@
  */
 
 import { supabase } from './supabase';
+import { AttendanceStatus } from './constants';
 import type { MandorAttendance, AttendanceWeeklySummary, AttendanceAnomaly } from './types';
 
 // ─── Queries ────────────────────────────────────────────────────────────────
@@ -102,9 +103,9 @@ export async function verifyAttendance(
 /** Format attendance status for display */
 export function attendanceStatusLabel(status: MandorAttendance['status']): string {
   switch (status) {
-    case 'DRAFT':    return 'Draft';
+    case AttendanceStatus.DRAFT:    return 'Draft';
     case 'VERIFIED': return 'Terverif.';
-    case 'SETTLED':  return 'Terpotong';
+    case AttendanceStatus.SETTLED:  return 'Terpotong';
     default:         return status;
   }
 }
@@ -112,9 +113,9 @@ export function attendanceStatusLabel(status: MandorAttendance['status']): strin
 /** Format attendance status color */
 export function attendanceStatusColor(status: MandorAttendance['status']): string {
   switch (status) {
-    case 'DRAFT':    return '#524E49'; // gray
+    case AttendanceStatus.DRAFT:    return '#524E49'; // gray
     case 'VERIFIED': return '#1565C0'; // blue
-    case 'SETTLED':  return '#3D8B40'; // green
+    case AttendanceStatus.SETTLED:  return '#3D8B40'; // green
     default:         return '#524E49';
   }
 }
