@@ -261,7 +261,7 @@ export async function runProjectScoring(
   let estimatorCount = 0;
 
   for (const a of assignments ?? []) {
-    const role = (a.profiles as any)?.role as UserRole | undefined;
+    const role = (a.profiles as unknown as { role?: UserRole })?.role;
     if (!role) continue;
 
     try {
@@ -274,8 +274,8 @@ export async function runProjectScoring(
         await saveScore(result);
         estimatorCount++;
       }
-    } catch (err: any) {
-      console.warn(`Score failed for ${a.user_id}:`, err.message);
+    } catch (err: unknown) {
+      console.warn(`Score failed for ${a.user_id}:`, err instanceof Error ? err.message : err);
     }
   }
 

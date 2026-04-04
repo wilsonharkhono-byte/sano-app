@@ -145,7 +145,7 @@ export interface OpnameHeader {
   contract_id: string;
   week_number: number;
   opname_date: string;
-  status: 'DRAFT' | 'SUBMITTED' | 'VERIFIED' | 'APPROVED' | 'PAID';
+  status: import('./constants').OpnameStatusType;
   submitted_by: string | null;
   submitted_at: string | null;
   verified_by: string | null;

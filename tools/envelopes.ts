@@ -269,8 +269,11 @@ async function checkTier1Direct(
   const { data: allocatedOrders } = await allocationQuery;
 
   const alreadyOrdered = (allocatedOrders ?? [])
-    .filter((row: any) => row.material_request_lines?.material_request_headers?.overall_status !== 'REJECTED')
-    .reduce((sum: number, row: any) => sum + Number(row.allocated_quantity ?? 0), 0);
+    .filter((row) => {
+      const r = row as unknown as { material_request_lines?: { material_request_headers?: { overall_status?: string } } };
+      return r.material_request_lines?.material_request_headers?.overall_status !== 'REJECTED';
+    })
+    .reduce((sum: number, row) => sum + Number((row as unknown as { allocated_quantity?: number }).allocated_quantity ?? 0), 0);
 
   const remaining = boqItem.planned - alreadyOrdered;
   const overOrderPct = remaining > 0 ? ((requestedQty - remaining) / remaining) * 100 : 100;

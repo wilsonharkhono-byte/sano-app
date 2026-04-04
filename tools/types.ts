@@ -1,9 +1,24 @@
 // SAN Contractor — TypeScript Type Definitions
 // Updated for multi-project, multi-role, header+lines architecture per SAN Developer Brief
 
+import type {
+  OpnameStatusType,
+  ProjectStatusType,
+  BaselineReviewStatusType,
+  MRStatusType,
+  POStatusType,
+  VOStatusType,
+  MTNStatusType,
+  AuditCaseStatusType,
+  KasbonStatusType,
+  AnomalyResolutionType,
+  UserRoleType,
+  DefectStatusType,
+} from './constants';
+
 // ─── Identity & Access ────────────────────────────────────────────────
 
-export type UserRole = 'supervisor' | 'estimator' | 'admin' | 'principal';
+export type UserRole = UserRoleType;
 
 export interface Profile {
   id: string;
@@ -21,7 +36,7 @@ export interface Project {
   contract_value: number | null;
   start_date: string | null;
   end_date: string | null;
-  status: 'ACTIVE' | 'ON_HOLD' | 'COMPLETED' | 'CANCELLED';
+  status: ProjectStatusType;
 }
 
 export interface ProjectAssignment {
@@ -166,7 +181,7 @@ export interface ImportStagingRow {
   parsed_data: object | null;
   confidence: number;
   needs_review: boolean;
-  review_status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'MODIFIED';
+  review_status: BaselineReviewStatusType;
   reviewer_notes: string | null;
   created_at: string;
 }
@@ -236,7 +251,7 @@ export interface MaterialRequestLineAllocation {
   created_at: string;
 }
 
-export type RequestStatus = 'PENDING' | 'UNDER_REVIEW' | 'APPROVED' | 'REJECTED' | 'AUTO_HOLD';
+export type RequestStatus = MRStatusType;
 export type MaterialRequestBasis = 'BOQ' | 'MATERIAL';
 export type MaterialRequestAllocationBasis = 'DIRECT' | 'TIER2_ENVELOPE' | 'GENERAL_STOCK';
 
@@ -253,7 +268,7 @@ export interface MaterialRequest {
   notes: string | null;
   gate1_flag: FlagLevel;
   gate1_details: GateResult | null;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'AUTO_HOLD';
+  status: Exclude<MRStatusType, 'UNDER_REVIEW'>;
   created_at: string;
 }
 
@@ -426,7 +441,7 @@ export interface ProgressReport {
 
 // ─── Defects (inside Progres) ─────────────────────────────────────────
 
-export type DefectStatus = 'OPEN' | 'VALIDATED' | 'IN_REPAIR' | 'RESOLVED' | 'VERIFIED' | 'ACCEPTED_BY_PRINCIPAL';
+export type DefectStatus = DefectStatusType;
 
 export interface Defect {
   id: string;
@@ -460,7 +475,7 @@ export type VOCause =
   | 'owner_supplied'
   | 'contractor_rework';
 
-export type VOGrade = 'low' | 'medium' | 'high' | 'critical_margin';
+export type VOGrade = import('./constants').VOGradeType;
 
 export interface VOEntry {
   id: string;
@@ -475,7 +490,7 @@ export interface VOEntry {
   est_cost: number | null;
   photo_path: string | null;
   is_micro: boolean;
-  status: 'AWAITING' | 'REVIEWED' | 'APPROVED' | 'REJECTED';
+  status: VOStatusType;
   reviewed_by: string | null;
   reviewed_at: string | null;
   created_by: string;
@@ -520,7 +535,7 @@ export interface MtnRequest {
   destination_project: string;
   reason: string;
   photo_path: string | null;
-  status: 'AWAITING' | 'APPROVED' | 'REJECTED' | 'RECEIVED';
+  status: MTNStatusType;
   reviewed_by: string | null;
   reviewed_at: string | null;
   created_at: string;
@@ -659,7 +674,7 @@ export type ImportAnomalyType =
 
 export type AnomalySeverity = 'INFO' | 'WARNING' | 'HIGH' | 'CRITICAL';
 
-export type AnomalyResolution = 'PENDING' | 'ACCEPTED' | 'CORRECTED' | 'DISMISSED';
+export type AnomalyResolution = AnomalyResolutionType;
 
 export interface ImportAnomaly {
   id: string;
@@ -697,7 +712,7 @@ export interface Kasbon {
   amount: number;
   kasbon_date: string;
   reason: string | null;
-  status: 'REQUESTED' | 'APPROVED' | 'SETTLED';
+  status: KasbonStatusType;
   requested_by: string;
   approved_by: string | null;
   approved_at: string | null;
@@ -714,7 +729,7 @@ export interface KasbonAging {
   amount: number;
   kasbon_date: string;
   reason: string | null;
-  status: 'REQUESTED' | 'APPROVED';
+  status: Exclude<KasbonStatusType, 'SETTLED'>;
   requested_by: string;
   approved_by: string | null;
   created_at: string;
@@ -776,7 +791,7 @@ export interface MicroVo {
   est_material: string | null;
   est_cost: number | null;
   photo_path: string | null;
-  status: 'AWAITING' | 'APPROVED' | 'REJECTED';
+  status: Exclude<VOStatusType, 'REVIEWED'>;
   created_at: string;
 }
 

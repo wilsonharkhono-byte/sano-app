@@ -84,14 +84,17 @@ export async function getProjectTeam(projectId: string): Promise<TeamMember[]> {
     .eq('project_id', projectId)
     .order('assigned_at', { ascending: true });
 
-  return (data ?? []).map((row: any) => ({
-    assignment_id: row.id,
-    user_id:       row.user_id,
-    full_name:     row.profiles?.full_name || '—',
-    role:          row.profiles?.role      || '—',
-    phone:         row.profiles?.phone     ?? null,
-    assigned_at:   row.assigned_at,
-  }));
+  return (data ?? []).map((row) => {
+    const profiles = row.profiles as unknown as { full_name?: string; role?: string; phone?: string | null } | null;
+    return {
+      assignment_id: row.id,
+      user_id:       row.user_id,
+      full_name:     profiles?.full_name || '—',
+      role:          profiles?.role      || '—',
+      phone:         profiles?.phone     ?? null,
+      assigned_at:   row.assigned_at,
+    };
+  });
 }
 
 /** Returns all registered users — used to populate the add-member picker. */

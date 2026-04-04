@@ -1977,7 +1977,7 @@ export async function generateExceptionHandlingLoad(
         }, new Map<string, number>()).entries(),
       ).map(([event_type, count]) => ({ event_type, count })).sort((a, b) => b.count - a.count),
       audit_breakdown: Array.from(
-        auditRows.reduce((map: Map<string, number>, row: any) => {
+        auditRows.reduce((map: Map<string, number>, row: AuditCaseMinRow) => {
           map.set(`${row.trigger_type}::${row.status}`, (map.get(`${row.trigger_type}::${row.status}`) ?? 0) + 1);
           return map;
         }, new Map<string, number>()).entries(),

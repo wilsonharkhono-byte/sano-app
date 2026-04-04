@@ -70,8 +70,8 @@ export async function writeAuditEvent(event: AuditEvent): Promise<void> {
         flag: event.severity,
       });
     }
-  } catch (err: any) {
-    console.warn('Audit write failed:', err.message);
+  } catch (err: unknown) {
+    console.warn('Audit write failed:', err instanceof Error ? err.message : err);
     // Never throw — audit must not block main flow
   }
 }
@@ -204,7 +204,7 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
       .select('po_id')
       .in('po_id', stalePOIds);
 
-    const posWithReceiptSet = new Set((posWithReceipts ?? []).map((r: any) => r.po_id));
+    const posWithReceiptSet = new Set((posWithReceipts ?? []).map((r) => r.po_id));
 
     for (const po of stalePOs ?? []) {
       if (!posWithReceiptSet.has(po.id)) {
