@@ -7,6 +7,23 @@
 import { Platform } from 'react-native';
 import { encode } from 'base64-arraybuffer';
 import type { ReportPayload } from './reports';
+import type {
+  ProgressSummaryData,
+  MaterialBalanceData,
+  ReceiptLogData,
+  SiteChangeLogData,
+  ScheduleVarianceData,
+  WeeklyDigestData,
+  PayrollSupportData,
+  ClientChargeData,
+  AuditListData,
+  AIUsageData,
+  ApprovalSLAData,
+  OperationalDisciplineData,
+  ToolUsageData,
+  ExceptionHandlingData,
+  ReportPhoto,
+} from './reportDataTypes';
 import { SanoDoc, C, FS, PDF } from './pdf-layout';
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -18,6 +35,13 @@ function fmtRp(n: number): string {
 function fmtDate(v?: string | null): string {
   if (!v) return '—';
   return new Date(v).toLocaleDateString('id-ID');
+}
+
+/** Short date for tight table columns: "26/3/26" */
+function fmtDateShort(v?: string | null): string {
+  if (!v) return '—';
+  const dt = new Date(v);
+  return `${dt.getDate()}/${dt.getMonth() + 1}/${String(dt.getFullYear()).slice(2)}`;
 }
 
 function fmtPct(n: number): string {
@@ -41,7 +65,7 @@ function statusColor(status: string) {
 // Each builder receives a SanoDoc and the report's `data` payload,
 // draws the report body, and returns void.
 
-async function buildProgressSummary(sd: SanoDoc, d: any): Promise<void> {
+async function buildProgressSummary(sd: SanoDoc, d: ProgressSummaryData): Promise<void> {
   // KPI row
   sd.kpiRow([
     { value: fmtPct(d.overall_progress ?? 0), label: 'Progress', color: C.accent },
@@ -75,7 +99,7 @@ async function buildProgressSummary(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Vol. Terpasang', width: 0.14, align: 'right' },
         { header: 'Progress', width: 0.15, align: 'right' },
       ],
-      (d.items ?? []).map((item: any) => [
+      (d.items ?? []).map((item) => [
         item.code ?? '—',
         item.label ?? '—',
         item.unit ?? '—',
@@ -92,16 +116,16 @@ async function buildProgressSummary(sd: SanoDoc, d: any): Promise<void> {
     sd.sectionTitle('Log Progres Terbaru');
     sd.table(
       [
-        { header: 'Tanggal', width: 0.13 },
-        { header: 'Kode BoQ', width: 0.12 },
-        { header: 'Item', width: 0.28 },
+        { header: 'Tgl', width: 0.09 },
+        { header: 'Kode', width: 0.10 },
+        { header: 'Item', width: 0.30 },
         { header: 'Qty', width: 0.08, align: 'right' },
-        { header: 'Satuan', width: 0.08 },
-        { header: 'Status', width: 0.14 },
-        { header: 'Lokasi', width: 0.17 },
+        { header: 'Sat.', width: 0.07 },
+        { header: 'Status', width: 0.16 },
+        { header: 'Lokasi', width: 0.20 },
       ],
-      (d.entries ?? []).slice(0, 50).map((entry: any) => [
-        fmtDate(entry.created_at),
+      (d.entries ?? []).slice(0, 50).map((entry) => [
+        fmtDateShort(entry.created_at),
         entry.boq_code ?? '—',
         entry.boq_label ?? '—',
         String(entry.quantity ?? 0),
@@ -113,8 +137,8 @@ async function buildProgressSummary(sd: SanoDoc, d: any): Promise<void> {
   }
 
   // Photos (first 12)
-  const photoUrls = (d.entries ?? []).flatMap((e: any) =>
-    (e.photos ?? []).map((p: any) => p.photo_url),
+  const photoUrls = (d.entries ?? []).flatMap((e) =>
+    (e.photos ?? []).map((p) => p.photo_url),
   ).slice(0, 12);
 
   if (photoUrls.length > 0) {
@@ -124,7 +148,7 @@ async function buildProgressSummary(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
-async function buildMaterialBalance(sd: SanoDoc, d: any): Promise<void> {
+async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promise<void> {
   sd.kpiRow([
     { value: String(d.total_materials ?? 0), label: 'Total Material', color: C.info },
     { value: String(d.over_received ?? 0), label: 'Over-Received', color: C.warning },
@@ -141,15 +165,15 @@ async function buildMaterialBalance(sd: SanoDoc, d: any): Promise<void> {
     sd.sectionTitle('Detail Material');
     sd.table(
       [
-        { header: 'Material', width: 0.25 },
-        { header: 'Satuan', width: 0.08 },
-        { header: 'Rencana', width: 0.13, align: 'right' },
-        { header: 'Diterima', width: 0.13, align: 'right' },
-        { header: 'Terpasang', width: 0.13, align: 'right' },
-        { header: 'On-Site', width: 0.13, align: 'right' },
-        { header: 'Status', width: 0.15 },
+        { header: 'Material', width: 0.28 },
+        { header: 'Sat.', width: 0.06 },
+        { header: 'Rencana', width: 0.12, align: 'right' },
+        { header: 'Diterima', width: 0.12, align: 'right' },
+        { header: 'Terpasang', width: 0.12, align: 'right' },
+        { header: 'On-Site', width: 0.12, align: 'right' },
+        { header: 'Status', width: 0.18 },
       ],
-      (d.balances ?? []).map((b: any) => {
+      (d.balances ?? []).map((b) => {
         const received = b.received ?? b.total_received ?? 0;
         const planned = b.planned ?? 0;
         const installed = b.installed ?? 0;
@@ -169,7 +193,7 @@ async function buildMaterialBalance(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
-async function buildReceiptLog(sd: SanoDoc, d: any): Promise<void> {
+async function buildReceiptLog(sd: SanoDoc, d: ReceiptLogData): Promise<void> {
   sd.kpiRow([
     { value: String(d.total_pos ?? 0), label: 'Total PO', color: C.info },
     { value: String(d.fully_received ?? 0), label: 'Fully Received', color: C.ok },
@@ -186,16 +210,16 @@ async function buildReceiptLog(sd: SanoDoc, d: any): Promise<void> {
     sd.sectionTitle('Log Penerimaan');
     sd.table(
       [
-        { header: 'No. PO', width: 0.12 },
-        { header: 'Material', width: 0.20 },
-        { header: 'Supplier', width: 0.15 },
-        { header: 'Dipesan', width: 0.10, align: 'right' },
-        { header: 'Diterima', width: 0.10, align: 'right' },
-        { header: 'Satuan', width: 0.08 },
-        { header: 'Harga/Unit', width: 0.12, align: 'right' },
-        { header: 'Status', width: 0.13 },
+        { header: 'No. PO', width: 0.10 },
+        { header: 'Material', width: 0.22 },
+        { header: 'Supplier', width: 0.16 },
+        { header: 'Pesan', width: 0.08, align: 'right' },
+        { header: 'Terima', width: 0.08, align: 'right' },
+        { header: 'Sat.', width: 0.06 },
+        { header: 'Harga/Unit', width: 0.14, align: 'right' },
+        { header: 'Status', width: 0.16 },
       ],
-      (d.entries ?? []).map((e: any) => [
+      (d.entries ?? []).map((e) => [
         e.po_number ?? e.po_ref ?? '—',
         e.material ?? '—',
         e.supplier ?? '—',
@@ -209,8 +233,8 @@ async function buildReceiptLog(sd: SanoDoc, d: any): Promise<void> {
   }
 
   // Photos
-  const photoUrls = (d.receipts ?? []).flatMap((r: any) =>
-    (r.photos ?? []).map((p: any) => p.photo_url),
+  const photoUrls = (d.receipts ?? []).flatMap((r) =>
+    (r.photos ?? []).map((p) => p.photo_url),
   ).slice(0, 12);
   if (photoUrls.length > 0) {
     sd.gap(6);
@@ -219,7 +243,7 @@ async function buildReceiptLog(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
-async function buildScheduleVariance(sd: SanoDoc, d: any): Promise<void> {
+async function buildScheduleVariance(sd: SanoDoc, d: ScheduleVarianceData): Promise<void> {
   sd.kpiRow([
     { value: String(d.total_milestones ?? 0), label: 'Total Milestone', color: C.info },
     { value: String(d.on_track ?? 0), label: 'On Track', color: C.ok },
@@ -244,7 +268,7 @@ async function buildScheduleVariance(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Sisa Hari', width: 0.22, align: 'right' },
         { header: 'Status', width: 0.18 },
       ],
-      (d.milestones ?? []).map((m: any) => [
+      (d.milestones ?? []).map((m) => [
         m.label ?? '—',
         fmtDate(m.planned_date),
         fmtDate(m.revised_date),
@@ -257,7 +281,7 @@ async function buildScheduleVariance(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
-async function buildWeeklyDigest(sd: SanoDoc, d: any): Promise<void> {
+async function buildWeeklyDigest(sd: SanoDoc, d: WeeklyDigestData): Promise<void> {
   sd.kpiRow([
     { value: String(d.total_activities ?? 0), label: 'Total Aktivitas', color: C.info },
     { value: fmtPct(d.overall_progress ?? 0), label: 'Progress', color: C.accent },
@@ -271,7 +295,7 @@ async function buildWeeklyDigest(sd: SanoDoc, d: any): Promise<void> {
   if (d.by_flag) {
     sd.gap(6);
     sd.sectionTitle('Aktivitas per Flag');
-    Object.entries(d.by_flag).forEach(([flag, count]: any) => {
+    Object.entries(d.by_flag).forEach(([flag, count]: [string, number]) => {
       const color = flag === 'CRITICAL' ? C.critical : flag === 'WARNING' ? C.warning : flag === 'OK' ? C.ok : C.info;
       sd.metricRow(flag, String(count), { valueColor: color });
     });
@@ -280,13 +304,13 @@ async function buildWeeklyDigest(sd: SanoDoc, d: any): Promise<void> {
   if (d.by_type) {
     sd.gap(6);
     sd.sectionTitle('Aktivitas per Tipe');
-    Object.entries(d.by_type).forEach(([type, count]: any) => {
+    Object.entries(d.by_type).forEach(([type, count]: [string, number]) => {
       sd.metricRow(type, String(count));
     });
   }
 }
 
-async function buildPayrollSupportSummary(sd: SanoDoc, d: any): Promise<void> {
+async function buildPayrollSupportSummary(sd: SanoDoc, d: PayrollSupportData): Promise<void> {
   sd.kpiRow([
     { value: String(d.total_entries ?? 0), label: 'Total Entri', color: C.info },
     { value: String(d.total_qty ?? 0), label: 'Total Qty', color: C.accent },
@@ -307,7 +331,7 @@ async function buildPayrollSupportSummary(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Jumlah Entri', width: 0.25, align: 'right' },
         { header: 'Total Qty', width: 0.25, align: 'right' },
       ],
-      (d.by_reporter ?? []).map((g: any) => [
+      (d.by_reporter ?? []).map((g) => [
         g.reporter_name ?? '—',
         String(g.entry_count ?? 0),
         String(g.total_qty ?? 0),
@@ -320,17 +344,17 @@ async function buildPayrollSupportSummary(sd: SanoDoc, d: any): Promise<void> {
     sd.sectionTitle('Detail Entri');
     sd.table(
       [
-        { header: 'Tanggal', width: 0.12 },
-        { header: 'Pelapor', width: 0.15 },
-        { header: 'Kode BoQ', width: 0.10 },
-        { header: 'Item', width: 0.20 },
-        { header: 'Qty', width: 0.08, align: 'right' },
-        { header: 'Satuan', width: 0.08 },
-        { header: 'Lokasi', width: 0.12 },
-        { header: 'Catatan', width: 0.15 },
+        { header: 'Tgl', width: 0.08 },
+        { header: 'Pelapor', width: 0.14 },
+        { header: 'Kode', width: 0.09 },
+        { header: 'Item', width: 0.22 },
+        { header: 'Qty', width: 0.07, align: 'right' },
+        { header: 'Sat.', width: 0.06 },
+        { header: 'Lokasi', width: 0.14 },
+        { header: 'Catatan', width: 0.20 },
       ],
-      (d.entries ?? []).slice(0, 100).map((e: any) => [
-        fmtDate(e.created_at),
+      (d.entries ?? []).slice(0, 100).map((e) => [
+        fmtDateShort(e.created_at),
         e.reporter_name ?? '—',
         e.boq_code ?? '—',
         e.boq_label ?? '—',
@@ -343,7 +367,7 @@ async function buildPayrollSupportSummary(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
-async function buildClientChargeReport(sd: SanoDoc, d: any): Promise<void> {
+async function buildClientChargeReport(sd: SanoDoc, d: ClientChargeData): Promise<void> {
   sd.kpiRow([
     { value: fmtRp(d.grand_total_est_cost ?? 0), label: 'Est. Tagihan VO', color: C.critical },
     { value: String(d.vo_charges?.items?.length ?? 0), label: 'VO Klien', color: C.warning },
@@ -361,16 +385,16 @@ async function buildClientChargeReport(sd: SanoDoc, d: any): Promise<void> {
     sd.sectionTitle('VO Tagihan Klien');
     sd.table(
       [
-        { header: 'Tanggal', width: 0.10 },
-        { header: 'Lokasi', width: 0.15 },
-        { header: 'Deskripsi', width: 0.22 },
+        { header: 'Tgl', width: 0.08 },
+        { header: 'Lokasi', width: 0.14 },
+        { header: 'Deskripsi', width: 0.26 },
         { header: 'Pemohon', width: 0.13 },
-        { header: 'Penyebab', width: 0.12 },
+        { header: 'Penyebab', width: 0.11 },
         { header: 'Est. Biaya', width: 0.14, align: 'right' },
         { header: 'Status', width: 0.14 },
       ],
-      (d.vo_charges.items ?? []).map((item: any) => [
-        fmtDate(item.created_at),
+      (d.vo_charges.items ?? []).map((item) => [
+        fmtDateShort(item.created_at),
         item.location ?? '—',
         item.description ?? '—',
         item.requested_by_name ?? '—',
@@ -386,17 +410,17 @@ async function buildClientChargeReport(sd: SanoDoc, d: any): Promise<void> {
     sd.sectionTitle('Support Progress');
     sd.table(
       [
-        { header: 'Tanggal', width: 0.12 },
-        { header: 'Pelapor', width: 0.15 },
-        { header: 'Kode BoQ', width: 0.12 },
+        { header: 'Tgl', width: 0.08 },
+        { header: 'Pelapor', width: 0.14 },
+        { header: 'Kode', width: 0.09 },
         { header: 'Item', width: 0.22 },
-        { header: 'Qty', width: 0.10, align: 'right' },
-        { header: 'Satuan', width: 0.08 },
-        { header: 'Lokasi', width: 0.12 },
-        { header: 'Catatan', width: 0.09 },
+        { header: 'Qty', width: 0.07, align: 'right' },
+        { header: 'Sat.', width: 0.06 },
+        { header: 'Lokasi', width: 0.14 },
+        { header: 'Catatan', width: 0.20 },
       ],
-      (d.progress_support.items ?? []).slice(0, 80).map((item: any) => [
-        fmtDate(item.created_at),
+      (d.progress_support.items ?? []).slice(0, 80).map((item) => [
+        fmtDateShort(item.created_at),
         item.reporter_name ?? '—',
         item.boq_code ?? '—',
         item.boq_label ?? '—',
@@ -409,7 +433,7 @@ async function buildClientChargeReport(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
-async function buildAuditList(sd: SanoDoc, d: any): Promise<void> {
+async function buildAuditList(sd: SanoDoc, d: AuditListData): Promise<void> {
   sd.kpiRow([
     { value: String(d.anomalies?.total ?? 0), label: 'Total Anomali', color: C.warning },
     { value: String(d.audit_cases?.total ?? 0), label: 'Audit Case', color: C.info },
@@ -433,7 +457,7 @@ async function buildAuditList(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Severity', width: 0.12 },
         { header: 'Deskripsi', width: 0.30 },
       ],
-      (d.anomalies.items ?? []).map((item: any) => [
+      (d.anomalies.items ?? []).map((item) => [
         fmtDate(item.created_at),
         item.event_type ?? '—',
         item.entity_type ?? '—',
@@ -456,7 +480,7 @@ async function buildAuditList(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Status', width: 0.14 },
         { header: 'Catatan', width: 0.22 },
       ],
-      (d.audit_cases.items ?? []).map((item: any) => [
+      (d.audit_cases.items ?? []).map((item) => [
         fmtDate(item.created_at),
         item.trigger_type ?? '—',
         item.entity_type ?? '—',
@@ -468,20 +492,20 @@ async function buildAuditList(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
-async function buildAIUsageSummary(sd: SanoDoc, d: any): Promise<void> {
+async function buildAIUsageSummary(sd: SanoDoc, d: AIUsageData): Promise<void> {
   sd.kpiRow([
-    { value: String(d.total_chats ?? 0), label: 'Total Chat', color: C.info },
-    { value: String(d.active_users ?? 0), label: 'User Aktif', color: C.ok },
-    { value: `${Math.round((d.total_tokens ?? 0) / 1000)}k`, label: 'Total Token', color: C.accent },
+    { value: String(d.summary.total_interactions ?? 0), label: 'Total Chat', color: C.info },
+    { value: String(d.summary.active_users ?? 0), label: 'User Aktif', color: C.ok },
+    { value: `${Math.round((d.summary.total_tokens ?? 0) / 1000)}k`, label: 'Total Token', color: C.accent },
   ]);
 
   sd.sectionTitle('Ringkasan Penggunaan AI');
-  sd.metricRow('Total Chat (30 hari)', String(d.total_chats ?? 0));
-  sd.metricRow('User Aktif', String(d.active_users ?? 0));
-  sd.metricRow('Total Token', `${Math.round((d.total_tokens ?? 0) / 1000)}k`);
-  sd.metricRow('Chat Sonnet', String(d.sonnet_chats ?? 0));
+  sd.metricRow('Total Chat (30 hari)', String(d.summary.total_interactions ?? 0));
+  sd.metricRow('User Aktif', String(d.summary.active_users ?? 0));
+  sd.metricRow('Total Token', `${Math.round((d.summary.total_tokens ?? 0) / 1000)}k`);
+  sd.metricRow('Chat Sonnet', String(d.summary.sonnet_count ?? 0));
 
-  if ((d.by_user ?? []).length > 0) {
+  if ((d.users ?? []).length > 0) {
     sd.gap(6);
     sd.sectionTitle('Penggunaan per User');
     sd.table(
@@ -491,16 +515,16 @@ async function buildAIUsageSummary(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Total Token', width: 0.25, align: 'right' },
         { header: 'Chat Sonnet', width: 0.25, align: 'right' },
       ],
-      (d.by_user ?? []).map((u: any) => [
-        u.user_name ?? '—',
-        String(u.chat_count ?? 0),
+      (d.users ?? []).map((u) => [
+        u.full_name ?? '—',
+        String(u.interaction_count ?? 0),
         String(u.total_tokens ?? 0),
         String(u.sonnet_count ?? 0),
       ]),
     );
   }
 
-  if ((d.daily_trend ?? []).length > 0) {
+  if ((d.usage_by_day ?? []).length > 0) {
     sd.gap(6);
     sd.sectionTitle('Tren Harian');
     sd.table(
@@ -509,28 +533,28 @@ async function buildAIUsageSummary(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Jumlah Chat', width: 0.35, align: 'right' },
         { header: 'Token', width: 0.35, align: 'right' },
       ],
-      (d.daily_trend ?? []).slice(0, 30).map((row: any) => [
+      (d.usage_by_day ?? []).slice(0, 30).map((row) => [
         fmtDate(row.date),
-        String(row.chat_count ?? 0),
-        String(row.tokens ?? 0),
+        String(row.interaction_count ?? 0),
+        String(row.total_tokens ?? 0),
       ]),
     );
   }
 }
 
-async function buildApprovalSLAUser(sd: SanoDoc, d: any): Promise<void> {
+async function buildApprovalSLAUser(sd: SanoDoc, d: ApprovalSLAData): Promise<void> {
   sd.kpiRow([
-    { value: String(d.total_queued ?? 0), label: 'Total Queued', color: C.info },
-    { value: String(d.avg_hours ?? 0), label: 'Avg Hours', color: C.accent },
-    { value: String(d.breached ?? 0), label: 'SLA Breached', color: C.critical },
+    { value: String(d.summary.pending_items ?? 0), label: 'Total Queued', color: C.info },
+    { value: String(d.summary.avg_hours ?? 0), label: 'Avg Hours', color: C.accent },
+    { value: String(d.summary.over_24h ?? 0), label: 'SLA Breached', color: C.critical },
   ]);
 
   sd.sectionTitle('Ringkasan SLA Approval');
-  sd.metricRow('Total Di-Queue', String(d.total_queued ?? 0));
-  sd.metricRow('Rata-rata Jam Respons', String(d.avg_hours ?? 0));
-  sd.metricRow('SLA Breach', String(d.breached ?? 0), { valueColor: C.critical });
+  sd.metricRow('Total Di-Queue', String(d.summary.pending_items ?? 0));
+  sd.metricRow('Rata-rata Jam Respons', String(d.summary.avg_hours ?? 0));
+  sd.metricRow('SLA Breach', String(d.summary.over_24h ?? 0), { valueColor: C.critical });
 
-  if ((d.by_user ?? []).length > 0) {
+  if ((d.users ?? []).length > 0) {
     sd.gap(6);
     sd.sectionTitle('SLA per User');
     sd.table(
@@ -542,65 +566,65 @@ async function buildApprovalSLAUser(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Avg Hours', width: 0.15, align: 'right' },
         { header: 'Breach', width: 0.15, align: 'right' },
       ],
-      (d.by_user ?? []).map((u: any) => [
-        u.user_name ?? '—',
-        String(u.queued ?? 0),
-        String(u.approved ?? 0),
-        String(u.rejected ?? 0),
+      (d.users ?? []).map((u) => [
+        u.full_name ?? '—',
+        String(u.assigned_pending ?? 0),
+        String(u.handled_events ?? 0),
+        String(u.over_24h ?? 0),
         String(u.avg_hours ?? 0),
-        String(u.breached ?? 0),
+        String(u.over_24h ?? 0),
       ]),
     );
   }
 }
 
-async function buildOperationalEntryDiscipline(sd: SanoDoc, d: any): Promise<void> {
+async function buildOperationalEntryDiscipline(sd: SanoDoc, d: OperationalDisciplineData): Promise<void> {
   sd.kpiRow([
-    { value: fmtPct(d.photo_coverage_pct ?? 0), label: 'Foto Coverage', color: C.accent },
-    { value: String(d.total_entries ?? 0), label: 'Total Entri', color: C.info },
-    { value: String(d.entries_with_photo ?? 0), label: 'Dengan Foto', color: C.ok },
+    { value: fmtPct(d.summary.photo_coverage_pct ?? 0), label: 'Foto Coverage', color: C.accent },
+    { value: String(d.summary.total_entries ?? 0), label: 'Total Entri', color: C.info },
+    { value: String(d.summary.photo_backed_entries ?? 0), label: 'Dengan Foto', color: C.ok },
   ]);
 
   sd.sectionTitle('Disiplin Entry Operasional');
-  sd.metricRow('Total Entri', String(d.total_entries ?? 0));
-  sd.metricRow('Entri dengan Foto', String(d.entries_with_photo ?? 0), { valueColor: C.ok });
-  sd.metricRow('Photo Coverage', fmtPct(d.photo_coverage_pct ?? 0));
+  sd.metricRow('Total Entri', String(d.summary.total_entries ?? 0));
+  sd.metricRow('Entri dengan Foto', String(d.summary.photo_backed_entries ?? 0), { valueColor: C.ok });
+  sd.metricRow('Photo Coverage', fmtPct(d.summary.photo_coverage_pct ?? 0));
   sd.gap(4);
-  sd.progressBar(d.photo_coverage_pct ?? 0, { label: `Foto coverage: ${fmtPct(d.photo_coverage_pct ?? 0)}` });
+  sd.progressBar(d.summary.photo_coverage_pct ?? 0, { label: `Foto coverage: ${fmtPct(d.summary.photo_coverage_pct ?? 0)}` });
 
-  if ((d.by_user ?? []).length > 0) {
+  if ((d.users ?? []).length > 0) {
     sd.gap(6);
     sd.sectionTitle('Coverage per User');
     sd.table(
       [
         { header: 'User', width: 0.30 },
         { header: 'Total Entri', width: 0.20, align: 'right' },
-        { header: 'Dengan Foto', width: 0.25, align: 'right' },
         { header: 'Coverage', width: 0.25, align: 'right' },
+        { header: 'Hari Aktif', width: 0.25, align: 'right' },
       ],
-      (d.by_user ?? []).map((u: any) => [
-        u.user_name ?? '—',
-        String(u.total ?? 0),
-        String(u.with_photo ?? 0),
-        fmtPct(u.coverage_pct ?? 0),
+      (d.users ?? []).map((u) => [
+        u.full_name ?? '—',
+        String(u.total_entries ?? 0),
+        fmtPct(u.photo_coverage_pct ?? 0),
+        String(u.active_days ?? 0),
       ]),
     );
   }
 }
 
-async function buildToolUsageSummary(sd: SanoDoc, d: any): Promise<void> {
+async function buildToolUsageSummary(sd: SanoDoc, d: ToolUsageData): Promise<void> {
   sd.kpiRow([
-    { value: String(d.total_exports ?? 0), label: 'Total Export', color: C.info },
-    { value: String(d.ai_chats ?? 0), label: 'AI Chat', color: C.accent },
-    { value: String(d.active_exporters ?? 0), label: 'User Export', color: C.ok },
+    { value: String(d.summary.total_exports ?? 0), label: 'Total Export', color: C.info },
+    { value: String(d.summary.total_ai_chats ?? 0), label: 'AI Chat', color: C.accent },
+    { value: String(d.summary.export_users ?? 0), label: 'User Export', color: C.ok },
   ]);
 
   sd.sectionTitle('Penggunaan Laporan & AI');
-  sd.metricRow('Total Export Laporan', String(d.total_exports ?? 0));
-  sd.metricRow('Total AI Chat', String(d.ai_chats ?? 0));
-  sd.metricRow('User yang Pernah Export', String(d.active_exporters ?? 0));
+  sd.metricRow('Total Export Laporan', String(d.summary.total_exports ?? 0));
+  sd.metricRow('Total AI Chat', String(d.summary.total_ai_chats ?? 0));
+  sd.metricRow('User yang Pernah Export', String(d.summary.export_users ?? 0));
 
-  if ((d.by_report_type ?? []).length > 0) {
+  if ((d.top_report_types ?? []).length > 0) {
     sd.gap(6);
     sd.sectionTitle('Export per Tipe Laporan');
     sd.table(
@@ -608,7 +632,7 @@ async function buildToolUsageSummary(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Tipe Laporan', width: 0.50 },
         { header: 'Jumlah Export', width: 0.50, align: 'right' },
       ],
-      (d.by_report_type ?? []).map((r: any) => [
+      (d.top_report_types ?? []).map((r) => [
         r.report_type ?? '—',
         String(r.count ?? 0),
       ]),
@@ -616,17 +640,17 @@ async function buildToolUsageSummary(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
-async function buildExceptionHandlingLoad(sd: SanoDoc, d: any): Promise<void> {
+async function buildExceptionHandlingLoad(sd: SanoDoc, d: ExceptionHandlingData): Promise<void> {
   sd.kpiRow([
-    { value: String(d.total_holds ?? 0), label: 'Hold', color: C.warning },
-    { value: String(d.total_rejects ?? 0), label: 'Reject', color: C.critical },
-    { value: String(d.total_overrides ?? 0), label: 'Override', color: C.info },
+    { value: String(d.summary.auto_hold_requests ?? 0), label: 'Hold', color: C.warning },
+    { value: String((d.summary.rejected_requests ?? 0) + (d.summary.rejected_vo ?? 0) + (d.summary.rejected_mtn ?? 0)), label: 'Reject', color: C.critical },
+    { value: String(d.summary.hold_reject_override_actions ?? 0), label: 'Override', color: C.info },
   ]);
 
   sd.sectionTitle('Beban Penanganan Exception');
-  sd.metricRow('Total Hold', String(d.total_holds ?? 0), { valueColor: C.warning });
-  sd.metricRow('Total Reject', String(d.total_rejects ?? 0), { valueColor: C.critical });
-  sd.metricRow('Total Override', String(d.total_overrides ?? 0));
+  sd.metricRow('Total Hold', String(d.summary.auto_hold_requests ?? 0), { valueColor: C.warning });
+  sd.metricRow('Total Reject', String((d.summary.rejected_requests ?? 0) + (d.summary.rejected_vo ?? 0) + (d.summary.rejected_mtn ?? 0)), { valueColor: C.critical });
+  sd.metricRow('Total Override', String(d.summary.hold_reject_override_actions ?? 0));
 
   if ((d.anomaly_breakdown ?? []).length > 0) {
     sd.gap(6);
@@ -637,15 +661,15 @@ async function buildExceptionHandlingLoad(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Jumlah', width: 0.30, align: 'right' },
         { header: 'Severity Avg', width: 0.30, align: 'right' },
       ],
-      (d.anomaly_breakdown ?? []).map((a: any) => [
-        a.type ?? '—',
+      (d.anomaly_breakdown ?? []).map((a) => [
+        a.event_type ?? '—',
         String(a.count ?? 0),
-        a.avg_severity ?? '—',
+        '—',
       ]),
     );
   }
 
-  if ((d.by_user ?? []).length > 0) {
+  if ((d.users ?? []).length > 0) {
     sd.gap(6);
     sd.sectionTitle('Beban per User');
     sd.table(
@@ -656,12 +680,12 @@ async function buildExceptionHandlingLoad(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Override', width: 0.18, align: 'right' },
         { header: 'Total', width: 0.17, align: 'right' },
       ],
-      (d.by_user ?? []).map((u: any) => [
-        u.user_name ?? '—',
-        String(u.holds ?? 0),
-        String(u.rejects ?? 0),
-        String(u.overrides ?? 0),
-        String((u.holds ?? 0) + (u.rejects ?? 0) + (u.overrides ?? 0)),
+      (d.users ?? []).map((u) => [
+        u.full_name ?? '—',
+        String(u.generated_count ?? 0),
+        String(u.handled_count ?? 0),
+        String(u.hold_reject_override ?? 0),
+        String((u.generated_count ?? 0) + (u.handled_count ?? 0) + (u.hold_reject_override ?? 0)),
       ]),
     );
   }
@@ -669,7 +693,7 @@ async function buildExceptionHandlingLoad(sd: SanoDoc, d: any): Promise<void> {
 
 // ── Site Change Log ───────────────────────────────────────────────────
 
-async function buildSiteChangeLog(sd: SanoDoc, d: any): Promise<void> {
+async function buildSiteChangeLog(sd: SanoDoc, d: SiteChangeLogData): Promise<void> {
   const s = d.summary ?? {};
 
   sd.kpiRow([
@@ -701,7 +725,7 @@ async function buildSiteChangeLog(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Jenis Perubahan', width: 0.60 },
         { header: 'Jumlah', width: 0.40, align: 'right' },
       ],
-      (d.by_type ?? []).map((t: any) => [t.label ?? t.change_type ?? '—', String(t.count ?? 0)]),
+      (d.by_type ?? []).map((t) => [t.label ?? t.change_type ?? '—', String(t.count ?? 0)]),
     );
   }
 
@@ -714,7 +738,7 @@ async function buildSiteChangeLog(sd: SanoDoc, d: any): Promise<void> {
         { header: 'Keputusan', width: 0.60 },
         { header: 'Jumlah', width: 0.40, align: 'right' },
       ],
-      (d.by_decision ?? []).map((t: any) => [t.label ?? t.decision ?? '—', String(t.count ?? 0)]),
+      (d.by_decision ?? []).map((t) => [t.label ?? t.decision ?? '—', String(t.count ?? 0)]),
     );
   }
 
@@ -725,25 +749,25 @@ async function buildSiteChangeLog(sd: SanoDoc, d: any): Promise<void> {
 
     const showCosts = Boolean(d.show_costs);
     const cols = [
-      { header: 'Tgl', width: 0.09 },
+      { header: 'Tgl', width: 0.08 },
       { header: 'Lokasi', width: 0.14 },
-      { header: 'Deskripsi', width: showCosts ? 0.22 : 0.30 },
-      { header: 'Jenis', width: 0.12 },
-      { header: 'Impact', width: 0.09 },
-      { header: 'Keputusan', width: 0.11 },
-      ...(showCosts ? [{ header: 'Est. Biaya', width: 0.12, align: 'right' as const }] : []),
-      { header: 'Pelapor', width: 0.11 },
+      { header: 'Deskripsi', width: showCosts ? 0.26 : 0.36 },
+      { header: 'Jenis', width: 0.13 },
+      { header: 'Impact', width: 0.08 },
+      { header: 'Keputusan', width: 0.10 },
+      ...(showCosts ? [{ header: 'Est. Biaya', width: 0.11, align: 'right' as const }] : []),
+      { header: 'Pelapor', width: 0.10 },
     ];
 
     sd.table(
       cols,
-      (d.items ?? []).map((item: any) => {
+      (d.items ?? []).map((item) => {
         const row = [
-          fmtDate(item.created_at),
+          fmtDateShort(item.created_at),
           item.location ?? '—',
           item.description ?? '—',
           item.change_type_label ?? item.change_type ?? '—',
-          (item.impact_label ?? item.impact ?? '—') + (item.is_urgent ? ' ⚠' : ''),
+          (item.impact_label ?? item.impact ?? '—') + (item.is_urgent ? ' [!]' : ''),
           item.decision_label ?? item.decision ?? '—',
         ];
         if (showCosts) row.push(item.est_cost != null ? fmtRp(item.est_cost) : '—');
@@ -754,8 +778,8 @@ async function buildSiteChangeLog(sd: SanoDoc, d: any): Promise<void> {
   }
 
   // Photos
-  const allPhotoUrls = (d.items ?? []).flatMap((item: any) =>
-    (item.photos ?? []).map((p: any) => p.photo_url ?? p.url ?? p),
+  const allPhotoUrls = (d.items ?? []).flatMap((item) =>
+    (item.photos ?? []).map((p) => p.photo_url ?? p.storage_path),
   ).filter(Boolean).slice(0, 16);
 
   if (allPhotoUrls.length > 0) {
@@ -767,6 +791,7 @@ async function buildSiteChangeLog(sd: SanoDoc, d: any): Promise<void> {
 
 // forward declarations populated below
 const BUILDERS: Partial<Record<string, (sd: SanoDoc, d: any) => Promise<void>>> = {};
+type AnyReportData = ProgressSummaryData | MaterialBalanceData | ReceiptLogData | SiteChangeLogData | ScheduleVarianceData | WeeklyDigestData | PayrollSupportData | ClientChargeData | AuditListData | AIUsageData | ApprovalSLAData | OperationalDisciplineData | ToolUsageData | ExceptionHandlingData;
 
 BUILDERS['progress_summary'] = buildProgressSummary;
 BUILDERS['material_balance'] = buildMaterialBalance;
@@ -795,13 +820,53 @@ export async function exportReportToPdf(
     generatedAt: payload.generated_at,
   });
 
-  const builder = BUILDERS[payload.type];
-  if (builder) {
-    await builder(sd, payload.data as any);
-  } else {
-    // Fallback: render raw JSON preview
-    sd.sectionTitle('Data Laporan');
-    sd.text(JSON.stringify(payload.data, null, 2).substring(0, 3000), { size: FS.xs });
+  switch (payload.type) {
+    case 'progress_summary':
+      await buildProgressSummary(sd, payload.data as ProgressSummaryData);
+      break;
+    case 'material_balance':
+      await buildMaterialBalance(sd, payload.data as MaterialBalanceData);
+      break;
+    case 'receipt_log':
+      await buildReceiptLog(sd, payload.data as ReceiptLogData);
+      break;
+    case 'site_change_log':
+      await buildSiteChangeLog(sd, payload.data as SiteChangeLogData);
+      break;
+    case 'schedule_variance':
+      await buildScheduleVariance(sd, payload.data as ScheduleVarianceData);
+      break;
+    case 'weekly_digest':
+      await buildWeeklyDigest(sd, payload.data as WeeklyDigestData);
+      break;
+    case 'payroll_support_summary':
+      await buildPayrollSupportSummary(sd, payload.data as PayrollSupportData);
+      break;
+    case 'client_charge_report':
+      await buildClientChargeReport(sd, payload.data as ClientChargeData);
+      break;
+    case 'audit_list':
+      await buildAuditList(sd, payload.data as AuditListData);
+      break;
+    case 'ai_usage_summary':
+      await buildAIUsageSummary(sd, payload.data as AIUsageData);
+      break;
+    case 'approval_sla_user':
+      await buildApprovalSLAUser(sd, payload.data as ApprovalSLAData);
+      break;
+    case 'operational_entry_discipline':
+      await buildOperationalEntryDiscipline(sd, payload.data as OperationalDisciplineData);
+      break;
+    case 'tool_usage_summary':
+      await buildToolUsageSummary(sd, payload.data as ToolUsageData);
+      break;
+    case 'exception_handling_load':
+      await buildExceptionHandlingLoad(sd, payload.data as ExceptionHandlingData);
+      break;
+    default:
+      // Fallback: render raw JSON preview
+      sd.sectionTitle('Data Laporan');
+      sd.text(JSON.stringify(payload.data, null, 2).substring(0, 3000), { size: FS.xs });
   }
 
   const pdfBytes = await sd.save();

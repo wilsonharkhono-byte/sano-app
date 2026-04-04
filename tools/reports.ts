@@ -106,6 +106,243 @@ type ResolvedPhoto = {
   gps_lon?: number | null;
 };
 
+// ── Supabase Row Shapes ────────────────────────────────────────────
+// Lightweight interfaces matching the `.select()` columns used below.
+// Keeps callback parameters typed without requiring Supabase codegen.
+
+/** Shared empty-result placeholder so we never need `as any` for fallback queries. */
+type EmptyQueryResult<T = Record<string, unknown>> = { data: T[]; error: null };
+function emptyResult<T = Record<string, unknown>>(): EmptyQueryResult<T> {
+  return { data: [], error: null };
+}
+
+/** progress_entries row shape (generateProgressSummary) */
+interface ProgressEntryRow {
+  id: string;
+  boq_item_id: string;
+  quantity: number;
+  unit: string;
+  work_status: string;
+  location: string | null;
+  note: string | null;
+  created_at: string;
+  progress_photos: Array<{ storage_path: string; captured_at?: string | null }>;
+}
+
+/** receipts row shape (generateReceiptLog) */
+interface ReceiptRow {
+  id: string;
+  po_id: string;
+  vehicle_ref: string | null;
+  gate3_flag: boolean;
+  notes: string | null;
+  created_at: string;
+  receipt_lines: Array<{ material_name: string; quantity_actual: number; unit: string }>;
+  receipt_photos: Array<{ photo_type: string; storage_path: string; gps_lat: number | null; gps_lon: number | null; created_at: string }>;
+}
+
+/** site_changes row shape (generateSiteChangeLog) */
+interface SiteChangeRow {
+  id: string;
+  created_at: string;
+  location: string | null;
+  description: string | null;
+  change_type: string;
+  impact: string;
+  is_urgent: boolean;
+  decision: string;
+  needs_owner_approval: boolean;
+  estimator_note: string | null;
+  resolution_note: string | null;
+  reviewed_at: string | null;
+  resolved_at: string | null;
+  est_cost: number | null;
+  cost_bearer: string | null;
+  photo_urls: string[] | null;
+  boq_items?: { code: string; label: string } | null;
+  mandor_contracts?: { mandor_name: string } | null;
+  profiles?: { full_name: string } | null;
+}
+
+/** Payroll/progress entry row (generatePayrollSupportSummary) */
+interface PayrollEntryRow {
+  id: string;
+  created_at: string;
+  boq_item_id: string;
+  quantity: number;
+  unit: string;
+  location: string | null;
+  note: string | null;
+  reported_by: string;
+  payroll_support: boolean;
+}
+
+/** BoQ lookup row (used in multiple reports) */
+interface BoqLookupRow {
+  id: string;
+  code: string;
+  label: string;
+}
+
+/** Profile lookup row (used in multiple reports) */
+interface ProfileLookupRow {
+  id: string;
+  full_name: string;
+}
+
+/** VO entry row (generateClientChargeReport) */
+interface VoEntryRow {
+  id: string;
+  created_at: string;
+  location: string | null;
+  description: string | null;
+  requested_by_name: string | null;
+  cause: string;
+  est_material: number | null;
+  est_cost: number | null;
+  status: string;
+}
+
+/** Client-charge progress entry row */
+interface ClientChargeEntryRow {
+  id: string;
+  created_at: string;
+  boq_item_id: string;
+  quantity: number;
+  unit: string;
+  location: string | null;
+  note: string | null;
+  reported_by: string;
+  client_charge_support: boolean;
+}
+
+/** Audit case row (generateAuditList) */
+interface AuditCaseRow {
+  id: string;
+  created_at: string;
+  trigger_type: string;
+  entity_type: string;
+  entity_id: string;
+  status: string;
+  notes: string | null;
+}
+
+/** Material request header row (SLA / Exception reports) */
+interface MRHeaderRow {
+  requested_by: string;
+  reviewed_by: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+  overall_status: string;
+}
+
+/** VO row for SLA/Exception reports */
+interface VoSlaRow {
+  created_by: string;
+  reviewed_by: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+  status: string;
+}
+
+/** MTN row for SLA/Exception reports */
+interface MtnSlaRow {
+  requested_by: string;
+  reviewed_by: string | null;
+  created_at: string;
+  reviewed_at: string | null;
+  status: string;
+}
+
+/** Approval task row */
+interface ApprovalTaskRow {
+  assigned_to: string;
+  entity_type: string;
+  action: string | null;
+  created_at: string;
+  acted_at: string | null;
+}
+
+/** Opname header row (SLA report) */
+interface OpnameHeaderRow {
+  submitted_at: string | null;
+  verified_by: string | null;
+  verified_at: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  status: string;
+}
+
+/** Mandor attendance row (SLA report) */
+interface AttendanceSlaRow {
+  created_at: string;
+  verified_by: string | null;
+  verified_at: string | null;
+  status: string;
+}
+
+/** Kasbon row (SLA report) */
+interface KasbonSlaRow {
+  created_at: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  status: string;
+}
+
+/** Generic entity row with id + timestamp (used for photo ID extraction) */
+interface EntityRow { id: string; created_at: string; [key: string]: unknown }
+
+/** Operational entry discipline — row shapes for each module query */
+interface OpsRequestRow { id: string; requested_by: string; created_at: string }
+interface OpsReceiptRow { id: string; received_by: string; created_at: string }
+interface OpsProgressRow { id: string; reported_by: string; created_at: string }
+interface OpsDefectRow { id: string; reported_by: string; created_at: string; photo_path: string | null }
+interface OpsVoRow { id: string; created_by: string; created_at: string; photo_path: string | null }
+interface OpsReworkRow { id: string; created_by: string; created_at: string }
+interface OpsMtnRow { id: string; requested_by: string; created_at: string; photo_path: string | null }
+interface OpsAttendanceRow { id: string; recorded_by: string; created_at: string }
+interface OpsKasbonRow { id: string; requested_by: string; created_at: string }
+
+/** Photo reference row (for photo-backed verification) */
+interface PhotoRefRow {
+  [key: string]: string;
+}
+
+/** Report export row (tool usage summary) */
+interface ReportExportRow {
+  generated_by: string;
+  report_type: string;
+  generated_at: string;
+}
+
+/** AI chat log row (tool usage / AI usage reports) */
+interface AiChatRow {
+  user_id: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  created_at: string;
+  user_role?: string;
+}
+
+/** Anomaly event row (audit / exception reports) */
+interface AnomalyEventRow {
+  id?: string;
+  event_type: string;
+  severity: string;
+  created_at: string;
+  entity_type?: string;
+  entity_id?: string;
+  description?: string;
+}
+
+/** Audit case row for exception report (minimal select) */
+interface AuditCaseMinRow {
+  trigger_type: string;
+  status: string;
+  created_at: string;
+}
+
 function assignSequenceCodes<T extends { id: string; created_at: string }>(items: T[], prefix: string) {
   const ordered = [...items].sort((a, b) => {
     const timeDiff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
@@ -167,7 +404,7 @@ async function resolvePhotoCollection(
 
 // ── Progress Summary ────────────────────────────────────────────────
 
-interface ProgressSummaryData {
+export interface ProgressSummaryData {
   overall_progress: number;
   total_items: number;
   completed_items: number;
@@ -237,7 +474,7 @@ export async function generateProgressSummary(projectId: string): Promise<Report
     in_progress_items: enriched.filter(i => i.progress > 0 && i.progress < 100).length,
     not_started_items: enriched.filter(i => i.progress === 0).length,
     items: enriched,
-    entries: await Promise.all((entryRows ?? []).map(async (entry: any) => {
+    entries: await Promise.all((entryRows ?? []).map(async (entry: ProgressEntryRow) => {
       const boq = boqMap.get(entry.boq_item_id);
       const rawPhotos = Array.isArray(entry.progress_photos) ? entry.progress_photos : [];
       const photos = await resolvePhotoCollection(rawPhotos);
@@ -329,10 +566,10 @@ export async function generateReceiptLog(projectId: string): Promise<ReportPaylo
       total_pos: entries.length,
       fully_received: entries.filter(e => e.status === 'FULLY_RECEIVED').length,
       entries,
-      receipts: await Promise.all((receipts ?? []).map(async (receipt: any) => {
+      receipts: await Promise.all((receipts ?? []).map(async (receipt: ReceiptRow) => {
         const po = (pos ?? []).find((row: PurchaseOrder) => row.id === receipt.po_id);
         const lines = Array.isArray(receipt.receipt_lines) ? receipt.receipt_lines : [];
-        const photos = await Promise.all(((Array.isArray(receipt.receipt_photos) ? receipt.receipt_photos : [])).map(async (photo: any) => ({
+        const photos = await Promise.all(((Array.isArray(receipt.receipt_photos) ? receipt.receipt_photos : [])).map(async (photo: ReceiptRow['receipt_photos'][number]) => ({
           photo_type: photo.photo_type,
           storage_path: photo.storage_path,
           photo_url: await resolvePhotoUrl(photo.storage_path),
@@ -346,8 +583,8 @@ export async function generateReceiptLog(projectId: string): Promise<ReportPaylo
           po_number: po ? getPurchaseOrderDisplayNumber(po) : '—',
           po_ref: po?.boq_ref ?? '—',
           supplier: po?.supplier ?? '—',
-          material_name: lines.map((line: any) => line.material_name).filter(Boolean).join(', ') || po?.material_name || '—',
-          quantity_actual: lines.reduce((sum: number, line: any) => sum + (line.quantity_actual ?? 0), 0),
+          material_name: lines.map((line: ReceiptRow['receipt_lines'][number]) => line.material_name).filter(Boolean).join(', ') || po?.material_name || '—',
+          quantity_actual: lines.reduce((sum, line) => sum + (line.quantity_actual ?? 0), 0),
           unit: lines[0]?.unit ?? po?.unit ?? '—',
           vehicle_ref: receipt.vehicle_ref,
           gate3_flag: receipt.gate3_flag,
@@ -382,7 +619,7 @@ export async function generateSiteChangeLog(
   if (error) throw new Error(error.message);
 
   const showCosts = options.viewerRole !== 'supervisor';
-  const items = await Promise.all((rows ?? []).map(async (row: any) => {
+  const items = await Promise.all((rows ?? []).map(async (row: SiteChangeRow) => {
     const rawPhotoPaths = Array.isArray(row.photo_urls) ? row.photo_urls : [];
     const photos = await resolvePhotoCollection(
       [],
@@ -430,25 +667,27 @@ export async function generateSiteChangeLog(
     };
   }));
 
-  const byType = Array.from((rows ?? []).reduce((map: Map<string, number>, row: any) => {
+  const byTypeMap = (rows ?? []).reduce((map: Map<string, number>, row: SiteChangeRow) => {
     map.set(row.change_type, (map.get(row.change_type) ?? 0) + 1);
     return map;
-  }, new Map<string, number>()).entries()).map(([change_type, count]) => ({
+  }, new Map<string, number>());
+  const byType = Array.from<[string, number]>(byTypeMap.entries()).map(([change_type, count]) => ({
     change_type,
     label: CHANGE_TYPE_LABELS[change_type as keyof typeof CHANGE_TYPE_LABELS] ?? change_type,
     count,
   })).sort((a, b) => b.count - a.count);
 
-  const byDecision = Array.from((rows ?? []).reduce((map: Map<string, number>, row: any) => {
+  const byDecisionMap = (rows ?? []).reduce((map: Map<string, number>, row: SiteChangeRow) => {
     map.set(row.decision, (map.get(row.decision) ?? 0) + 1);
     return map;
-  }, new Map<string, number>()).entries()).map(([decision, count]) => ({
+  }, new Map<string, number>());
+  const byDecision = Array.from<[string, number]>(byDecisionMap.entries()).map(([decision, count]) => ({
     decision,
     label: DECISION_LABELS[decision as keyof typeof DECISION_LABELS] ?? decision,
     count,
   })).sort((a, b) => b.count - a.count);
 
-  const approvedCostTotal = (rows ?? []).reduce((sum: number, row: any) => {
+  const approvedCostTotal = (rows ?? []).reduce((sum: number, row: SiteChangeRow) => {
     if (row.decision !== 'disetujui') return sum;
     return sum + Number(row.est_cost ?? 0);
   }, 0);
@@ -463,15 +702,15 @@ export async function generateSiteChangeLog(
       show_costs: showCosts,
       summary: {
         total_items: rows?.length ?? 0,
-        pending: (rows ?? []).filter((row: any) => row.decision === 'pending').length,
-        disetujui: (rows ?? []).filter((row: any) => row.decision === 'disetujui').length,
-        ditolak: (rows ?? []).filter((row: any) => row.decision === 'ditolak').length,
-        selesai: (rows ?? []).filter((row: any) => row.decision === 'selesai').length,
-        urgent: (rows ?? []).filter((row: any) => row.is_urgent).length,
-        impact_berat: (rows ?? []).filter((row: any) => row.impact === 'berat').length,
-        approved_unresolved: (rows ?? []).filter((row: any) => row.decision === 'disetujui' && !row.resolved_at).length,
-        open_rework: (rows ?? []).filter((row: any) => row.change_type === 'rework' && row.decision !== 'selesai').length,
-        open_quality_notes: (rows ?? []).filter((row: any) => row.change_type === 'catatan_mutu' && row.decision !== 'selesai').length,
+        pending: (rows ?? []).filter((row: SiteChangeRow) => row.decision === 'pending').length,
+        disetujui: (rows ?? []).filter((row: SiteChangeRow) => row.decision === 'disetujui').length,
+        ditolak: (rows ?? []).filter((row: SiteChangeRow) => row.decision === 'ditolak').length,
+        selesai: (rows ?? []).filter((row: SiteChangeRow) => row.decision === 'selesai').length,
+        urgent: (rows ?? []).filter((row: SiteChangeRow) => row.is_urgent).length,
+        impact_berat: (rows ?? []).filter((row: SiteChangeRow) => row.impact === 'berat').length,
+        approved_unresolved: (rows ?? []).filter((row: SiteChangeRow) => row.decision === 'disetujui' && !row.resolved_at).length,
+        open_rework: (rows ?? []).filter((row: SiteChangeRow) => row.change_type === 'rework' && row.decision !== 'selesai').length,
+        open_quality_notes: (rows ?? []).filter((row: SiteChangeRow) => row.change_type === 'catatan_mutu' && row.decision !== 'selesai').length,
         approved_cost_total: showCosts ? approvedCostTotal : null,
       },
       by_type: byType,
@@ -595,27 +834,27 @@ async function generatePayrollSupportSummary(
   const { data: entries, error } = await query;
   if (error) throw new Error(error.message);
 
-  const boqIds = Array.from(new Set((entries ?? []).map((entry: any) => entry.boq_item_id).filter(Boolean)));
-  const reporterIds = Array.from(new Set((entries ?? []).map((entry: any) => entry.reported_by).filter(Boolean)));
+  const boqIds = Array.from(new Set((entries ?? []).map((entry: PayrollEntryRow) => entry.boq_item_id).filter(Boolean)));
+  const reporterIds = Array.from(new Set((entries ?? []).map((entry: PayrollEntryRow) => entry.reported_by).filter(Boolean)));
 
   const [boqRes, profileRes] = await Promise.all([
     boqIds.length > 0
       ? supabase.from('boq_items').select('id, code, label').in('id', boqIds)
-      : Promise.resolve({ data: [], error: null } as any),
+      : Promise.resolve(emptyResult<BoqLookupRow>()),
     reporterIds.length > 0
       ? supabase.from('profiles').select('id, full_name').in('id', reporterIds)
-      : Promise.resolve({ data: [], error: null } as any),
+      : Promise.resolve(emptyResult<ProfileLookupRow>()),
   ]);
 
   if (boqRes.error) throw new Error(boqRes.error.message);
   if (profileRes.error) throw new Error(profileRes.error.message);
 
   const boqMap = new Map<string, { code: string; label: string }>(
-    (boqRes.data ?? []).map((item: any) => [item.id, { code: item.code ?? '—', label: item.label ?? '—' }]),
+    (boqRes.data ?? []).map((item: BoqLookupRow) => [item.id, { code: item.code ?? '—', label: item.label ?? '—' }]),
   );
-  const profileMap = new Map((profileRes.data ?? []).map((item: any) => [item.id, item.full_name]));
+  const profileMap = new Map((profileRes.data ?? []).map((item: ProfileLookupRow) => [item.id, item.full_name]));
 
-  const normalizedEntries = (entries ?? []).map((entry: any) => {
+  const normalizedEntries = (entries ?? []).map((entry: PayrollEntryRow) => {
     const boq = boqMap.get(entry.boq_item_id);
     return {
       ...entry,
@@ -625,9 +864,10 @@ async function generatePayrollSupportSummary(
     };
   });
 
-  const byReporterMap = new Map<string, { reporter_name: string; total_qty: number; entry_count: number; entries: any[] }>();
-  normalizedEntries.forEach((entry: any) => {
-    const current: { reporter_name: string; total_qty: number; entry_count: number; entries: any[] } = byReporterMap.get(entry.reporter_name) ?? {
+  type NormalizedEntry = PayrollEntryRow & { boq_code: string; boq_label: string; reporter_name: string };
+  const byReporterMap = new Map<string, { reporter_name: string; total_qty: number; entry_count: number; entries: NormalizedEntry[] }>();
+  normalizedEntries.forEach((entry) => {
+    const current: { reporter_name: string; total_qty: number; entry_count: number; entries: NormalizedEntry[] } = byReporterMap.get(entry.reporter_name) ?? {
       reporter_name: entry.reporter_name,
       total_qty: 0,
       entry_count: 0,
@@ -650,7 +890,7 @@ async function generatePayrollSupportSummary(
     data: {
       purpose: 'Dokumen pendukung untuk rekap penggajian pekerjaan lapangan yang ditandai payroll support.',
       total_entries: normalizedEntries.length,
-      total_qty: normalizedEntries.reduce((sum: number, entry: any) => sum + (entry.quantity ?? 0), 0),
+      total_qty: normalizedEntries.reduce((sum: number, entry: NormalizedEntry) => sum + (entry.quantity ?? 0), 0),
       by_reporter: byReporter,
       entries: normalizedEntries,
       date_range: { from: filters.date_from ?? null, to: filters.date_to ?? null },
@@ -695,27 +935,27 @@ async function generateClientChargeReport(
   const voEntries = voRes.data ?? [];
   const peEntries = peRes.data ?? [];
 
-  const boqIds = Array.from(new Set(peEntries.map((entry: any) => entry.boq_item_id).filter(Boolean)));
-  const reporterIds = Array.from(new Set(peEntries.map((entry: any) => entry.reported_by).filter(Boolean)));
+  const boqIds = Array.from(new Set(peEntries.map((entry: ClientChargeEntryRow) => entry.boq_item_id).filter(Boolean)));
+  const reporterIds = Array.from(new Set(peEntries.map((entry: ClientChargeEntryRow) => entry.reported_by).filter(Boolean)));
 
   const [boqRes, profileRes] = await Promise.all([
     boqIds.length > 0
       ? supabase.from('boq_items').select('id, code, label').in('id', boqIds)
-      : Promise.resolve({ data: [], error: null } as any),
+      : Promise.resolve(emptyResult<BoqLookupRow>()),
     reporterIds.length > 0
       ? supabase.from('profiles').select('id, full_name').in('id', reporterIds)
-      : Promise.resolve({ data: [], error: null } as any),
+      : Promise.resolve(emptyResult<ProfileLookupRow>()),
   ]);
 
   if (boqRes.error) throw new Error(boqRes.error.message);
   if (profileRes.error) throw new Error(profileRes.error.message);
 
   const boqMap = new Map<string, { code: string; label: string }>(
-    (boqRes.data ?? []).map((item: any) => [item.id, { code: item.code ?? '—', label: item.label ?? '—' }]),
+    (boqRes.data ?? []).map((item: BoqLookupRow) => [item.id, { code: item.code ?? '—', label: item.label ?? '—' }]),
   );
-  const profileMap = new Map((profileRes.data ?? []).map((item: any) => [item.id, item.full_name]));
+  const profileMap = new Map((profileRes.data ?? []).map((item: ProfileLookupRow) => [item.id, item.full_name]));
 
-  const normalizedProgressEntries = peEntries.map((entry: any) => {
+  const normalizedProgressEntries = peEntries.map((entry: ClientChargeEntryRow) => {
     const boq = boqMap.get(entry.boq_item_id);
     return {
       ...entry,
@@ -725,7 +965,7 @@ async function generateClientChargeReport(
     };
   });
 
-  const voTotal = voEntries.reduce((s, v: any) => s + (v.est_cost ?? 0), 0);
+  const voTotal = voEntries.reduce((s, v: VoEntryRow) => s + (v.est_cost ?? 0), 0);
 
   return {
     type: 'client_charge_report',
@@ -739,7 +979,7 @@ async function generateClientChargeReport(
       progress_support: {
         items: normalizedProgressEntries,
         total_entries: normalizedProgressEntries.length,
-        total_qty: normalizedProgressEntries.reduce((sum: number, entry: any) => sum + (entry.quantity ?? 0), 0),
+        total_qty: normalizedProgressEntries.reduce((sum, entry) => sum + (entry.quantity ?? 0), 0),
       },
       grand_total_est_cost: voTotal,
       date_range: { from: filters.date_from ?? null, to: filters.date_to ?? null },
@@ -779,7 +1019,7 @@ async function generateAuditList(
   const auditCases = auditRes.data ?? [];
 
   const openAnomalies = anomalies;
-  const openCases = auditCases.filter((c: any) => c.status !== 'CLOSED');
+  const openCases = auditCases.filter((c: AuditCaseRow) => c.status !== 'CLOSED');
 
   return {
     type: 'audit_list',
@@ -1091,14 +1331,14 @@ export async function generateApprovalSLAUser(
   }> = [];
   const entityBuckets = new Map<string, number[]>();
   const pendingByQueue = [
-    { label: 'Permintaan Material', count: requestRows.filter((row: any) => !row.reviewed_at && ['PENDING', 'UNDER_REVIEW', 'AUTO_HOLD'].includes(row.overall_status)).length },
-    { label: 'VO Menunggu Review', count: voRows.filter((row: any) => !row.reviewed_at && row.status === 'AWAITING').length },
-    { label: 'MTN Menunggu Review', count: mtnRows.filter((row: any) => !row.reviewed_at && row.status === 'AWAITING').length },
-    { label: 'Approval Task Pending', count: taskRows.filter((row: any) => !row.action).length },
-    { label: 'Opname Menunggu Verifikasi', count: opnameRows.filter((row: any) => row.status === 'SUBMITTED').length },
-    { label: 'Opname Menunggu Approval', count: opnameRows.filter((row: any) => row.status === 'VERIFIED').length },
-    { label: 'Attendance Draft', count: attendanceRows.filter((row: any) => row.status === 'DRAFT').length },
-    { label: 'Kasbon Requested', count: kasbonRows.filter((row: any) => row.status === 'REQUESTED').length },
+    { label: 'Permintaan Material', count: requestRows.filter((row: MRHeaderRow) => !row.reviewed_at && ['PENDING', 'UNDER_REVIEW', 'AUTO_HOLD'].includes(row.overall_status)).length },
+    { label: 'VO Menunggu Review', count: voRows.filter((row: VoSlaRow) => !row.reviewed_at && row.status === 'AWAITING').length },
+    { label: 'MTN Menunggu Review', count: mtnRows.filter((row: MtnSlaRow) => !row.reviewed_at && row.status === 'AWAITING').length },
+    { label: 'Approval Task Pending', count: taskRows.filter((row: ApprovalTaskRow) => !row.action).length },
+    { label: 'Opname Menunggu Verifikasi', count: opnameRows.filter((row: OpnameHeaderRow) => row.status === 'SUBMITTED').length },
+    { label: 'Opname Menunggu Approval', count: opnameRows.filter((row: OpnameHeaderRow) => row.status === 'VERIFIED').length },
+    { label: 'Attendance Draft', count: attendanceRows.filter((row: AttendanceSlaRow) => row.status === 'DRAFT').length },
+    { label: 'Kasbon Requested', count: kasbonRows.filter((row: KasbonSlaRow) => row.status === 'REQUESTED').length },
   ];
   const assignedPending = new Map<string, number>();
 
@@ -1112,22 +1352,22 @@ export async function generateApprovalSLAUser(
     entityBuckets.set(entity, bucket);
   };
 
-  requestRows.forEach((row: any) => pushEvent(row.reviewed_by, 'Permintaan Material', row.created_at, row.reviewed_at));
-  voRows.forEach((row: any) => pushEvent(row.reviewed_by, 'VO', row.created_at, row.reviewed_at));
-  mtnRows.forEach((row: any) => pushEvent(row.reviewed_by, 'MTN', row.created_at, row.reviewed_at));
-  taskRows.forEach((row: any) => {
+  requestRows.forEach((row: MRHeaderRow) => pushEvent(row.reviewed_by, 'Permintaan Material', row.created_at, row.reviewed_at));
+  voRows.forEach((row: VoSlaRow) => pushEvent(row.reviewed_by, 'VO', row.created_at, row.reviewed_at));
+  mtnRows.forEach((row: MtnSlaRow) => pushEvent(row.reviewed_by, 'MTN', row.created_at, row.reviewed_at));
+  taskRows.forEach((row: ApprovalTaskRow) => {
     if (!row.action) {
       assignedPending.set(row.assigned_to, (assignedPending.get(row.assigned_to) ?? 0) + 1);
       return;
     }
     pushEvent(row.assigned_to, `Task ${row.entity_type}`, row.created_at, row.acted_at);
   });
-  opnameRows.forEach((row: any) => {
+  opnameRows.forEach((row: OpnameHeaderRow) => {
     pushEvent(row.verified_by, 'Verifikasi Opname', row.submitted_at, row.verified_at);
     pushEvent(row.approved_by, 'Approval Opname', row.verified_at ?? row.submitted_at, row.approved_at);
   });
-  attendanceRows.forEach((row: any) => pushEvent(row.verified_by, 'Verifikasi Attendance', row.created_at, row.verified_at));
-  kasbonRows.forEach((row: any) => pushEvent(row.approved_by, 'Approval Kasbon', row.created_at, row.approved_at));
+  attendanceRows.forEach((row: AttendanceSlaRow) => pushEvent(row.verified_by, 'Verifikasi Attendance', row.created_at, row.verified_at));
+  kasbonRows.forEach((row: KasbonSlaRow) => pushEvent(row.approved_by, 'Approval Kasbon', row.created_at, row.approved_at));
 
   const userIds = Array.from(new Set([
     ...events.map(event => event.user_id),
@@ -1303,31 +1543,31 @@ export async function generateOperationalEntryDiscipline(
 
   const [progressPhotoRes, receiptPhotoRes, defectPhotoRes, voPhotoRes, reworkPhotoRes, mtnPhotoRes] = await Promise.all([
     progressRows.length > 0
-      ? supabase.from('progress_photos').select('progress_entry_id').in('progress_entry_id', progressRows.map((row: any) => row.id))
-      : Promise.resolve({ data: [] as any[] }),
+      ? supabase.from('progress_photos').select('progress_entry_id').in('progress_entry_id', progressRows.map((row: EntityRow) => row.id))
+      : Promise.resolve(emptyResult<PhotoRefRow>()),
     receiptRows.length > 0
-      ? supabase.from('receipt_photos').select('receipt_id').in('receipt_id', receiptRows.map((row: any) => row.id))
-      : Promise.resolve({ data: [] as any[] }),
+      ? supabase.from('receipt_photos').select('receipt_id').in('receipt_id', receiptRows.map((row: EntityRow) => row.id))
+      : Promise.resolve(emptyResult<PhotoRefRow>()),
     defectRows.length > 0
-      ? supabase.from('defect_photos').select('defect_id').in('defect_id', defectRows.map((row: any) => row.id))
-      : Promise.resolve({ data: [] as any[] }),
+      ? supabase.from('defect_photos').select('defect_id').in('defect_id', defectRows.map((row: EntityRow) => row.id))
+      : Promise.resolve(emptyResult<PhotoRefRow>()),
     voRows.length > 0
-      ? supabase.from('vo_photos').select('vo_entry_id').in('vo_entry_id', voRows.map((row: any) => row.id))
-      : Promise.resolve({ data: [] as any[] }),
+      ? supabase.from('vo_photos').select('vo_entry_id').in('vo_entry_id', voRows.map((row: EntityRow) => row.id))
+      : Promise.resolve(emptyResult<PhotoRefRow>()),
     reworkRows.length > 0
-      ? supabase.from('rework_photos').select('rework_entry_id').in('rework_entry_id', reworkRows.map((row: any) => row.id))
-      : Promise.resolve({ data: [] as any[] }),
+      ? supabase.from('rework_photos').select('rework_entry_id').in('rework_entry_id', reworkRows.map((row: EntityRow) => row.id))
+      : Promise.resolve(emptyResult<PhotoRefRow>()),
     mtnRows.length > 0
-      ? supabase.from('mtn_photos').select('mtn_request_id').in('mtn_request_id', mtnRows.map((row: any) => row.id))
-      : Promise.resolve({ data: [] as any[] }),
+      ? supabase.from('mtn_photos').select('mtn_request_id').in('mtn_request_id', mtnRows.map((row: EntityRow) => row.id))
+      : Promise.resolve(emptyResult<PhotoRefRow>()),
   ]);
 
-  const progressPhotoSet = new Set((progressPhotoRes.data ?? []).map((row: any) => row.progress_entry_id));
-  const receiptPhotoSet = new Set((receiptPhotoRes.data ?? []).map((row: any) => row.receipt_id));
-  const defectPhotoSet = new Set((defectPhotoRes.data ?? []).map((row: any) => row.defect_id));
-  const voPhotoSet = new Set((voPhotoRes.data ?? []).map((row: any) => row.vo_entry_id));
-  const reworkPhotoSet = new Set((reworkPhotoRes.data ?? []).map((row: any) => row.rework_entry_id));
-  const mtnPhotoSet = new Set((mtnPhotoRes.data ?? []).map((row: any) => row.mtn_request_id));
+  const progressPhotoSet = new Set((progressPhotoRes.data ?? []).map((row: PhotoRefRow) => row.progress_entry_id));
+  const receiptPhotoSet = new Set((receiptPhotoRes.data ?? []).map((row: PhotoRefRow) => row.receipt_id));
+  const defectPhotoSet = new Set((defectPhotoRes.data ?? []).map((row: PhotoRefRow) => row.defect_id));
+  const voPhotoSet = new Set((voPhotoRes.data ?? []).map((row: PhotoRefRow) => row.vo_entry_id));
+  const reworkPhotoSet = new Set((reworkPhotoRes.data ?? []).map((row: PhotoRefRow) => row.rework_entry_id));
+  const mtnPhotoSet = new Set((mtnPhotoRes.data ?? []).map((row: PhotoRefRow) => row.mtn_request_id));
 
   const entries: Array<{
     user_id: string;
@@ -1337,15 +1577,15 @@ export async function generateOperationalEntryDiscipline(
     has_photo: boolean;
   }> = [];
 
-  requestRows.forEach((row: any) => entries.push({ user_id: row.requested_by, module: 'Permintaan Material', created_at: row.created_at, photo_eligible: false, has_photo: false }));
-  receiptRows.forEach((row: any) => entries.push({ user_id: row.received_by, module: 'Penerimaan', created_at: row.created_at, photo_eligible: true, has_photo: receiptPhotoSet.has(row.id) }));
-  progressRows.forEach((row: any) => entries.push({ user_id: row.reported_by, module: 'Progres', created_at: row.created_at, photo_eligible: true, has_photo: progressPhotoSet.has(row.id) }));
-  defectRows.forEach((row: any) => entries.push({ user_id: row.reported_by, module: 'Cacat', created_at: row.created_at, photo_eligible: true, has_photo: Boolean(row.photo_path) || defectPhotoSet.has(row.id) }));
-  voRows.forEach((row: any) => entries.push({ user_id: row.created_by, module: 'VO', created_at: row.created_at, photo_eligible: true, has_photo: Boolean(row.photo_path) || voPhotoSet.has(row.id) }));
-  reworkRows.forEach((row: any) => entries.push({ user_id: row.created_by, module: 'Rework', created_at: row.created_at, photo_eligible: true, has_photo: reworkPhotoSet.has(row.id) }));
-  mtnRows.forEach((row: any) => entries.push({ user_id: row.requested_by, module: 'MTN', created_at: row.created_at, photo_eligible: true, has_photo: Boolean(row.photo_path) || mtnPhotoSet.has(row.id) }));
-  attendanceRows.forEach((row: any) => entries.push({ user_id: row.recorded_by, module: 'Attendance', created_at: row.created_at, photo_eligible: false, has_photo: false }));
-  kasbonRows.forEach((row: any) => entries.push({ user_id: row.requested_by, module: 'Kasbon', created_at: row.created_at, photo_eligible: false, has_photo: false }));
+  (requestRows as OpsRequestRow[]).forEach((row) => entries.push({ user_id: row.requested_by, module: 'Permintaan Material', created_at: row.created_at, photo_eligible: false, has_photo: false }));
+  (receiptRows as OpsReceiptRow[]).forEach((row) => entries.push({ user_id: row.received_by, module: 'Penerimaan', created_at: row.created_at, photo_eligible: true, has_photo: receiptPhotoSet.has(row.id) }));
+  (progressRows as OpsProgressRow[]).forEach((row) => entries.push({ user_id: row.reported_by, module: 'Progres', created_at: row.created_at, photo_eligible: true, has_photo: progressPhotoSet.has(row.id) }));
+  (defectRows as OpsDefectRow[]).forEach((row) => entries.push({ user_id: row.reported_by, module: 'Cacat', created_at: row.created_at, photo_eligible: true, has_photo: Boolean(row.photo_path) || defectPhotoSet.has(row.id) }));
+  (voRows as OpsVoRow[]).forEach((row) => entries.push({ user_id: row.created_by, module: 'VO', created_at: row.created_at, photo_eligible: true, has_photo: Boolean(row.photo_path) || voPhotoSet.has(row.id) }));
+  (reworkRows as OpsReworkRow[]).forEach((row) => entries.push({ user_id: row.created_by, module: 'Rework', created_at: row.created_at, photo_eligible: true, has_photo: reworkPhotoSet.has(row.id) }));
+  (mtnRows as OpsMtnRow[]).forEach((row) => entries.push({ user_id: row.requested_by, module: 'MTN', created_at: row.created_at, photo_eligible: true, has_photo: Boolean(row.photo_path) || mtnPhotoSet.has(row.id) }));
+  (attendanceRows as OpsAttendanceRow[]).forEach((row) => entries.push({ user_id: row.recorded_by, module: 'Attendance', created_at: row.created_at, photo_eligible: false, has_photo: false }));
+  (kasbonRows as OpsKasbonRow[]).forEach((row) => entries.push({ user_id: row.requested_by, module: 'Kasbon', created_at: row.created_at, photo_eligible: false, has_photo: false }));
 
   const userIds = Array.from(new Set(entries.map(entry => entry.user_id).filter(Boolean)));
   const profileMap = await getProfileDirectory(userIds);
@@ -1469,8 +1709,8 @@ export async function generateToolUsageSummary(
   const aiRows = aiRes.data ?? [];
 
   const userIds = Array.from(new Set([
-    ...exportRows.map((row: any) => row.generated_by),
-    ...aiRows.map((row: any) => row.user_id),
+    ...exportRows.map((row: ReportExportRow) => row.generated_by),
+    ...aiRows.map((row: AiChatRow) => row.user_id),
   ].filter(Boolean)));
   const profileMap = await getProfileDirectory(userIds);
   const reportTypeCounts = new Map<string, number>();
@@ -1504,7 +1744,7 @@ export async function generateToolUsageSummary(
     return userBuckets.get(userId)!;
   };
 
-  exportRows.forEach((row: any) => {
+  exportRows.forEach((row: ReportExportRow) => {
     reportTypeCounts.set(row.report_type, (reportTypeCounts.get(row.report_type) ?? 0) + 1);
     const bucket = ensureUser(row.generated_by);
     bucket.export_count += 1;
@@ -1513,7 +1753,7 @@ export async function generateToolUsageSummary(
     }
   });
 
-  aiRows.forEach((row: any) => {
+  aiRows.forEach((row: AiChatRow) => {
     const bucket = ensureUser(row.user_id);
     bucket.ai_chat_count += 1;
     bucket.total_tokens += Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0);
@@ -1541,10 +1781,10 @@ export async function generateToolUsageSummary(
     data: {
       summary: {
         total_exports: exportRows.length,
-        export_users: new Set(exportRows.map((row: any) => row.generated_by)).size,
+        export_users: new Set(exportRows.map((row: ReportExportRow) => row.generated_by)).size,
         total_ai_chats: aiRows.length,
-        ai_users: new Set(aiRows.map((row: any) => row.user_id)).size,
-        total_ai_tokens: aiRows.reduce((sum: number, row: any) => sum + Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0), 0),
+        ai_users: new Set(aiRows.map((row: AiChatRow) => row.user_id)).size,
+        total_ai_tokens: aiRows.reduce((sum: number, row: AiChatRow) => sum + Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0), 0),
       },
       top_report_types: Array.from(reportTypeCounts.entries()).map(([report_type, count]) => ({ report_type, count })).sort((a, b) => b.count - a.count),
       users,
@@ -1622,11 +1862,11 @@ export async function generateExceptionHandlingLoad(
   const auditRows = auditRes.data ?? [];
 
   const userIds = Array.from(new Set([
-    ...taskRows.map((row: any) => row.assigned_to),
-    ...requestRows.flatMap((row: any) => [row.requested_by, row.reviewed_by]),
-    ...voRows.flatMap((row: any) => [row.created_by, row.reviewed_by]),
-    ...mtnRows.flatMap((row: any) => [row.requested_by, row.reviewed_by]),
-  ].filter(Boolean)));
+    ...taskRows.map((row: ApprovalTaskRow) => row.assigned_to),
+    ...requestRows.flatMap((row: MRHeaderRow) => [row.requested_by, row.reviewed_by]),
+    ...voRows.flatMap((row: VoSlaRow) => [row.created_by, row.reviewed_by]),
+    ...mtnRows.flatMap((row: MtnSlaRow) => [row.requested_by, row.reviewed_by]),
+  ].filter((id): id is string => Boolean(id))));
   const profileMap = await getProfileDirectory(userIds);
 
   const users = new Map<string, {
@@ -1654,7 +1894,7 @@ export async function generateExceptionHandlingLoad(
     return users.get(userId)!;
   };
 
-  requestRows.forEach((row: any) => {
+  requestRows.forEach((row: MRHeaderRow) => {
     if (row.overall_status === 'AUTO_HOLD') {
       const creator = ensureUser(row.requested_by);
       creator.generated_count += 1;
@@ -1673,7 +1913,7 @@ export async function generateExceptionHandlingLoad(
     }
   });
 
-  voRows.forEach((row: any) => {
+  voRows.forEach((row: VoSlaRow) => {
     if (row.status === 'REJECTED') {
       const creator = ensureUser(row.created_by);
       creator.generated_count += 1;
@@ -1687,7 +1927,7 @@ export async function generateExceptionHandlingLoad(
     }
   });
 
-  mtnRows.forEach((row: any) => {
+  mtnRows.forEach((row: MtnSlaRow) => {
     if (row.status === 'REJECTED') {
       const creator = ensureUser(row.requested_by);
       creator.generated_count += 1;
@@ -1701,7 +1941,7 @@ export async function generateExceptionHandlingLoad(
     }
   });
 
-  taskRows.forEach((row: any) => {
+  taskRows.forEach((row: ApprovalTaskRow) => {
     if (!['HOLD', 'REJECT', 'OVERRIDE'].includes(row.action ?? '')) return;
     const assignee = ensureUser(row.assigned_to);
     assignee.handled_count += 1;
@@ -1717,21 +1957,21 @@ export async function generateExceptionHandlingLoad(
     filters,
     data: {
       summary: {
-        auto_hold_requests: requestRows.filter((row: any) => row.overall_status === 'AUTO_HOLD').length,
-        rejected_requests: requestRows.filter((row: any) => row.overall_status === 'REJECTED').length,
-        rejected_vo: voRows.filter((row: any) => row.status === 'REJECTED').length,
-        rejected_mtn: mtnRows.filter((row: any) => row.status === 'REJECTED').length,
-        hold_reject_override_actions: taskRows.filter((row: any) => ['HOLD', 'REJECT', 'OVERRIDE'].includes(row.action ?? '')).length,
+        auto_hold_requests: requestRows.filter((row: MRHeaderRow) => row.overall_status === 'AUTO_HOLD').length,
+        rejected_requests: requestRows.filter((row: MRHeaderRow) => row.overall_status === 'REJECTED').length,
+        rejected_vo: voRows.filter((row: VoSlaRow) => row.status === 'REJECTED').length,
+        rejected_mtn: mtnRows.filter((row: MtnSlaRow) => row.status === 'REJECTED').length,
+        hold_reject_override_actions: taskRows.filter((row: ApprovalTaskRow) => ['HOLD', 'REJECT', 'OVERRIDE'].includes(row.action ?? '')).length,
         anomalies_total: anomalyRows.length,
-        anomalies_high_or_critical: anomalyRows.filter((row: any) => ['HIGH', 'CRITICAL'].includes(row.severity)).length,
-        audit_cases_open: auditRows.filter((row: any) => row.status !== 'CLOSED').length,
+        anomalies_high_or_critical: anomalyRows.filter((row: AnomalyEventRow) => ['HIGH', 'CRITICAL'].includes(row.severity)).length,
+        audit_cases_open: auditRows.filter((row: AuditCaseMinRow) => row.status !== 'CLOSED').length,
       },
       users: Array.from(users.values()).sort((a, b) => {
         if (b.handled_count !== a.handled_count) return b.handled_count - a.handled_count;
         return b.generated_count - a.generated_count;
       }),
       anomaly_breakdown: Array.from(
-        anomalyRows.reduce((map: Map<string, number>, row: any) => {
+        anomalyRows.reduce((map: Map<string, number>, row: AnomalyEventRow) => {
           map.set(row.event_type, (map.get(row.event_type) ?? 0) + 1);
           return map;
         }, new Map<string, number>()).entries(),

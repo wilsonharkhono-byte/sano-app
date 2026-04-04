@@ -559,82 +559,90 @@ export default function PrincipalHomeScreen() {
     </Card>
   ) : null;
 
+  const EXPAND_MAX_H = 420;
+
   const allOpenDefects = [
     ...criticalDefects.map(d => ({ ...d, _severity: 'Critical' as const })),
     ...majorDefects.map(d => ({ ...d, _severity: 'Major' as const })),
   ];
   const DEFECT_PREVIEW = 3;
-  const visibleDefects = defectsExpanded ? allOpenDefects : allOpenDefects.slice(0, DEFECT_PREVIEW);
   const hasMoreDefects = allOpenDefects.length > DEFECT_PREVIEW;
+
+  const renderDefectRow = (d: typeof allOpenDefects[0]) => (
+    <TouchableOpacity key={d.id} style={styles.excRow} onPress={() => setSelectedDefect(d)} activeOpacity={0.7}>
+      <Ionicons
+        name={d._severity === 'Critical' ? 'alert-circle' : 'warning'}
+        size={16}
+        color={d._severity === 'Critical' ? COLORS.critical : COLORS.warning}
+      />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.excText}>{d.description ?? d.id}</Text>
+        <Text style={styles.excMeta}>{d.location ?? ''}</Text>
+      </View>
+      <Badge flag={d._severity === 'Critical' ? 'CRITICAL' : 'WARNING'} label={d.status} />
+      <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
+    </TouchableOpacity>
+  );
 
   const defectsCard = allOpenDefects.length > 0 ? (
     <Card
       title={`${allOpenDefects.length} Perubahan Memblokir / Belum Selesai`}
       borderColor={criticalDefects.length > 0 ? COLORS.critical : COLORS.warning}
     >
-      {visibleDefects.map(d => (
-        <TouchableOpacity key={d.id} style={styles.excRow} onPress={() => setSelectedDefect(d)} activeOpacity={0.7}>
-          <Ionicons
-            name={d._severity === 'Critical' ? 'alert-circle' : 'warning'}
-            size={16}
-            color={d._severity === 'Critical' ? COLORS.critical : COLORS.warning}
-          />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.excText}>{d.description ?? d.id}</Text>
-            <Text style={styles.excMeta}>{d.location ?? ''}</Text>
-          </View>
-          <Badge flag={d._severity === 'Critical' ? 'CRITICAL' : 'WARNING'} label={d.status} />
-          <Ionicons name="chevron-forward" size={14} color={COLORS.textMuted} />
-        </TouchableOpacity>
-      ))}
+      {defectsExpanded ? (
+        <View style={{ maxHeight: EXPAND_MAX_H }}>
+          <ScrollView nestedScrollEnabled showsVerticalScrollIndicator>
+            {allOpenDefects.map(renderDefectRow)}
+          </ScrollView>
+        </View>
+      ) : (
+        allOpenDefects.slice(0, DEFECT_PREVIEW).map(renderDefectRow)
+      )}
       {hasMoreDefects && (
         <TouchableOpacity style={styles.expandBtn} onPress={() => setDefectsExpanded(!defectsExpanded)}>
           <Ionicons name={defectsExpanded ? 'chevron-up' : 'chevron-down'} size={16} color={COLORS.accent} />
           <Text style={styles.expandBtnText}>
-            {defectsExpanded ? 'Sembunyikan' : `Lihat ${allOpenDefects.length - DEFECT_PREVIEW} lainnya`}
+            {defectsExpanded ? 'Tutup' : `Lihat ${allOpenDefects.length - DEFECT_PREVIEW} lainnya`}
           </Text>
-        </TouchableOpacity>
-      )}
-      {defectsExpanded && hasMoreDefects && (
-        <TouchableOpacity style={styles.collapseSticky} onPress={() => setDefectsExpanded(false)}>
-          <Ionicons name="chevron-up" size={14} color={COLORS.accent} />
-          <Text style={styles.collapseStickyText}>Tutup</Text>
         </TouchableOpacity>
       )}
     </Card>
   ) : null;
 
   const KASBON_PREVIEW = 3;
-  const visibleKasbon = kasbonExpanded ? agingKasbon : agingKasbon.slice(0, KASBON_PREVIEW);
   const hasMoreKasbon = agingKasbon.length > KASBON_PREVIEW;
+
+  const renderKasbonRow = (k: KasbonAging) => (
+    <View key={k.id} style={styles.excRow}>
+      <Ionicons name="cash-outline" size={16} color={COLORS.warning} />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.excText}>
+          {k.mandor_name}: {formatRp(k.amount)}
+        </Text>
+        <Text style={styles.excMeta}>
+          {k.age_days} hari · {k.opname_cycles_since} siklus opname · {kasbonStatusLabel(k.status)}
+        </Text>
+      </View>
+    </View>
+  );
 
   const agingKasbonCard = agingKasbon.length > 0 ? (
     <Card title={`${agingKasbon.length} Kasbon Belum Terpotong`} borderColor={COLORS.warning}>
-      {visibleKasbon.map(k => (
-        <View key={k.id} style={styles.excRow}>
-          <Ionicons name="cash-outline" size={16} color={COLORS.warning} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.excText}>
-              {k.mandor_name}: {formatRp(k.amount)}
-            </Text>
-            <Text style={styles.excMeta}>
-              {k.age_days} hari · {k.opname_cycles_since} siklus opname · {kasbonStatusLabel(k.status)}
-            </Text>
-          </View>
+      {kasbonExpanded ? (
+        <View style={{ maxHeight: EXPAND_MAX_H }}>
+          <ScrollView nestedScrollEnabled showsVerticalScrollIndicator>
+            {agingKasbon.map(renderKasbonRow)}
+          </ScrollView>
         </View>
-      ))}
+      ) : (
+        agingKasbon.slice(0, KASBON_PREVIEW).map(renderKasbonRow)
+      )}
       {hasMoreKasbon && (
         <TouchableOpacity style={styles.expandBtn} onPress={() => setKasbonExpanded(!kasbonExpanded)}>
           <Ionicons name={kasbonExpanded ? 'chevron-up' : 'chevron-down'} size={16} color={COLORS.accent} />
           <Text style={styles.expandBtnText}>
-            {kasbonExpanded ? 'Sembunyikan' : `Lihat ${agingKasbon.length - KASBON_PREVIEW} lainnya`}
+            {kasbonExpanded ? 'Tutup' : `Lihat ${agingKasbon.length - KASBON_PREVIEW} lainnya`}
           </Text>
-        </TouchableOpacity>
-      )}
-      {kasbonExpanded && hasMoreKasbon && (
-        <TouchableOpacity style={styles.collapseSticky} onPress={() => setKasbonExpanded(false)}>
-          <Ionicons name="chevron-up" size={14} color={COLORS.accent} />
-          <Text style={styles.collapseStickyText}>Tutup</Text>
         </TouchableOpacity>
       )}
     </Card>
@@ -748,7 +756,6 @@ export default function PrincipalHomeScreen() {
   };
 
   const ACTIVITY_PREVIEW_COUNT = 5;
-  const visibleActivity = activityExpanded ? teamActivity : teamActivity.slice(0, ACTIVITY_PREVIEW_COUNT);
   const hasMoreActivity = teamActivity.length > ACTIVITY_PREVIEW_COUNT;
 
   const renderActivityRow = (a: TeamActivityItem) => {
@@ -775,7 +782,15 @@ export default function PrincipalHomeScreen() {
         <Text style={styles.hint}>Belum ada aktivitas tercatat dalam 7 hari terakhir.</Text>
       ) : (
         <>
-          {visibleActivity.map(renderActivityRow)}
+          {activityExpanded ? (
+            <View style={{ maxHeight: EXPAND_MAX_H }}>
+              <ScrollView nestedScrollEnabled showsVerticalScrollIndicator>
+                {teamActivity.map(renderActivityRow)}
+              </ScrollView>
+            </View>
+          ) : (
+            teamActivity.slice(0, ACTIVITY_PREVIEW_COUNT).map(renderActivityRow)
+          )}
           {hasMoreActivity && (
             <TouchableOpacity
               style={styles.expandBtn}
@@ -787,14 +802,8 @@ export default function PrincipalHomeScreen() {
                 color={COLORS.accent}
               />
               <Text style={styles.expandBtnText}>
-                {activityExpanded ? 'Sembunyikan' : `Lihat ${teamActivity.length - ACTIVITY_PREVIEW_COUNT} aktivitas lainnya`}
+                {activityExpanded ? 'Tutup' : `Lihat ${teamActivity.length - ACTIVITY_PREVIEW_COUNT} aktivitas lainnya`}
               </Text>
-            </TouchableOpacity>
-          )}
-          {activityExpanded && hasMoreActivity && (
-            <TouchableOpacity style={styles.collapseSticky} onPress={() => setActivityExpanded(false)}>
-              <Ionicons name="chevron-up" size={14} color={COLORS.accent} />
-              <Text style={styles.collapseStickyText}>Tutup</Text>
             </TouchableOpacity>
           )}
         </>
@@ -963,46 +972,75 @@ export default function PrincipalHomeScreen() {
       </View>
 
       {/* Individual change items — tappable + expandable */}
-      {(changesExpanded ? siteChangesList : siteChangesList.slice(0, 3)).map(c => {
-        const impact = IMPACT_BADGE[c.impact] ?? IMPACT_BADGE.ringan;
-        return (
-          <TouchableOpacity
-            key={c.id}
-            style={styles.changeRow}
-            onPress={() => setSelectedChange(c)}
-            activeOpacity={0.7}
-          >
-            <View style={{ flex: 1 }}>
-              <View style={styles.changeHeader}>
-                <Text style={styles.changeType}>{CHANGE_TYPE_LABELS[c.change_type] ?? c.change_type}</Text>
-                <View style={[styles.impactBadge, { backgroundColor: impact.bg }]}>
-                  <Text style={[styles.impactBadgeText, { color: impact.color }]}>{impact.label}</Text>
+      {changesExpanded ? (
+        <View style={{ maxHeight: EXPAND_MAX_H }}>
+          <ScrollView nestedScrollEnabled showsVerticalScrollIndicator>
+            {siteChangesList.map(c => {
+              const impact = IMPACT_BADGE[c.impact] ?? IMPACT_BADGE.ringan;
+              return (
+                <TouchableOpacity
+                  key={c.id}
+                  style={styles.changeRow}
+                  onPress={() => setSelectedChange(c)}
+                  activeOpacity={0.7}
+                >
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.changeHeader}>
+                      <Text style={styles.changeType}>{CHANGE_TYPE_LABELS[c.change_type] ?? c.change_type}</Text>
+                      <View style={[styles.impactBadge, { backgroundColor: impact.bg }]}>
+                        <Text style={[styles.impactBadgeText, { color: impact.color }]}>{impact.label}</Text>
+                      </View>
+                      {c.is_urgent && (
+                        <Ionicons name="flame" size={13} color={COLORS.critical} />
+                      )}
+                    </View>
+                    <Text style={styles.changeDesc} numberOfLines={1}>{c.description}</Text>
+                    <Text style={styles.hint}>
+                      {c.reporter_name} · {c.location} · {DECISION_LABEL[c.decision] ?? c.decision}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      ) : (
+        siteChangesList.slice(0, 3).map(c => {
+          const impact = IMPACT_BADGE[c.impact] ?? IMPACT_BADGE.ringan;
+          return (
+            <TouchableOpacity
+              key={c.id}
+              style={styles.changeRow}
+              onPress={() => setSelectedChange(c)}
+              activeOpacity={0.7}
+            >
+              <View style={{ flex: 1 }}>
+                <View style={styles.changeHeader}>
+                  <Text style={styles.changeType}>{CHANGE_TYPE_LABELS[c.change_type] ?? c.change_type}</Text>
+                  <View style={[styles.impactBadge, { backgroundColor: impact.bg }]}>
+                    <Text style={[styles.impactBadgeText, { color: impact.color }]}>{impact.label}</Text>
+                  </View>
+                  {c.is_urgent && (
+                    <Ionicons name="flame" size={13} color={COLORS.critical} />
+                  )}
                 </View>
-                {c.is_urgent && (
-                  <Ionicons name="flame" size={13} color={COLORS.critical} />
-                )}
+                <Text style={styles.changeDesc} numberOfLines={1}>{c.description}</Text>
+                <Text style={styles.hint}>
+                  {c.reporter_name} · {c.location} · {DECISION_LABEL[c.decision] ?? c.decision}
+                </Text>
               </View>
-              <Text style={styles.changeDesc} numberOfLines={1}>{c.description}</Text>
-              <Text style={styles.hint}>
-                {c.reporter_name} · {c.location} · {DECISION_LABEL[c.decision] ?? c.decision}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
-          </TouchableOpacity>
-        );
-      })}
+              <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} />
+            </TouchableOpacity>
+          );
+        })
+      )}
       {siteChangesList.length > 3 && (
         <TouchableOpacity style={styles.expandBtn} onPress={() => setChangesExpanded(!changesExpanded)}>
           <Ionicons name={changesExpanded ? 'chevron-up' : 'chevron-down'} size={16} color={COLORS.accent} />
           <Text style={styles.expandBtnText}>
-            {changesExpanded ? 'Sembunyikan' : `Lihat ${siteChangesList.length - 3} perubahan lainnya`}
+            {changesExpanded ? 'Tutup' : `Lihat ${siteChangesList.length - 3} perubahan lainnya`}
           </Text>
-        </TouchableOpacity>
-      )}
-      {changesExpanded && siteChangesList.length > 3 && (
-        <TouchableOpacity style={styles.collapseSticky} onPress={() => setChangesExpanded(false)}>
-          <Ionicons name="chevron-up" size={14} color={COLORS.accent} />
-          <Text style={styles.collapseStickyText}>Tutup</Text>
         </TouchableOpacity>
       )}
     </Card>
@@ -1869,12 +1907,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: COLORS.borderSub,
   },
   expandBtnText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.accent },
-  collapseSticky: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.xs,
-    paddingVertical: SPACE.sm, marginTop: SPACE.xs,
-    backgroundColor: COLORS.accentBg, borderRadius: RADIUS,
-  },
-  collapseStickyText: { fontSize: TYPE.xs, fontFamily: FONTS.bold, color: COLORS.accent, textTransform: 'uppercase', letterSpacing: 0.4 },
 
   // ── Section 5: Status Keuangan ──
   finGrid: { flexDirection: 'row', gap: SPACE.sm, marginBottom: SPACE.sm },

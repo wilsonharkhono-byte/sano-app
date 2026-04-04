@@ -164,7 +164,7 @@ export class SanoDoc {
 
     // Report title (after wordmark)
     const sanoWidth = this.fonts.bold.widthOfTextAtSize('SANO', FS.title);
-    p.drawText(`  ·  ${this.reportTitle}`, {
+    p.drawText(`  ·  ${this._sanitize(this.reportTitle)}`, {
       x: PDF.ML + sanoWidth,
       y: topY,
       size: FS.lg,
@@ -197,7 +197,7 @@ export class SanoDoc {
       day: '2-digit', month: 'long', year: 'numeric',
       hour: '2-digit', minute: '2-digit',
     });
-    p.drawText(`${this.projectName}  ·  ${fmtDate}`, {
+    p.drawText(`${this._sanitize(this.projectName)}  ·  ${fmtDate}`, {
       x: PDF.ML,
       y: lineY - 13,
       size: FS.sm,
@@ -274,9 +274,18 @@ export class SanoDoc {
     }
   }
 
-  /** Sanitize text for pdf-lib (which cannot render control characters). */
+  /**
+   * Sanitize text for pdf-lib WinAnsi encoding.
+   * Standard fonts only support Windows-1252 characters — anything outside
+   * that codepage (emoji, CJK, symbols like ⚠) crashes drawText/widthOfTextAtSize.
+   */
   _sanitize(text: string): string {
-    return text.replace(/[\r\n\t]/g, ' ').replace(/\s{2,}/g, ' ').trim();
+    return text
+      .replace(/[\x00-\x1f\x7f]/g, ' ')  // control chars → space
+      // Keep only WinAnsi-safe characters: ASCII printable + Latin-1 Supplement + Windows-1252 specials
+      .replace(/[^\x20-\x7e\xa0-\xff\u20ac\u201a\u0192\u201e\u2026\u2020\u2021\u02c6\u2030\u0160\u2039\u0152\u017d\u2018\u2019\u201c\u201d\u2022\u2013\u2014\u02dc\u2122\u0161\u203a\u0153\u017e\u0178]/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
   }
 
   /** Word-wrap text to fit within maxWidth. Handles embedded newlines. */
@@ -287,7 +296,7 @@ export class SanoDoc {
     const lines: string[] = [];
 
     for (const para of paragraphs) {
-      const clean = para.replace(/\t/g, ' ').trim();
+      const clean = this._sanitize(para);
       if (!clean) { lines.push(''); continue; }
       const words = clean.split(' ').filter(Boolean);
       let currentLine = '';
@@ -508,7 +517,8 @@ export class SanoDoc {
     const rowH = 18;
     this.ensureSpace(rowH);
 
-    const valW = this.fonts.bold.widthOfTextAtSize(value, FS.base);
+    const safeValue = this._sanitize(value);
+    const valW = this.fonts.bold.widthOfTextAtSize(safeValue, FS.base);
     // Leave a minimum 12pt gap between label and right-aligned value
     const maxLabelW = PDF.CW - valW - 12;
     const truncLabel = this._truncateToWidth(label, this.fonts.regular, FS.base, maxLabelW);
@@ -521,7 +531,7 @@ export class SanoDoc {
       color: C.textSec,
     });
 
-    this.page.drawText(value, {
+    this.page.drawText(safeValue, {
       x: PDF.PAGE_W - PDF.MR - valW,
       y: this.y - 11,
       size: FS.base,
@@ -545,26 +555,31 @@ export class SanoDoc {
 
   /**
    * Draw a data table with styled header row, alternating row colors,
-   * and automatic page breaks.
+   * automatic page breaks, and multi-line cell wrapping.
    *
    * @param columns - Array of { header, width (fraction of CW), align? }
    * @param rows    - 2D string array of cell values
+   * @param opts    - maxLines: max wrapped lines per cell (default 3)
    */
   table(
     columns: Array<{ header: string; width: number; align?: 'left' | 'right' | 'center' }>,
     rows: string[][],
+    opts: { maxLines?: number } = {},
   ): void {
     const headerH = 20;
-    const rowH = 18;
     const cellPadX = 6;
-    const cellPadY = 5;
+    const cellPadY = 4;
+    const fontSize = FS.sm;
+    const lineH = fontSize + 3;      // vertical space per text line
+    const minRowH = lineH + cellPadY * 2;  // single-line row height
+    const maxLines = opts.maxLines ?? 3;
 
     // Resolve absolute widths from fractions
     const colWidths = columns.map(c => c.width * PDF.CW);
 
     // ── Draw header ──
     const drawHeader = () => {
-      this.ensureSpace(headerH + rowH); // header + at least 1 data row
+      this.ensureSpace(headerH + minRowH); // header + at least 1 data row
 
       let hx = PDF.ML;
       // Header background
@@ -575,15 +590,16 @@ export class SanoDoc {
       });
 
       columns.forEach((col, ci) => {
-        const textW = this.fonts.bold.widthOfTextAtSize(col.header, FS.sm);
+        const hdrText = this._sanitize(col.header);
+        const textW = this.fonts.bold.widthOfTextAtSize(hdrText, fontSize);
         let tx = hx + cellPadX;
         if (col.align === 'right') tx = hx + colWidths[ci] - textW - cellPadX;
         else if (col.align === 'center') tx = hx + (colWidths[ci] - textW) / 2;
 
-        this.page.drawText(col.header, {
+        this.page.drawText(hdrText, {
           x: tx,
-          y: this.y - headerH + cellPadY + 1,
-          size: FS.sm,
+          y: this.y - headerH + cellPadY + 2,
+          size: fontSize,
           font: this.fonts.bold,
           color: C.white,
         });
@@ -597,6 +613,25 @@ export class SanoDoc {
 
     // ── Draw data rows ──
     rows.forEach((row, ri) => {
+      // Pre-compute wrapped lines for each cell
+      const cellLines: string[][] = columns.map((col, ci) => {
+        const raw = this._sanitize(row[ci] ?? '—');
+        const availW = colWidths[ci] - cellPadX * 2;
+        let lines = this._wrapText(raw, this.fonts.regular, fontSize, availW);
+        if (lines.length > maxLines) {
+          lines = lines.slice(0, maxLines);
+          // Truncate last line to hint there's more
+          lines[maxLines - 1] = this._truncateToWidth(
+            lines[maxLines - 1], this.fonts.regular, fontSize, availW,
+          );
+        }
+        return lines;
+      });
+
+      // Row height determined by the tallest cell
+      const tallest = Math.max(1, ...cellLines.map(l => l.length));
+      const rowH = Math.max(minRowH, tallest * lineH + cellPadY * 2);
+
       // Page break check: if not enough space, add page + re-draw header
       if (this.y - rowH < PDF.BOTTOM) {
         this.addPage();
@@ -618,22 +653,23 @@ export class SanoDoc {
         color: C.borderLight,
       });
 
+      // Draw each cell's wrapped lines (top-aligned)
       let rx = PDF.ML;
       columns.forEach((col, ci) => {
-        const rawText = this._sanitize(row[ci] ?? '—');
-        const availW = colWidths[ci] - cellPadX * 2;
-        const cellText = this._truncateToWidth(rawText, this.fonts.regular, FS.sm, availW);
-        const textW = this.fonts.regular.widthOfTextAtSize(cellText, FS.sm);
-        let tx = rx + cellPadX;
-        if (col.align === 'right') tx = rx + colWidths[ci] - textW - cellPadX;
-        else if (col.align === 'center') tx = rx + (colWidths[ci] - textW) / 2;
+        const lines = cellLines[ci];
+        lines.forEach((line, li) => {
+          const textW = this.fonts.regular.widthOfTextAtSize(line, fontSize);
+          let tx = rx + cellPadX;
+          if (col.align === 'right') tx = rx + colWidths[ci] - textW - cellPadX;
+          else if (col.align === 'center') tx = rx + (colWidths[ci] - textW) / 2;
 
-        this.page.drawText(cellText, {
-          x: tx,
-          y: this.y - rowH + cellPadY,
-          size: FS.sm,
-          font: this.fonts.regular,
-          color: C.text,
+          this.page.drawText(line, {
+            x: tx,
+            y: this.y - cellPadY - fontSize - li * lineH,
+            size: fontSize,
+            font: this.fonts.regular,
+            color: C.text,
+          });
         });
         rx += colWidths[ci];
       });

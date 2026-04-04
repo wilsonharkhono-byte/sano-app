@@ -7,6 +7,18 @@ import { Platform } from 'react-native';
 import * as XLSX from 'xlsx';
 import { encode } from 'base64-arraybuffer';
 import type { ReportPayload } from './reports';
+import type {
+  ProgressSummaryData,
+  MaterialBalanceData,
+  ReceiptLogData,
+  SiteChangeLogData,
+  ScheduleVarianceData,
+  WeeklyDigestData,
+  PayrollSupportData,
+  ClientChargeData,
+  AuditListData,
+  ReportPhoto,
+} from './reportDataTypes';
 
 // ── helpers ─────────────────────────────────────────────────────────
 
@@ -155,30 +167,33 @@ async function embedInlineImages(
   }
 }
 
-async function addPhotoPreviewsToWorkbook(workbook: any, payload: ReportPayload) {
-  const d = payload.data as any;
+async function addPhotoPreviewsToWorkbook(workbook: Record<string, unknown>, payload: ReportPayload) {
+  const wb = workbook as { getWorksheet(name: string): unknown };
 
   if (payload.type === 'progress_summary') {
-    const photoUrls = (d.entries ?? []).flatMap((entry: any) =>
-      (entry.photos ?? []).map((photo: any) => photo.photo_url ?? null),
+    const d = payload.data as ProgressSummaryData;
+    const photoUrls = (d.entries ?? []).flatMap((entry) =>
+      (entry.photos ?? []).map((photo) => photo.photo_url ?? null),
     );
-    await embedInlineImages(workbook, workbook.getWorksheet('Lampiran Foto Progres'), photoUrls);
+    await embedInlineImages(wb, wb.getWorksheet('Lampiran Foto Progres'), photoUrls);
     return;
   }
 
   if (payload.type === 'receipt_log') {
-    const photoUrls = (d.receipts ?? []).flatMap((receipt: any) =>
-      (receipt.photos ?? []).map((photo: any) => photo.photo_url ?? null),
+    const d = payload.data as ReceiptLogData;
+    const photoUrls = (d.receipts ?? []).flatMap((receipt) =>
+      (receipt.photos ?? []).map((photo: ReportPhoto) => photo.photo_url ?? null),
     );
-    await embedInlineImages(workbook, workbook.getWorksheet('Lampiran Foto Penerimaan'), photoUrls);
+    await embedInlineImages(wb, wb.getWorksheet('Lampiran Foto Penerimaan'), photoUrls);
     return;
   }
 
   if (payload.type === 'site_change_log') {
-    const photoUrls = (d.items ?? []).flatMap((item: any) =>
-      (item.photos ?? []).map((photo: any) => photo.photo_url ?? null),
+    const d = payload.data as SiteChangeLogData;
+    const photoUrls = (d.items ?? []).flatMap((item) =>
+      (item.photos ?? []).map((photo: ReportPhoto) => photo.photo_url ?? null),
     );
-    await embedInlineImages(workbook, workbook.getWorksheet('Lampiran Foto Perubahan'), photoUrls);
+    await embedInlineImages(wb, wb.getWorksheet('Lampiran Foto Perubahan'), photoUrls);
     return;
   }
 
@@ -186,7 +201,7 @@ async function addPhotoPreviewsToWorkbook(workbook: any, payload: ReportPayload)
 
 // ── per-report builders ──────────────────────────────────────────────
 
-function buildProgressSummary(wb: XLSX.WorkBook, d: any) {
+function buildProgressSummary(wb: XLSX.WorkBook, d: ProgressSummaryData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Progress Keseluruhan', `${d.overall_progress}%`],
@@ -201,7 +216,7 @@ function buildProgressSummary(wb: XLSX.WorkBook, d: any) {
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan');
 
   const itemHeader = ['Kode', 'Item Pekerjaan', 'Satuan', 'Volume Rencana', 'Volume Terpasang', 'Progress (%)'];
-  const itemRows: SheetRow[] = (d.items ?? []).map((item: any) => [
+  const itemRows: SheetRow[] = (d.items ?? []).map((item) => [
     item.code,
     item.label,
     item.unit,
@@ -212,7 +227,7 @@ function buildProgressSummary(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'Detail Item BoQ', itemHeader, itemRows);
 
   const entryHeader = ['Tanggal', 'Kode BoQ', 'Item', 'Qty', 'Satuan', 'Status', 'Lokasi', 'Catatan', 'Jumlah Foto'];
-  const entryRows: SheetRow[] = (d.entries ?? []).map((entry: any) => [
+  const entryRows: SheetRow[] = (d.entries ?? []).map((entry) => [
     entry.created_at ? new Date(entry.created_at).toLocaleDateString('id-ID') : '—',
     entry.boq_code ?? '—',
     entry.boq_label ?? '—',
@@ -226,8 +241,8 @@ function buildProgressSummary(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'Log Progres', entryHeader, entryRows);
 
   const photoHeader = ['Tanggal', 'Kode BoQ', 'Item', 'Qty', 'Lampiran', 'Referensi File', 'Aksi'];
-  const photoRows: SheetRow[] = (d.entries ?? []).flatMap((entry: any) =>
-    (entry.photos ?? []).map((photo: any, index: number) => [
+  const photoRows: SheetRow[] = (d.entries ?? []).flatMap((entry) =>
+    (entry.photos ?? []).map((photo, index: number) => [
       entry.created_at ? new Date(entry.created_at).toLocaleDateString('id-ID') : '—',
       entry.boq_code ?? '—',
       entry.boq_label ?? '—',
@@ -240,7 +255,7 @@ function buildProgressSummary(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'Lampiran Foto Progres', photoHeader, photoRows);
 }
 
-function buildMaterialBalance(wb: XLSX.WorkBook, d: any) {
+function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Total Material', String(d.total_materials)],
@@ -253,7 +268,7 @@ function buildMaterialBalance(wb: XLSX.WorkBook, d: any) {
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan');
 
   const header = ['Nama Material', 'Satuan', 'Volume Direncanakan', 'Volume Diterima', 'Volume Terpasang', 'Saldo On-Site', 'Status'];
-  const rows: string[][] = (d.balances ?? []).map((b: any) => {
+  const rows: string[][] = (d.balances ?? []).map((b) => {
     const received = b.received ?? b.total_received ?? 0;
     const planned = b.planned ?? 0;
     const installed = b.installed ?? 0;
@@ -275,7 +290,7 @@ function buildMaterialBalance(wb: XLSX.WorkBook, d: any) {
   XLSX.utils.book_append_sheet(wb, ws, 'Detail Material');
 }
 
-function buildReceiptLog(wb: XLSX.WorkBook, d: any) {
+function buildReceiptLog(wb: XLSX.WorkBook, d: ReceiptLogData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Total PO', String(d.total_pos)],
@@ -288,7 +303,7 @@ function buildReceiptLog(wb: XLSX.WorkBook, d: any) {
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan');
 
   const header = ['No. PO', 'Material', 'Supplier', 'Qty Dipesan', 'Qty Diterima', 'Satuan', 'Harga Satuan (Rp)', 'Total Nilai (Rp)', 'Status'];
-  const rows: SheetRow[] = (d.entries ?? []).map((e: any) => [
+  const rows: SheetRow[] = (d.entries ?? []).map((e) => [
     e.po_number ?? e.po_ref ?? '—',
     e.material ?? '—',
     e.supplier ?? '—',
@@ -302,7 +317,7 @@ function buildReceiptLog(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'Log Penerimaan', header, rows);
 
   const detailHeader = ['Tanggal', 'Receipt ID', 'No. PO', 'BoQ Ref', 'Material', 'Qty Diterima', 'Satuan', 'Supplier', 'Kendaraan', 'Gate 3', 'Catatan', 'Jumlah Foto'];
-  const detailRows: SheetRow[] = (d.receipts ?? []).map((receipt: any) => [
+  const detailRows: SheetRow[] = (d.receipts ?? []).map((receipt) => [
     receipt.created_at ? new Date(receipt.created_at).toLocaleDateString('id-ID') : '—',
     receipt.receipt_id ?? '—',
     receipt.po_number ?? receipt.po_ref ?? '—',
@@ -312,15 +327,15 @@ function buildReceiptLog(wb: XLSX.WorkBook, d: any) {
     receipt.unit ?? '—',
     receipt.supplier ?? '—',
     receipt.vehicle_ref ?? '—',
-    receipt.gate3_flag ?? '—',
+    String(receipt.gate3_flag) ?? '—',
     receipt.notes ?? '—',
     String((receipt.photos ?? []).length),
   ]);
   appendSheet(wb, 'Penerimaan Detail', detailHeader, detailRows);
 
   const photoHeader = ['Tanggal', 'Receipt ID', 'Material', 'Lampiran', 'GPS', 'Referensi File', 'Aksi'];
-  const photoRows: SheetRow[] = (d.receipts ?? []).flatMap((receipt: any) =>
-    (receipt.photos ?? []).map((photo: any) => [
+  const photoRows: SheetRow[] = (d.receipts ?? []).flatMap((receipt) =>
+    (receipt.photos ?? []).map((photo: ReportPhoto) => [
       receipt.created_at ? new Date(receipt.created_at).toLocaleDateString('id-ID') : '—',
       receipt.receipt_id ?? '—',
       receipt.material_name ?? '—',
@@ -333,7 +348,7 @@ function buildReceiptLog(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'Lampiran Foto Penerimaan', photoHeader, photoRows);
 }
 
-function buildSiteChangeLog(wb: XLSX.WorkBook, d: any) {
+function buildSiteChangeLog(wb: XLSX.WorkBook, d: SiteChangeLogData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Total Catatan', String(d.summary?.total_items ?? 0)],
@@ -355,7 +370,7 @@ function buildSiteChangeLog(wb: XLSX.WorkBook, d: any) {
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan');
 
   const byTypeHeader = ['Jenis Perubahan', 'Jumlah'];
-  const byTypeRows: SheetRow[] = (d.by_type ?? []).map((row: any) => [
+  const byTypeRows: SheetRow[] = (d.by_type ?? []).map((row) => [
     row.label ?? row.change_type ?? '—',
     String(row.count ?? 0),
   ]);
@@ -377,7 +392,7 @@ function buildSiteChangeLog(wb: XLSX.WorkBook, d: any) {
   const itemHeader = d.show_costs
     ? [...itemHeaderBase, 'Estimasi Biaya (Rp)', 'Beban Biaya']
     : itemHeaderBase;
-  const itemRows: SheetRow[] = (d.items ?? []).map((item: any) => {
+  const itemRows: SheetRow[] = (d.items ?? []).map((item) => {
     const base: SheetRow = [
       item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID') : '—',
       item.change_type_label ?? item.change_type ?? '—',
@@ -400,8 +415,8 @@ function buildSiteChangeLog(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'Daftar Perubahan', itemHeader, itemRows);
 
   const photoHeader = ['Tanggal', 'Jenis', 'Deskripsi', 'Lokasi', 'Lampiran', 'Referensi File', 'Aksi'];
-  const photoRows: SheetRow[] = (d.items ?? []).flatMap((item: any) =>
-    (item.photos ?? []).map((photo: any, index: number) => [
+  const photoRows: SheetRow[] = (d.items ?? []).flatMap((item) =>
+    (item.photos ?? []).map((photo: ReportPhoto, index: number) => [
       item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID') : '—',
       item.change_type_label ?? item.change_type ?? '—',
       item.description ?? '—',
@@ -414,7 +429,7 @@ function buildSiteChangeLog(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'Lampiran Foto Perubahan', photoHeader, photoRows);
 }
 
-function buildScheduleVariance(wb: XLSX.WorkBook, d: any) {
+function buildScheduleVariance(wb: XLSX.WorkBook, d: ScheduleVarianceData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Total Milestone', String(d.total_milestones)],
@@ -428,7 +443,7 @@ function buildScheduleVariance(wb: XLSX.WorkBook, d: any) {
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan');
 
   const header = ['Milestone', 'Tanggal Rencana', 'Tanggal Revisi', 'Sisa Hari', 'Status'];
-  const rows: string[][] = (d.milestones ?? []).map((m: any) => [
+  const rows: string[][] = (d.milestones ?? []).map((m) => [
     m.label ?? '—',
     m.planned_date ? new Date(m.planned_date).toLocaleDateString('id-ID') : '—',
     m.revised_date ? new Date(m.revised_date).toLocaleDateString('id-ID') : '—',
@@ -443,7 +458,7 @@ function buildScheduleVariance(wb: XLSX.WorkBook, d: any) {
   XLSX.utils.book_append_sheet(wb, ws, 'Detail Milestone');
 }
 
-function buildWeeklyDigest(wb: XLSX.WorkBook, d: any) {
+function buildWeeklyDigest(wb: XLSX.WorkBook, d: WeeklyDigestData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Periode', `${d.week_start} — ${d.week_end}`],
@@ -453,7 +468,7 @@ function buildWeeklyDigest(wb: XLSX.WorkBook, d: any) {
   if (d.by_flag) {
     summaryRows.push(['', '']);
     summaryRows.push(['Flag', 'Jumlah']);
-    Object.entries(d.by_flag).forEach(([flag, count]: any) => {
+    Object.entries(d.by_flag).forEach(([flag, count]: [string, number]) => {
       summaryRows.push([flag, String(count)]);
     });
   }
@@ -464,7 +479,7 @@ function buildWeeklyDigest(wb: XLSX.WorkBook, d: any) {
 
   if (d.by_type) {
     const typeHeader = ['Tipe Aktivitas', 'Jumlah'];
-    const typeRows: string[][] = Object.entries(d.by_type).map(([type, count]: any) => [
+    const typeRows: string[][] = Object.entries(d.by_type).map(([type, count]: [string, number]) => [
       type, String(count),
     ]);
     const wsType = XLSX.utils.aoa_to_sheet([typeHeader, ...typeRows]);
@@ -474,7 +489,7 @@ function buildWeeklyDigest(wb: XLSX.WorkBook, d: any) {
   }
 }
 
-function buildPayrollSupportSummary(wb: XLSX.WorkBook, d: any) {
+function buildPayrollSupportSummary(wb: XLSX.WorkBook, d: PayrollSupportData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Tujuan', d.purpose ?? '—'],
@@ -488,7 +503,7 @@ function buildPayrollSupportSummary(wb: XLSX.WorkBook, d: any) {
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Payroll');
 
   const groupHeader = ['Pelapor', 'Jumlah Entri', 'Total Qty'];
-  const groupRows: SheetRow[] = (d.by_reporter ?? []).map((group: any) => [
+  const groupRows: SheetRow[] = (d.by_reporter ?? []).map((group) => [
     group.reporter_name ?? '—',
     String(group.entry_count ?? 0),
     String(group.total_qty ?? 0),
@@ -496,7 +511,7 @@ function buildPayrollSupportSummary(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'Rekap Pelapor', groupHeader, groupRows);
 
   const entryHeader = ['Tanggal', 'Pelapor', 'Kode BoQ', 'Item', 'Qty', 'Satuan', 'Lokasi', 'Catatan'];
-  const entryRows: SheetRow[] = (d.entries ?? []).map((entry: any) => [
+  const entryRows: SheetRow[] = (d.entries ?? []).map((entry) => [
     entry.created_at ? new Date(entry.created_at).toLocaleDateString('id-ID') : '—',
     entry.reporter_name ?? '—',
     entry.boq_code ?? '—',
@@ -509,7 +524,7 @@ function buildPayrollSupportSummary(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'Entri Payroll Support', entryHeader, entryRows);
 }
 
-function buildClientChargeReport(wb: XLSX.WorkBook, d: any) {
+function buildClientChargeReport(wb: XLSX.WorkBook, d: ClientChargeData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Tujuan', d.purpose ?? '—'],
@@ -524,7 +539,7 @@ function buildClientChargeReport(wb: XLSX.WorkBook, d: any) {
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Tagihan');
 
   const voHeader = ['Tanggal', 'Lokasi', 'Deskripsi', 'Pemohon', 'Penyebab', 'Material Estimasi', 'Est. Biaya (Rp)', 'Status'];
-  const voRows: SheetRow[] = (d.vo_charges?.items ?? []).map((item: any) => [
+  const voRows: SheetRow[] = (d.vo_charges?.items ?? []).map((item) => [
     item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID') : '—',
     item.location ?? '—',
     item.description ?? '—',
@@ -537,7 +552,7 @@ function buildClientChargeReport(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'VO Tagihan Klien', voHeader, voRows);
 
   const progressHeader = ['Tanggal', 'Pelapor', 'Kode BoQ', 'Item', 'Qty', 'Satuan', 'Lokasi', 'Catatan'];
-  const progressRows: SheetRow[] = (d.progress_support?.items ?? []).map((item: any) => [
+  const progressRows: SheetRow[] = (d.progress_support?.items ?? []).map((item) => [
     item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID') : '—',
     item.reporter_name ?? '—',
     item.boq_code ?? '—',
@@ -550,7 +565,7 @@ function buildClientChargeReport(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'Support Progress', progressHeader, progressRows);
 }
 
-function buildAuditList(wb: XLSX.WorkBook, d: any) {
+function buildAuditList(wb: XLSX.WorkBook, d: AuditListData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Total Anomali', String(d.anomalies?.total ?? 0)],
@@ -563,7 +578,7 @@ function buildAuditList(wb: XLSX.WorkBook, d: any) {
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Audit');
 
   const anomalyHeader = ['Tanggal', 'Event Type', 'Entity Type', 'Entity ID', 'Severity', 'Deskripsi'];
-  const anomalyRows: SheetRow[] = (d.anomalies?.items ?? []).map((item: any) => [
+  const anomalyRows: SheetRow[] = (d.anomalies?.items ?? []).map((item) => [
     item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID') : '—',
     item.event_type ?? '—',
     item.entity_type ?? '—',
@@ -574,7 +589,7 @@ function buildAuditList(wb: XLSX.WorkBook, d: any) {
   appendSheet(wb, 'Anomali', anomalyHeader, anomalyRows);
 
   const auditHeader = ['Tanggal', 'Trigger', 'Entity Type', 'Entity ID', 'Status', 'Catatan'];
-  const auditRows: SheetRow[] = (d.audit_cases?.items ?? []).map((item: any) => [
+  const auditRows: SheetRow[] = (d.audit_cases?.items ?? []).map((item) => [
     item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID') : '—',
     item.trigger_type ?? '—',
     item.entity_type ?? '—',
@@ -592,21 +607,20 @@ export async function exportReportToExcel(
   projectName?: string
 ): Promise<void> {
   const wb = XLSX.utils.book_new();
-  const d = payload.data as any;
 
   // Add summary info sheet first
   addMetaSheet(wb, payload, projectName);
 
   switch (payload.type) {
-    case 'progress_summary':   buildProgressSummary(wb, d); break;
-    case 'material_balance':   buildMaterialBalance(wb, d); break;
-    case 'receipt_log':        buildReceiptLog(wb, d); break;
-    case 'site_change_log':    buildSiteChangeLog(wb, d); break;
-    case 'schedule_variance':  buildScheduleVariance(wb, d); break;
-    case 'weekly_digest':      buildWeeklyDigest(wb, d); break;
-    case 'payroll_support_summary': buildPayrollSupportSummary(wb, d); break;
-    case 'client_charge_report': buildClientChargeReport(wb, d); break;
-    case 'audit_list':         buildAuditList(wb, d); break;
+    case 'progress_summary':   buildProgressSummary(wb, payload.data as ProgressSummaryData); break;
+    case 'material_balance':   buildMaterialBalance(wb, payload.data as MaterialBalanceData); break;
+    case 'receipt_log':        buildReceiptLog(wb, payload.data as ReceiptLogData); break;
+    case 'site_change_log':    buildSiteChangeLog(wb, payload.data as SiteChangeLogData); break;
+    case 'schedule_variance':  buildScheduleVariance(wb, payload.data as ScheduleVarianceData); break;
+    case 'weekly_digest':      buildWeeklyDigest(wb, payload.data as WeeklyDigestData); break;
+    case 'payroll_support_summary': buildPayrollSupportSummary(wb, payload.data as PayrollSupportData); break;
+    case 'client_charge_report': buildClientChargeReport(wb, payload.data as ClientChargeData); break;
+    case 'audit_list':         buildAuditList(wb, payload.data as AuditListData); break;
   }
 
   const baseWorkbookBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });

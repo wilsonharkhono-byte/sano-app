@@ -1070,8 +1070,9 @@ export async function updateOpnameLine(
   return { error: error?.message };
 }
 
-// ─── Approval workflow ────────────────────────────────────────────────────
+// ─── Approval workflow (DEPRECATED — use opnameRpc.ts instead) ────────────
 
+/** @deprecated Use `submitOpname` from `opnameRpc.ts` instead. */
 export async function submitOpname(
   headerId: string,
   _submittedBy: string,
@@ -1082,6 +1083,7 @@ export async function submitOpname(
   return { error: error?.message };
 }
 
+/** @deprecated Use `verifyOpname` from `opnameRpc.ts` instead. */
 export async function verifyOpname(
   headerId: string,
   _verifiedBy: string,
@@ -1094,6 +1096,7 @@ export async function verifyOpname(
   return { error: error?.message };
 }
 
+/** @deprecated Use `approveOpname` from `opnameRpc.ts` instead. */
 export async function approveOpname(
   headerId: string,
   _approvedBy: string,
@@ -1106,6 +1109,7 @@ export async function approveOpname(
   return { error: error?.message };
 }
 
+/** @deprecated Use `markOpnamePaid` from `opnameRpc.ts` instead. */
 export async function markOpnamePaid(
   headerId: string,
   paymentReference?: string,
