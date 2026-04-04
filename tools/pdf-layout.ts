@@ -274,24 +274,36 @@ export class SanoDoc {
     }
   }
 
-  /** Word-wrap text to fit within maxWidth. */
+  /** Sanitize text for pdf-lib (which cannot render control characters). */
+  _sanitize(text: string): string {
+    return text.replace(/[\r\n\t]/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  }
+
+  /** Word-wrap text to fit within maxWidth. Handles embedded newlines. */
   _wrapText(text: string, font: PDFFont, size: number, maxWidth: number): string[] {
     if (!text) return [''];
-    const words = text.split(' ');
+    // Split on newlines first, then wrap each paragraph
+    const paragraphs = text.split(/\r?\n/);
     const lines: string[] = [];
-    let currentLine = '';
 
-    for (const word of words) {
-      const testLine = currentLine ? `${currentLine} ${word}` : word;
-      const testWidth = font.widthOfTextAtSize(testLine, size);
-      if (testWidth > maxWidth && currentLine) {
-        lines.push(currentLine);
-        currentLine = word;
-      } else {
-        currentLine = testLine;
+    for (const para of paragraphs) {
+      const clean = para.replace(/\t/g, ' ').trim();
+      if (!clean) { lines.push(''); continue; }
+      const words = clean.split(' ').filter(Boolean);
+      let currentLine = '';
+
+      for (const word of words) {
+        const testLine = currentLine ? `${currentLine} ${word}` : word;
+        const testWidth = font.widthOfTextAtSize(testLine, size);
+        if (testWidth > maxWidth && currentLine) {
+          lines.push(currentLine);
+          currentLine = word;
+        } else {
+          currentLine = testLine;
+        }
       }
+      if (currentLine) lines.push(currentLine);
     }
-    if (currentLine) lines.push(currentLine);
     return lines.length > 0 ? lines : [''];
   }
 
@@ -306,6 +318,7 @@ export class SanoDoc {
    */
   _truncateToWidth(text: string, font: PDFFont, size: number, maxWidth: number): string {
     if (!text) return '';
+    text = this._sanitize(text);
     if (font.widthOfTextAtSize(text, size) <= maxWidth) return text;
     // Binary search for the longest prefix that fits with an ellipsis
     const ellipsis = '…';
@@ -607,7 +620,7 @@ export class SanoDoc {
 
       let rx = PDF.ML;
       columns.forEach((col, ci) => {
-        const rawText = row[ci] ?? '—';
+        const rawText = this._sanitize(row[ci] ?? '—');
         const availW = colWidths[ci] - cellPadX * 2;
         const cellText = this._truncateToWidth(rawText, this.fonts.regular, FS.sm, availW);
         const textW = this.fonts.regular.widthOfTextAtSize(cellText, FS.sm);
@@ -639,6 +652,7 @@ export class SanoDoc {
     color: ReturnType<typeof rgb>,
     bgColor: ReturnType<typeof rgb>,
   ): void {
+    text = this._sanitize(text);
     const padX = 6;
     const padY = 3;
     const textW = this.fonts.bold.widthOfTextAtSize(text, FS.xs);

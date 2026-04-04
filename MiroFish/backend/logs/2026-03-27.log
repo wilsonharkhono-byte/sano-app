@@ -1,0 +1,4 @@
+[2026-03-27 21:02:57] DEBUG [mirofish.request.log_request:55] 请求: GET /
+[2026-03-27 21:02:57] DEBUG [mirofish.request.log_response:62] 响应: 404
+[2026-03-27 21:02:57] DEBUG [mirofish.request.log_request:55] 请求: GET /favicon.ico
+[2026-03-27 21:02:57] DEBUG [mirofish.request.log_response:62] 响应: 404

@@ -1,0 +1,239 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1775271324877,
+  "projectRoot": "/sessions/awesome-keen-babbage/mnt/Claude Code",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "react",
+        "version": "19.1.0",
+        "category": "frontend"
+      },
+      {
+        "name": "react-dom",
+        "version": "19.1.0",
+        "category": "frontend"
+      },
+      {
+        "name": "jest",
+        "version": "30.3.0",
+        "category": "testing"
+      }
+    ],
+    "packageManager": "npm",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "npm test",
+    "lintCommand": null,
+    "devCommand": "npm run start",
+    "scripts": {
+      "start": "expo start",
+      "android": "expo start --android",
+      "ios": "expo start --ios",
+      "web": "expo start --web",
+      "sync:materials": "node tools/syncMaterialCatalog.mjs",
+      "sync:materials:watch": "node tools/syncMaterialCatalog.mjs --watch",
+      "test": "jest"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "assets",
+      "docs"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "MiroFish": {
+      "path": "MiroFish",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1775271324855,
+      "keyFiles": []
+    },
+    "assets": {
+      "path": "assets",
+      "purpose": "Static assets",
+      "fileCount": 5,
+      "lastAccessed": 1775271324859,
+      "keyFiles": [
+        "LOGO SANO.svg",
+        "icon.svg",
+        "splash.svg"
+      ]
+    },
+    "dist": {
+      "path": "dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 2,
+      "lastAccessed": 1775271324860,
+      "keyFiles": [
+        "index.html",
+        "metadata.json"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 2,
+      "lastAccessed": 1775271324862,
+      "keyFiles": [
+        "OPNAME_FEATURE_BRIEF.md",
+        "harian_payment_architecture.md"
+      ]
+    },
+    "office": {
+      "path": "office",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1775271324863,
+      "keyFiles": [
+        "PrincipalNavigation.tsx",
+        "navigation.tsx"
+      ]
+    },
+    "shims": {
+      "path": "shims",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1775271324865,
+      "keyFiles": [
+        "reanimated.web.js",
+        "worklets.web.js"
+      ]
+    },
+    "supabase": {
+      "path": "supabase",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1775271324867,
+      "keyFiles": []
+    },
+    "tmp": {
+      "path": "tmp",
+      "purpose": null,
+      "fileCount": 8,
+      "lastAccessed": 1775271324868,
+      "keyFiles": [
+        "__excelParser_eval.cjs",
+        "analyze_actual_parser.mjs",
+        "setup-guide.txt",
+        "supabase-reset.sql",
+        "supabase-schema.sql"
+      ]
+    },
+    "tools": {
+      "path": "tools",
+      "purpose": null,
+      "fileCount": 34,
+      "lastAccessed": 1775271324869,
+      "keyFiles": [
+        "ai-assist.ts",
+        "attendance.ts",
+        "audit.ts",
+        "auth.ts",
+        "baseline.ts"
+      ]
+    },
+    "workflows": {
+      "path": "workflows",
+      "purpose": null,
+      "fileCount": 3,
+      "lastAccessed": 1775271324870,
+      "keyFiles": [
+        "App.tsx",
+        "navigation.tsx",
+        "theme.ts"
+      ]
+    },
+    "dist/assets": {
+      "path": "dist/assets",
+      "purpose": "Static assets",
+      "fileCount": 0,
+      "lastAccessed": 1775271324871,
+      "keyFiles": []
+    },
+    "supabase/migrations": {
+      "path": "supabase/migrations",
+      "purpose": "Database migrations",
+      "fileCount": 25,
+      "lastAccessed": 1775271324873,
+      "keyFiles": [
+        "001_core_tables.sql",
+        "002_baseline_tables.sql",
+        "003_seed.sql"
+      ]
+    },
+    "supabase/tests": {
+      "path": "supabase/tests",
+      "purpose": "Test files",
+      "fileCount": 1,
+      "lastAccessed": 1775271324874,
+      "keyFiles": [
+        "010_opname_rebuild.test.sql"
+      ]
+    },
+    "tools/__tests__": {
+      "path": "tools/__tests__",
+      "purpose": "Test files",
+      "fileCount": 3,
+      "lastAccessed": 1775271324875,
+      "keyFiles": [
+        "excelParser.test.ts",
+        "opname.test.ts",
+        "opnameRpc.test.ts"
+      ]
+    },
+    "workflows/components": {
+      "path": "workflows/components",
+      "purpose": "UI components",
+      "fileCount": 14,
+      "lastAccessed": 1775271324876,
+      "keyFiles": [
+        "AIChatModal.tsx",
+        "Badge.tsx",
+        "Card.tsx"
+      ]
+    },
+    "workflows/utils": {
+      "path": "workflows/utils",
+      "purpose": "Utility functions",
+      "fileCount": 1,
+      "lastAccessed": 1775271324877,
+      "keyFiles": [
+        "workbookPicker.ts"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}

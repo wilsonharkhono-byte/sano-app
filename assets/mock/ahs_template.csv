@@ -1,0 +1,18 @@
+BoQ Kode,BoQ Item,Tipe Pekerjaan,Tier Material,Kode Material,Nama Material,Spesifikasi,Kebutuhan per Unit BoQ,Satuan Material,Faktor Waste (%)
+STR-01,Pekerjaan Pondasi Footplat,Fisik,1,CON-RM25,Ready mix kelas 25,"Mutu setara K-250, slump 12cm",1.00,m3,3
+STR-01,Pekerjaan Pondasi Footplat,Fisik,1,REB-DE16,Besi beton ulir 16 mm,"Tulangan utama footplat",78.00,kg,5
+STR-01,Pekerjaan Pondasi Footplat,Fisik,1,REB-PL08,Besi beton polos 8 mm,"Tulangan pembagi / sengkang",12.00,kg,5
+STR-01,Pekerjaan Pondasi Footplat,Fisik,2,PLY-FF12,Plywood film faced 12 mm,"Bekisting sisi footplat",3.50,lbr,10
+STR-02,Kolom Beton Bertulang,Fisik,1,CON-RM30,Ready mix kelas 30,"Mutu setara K-300, slump 12cm",1.00,m3,3
+STR-02,Kolom Beton Bertulang,Fisik,1,REB-DE16,Besi beton ulir 16 mm,"Tulangan utama kolom",85.00,kg,5
+STR-02,Kolom Beton Bertulang,Fisik,1,REB-PL10,Besi beton polos 10 mm,"Sengkang kolom",18.00,kg,5
+STR-02,Kolom Beton Bertulang,Fisik,2,PLY-FF12,Plywood film faced 12 mm,"Bekisting kolom",5.50,lbr,10
+ARC-01,Pasangan Dinding Bata Ringan,Fisik,2,AAC-BL07,Bata ringan 7.5 cm,"AAC density 650 kg/m3",8.33,pcs,5
+ARC-01,Pasangan Dinding Bata Ringan,Fisik,3,MRT-INST,Mortar instan pasangan bata,"Mortar instan khusus pasangan bata",0.25,zak,2
+ARC-01,Pasangan Dinding Bata Ringan,Fisik,2,BRK-CL01,Bata merah standar,"Alternatif pasangan dinding",55.00,pcs,10
+FIN-01,Plesteran Dinding,Finishing,3,MRT-PLST,Mortar instan plester,"Plester instan siap pakai",0.28,zak,2
+FIN-02,Acian Dinding,Finishing,3,MRT-ACI,Mortar instan acian,"Acian instan siap pakai",0.18,zak,2
+STR-03,Pekerjaan Balok Beton,Fisik,1,CON-RM30,Ready mix kelas 30,"Mutu setara K-300, slump 12cm",1.00,m3,3
+STR-03,Pekerjaan Balok Beton,Fisik,1,REB-DE19,Besi beton ulir 19 mm,"Tulangan utama balok",120.00,kg,5
+STR-03,Pekerjaan Balok Beton,Fisik,1,REB-PL08,Besi beton polos 8 mm,"Sengkang balok",22.00,kg,5
+STR-03,Pekerjaan Balok Beton,Fisik,2,PLY-FF12,Plywood film faced 12 mm,"Bekisting balok",5.50,lbr,10

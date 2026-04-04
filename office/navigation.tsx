@@ -2,9 +2,9 @@ import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { NavigationContainer } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { StyleSheet, Text } from 'react-native';
+import { StyleSheet, Text, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, FONTS, SPACE, TYPE } from '../workflows/theme';
+import { COLORS, FONTS, SPACE, TYPE, BREAKPOINTS } from '../workflows/theme';
 
 import OfficeHomeScreen from './screens/OfficeHomeScreen';
 import ApprovalsScreen from './screens/ApprovalsScreen';
@@ -63,20 +63,28 @@ const LABEL_MAP: Record<string, string> = {
 
 export default function OfficeNavigation() {
   const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+
+  const isWide    = width >= BREAKPOINTS.tablet;
+  const barHeight = isWide
+    ? 64 + Math.max(insets.bottom, SPACE.sm)
+    : 56 + Math.max(insets.bottom, SPACE.sm + 2);
+  const iconSize  = isWide ? 26 : 22;
+  const labelStyle = isWide ? styles.labelWide : styles.label;
 
   return (
     <NavigationContainer>
       <Tab.Navigator
         screenOptions={({ route }) => ({
-          tabBarIcon: ({ color, focused, size }) => (
+          tabBarIcon: ({ color, focused }) => (
             <Ionicons
               name={focused ? ICON_MAP_ACTIVE[route.name] : ICON_MAP[route.name]}
-              size={size - 2}
+              size={iconSize}
               color={color}
             />
           ),
           tabBarLabel: ({ color }) => (
-            <Text style={[styles.label, { color }]}>
+            <Text style={[labelStyle, { color }]} numberOfLines={1}>
               {LABEL_MAP[route.name]}
             </Text>
           ),
@@ -86,10 +94,11 @@ export default function OfficeNavigation() {
             backgroundColor: COLORS.surface,
             borderTopWidth: 1,
             borderTopColor: COLORS.borderSub,
-            height: 56 + Math.max(insets.bottom, SPACE.sm + 2),
+            height: barHeight,
             paddingBottom: Math.max(insets.bottom, SPACE.sm + 2),
-            paddingTop: SPACE.sm,
+            paddingTop: isWide ? SPACE.md : SPACE.sm,
           },
+          tabBarLabelPosition: 'below-icon',
           headerShown: false,
         })}
       >
@@ -105,12 +114,22 @@ export default function OfficeNavigation() {
         {/* Mandor setup and Opname are accessed from the workflow Progres tab, not as standalone tabs */}
         <Tab.Screen
           name="Mandor"
-          children={() => <MandorSetupScreen onBack={() => {}} />}
+          children={({ navigation }) => (
+            <MandorSetupScreen
+              onBack={() => navigation.navigate('Reports')}
+              onOpenAttendanceContract={(contract) => {
+                navigation.navigate('Reports', {
+                  screen: 'Attendance',
+                  params: { contractId: contract.id },
+                });
+              }}
+            />
+          )}
           options={{ tabBarButton: () => null }}
         />
         <Tab.Screen
           name="Opname"
-          children={() => <OpnameScreen onBack={() => {}} />}
+          children={({ navigation }) => <OpnameScreen onBack={() => navigation.navigate('Reports')} />}
           options={{ tabBarButton: () => null }}
         />
         <Tab.Screen name="Reports" component={OfficeReportsScreen} />
@@ -125,5 +144,11 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.semibold,
     letterSpacing: 0.3,
     marginTop: 1,
+  },
+  labelWide: {
+    fontSize: TYPE.sm,
+    fontFamily: FONTS.semibold,
+    letterSpacing: 0.3,
+    marginTop: 2,
   },
 });

@@ -1,0 +1,46 @@
+{
+  "type": "schedule_variance",
+  "title": "Laporan Varians Jadwal",
+  "generated_at": "2026-03-27T15:30:00.000Z",
+  "project_id": "project-san-sample-001",
+  "data": {
+    "total_milestones": 4,
+    "on_track": 1,
+    "at_risk": 2,
+    "delayed": 1,
+    "milestones": [
+      {
+        "label": "Struktur Lantai 1 Selesai",
+        "planned_date": "2026-04-02",
+        "revised_date": null,
+        "revision_reason": null,
+        "status": "AT_RISK",
+        "days_remaining": 6
+      },
+      {
+        "label": "Pasangan Bata Lt.1 Selesai",
+        "planned_date": "2026-04-12",
+        "revised_date": "2026-04-18",
+        "revision_reason": "Menunggu tambahan supply bata MRH",
+        "status": "AT_RISK",
+        "days_remaining": 22
+      },
+      {
+        "label": "Instalasi MEP Rough-In",
+        "planned_date": "2026-03-24",
+        "revised_date": null,
+        "revision_reason": null,
+        "status": "DELAYED",
+        "days_remaining": -3
+      },
+      {
+        "label": "Acian Zona Timur",
+        "planned_date": "2026-04-20",
+        "revised_date": null,
+        "revision_reason": null,
+        "status": "ON_TRACK",
+        "days_remaining": 24
+      }
+    ]
+  }
+}

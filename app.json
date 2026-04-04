@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "SANO",
+    "slug": "san-contractor-supervisor",
+    "version": "3.0.0",
+    "icon": "./assets/icon.png",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#D2D0C4"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.sancontractor.supervisor",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera digunakan untuk foto bukti material dan progres.",
+        "NSLocationWhenInUseUsageDescription": "Lokasi digunakan untuk verifikasi GPS pada foto penerimaan material."
+      }
+    },
+    "android": {
+      "package": "com.sancontractor.supervisor",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION"
+      ]
+    },
+    "updates": {
+      "url": "https://u.expo.dev/30991bf9-4ebe-42a1-8daf-69d631fcad86"
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "plugins": [
+      "expo-image-picker",
+      "expo-location",
+      "expo-asset",
+      "expo-font"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "30991bf9-4ebe-42a1-8daf-69d631fcad86"
+      }
+    }
+  }
+}

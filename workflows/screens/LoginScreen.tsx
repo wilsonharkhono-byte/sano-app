@@ -2,17 +2,18 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   KeyboardAvoidingView, Platform, Alert, ActivityIndicator,
-  Animated, Dimensions, StatusBar, ScrollView,
+  Animated, Dimensions, StatusBar, ScrollView, Easing,
 } from 'react-native';
 import { signIn, signUp } from '../../tools/auth';
+import { SanoLogo } from '../components/SanoBrand';
 import { COLORS, FONTS, TYPE, SPACE } from '../theme';
 
 const { height: SH } = Dimensions.get('window');
 
 // ── Brand panel height ──────────────────────────────────────────────────────
-// Scales with screen height but stays between comfortable bounds.
-const PANEL_H = Math.max(260, Math.min(SH * 0.44, 340));
+const PANEL_H = Math.max(280, Math.min(SH * 0.44, 350));
 
+// ── Main screen ──────────────────────────────────────────────────────────────
 export default function LoginScreen() {
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
@@ -22,20 +23,48 @@ export default function LoginScreen() {
   const [focused,  setFocused]  = useState<string | null>(null);
 
   // ── Entrance animations ───────────────────────────────────────────────────
-  const panelY  = useRef(new Animated.Value(-16)).current;
-  const panelOp = useRef(new Animated.Value(0)).current;
-  const formY   = useRef(new Animated.Value(20)).current;
-  const formOp  = useRef(new Animated.Value(0)).current;
+  // Four independent tracks fire in parallel with staggered delays:
+  //   0 ms  — panel slides down
+  // 200 ms  — typographic logo materialises (scale + opacity)
+  // 560 ms  — acronym + tagline fade in
+  // 340 ms  — form rises from below
+  const panelY    = useRef(new Animated.Value(-20)).current;
+  const panelOp   = useRef(new Animated.Value(0)).current;
+  const logoOp    = useRef(new Animated.Value(0)).current;
+  const logoScale = useRef(new Animated.Value(0.92)).current;
+  const detailOp  = useRef(new Animated.Value(0)).current;
+  const formY     = useRef(new Animated.Value(24)).current;
+  const formOp    = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    Animated.sequence([
+    const ease = Easing.out(Easing.cubic);
+
+    Animated.parallel([
+      // 1 — Panel
       Animated.parallel([
-        Animated.timing(panelY,  { toValue: 0, duration: 480, useNativeDriver: true }),
-        Animated.timing(panelOp, { toValue: 1, duration: 480, useNativeDriver: true }),
+        Animated.timing(panelY,  { toValue: 0, duration: 520, easing: ease, useNativeDriver: true }),
+        Animated.timing(panelOp, { toValue: 1, duration: 520, easing: ease, useNativeDriver: true }),
       ]),
-      Animated.parallel([
-        Animated.timing(formY,  { toValue: 0, duration: 360, useNativeDriver: true }),
-        Animated.timing(formOp, { toValue: 1, duration: 360, useNativeDriver: true }),
+      // 2 — Logo materialises
+      Animated.sequence([
+        Animated.delay(200),
+        Animated.parallel([
+          Animated.timing(logoOp,    { toValue: 1, duration: 500, easing: ease, useNativeDriver: true }),
+          Animated.timing(logoScale, { toValue: 1, duration: 500, easing: ease, useNativeDriver: true }),
+        ]),
+      ]),
+      // 3 — Acronym + tagline
+      Animated.sequence([
+        Animated.delay(560),
+        Animated.timing(detailOp, { toValue: 1, duration: 300, easing: ease, useNativeDriver: true }),
+      ]),
+      // 4 — Form (rises from below, starts while logo is still animating)
+      Animated.sequence([
+        Animated.delay(340),
+        Animated.parallel([
+          Animated.timing(formOp, { toValue: 1, duration: 480, easing: ease, useNativeDriver: true }),
+          Animated.timing(formY,  { toValue: 0, duration: 480, easing: ease, useNativeDriver: true }),
+        ]),
       ]),
     ]).start();
   }, []);
@@ -46,7 +75,7 @@ export default function LoginScreen() {
     Animated.timing(nameH, {
       toValue: isSignUp ? 1 : 0,
       duration: 260,
-      useNativeDriver: false, // layout prop — cannot use native driver
+      useNativeDriver: false, // animates layout (maxHeight)
     }).start();
   }, [isSignUp]);
 
@@ -68,8 +97,9 @@ export default function LoginScreen() {
       } else {
         await signIn(email.trim(), password);
       }
-    } catch (err: any) {
-      Alert.alert('Gagal masuk', err.message ?? 'Terjadi kesalahan. Coba lagi.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Terjadi kesalahan. Coba lagi.';
+      Alert.alert('Gagal masuk', msg);
     } finally {
       setLoading(false);
     }
@@ -83,43 +113,50 @@ export default function LoginScreen() {
       <StatusBar barStyle="light-content" backgroundColor={COLORS.primary} />
       <View style={styles.root}>
 
-        {/* ── Brand panel — deep warm-black, architectural ── */}
+        {/* ── Brand panel — deep warm-black ── */}
         <Animated.View
           style={[
             styles.panel,
             { opacity: panelOp, transform: [{ translateY: panelY }] },
           ]}
         >
-          {/* Corner mark — two sand lines, top-left geometric detail */}
+          {/* Corner mark — geometric detail, top-left */}
           <View style={styles.cornerMark} pointerEvents="none">
             <View style={styles.cornerLineL} />
             <View style={styles.cornerLineS} />
           </View>
 
-          {/* Monumental wordmark */}
-          <Text
-            style={styles.wordmark}
-            accessibilityRole="header"
-            accessibilityLabel="SANO — Structured Approval Network and Operations"
-          >
-            SANO
-          </Text>
+          {/* ── Logo cluster — typographic mark → descriptor ── */}
+          <View style={styles.logoGroup}>
 
-          {/* Acronym — spaced, architectural */}
-          <Text style={styles.acronym} accessibilityElementsHidden>
-            STRUCTURED APPROVAL{'\n'}NETWORK & OPERATIONS
-          </Text>
+            {/* Typographic SANO logo — the hero moment */}
+            <Animated.View
+              style={{
+                opacity: logoOp,
+                transform: [{ scale: logoScale }],
+                marginBottom: 14,
+              }}
+            >
+              <SanoLogo width={220} color={COLORS.accent} />
+            </Animated.View>
 
-          {/* Tagline with sand accent bar */}
-          <View style={styles.taglineRow}>
-            <View style={styles.taglineBar} />
-            <Text style={styles.tagline}>
-              Operasi lapangan, persetujuan,{'\n'}dan kontrol proyek.
-            </Text>
+            {/* Acronym + tagline — fade in after logo settles */}
+            <Animated.View style={{ opacity: detailOp }}>
+              <Text style={styles.acronym} accessibilityElementsHidden>
+                STRUCTURED APPROVAL · NETWORK & OPERATIONS
+              </Text>
+              <View style={styles.taglineRow}>
+                <View style={styles.taglineBar} />
+                <Text style={styles.tagline}>
+                  Operasi lapangan, persetujuan,{'\n'}dan kontrol proyek.
+                </Text>
+              </View>
+            </Animated.View>
+
           </View>
         </Animated.View>
 
-        {/* ── 3-point accent stripe ── */}
+        {/* ── Accent stripe ── */}
         <View style={styles.accentStripe} />
 
         {/* ── Form area — warm near-white ── */}
@@ -143,7 +180,7 @@ export default function LoginScreen() {
                 style={{
                   maxHeight: nameH.interpolate({
                     inputRange: [0, 1],
-                    outputRange: [0, 84],
+                    outputRange: [0, 92],
                   }),
                   opacity: nameH,
                   overflow: 'hidden',
@@ -221,22 +258,24 @@ export default function LoginScreen() {
                 )}
               </TouchableOpacity>
 
-              {/* Toggle sign-in / sign-up */}
-              <TouchableOpacity
-                onPress={toggleMode}
-                style={styles.toggle}
-                accessibilityLabel={
-                  isSignUp ? 'Sudah punya akun? Masuk' : 'Belum punya akun? Daftar'
-                }
-                accessibilityRole="button"
-              >
-                <Text style={styles.toggleText}>
-                  {isSignUp ? 'Sudah punya akun?  ' : 'Belum punya akun?  '}
-                  <Text style={styles.toggleLink}>
-                    {isSignUp ? 'Masuk' : 'Daftar'}
+              {/* Toggle sign-in / sign-up — only in dev; production is invite-only */}
+              {__DEV__ && (
+                <TouchableOpacity
+                  onPress={toggleMode}
+                  style={styles.toggle}
+                  accessibilityLabel={
+                    isSignUp ? 'Sudah punya akun? Masuk' : 'Belum punya akun? Daftar'
+                  }
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.toggleText}>
+                    {isSignUp ? 'Sudah punya akun?  ' : 'Belum punya akun?  '}
+                    <Text style={styles.toggleLink}>
+                      {isSignUp ? 'Masuk' : 'Daftar'}
+                    </Text>
                   </Text>
-                </Text>
-              </TouchableOpacity>
+                </TouchableOpacity>
+              )}
             </Animated.View>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -254,15 +293,15 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surface,
   },
 
-  // ── Brand panel ────────────────────────────────────────────────────────
+  // ── Brand panel ─────────────────────────────────────────────────────────
 
   panel: {
     height: PANEL_H,
     backgroundColor: COLORS.primary,   // #141210 — deep warm near-black
     paddingTop: 52,
-    paddingBottom: 32,
+    paddingBottom: 28,
     paddingHorizontal: SPACE.xl,
-    justifyContent: 'flex-end',
+    justifyContent: 'flex-end',        // logo cluster anchored to bottom
   },
 
   // Geometric corner mark — two horizontal lines, top-left
@@ -275,7 +314,7 @@ const styles = StyleSheet.create({
   cornerLineL: {
     width: 32,
     height: 2.5,
-    backgroundColor: COLORS.accent,    // #B29F86 — sand
+    backgroundColor: COLORS.accent,
   },
   cornerLineS: {
     width: 16,
@@ -284,28 +323,22 @@ const styles = StyleSheet.create({
     opacity: 0.55,
   },
 
-  // Monumental wordmark — the hero moment
-  wordmark: {
-    fontSize: 76,
-    fontFamily: FONTS.bold,
-    color: COLORS.accent,              // sand on dark — premium architectural feel
-    letterSpacing: 10,
-    lineHeight: 82,
-    includeFontPadding: false,
-    marginBottom: 6,
+  // Logo cluster — typographic logo + descriptor
+  logoGroup: {
+    gap: 0,
   },
 
-  // Acronym — spaced micro text
+  // Acronym — single spaced line with center-dot separator
   acronym: {
-    fontSize: 8,
+    fontSize: 9,
     fontFamily: FONTS.medium,
-    color: '#5C5650',                  // warm mid-gray, legible on dark
+    color: '#5C5650',
     letterSpacing: 2,
     lineHeight: 14,
-    marginBottom: SPACE.base,
+    marginBottom: SPACE.sm + 2,
   },
 
-  // Tagline row — left accent bar + body text
+  // Tagline row — left accent bar + descriptive copy
   taglineRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -313,16 +346,16 @@ const styles = StyleSheet.create({
   },
   taglineBar: {
     width: 2,
-    height: 36,                        // matches two lines of tagline
+    height: 36,
     backgroundColor: COLORS.accent,
     opacity: 0.5,
     marginTop: 2,
   },
   tagline: {
-    fontSize: TYPE.sm,
+    fontSize: TYPE.base,               // 15 — comfortable on mobile
     fontFamily: FONTS.regular,
-    color: '#7A746E',                  // warm lighter gray
-    lineHeight: 20,
+    color: '#7A746E',
+    lineHeight: 22,
     flex: 1,
   },
 
@@ -330,83 +363,84 @@ const styles = StyleSheet.create({
 
   accentStripe: {
     height: 3,
-    backgroundColor: COLORS.accent,   // sand divider — sharp, precise
+    backgroundColor: COLORS.accent,
   },
 
   // ── Form area ──────────────────────────────────────────────────────────
 
   formOuter: {
     flex: 1,
-    backgroundColor: COLORS.surface,  // #FDFAF6 — warm near-white
+    backgroundColor: COLORS.surface,  // #FDFAF6
   },
   scrollContent: {
     flexGrow: 1,
   },
   formInner: {
     paddingHorizontal: SPACE.xl,
-    paddingTop: SPACE.xl,
+    paddingTop: SPACE.xl + 4,          // 28 — generous top spacing
     paddingBottom: SPACE.xxl,
-    gap: SPACE.base,
+    gap: SPACE.lg,                     // 20 — roomier gaps between fields
   },
 
   // ── Field groups ───────────────────────────────────────────────────────
 
   fieldGroup: {
-    gap: 6,
+    gap: 8,                            // was 6 — more room label → input
   },
   fieldLabel: {
-    fontSize: 9,
+    fontSize: 11,                      // was 9 — readable on mobile
     fontFamily: FONTS.bold,
     color: COLORS.textSec,
-    letterSpacing: 2,                  // spaced caps — architectural
+    letterSpacing: 2,
   },
 
-  // Underline-style input — editorial, not generic box
+  // Underline-style input — with enough padding so the focus ring
+  // doesn't clip into the text (the core fix for the overlap issue).
   input: {
     backgroundColor: 'transparent',
     borderBottomWidth: 1.5,
     borderBottomColor: COLORS.border,
-    paddingVertical: SPACE.sm + 2,
-    paddingHorizontal: 0,
-    fontSize: TYPE.md,
+    paddingVertical: 14,               // was 10 — taller for fat fingers
+    paddingHorizontal: 6,              // was 0  — keeps text clear of focus ring
+    fontSize: 18,                      // was 16 — clearly legible on phone
     fontFamily: FONTS.regular,
     color: COLORS.text,
   },
   inputFocused: {
-    borderBottomWidth: 2,
+    borderBottomWidth: 2.5,
     borderBottomColor: COLORS.primary, // snaps to near-black on focus
   },
 
   // ── Submit button ──────────────────────────────────────────────────────
 
   btn: {
-    backgroundColor: COLORS.primary,  // near-black
-    borderRadius: 2,                   // sharp — architectural, not bubbly
-    paddingVertical: SPACE.base,
+    backgroundColor: COLORS.primary,
+    borderRadius: 2,
+    paddingVertical: SPACE.base + 2,   // 18 — slightly taller
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 52,
+    minHeight: 56,                     // was 52 — better touch target
     marginTop: SPACE.sm,
   },
   btnBusy: {
     opacity: 0.6,
   },
   btnText: {
-    color: COLORS.accent,              // sand — echoes the wordmark
-    fontSize: TYPE.sm,
+    color: COLORS.accent,
+    fontSize: 15,                      // was 13 — bolder on mobile
     fontFamily: FONTS.bold,
-    letterSpacing: 4,                  // wide-spaced caps = commanding
+    letterSpacing: 4,
   },
 
   // ── Toggle ─────────────────────────────────────────────────────────────
 
   toggle: {
     alignItems: 'center',
-    paddingVertical: SPACE.sm,
+    paddingVertical: SPACE.sm + 2,     // bigger touch target
     marginTop: SPACE.xs,
   },
   toggleText: {
-    fontSize: TYPE.sm,
+    fontSize: 15,                      // was 13 — comfortable mobile size
     fontFamily: FONTS.regular,
     color: COLORS.textSec,
   },

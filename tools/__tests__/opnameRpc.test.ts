@@ -146,6 +146,7 @@ describe('opnameRpc', () => {
 
       expect(mockRpc).toHaveBeenCalledWith('mark_opname_paid', {
         p_header_id: 'header-uuid-1',
+        p_payment_reference: null,
       });
     });
   });
@@ -202,19 +203,27 @@ describe('opnameRpc', () => {
   // ─── getLaborPaymentSummary ─────────────────────────────────────────
 
   describe('getLaborPaymentSummary', () => {
-    it('queries v_labor_payment_summary by project_id', async () => {
-      const mockChain = {
-        select: jest.fn().mockReturnThis(),
-        eq: jest.fn().mockReturnThis(),
-        order: jest.fn().mockResolvedValue({ data: [], error: null }),
+    it('queries contracts, opnames, kasbon, and rates for the project', async () => {
+      // The new implementation makes multiple .from() calls in parallel,
+      // each with different chain methods. Provide a fully chainable mock.
+      const makeChain = (data: any[] = []) => {
+        const chain: Record<string, jest.Mock> = {};
+        const resolver = { data, error: null };
+        chain.select = jest.fn().mockReturnValue(chain);
+        chain.eq = jest.fn().mockReturnValue(chain);
+        chain.in = jest.fn().mockReturnValue(chain);
+        chain.order = jest.fn().mockResolvedValue(resolver);
+        // For calls that end without .order (e.g. mandor_contract_rates)
+        chain.then = jest.fn((resolve: any) => resolve(resolver));
+        return chain;
       };
-      mockFrom.mockReturnValue(mockChain);
 
-      await getLaborPaymentSummary('project-uuid-1');
+      mockFrom.mockImplementation(() => makeChain([]));
 
-      expect(mockFrom).toHaveBeenCalledWith('v_labor_payment_summary');
-      expect(mockChain.eq).toHaveBeenCalledWith('project_id', 'project-uuid-1');
-      expect(mockChain.order).toHaveBeenCalledWith('mandor_name');
+      const result = await getLaborPaymentSummary('project-uuid-1');
+
+      expect(mockFrom).toHaveBeenCalledWith('mandor_contracts');
+      expect(result).toEqual([]);
     });
   });
 

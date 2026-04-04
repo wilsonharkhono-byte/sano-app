@@ -1,0 +1,45 @@
+{
+  "type": "receipt_log",
+  "title": "Log Penerimaan Material",
+  "generated_at": "2026-03-27T15:30:00.000Z",
+  "project_id": "project-san-sample-001",
+  "data": {
+    "total_pos": 3,
+    "fully_received": 1,
+    "entries": [
+      {
+        "supplier": "PT Baja Mandiri",
+        "material": "Besi Ulir D13",
+        "ordered_qty": 1240,
+        "received_qty": 1300,
+        "receipt_count": 3,
+        "unit": "kg",
+        "status": "PARTIAL_RECEIVED",
+        "ordered_date": "2026-03-10",
+        "last_receipt": "2026-03-26T10:14:00.000Z"
+      },
+      {
+        "supplier": "CV Makmur Bata",
+        "material": "Bata MRH",
+        "ordered_qty": 820,
+        "received_qty": 780,
+        "receipt_count": 2,
+        "unit": "unit",
+        "status": "PARTIAL_RECEIVED",
+        "ordered_date": "2026-03-12",
+        "last_receipt": "2026-03-25T14:22:00.000Z"
+      },
+      {
+        "supplier": "PT Semen Nusantara",
+        "material": "Semen PCC",
+        "ordered_qty": 260,
+        "received_qty": 260,
+        "receipt_count": 1,
+        "unit": "zak",
+        "status": "FULLY_RECEIVED",
+        "ordered_date": "2026-03-05",
+        "last_receipt": "2026-03-20T08:42:00.000Z"
+      }
+    ]
+  }
+}

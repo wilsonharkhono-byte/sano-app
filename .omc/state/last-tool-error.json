@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"rm -f \\\"/sessions/awesome-keen-babbage/mnt/Claude Code/.git/index.lock\\\" && cd \\\"/sessions/awesome-keen-babbage/mnt/Claude Code\\\" && git add vercel.json && git commit -m \\\"Add Vercel confi...",
+  "error": "Exit code 1\nrm: cannot remove '/sessions/awesome-keen-babbage/mnt/Claude Code/.git/index.lock': Operation not permitted",
+  "timestamp": "2026-04-04T07:20:15.214Z",
+  "retry_count": 2
+}

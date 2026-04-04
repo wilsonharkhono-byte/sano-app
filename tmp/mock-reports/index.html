@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SANO Report Preview</title>
+  <style>
+    :root {
+      --bg: #f4efe6;
+      --paper: #fffdf8;
+      --ink: #1f1a17;
+      --muted: #6b625b;
+      --line: #ddd2c3;
+      --accent: #a44b2f;
+      --accent-soft: #f5e0d8;
+      --ok: #2f7d4f;
+      --warn: #bf7a19;
+      --risk: #b75b14;
+      --bad: #b43333;
+      --shadow: 0 18px 48px rgba(75, 49, 28, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Trebuchet MS", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, #f8dfd2 0, transparent 28rem),
+        linear-gradient(180deg, #efe7dc 0%, var(--bg) 38%, #efe8dd 100%);
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .page {
+      width: min(1200px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 64px;
+    }
+
+    .hero {
+      background: linear-gradient(140deg, #2e251f 0%, #4b2d1d 100%);
+      color: #fff8f2;
+      border-radius: 28px;
+      padding: 32px;
+      box-shadow: var(--shadow);
+      margin-bottom: 22px;
+    }
+
+    .eyebrow {
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      font-size: 12px;
+      opacity: 0.72;
+      margin: 0 0 8px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: clamp(34px, 6vw, 58px);
+      line-height: 0.98;
+      max-width: 9ch;
+      margin-bottom: 14px;
+    }
+
+    .hero p {
+      margin: 0;
+      max-width: 64ch;
+      color: rgba(255, 248, 242, 0.82);
+      line-height: 1.6;
+    }
+
+    .nav {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 18px 0 28px;
+    }
+
+    .nav a {
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.75);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .sheet {
+      background: var(--paper);
+      border: 1px solid rgba(173, 153, 130, 0.32);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      padding: 26px;
+      margin-bottom: 20px;
+    }
+
+    .sheet-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .sheet-title {
+      font-size: 30px;
+      margin-bottom: 6px;
+    }
+
+    .sheet-sub {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .project-tag {
+      white-space: nowrap;
+      padding: 10px 14px;
+      border-radius: 16px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      background: #fff;
+    }
+
+    .stat-value {
+      display: block;
+      font-size: 30px;
+      line-height: 1;
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+
+    .stat-label {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-weight: 700;
+    }
+
+    .stat.ok .stat-value { color: var(--ok); }
+    .stat.warn .stat-value { color: var(--warn); }
+    .stat.risk .stat-value { color: var(--risk); }
+    .stat.bad .stat-value { color: var(--bad); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+
+    th,
+    td {
+      padding: 12px 14px;
+      text-align: left;
+      border-bottom: 1px solid #eee5da;
+      vertical-align: top;
+    }
+
+    th {
+      background: #fbf7f1;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .badge.ok {
+      background: rgba(47, 125, 79, 0.12);
+      color: var(--ok);
+    }
+
+    .badge.risk {
+      background: rgba(191, 122, 25, 0.14);
+      color: var(--warn);
+    }
+
+    .badge.bad {
+      background: rgba(180, 51, 51, 0.12);
+      color: var(--bad);
+    }
+
+    .progress-row {
+      display: grid;
+      grid-template-columns: 1.6fr 1fr;
+      gap: 18px;
+    }
+
+    .bars {
+      display: grid;
+      gap: 12px;
+    }
+
+    .bar-card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 14px;
+      background: #fff;
+    }
+
+    .bar-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+
+    .bar-track {
+      height: 10px;
+      border-radius: 999px;
+      background: #efe4d8;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #c67641 0%, #a44b2f 100%);
+    }
+
+    .mini-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .mini-card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 16px;
+      background: #fff;
+    }
+
+    .mini-card h3 {
+      font-size: 18px;
+      margin-bottom: 8px;
+    }
+
+    .mini-card p,
+    .note {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .legend {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .footer {
+      padding: 12px 4px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    @media (max-width: 840px) {
+      .sheet-head,
+      .progress-row {
+        grid-template-columns: 1fr;
+        display: grid;
+      }
+
+      .project-tag {
+        white-space: normal;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <p class="eyebrow">SANO Mock Export Center</p>
+      <h1>SANO HTML Preview of Sample Reports</h1>
+      <p>
+        This page turns the JSON mock exports into report-style previews so you can review the layout and the kind of content each export is meant to show.
+      </p>
+    </section>
+
+    <nav class="nav">
+      <a href="#progress-summary">Progress Summary</a>
+      <a href="#material-balance">Material Balance</a>
+      <a href="#receipt-log">Receipt Log</a>
+      <a href="#punch-list">Punch List</a>
+      <a href="#vo-summary">VO &amp; Rework</a>
+      <a href="#schedule-variance">Schedule Variance</a>
+      <a href="#weekly-digest">Weekly Digest</a>
+    </nav>
+
+    <section id="progress-summary" class="sheet">
+      <div class="sheet-head">
+        <div>
+          <h2 class="sheet-title">Laporan Ringkasan Progres</h2>
+          <p class="sheet-sub">Generated from <code>progress-summary.sample.json</code></p>
+        </div>
+        <div class="project-tag">project-san-sample-001 · 2026-03-27</div>
+      </div>
+
+      <div class="stats">
+        <div class="stat risk"><span class="stat-value">43%</span><span class="stat-label">Overall Progress</span></div>
+        <div class="stat ok"><span class="stat-value">1</span><span class="stat-label">Completed Items</span></div>
+        <div class="stat warn"><span class="stat-value">2</span><span class="stat-label">In Progress</span></div>
+        <div class="stat"><span class="stat-value">1</span><span class="stat-label">Not Started</span></div>
+      </div>
+
+      <div class="progress-row">
+        <div class="bars">
+          <div class="bar-card">
+            <div class="bar-meta"><strong>STR-001 · Sloof Zona A</strong><span>12 / 24 m3</span></div>
+            <div class="bar-track"><div class="bar-fill" style="width:50%"></div></div>
+          </div>
+          <div class="bar-card">
+            <div class="bar-meta"><strong>ARC-014 · Pasangan Bata MRH Lt.1</strong><span>410 / 820 unit</span></div>
+            <div class="bar-track"><div class="bar-fill" style="width:50%"></div></div>
+          </div>
+          <div class="bar-card">
+            <div class="bar-meta"><strong>FIN-008 · Plester Acian Dinding Selatan</strong><span>210 / 210 m2</span></div>
+            <div class="bar-track"><div class="bar-fill" style="width:100%"></div></div>
+          </div>
+          <div class="bar-card">
+            <div class="bar-meta"><strong>MEP-003 · Instalasi Pipa Air Bersih</strong><span>0 / 65 m'</span></div>
+            <div class="bar-track"><div class="bar-fill" style="width:0%"></div></div>
+          </div>
+        </div>
+
+        <div class="mini-grid">
+          <div class="mini-card">
+            <h3>How This Reads</h3>
+            <p>A quick operational summary: what is done, what is moving, and which BoQ packages still have not started.</p>
+          </div>
+          <div class="mini-card">
+            <h3>What You'd Check</h3>
+            <p>Whether major structural items like sloof are moving fast enough, and whether downstream trades are blocked by low field progress.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="material-balance" class="sheet">
+      <div class="sheet-head">
+        <div>
+          <h2 class="sheet-title">Laporan Material Balance</h2>
+          <p class="sheet-sub">Generated from <code>material-balance.sample.json</code></p>
+        </div>
+        <div class="project-tag">4 materials · 1 over-received · 1 under-received</div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Material</th>
+            <th>Planned</th>
+            <th>Received</th>
+            <th>Installed</th>
+            <th>On Site</th>
+            <th>Unit</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Bata MRH</strong><br><span class="note">mat-bata-mrh</span></td>
+            <td>820</td>
+            <td>780</td>
+            <td>410</td>
+            <td>370</td>
+            <td>unit</td>
+          </tr>
+          <tr>
+            <td><strong>Besi Ulir D13</strong><br><span class="note">mat-besi-d13</span></td>
+            <td>1240</td>
+            <td>1300</td>
+            <td>740</td>
+            <td>560</td>
+            <td>kg</td>
+          </tr>
+          <tr>
+            <td><strong>Besi Begel D8</strong><br><span class="note">mat-begel-d8</span></td>
+            <td>480</td>
+            <td>320</td>
+            <td>240</td>
+            <td>80</td>
+            <td>kg</td>
+          </tr>
+          <tr>
+            <td><strong>Semen PCC</strong><br><span class="note">mat-semen-pcc</span></td>
+            <td>260</td>
+            <td>260</td>
+            <td>180</td>
+            <td>80</td>
+            <td>zak</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="receipt-log" class="sheet">
+      <div class="sheet-head">
+        <div>
+          <h2 class="sheet-title">Log Penerimaan Material</h2>
+          <p class="sheet-sub">Generated from <code>receipt-log.sample.json</code></p>
+        </div>
+        <div class="project-tag">3 POs · 1 fully received</div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Supplier</th>
+            <th>Material</th>
+            <th>Ordered</th>
+            <th>Received</th>
+            <th>Receipts</th>
+            <th>Status</th>
+            <th>Last Receipt</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>PT Baja Mandiri</td>
+            <td>Besi Ulir D13</td>
+            <td>1240 kg</td>
+            <td>1300 kg</td>
+            <td>3</td>
+            <td><span class="badge risk">Partial Received</span></td>
+            <td>2026-03-26</td>
+          </tr>
+          <tr>
+            <td>CV Makmur Bata</td>
+            <td>Bata MRH</td>
+            <td>820 unit</td>
+            <td>780 unit</td>
+            <td>2</td>
+            <td><span class="badge risk">Partial Received</span></td>
+            <td>2026-03-25</td>
+          </tr>
+          <tr>
+            <td>PT Semen Nusantara</td>
+            <td>Semen PCC</td>
+            <td>260 zak</td>
+            <td>260 zak</td>
+            <td>1</td>
+            <td><span class="badge ok">Fully Received</span></td>
+            <td>2026-03-20</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="punch-list" class="sheet">
+      <div class="sheet-head">
+        <div>
+          <h2 class="sheet-title">Punch List — Daftar Cacat</h2>
+          <p class="sheet-sub">Generated from <code>punch-list.sample.json</code></p>
+        </div>
+        <div class="project-tag">Handover Eligible: No</div>
+      </div>
+
+      <div class="legend">
+        <span class="badge bad">1 Critical Open</span>
+        <span class="badge risk">1 Major Open</span>
+        <span class="badge">0 Minor Open</span>
+      </div>
+
+      <div class="mini-grid">
+        <div class="mini-card">
+          <h3>FIN-008 — Plester Acian</h3>
+          <p>Lt.1 Dinding Timur</p>
+          <p>Retak rambut 1.5m di area sambungan</p>
+          <p><strong>Severity:</strong> Major</p>
+          <p><strong>Status:</strong> IN_REPAIR</p>
+          <p><strong>PIC:</strong> Subkon Plester</p>
+          <p><strong>Target:</strong> 2026-03-29</p>
+        </div>
+        <div class="mini-card">
+          <h3>MEP-003 — Pipa Air Bersih</h3>
+          <p>Shaft Belakang</p>
+          <p>Kebocoran sambungan pipa utama</p>
+          <p><strong>Severity:</strong> Critical</p>
+          <p><strong>Status:</strong> OPEN</p>
+          <p><strong>PIC:</strong> Subkon MEP</p>
+          <p><strong>Target:</strong> 2026-03-28</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="vo-summary" class="sheet">
+      <div class="sheet-head">
+        <div>
+          <h2 class="sheet-title">Ringkasan VO &amp; Rework</h2>
+          <p class="sheet-sub">Generated from <code>vo-summary.sample.json</code></p>
+        </div>
+        <div class="project-tag">3 VOs · 2 reworks · Rp18.5m est cost</div>
+      </div>
+
+      <div class="stats">
+        <div class="stat risk"><span class="stat-value">3</span><span class="stat-label">VO Count</span></div>
+        <div class="stat bad"><span class="stat-value">2</span><span class="stat-label">Rework Count</span></div>
+        <div class="stat warn"><span class="stat-value">Rp18.5m</span><span class="stat-label">Est. VO Cost</span></div>
+      </div>
+
+      <div class="mini-grid">
+        <div class="mini-card">
+          <h3>VO Causes</h3>
+          <p>client_request: 2</p>
+          <p>design_revision: 1</p>
+          <p>site_execution: 1</p>
+          <p>contractor_rework: 1</p>
+        </div>
+        <div class="mini-card">
+          <h3>Open Review Signals</h3>
+          <p>One VO is still awaiting review, and another has been reviewed but not yet approved.</p>
+        </div>
+      </div>
+
+      <table style="margin-top:16px">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Description</th>
+            <th>Cause</th>
+            <th>Cost Impact</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>VO</td>
+            <td>Perubahan pola lantai foyer menjadi diagonal</td>
+            <td>client_request</td>
+            <td>Rp6,500,000</td>
+            <td><span class="badge risk">Awaiting</span></td>
+          </tr>
+          <tr>
+            <td>VO</td>
+            <td>Penambahan outlet di pantry</td>
+            <td>design_revision</td>
+            <td>Rp2,000,000</td>
+            <td><span class="badge risk">Reviewed</span></td>
+          </tr>
+          <tr>
+            <td>VO</td>
+            <td>Ubah tipe handrail tangga</td>
+            <td>client_request</td>
+            <td>Rp10,000,000</td>
+            <td><span class="badge ok">Approved</span></td>
+          </tr>
+          <tr>
+            <td>Rework</td>
+            <td>Bongkar ulang acian area foyer</td>
+            <td>site_execution</td>
+            <td>Rp1,200,000</td>
+            <td><span class="badge bad">Rework</span></td>
+          </tr>
+          <tr>
+            <td>Rework</td>
+            <td>Perapihan ulang sambungan plafond</td>
+            <td>contractor_rework</td>
+            <td>Rp600,000</td>
+            <td><span class="badge bad">Rework</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="schedule-variance" class="sheet">
+      <div class="sheet-head">
+        <div>
+          <h2 class="sheet-title">Laporan Varians Jadwal</h2>
+          <p class="sheet-sub">Generated from <code>schedule-variance.sample.json</code></p>
+        </div>
+        <div class="project-tag">4 milestones · 2 at risk · 1 delayed</div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Milestone</th>
+            <th>Planned</th>
+            <th>Revised</th>
+            <th>Status</th>
+            <th>Days Remaining</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Struktur Lantai 1 Selesai</td>
+            <td>2026-04-02</td>
+            <td>-</td>
+            <td><span class="badge risk">AT RISK</span></td>
+            <td>6</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td>Pasangan Bata Lt.1 Selesai</td>
+            <td>2026-04-12</td>
+            <td>2026-04-18</td>
+            <td><span class="badge risk">AT RISK</span></td>
+            <td>22</td>
+            <td>Menunggu tambahan supply bata MRH</td>
+          </tr>
+          <tr>
+            <td>Instalasi MEP Rough-In</td>
+            <td>2026-03-24</td>
+            <td>-</td>
+            <td><span class="badge bad">Delayed</span></td>
+            <td>-3</td>
+            <td>-</td>
+          </tr>
+          <tr>
+            <td>Acian Zona Timur</td>
+            <td>2026-04-20</td>
+            <td>-</td>
+            <td><span class="badge ok">On Track</span></td>
+            <td>24</td>
+            <td>-</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="weekly-digest" class="sheet">
+      <div class="sheet-head">
+        <div>
+          <h2 class="sheet-title">Rangkuman Mingguan</h2>
+          <p class="sheet-sub">Generated from <code>weekly-digest.sample.json</code></p>
+        </div>
+        <div class="project-tag">2026-03-20 to 2026-03-27</div>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><span class="stat-value">28</span><span class="stat-label">Total Activities</span></div>
+        <div class="stat risk"><span class="stat-value">43%</span><span class="stat-label">Overall Progress</span></div>
+        <div class="stat warn"><span class="stat-value">7</span><span class="stat-label">Warning Flags</span></div>
+        <div class="stat bad"><span class="stat-value">1</span><span class="stat-label">Critical Flags</span></div>
+      </div>
+
+      <div class="mini-grid">
+        <div class="mini-card">
+          <h3>Activity Mix</h3>
+          <p>Permintaan: 6</p>
+          <p>Terima: 5</p>
+          <p>Progres: 9</p>
+          <p>Defect: 3</p>
+          <p>VO: 3</p>
+          <p>Rework: 2</p>
+        </div>
+        <div class="mini-card">
+          <h3>Flag Mix</h3>
+          <p>OK: 14</p>
+          <p>INFO: 5</p>
+          <p>WARNING: 7</p>
+          <p>HIGH: 1</p>
+          <p>CRITICAL: 1</p>
+        </div>
+      </div>
+    </section>
+
+    <p class="footer">
+      Source JSON lives in the same folder. This HTML is a presentation mockup only and is not yet connected to the in-app Export Center.
+    </p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,27 @@
+{
+  "type": "weekly_digest",
+  "title": "Rangkuman Mingguan",
+  "generated_at": "2026-03-27T15:30:00.000Z",
+  "project_id": "project-san-sample-001",
+  "data": {
+    "week_start": "2026-03-20",
+    "week_end": "2026-03-27",
+    "total_activities": 28,
+    "by_type": {
+      "permintaan": 6,
+      "terima": 5,
+      "progres": 9,
+      "defect": 3,
+      "vo": 3,
+      "rework": 2
+    },
+    "by_flag": {
+      "OK": 14,
+      "INFO": 5,
+      "WARNING": 7,
+      "HIGH": 1,
+      "CRITICAL": 1
+    },
+    "overall_progress": 43
+  }
+}

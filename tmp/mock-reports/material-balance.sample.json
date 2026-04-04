@@ -1,0 +1,49 @@
+{
+  "type": "material_balance",
+  "title": "Laporan Material Balance",
+  "generated_at": "2026-03-27T15:30:00.000Z",
+  "project_id": "project-san-sample-001",
+  "data": {
+    "total_materials": 4,
+    "over_received": 1,
+    "under_received": 1,
+    "balances": [
+      {
+        "material_name": "Bata MRH",
+        "material_id": "mat-bata-mrh",
+        "planned": 820,
+        "received": 780,
+        "installed": 410,
+        "on_site": 370,
+        "unit": "unit"
+      },
+      {
+        "material_name": "Besi Ulir D13",
+        "material_id": "mat-besi-d13",
+        "planned": 1240,
+        "received": 1300,
+        "installed": 740,
+        "on_site": 560,
+        "unit": "kg"
+      },
+      {
+        "material_name": "Besi Begel D8",
+        "material_id": "mat-begel-d8",
+        "planned": 480,
+        "received": 320,
+        "installed": 240,
+        "on_site": 80,
+        "unit": "kg"
+      },
+      {
+        "material_name": "Semen PCC",
+        "material_id": "mat-semen-pcc",
+        "planned": 260,
+        "received": 260,
+        "installed": 180,
+        "on_site": 80,
+        "unit": "zak"
+      }
+    ]
+  }
+}

@@ -80,8 +80,14 @@ export async function approveOpname(
   return { error: error?.message };
 }
 
-export async function markOpnamePaid(headerId: string): Promise<{ error?: string }> {
-  const { error } = await supabase.rpc('mark_opname_paid', { p_header_id: headerId });
+export async function markOpnamePaid(
+  headerId: string,
+  paymentReference?: string,
+): Promise<{ error?: string }> {
+  const { error } = await supabase.rpc('mark_opname_paid', {
+    p_header_id: headerId,
+    p_payment_reference: paymentReference ?? null,
+  });
   return { error: error?.message };
 }
 
@@ -101,17 +107,86 @@ export async function getOpnameProgressFlags(
 }
 
 // ─── Gate 5: Labor Payment Summary ─────────────────────────────────────────
+// Built from mandor_contracts + opname_headers + mandor_kasbon
+// (replaces the deleted v_labor_payment_summary view)
 
 export async function getLaborPaymentSummary(
   projectId: string,
 ): Promise<LaborPaymentSummary[]> {
-  const { data } = await supabase
-    .from('v_labor_payment_summary')
-    .select('*')
-    .eq('project_id', projectId)
-    .order('mandor_name');
+  const [contractsRes, opnameRes, kasbonRes, ratesRes] = await Promise.all([
+    supabase
+      .from('mandor_contracts')
+      .select('id, mandor_name, trade_categories')
+      .eq('project_id', projectId)
+      .eq('is_active', true)
+      .order('mandor_name'),
+    supabase
+      .from('opname_headers')
+      .select('contract_id, week_number, opname_date, status, gross_total, retention_amount, net_this_week, kasbon')
+      .eq('project_id', projectId)
+      .in('status', ['APPROVED', 'PAID']),
+    supabase
+      .from('mandor_kasbon')
+      .select('contract_id, amount')
+      .eq('project_id', projectId)
+      .in('status', ['REQUESTED', 'APPROVED']),
+    supabase
+      .from('mandor_contract_rates')
+      .select('contract_id, contracted_rate, boq_labor_rate')
+      .in('contract_id',
+        (await supabase.from('mandor_contracts').select('id').eq('project_id', projectId).eq('is_active', true))
+          .data?.map(c => c.id) ?? [],
+      ),
+  ]);
 
-  return (data ?? []) as LaborPaymentSummary[];
+  const contracts = contractsRes.data ?? [];
+  const opnames = opnameRes.data ?? [];
+  const kasbons = kasbonRes.data ?? [];
+  const rates = ratesRes.data ?? [];
+
+  // Group rates by contract for budget calc
+  const ratesByContract = new Map<string, { contracted: number; boq: number }>();
+  for (const r of rates) {
+    const prev = ratesByContract.get(r.contract_id) ?? { contracted: 0, boq: 0 };
+    prev.contracted += Number(r.contracted_rate ?? 0);
+    prev.boq += Number(r.boq_labor_rate ?? 0);
+    ratesByContract.set(r.contract_id, prev);
+  }
+
+  return contracts.map(c => {
+    const contractOpnames = opnames.filter(o => o.contract_id === c.id);
+    const contractKasbons = kasbons.filter(k => k.contract_id === c.id);
+
+    const totalGross = contractOpnames.reduce((s, o) => s + Number(o.gross_total ?? 0), 0);
+    const totalRetention = contractOpnames.reduce((s, o) => s + Number(o.retention_amount ?? 0), 0);
+    const totalPaid = contractOpnames.reduce((s, o) => s + Number(o.net_this_week ?? 0), 0);
+    const totalKasbon = contractKasbons.reduce((s, k) => s + Number(k.amount ?? 0), 0);
+    const budgets = ratesByContract.get(c.id) ?? { contracted: 0, boq: 0 };
+
+    const latest = contractOpnames
+      .sort((a, b) => (b.opname_date ?? '').localeCompare(a.opname_date ?? ''))
+      [0];
+    const variancePct = budgets.boq > 0
+      ? Math.round(((budgets.contracted - budgets.boq) / budgets.boq) * 1000) / 10
+      : 0;
+
+    return {
+      project_id: projectId,
+      contract_id: c.id,
+      mandor_name: c.mandor_name,
+      trade_categories: c.trade_categories ?? [],
+      approved_opname_count: contractOpnames.length,
+      total_gross: totalGross,
+      total_retention: totalRetention,
+      total_paid: totalPaid,
+      total_kasbon: totalKasbon,
+      total_boq_labor_budget: budgets.boq,
+      total_contracted_budget: budgets.contracted,
+      contract_vs_boq_variance_pct: variancePct,
+      latest_approved_week: latest?.week_number ?? null,
+      latest_approved_date: latest?.opname_date ?? null,
+    } as LaborPaymentSummary;
+  });
 }
 
 // ─── Refresh Prior Paid ────────────────────────────────────────────────────

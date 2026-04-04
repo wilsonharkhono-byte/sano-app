@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Modal, useWindowDimensions } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,12 @@ import Badge from '../../workflows/components/Badge';
 import DateSelectField, { formatDisplayDate } from '../../workflows/components/DateSelectField';
 import { useProject } from '../../workflows/hooks/useProject';
 import { useToast } from '../../workflows/components/Toast';
+import { getSiteChangeSummary, type SiteChangeSummary } from '../../tools/siteChanges';
+import { getLaborPaymentSummary, type LaborPaymentSummary } from '../../tools/opnameRpc';
+import { getAttendanceByProject } from '../../tools/attendance';
+import { getKasbonAging } from '../../tools/kasbon';
+import { formatRp } from '../../tools/opname';
+import type { MandorAttendance, KasbonAging } from '../../tools/types';
 import { generateReport, recordReportExport, type ReportPayload, type ReportType, type ReportFilters } from '../../tools/reports';
 import { exportReportToExcel } from '../../tools/excel';
 import { exportReportToPdf } from '../../tools/pdf';
@@ -33,14 +39,29 @@ export default function OfficeReportsScreen() {
   const [filterModalVisible, setFilterModalVisible] = useState(false);
   const [filterFrom, setFilterFrom] = useState('');
   const [filterTo, setFilterTo] = useState('');
+  const [changeSummary, setChangeSummary] = useState<SiteChangeSummary | null>(null);
+  const [laborSummary, setLaborSummary] = useState<LaborPaymentSummary[]>([]);
+  const [attendance, setAttendance] = useState<MandorAttendance[]>([]);
+  const [kasbonAging, setKasbonAging] = useState<KasbonAging[]>([]);
+
+  useEffect(() => {
+    if (!project) return;
+    getSiteChangeSummary(project.id).then(setChangeSummary);
+  }, [project]);
+
+  useEffect(() => {
+    if (!project || profile?.role !== 'principal') return;
+    getLaborPaymentSummary(project.id).then(setLaborSummary);
+    getAttendanceByProject(project.id).then(setAttendance);
+    getKasbonAging(project.id).then(setKasbonAging);
+  }, [project, profile?.role]);
 
   const overallProgress = boqItems.length > 0
     ? Math.round(boqItems.reduce((s, b) => s + b.progress, 0) / boqItems.length)
     : 0;
-  const openDefects = defects.filter(d => !['VERIFIED', 'ACCEPTED_BY_PRINCIPAL'].includes(d.status)).length;
-  const critOpen = defects.filter(d => d.severity === 'Critical' && !['VERIFIED', 'ACCEPTED_BY_PRINCIPAL'].includes(d.status)).length;
-  const majorOpen = defects.filter(d => d.severity === 'Major' && ['OPEN', 'VALIDATED', 'IN_REPAIR'].includes(d.status)).length;
-  const handoverEligible = critOpen === 0 && majorOpen === 0;
+  const pendingBerat = changeSummary?.pending_berat ?? 0;
+  const openRework = changeSummary?.open_rework ?? 0;
+  const handoverEligible = pendingBerat === 0 && openRework === 0;
   const openPOs = purchaseOrders.filter(po => po.status === 'OPEN' || po.status === 'PARTIAL_RECEIVED').length;
   const atRisk = milestones.filter(m => m.status === 'AT_RISK' || m.status === 'DELAYED').length;
   const isPrincipal = profile?.role === 'principal';
@@ -82,52 +103,242 @@ export default function OfficeReportsScreen() {
               {handoverEligible ? 'ELIGIBLE — Siap Serah Terima' : 'BELUM ELIGIBLE'}
             </Text>
             <Text style={styles.hint}>
-              {handoverEligible ? 'Semua Critical dan Major terselesaikan.' : `${critOpen} Critical, ${majorOpen} Major masih open.`}
+              {handoverEligible ? 'Semua catatan perubahan berat dan rework terselesaikan.' : `${pendingBerat} berat, ${openRework} rework masih open.`}
             </Text>
           </View>
         </Card>
 
-        {/* Defect breakdown */}
-        <Card title="Ringkasan Cacat">
+        {/* Catatan Perubahan summary */}
+        <Card title="Ringkasan Catatan Perubahan">
           <View style={styles.metricRow}>
-            <Text style={styles.metricLabel}>Total Open</Text>
-            <Text style={[styles.metricValue, { color: COLORS.critical }]}>{openDefects}</Text>
+            <Text style={styles.metricLabel}>Total Catatan</Text>
+            <Text style={styles.metricValue}>{changeSummary?.total_count ?? 0}</Text>
           </View>
           <View style={styles.metricRow}>
-            <Text style={styles.metricLabel}>Critical Open</Text>
-            <Text style={[styles.metricValue, { color: COLORS.critical }]}>{critOpen}</Text>
+            <Text style={styles.metricLabel}>Pending Review</Text>
+            <Text style={[styles.metricValue, { color: COLORS.warning }]}>{changeSummary?.pending_count ?? 0}</Text>
           </View>
           <View style={styles.metricRow}>
-            <Text style={styles.metricLabel}>Major Open</Text>
-            <Text style={[styles.metricValue, { color: COLORS.warning }]}>{majorOpen}</Text>
+            <Text style={styles.metricLabel}>Impact Berat</Text>
+            <Text style={[styles.metricValue, { color: COLORS.critical }]}>{changeSummary?.pending_berat ?? 0}</Text>
+          </View>
+          <View style={styles.metricRow}>
+            <Text style={styles.metricLabel}>Rework Belum Selesai</Text>
+            <Text style={[styles.metricValue, { color: COLORS.warning }]}>{changeSummary?.open_rework ?? 0}</Text>
           </View>
         </Card>
 
-        <Card title="Mandor & Opname" subtitle="Workflow borongan dan opname mingguan untuk estimator, admin, dan prinsipal.">
-          <View style={styles.workflowGrid}>
-            <TouchableOpacity style={styles.workflowBtn} onPress={() => navigation.navigate('Mandor')}>
-              <View style={[styles.workflowIcon, { backgroundColor: `${COLORS.info}15` }]}>
-                <Ionicons name="people" size={20} color={COLORS.info} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.workflowLabel}>Setup Mandor</Text>
-                <Text style={styles.workflowHint}>Kontrak, trade, dan rate borongan</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={COLORS.textSec} />
-            </TouchableOpacity>
+        {isPrincipal ? (
+          <>
+            {/* ── Payment Summary ──────────────────────────────────────── */}
+            <Card title="Ringkasan Pembayaran" subtitle={`${laborSummary.length} mandor aktif`}>
+              {(() => {
+                const totGross = laborSummary.reduce((s, m) => s + m.total_gross, 0);
+                const totRetention = laborSummary.reduce((s, m) => s + m.total_retention, 0);
+                const totPaid = laborSummary.reduce((s, m) => s + m.total_paid, 0);
+                const totKasbon = laborSummary.reduce((s, m) => s + m.total_kasbon, 0);
+                const totBudget = laborSummary.reduce((s, m) => s + m.total_contracted_budget, 0);
+                const budgetUsed = totBudget > 0 ? Math.round((totGross / totBudget) * 100) : 0;
+                return (
+                  <>
+                    <View style={styles.kpiRow}>
+                      <View style={styles.kpiTile}>
+                        <Text style={[styles.kpiValue, { color: COLORS.accent }]}>{formatRp(totGross)}</Text>
+                        <Text style={styles.kpiLabel}>Total Gross</Text>
+                      </View>
+                      <View style={styles.kpiTile}>
+                        <Text style={[styles.kpiValue, { color: COLORS.ok }]}>{formatRp(totPaid)}</Text>
+                        <Text style={styles.kpiLabel}>Total Dibayar</Text>
+                      </View>
+                    </View>
+                    <View style={styles.metricRow}>
+                      <Text style={styles.metricLabel}>Retensi Ditahan</Text>
+                      <Text style={[styles.metricValue, { color: COLORS.warning }]}>{formatRp(totRetention)}</Text>
+                    </View>
+                    <View style={styles.metricRow}>
+                      <Text style={styles.metricLabel}>Kasbon Outstanding</Text>
+                      <Text style={[styles.metricValue, { color: COLORS.critical }]}>{formatRp(totKasbon)}</Text>
+                    </View>
+                    <View style={styles.metricRow}>
+                      <Text style={styles.metricLabel}>Budget Terpakai</Text>
+                      <Text style={[styles.metricValue, { color: budgetUsed > 90 ? COLORS.critical : budgetUsed > 70 ? COLORS.warning : COLORS.ok }]}>{budgetUsed}%</Text>
+                    </View>
+                    {laborSummary.length > 0 && (
+                      <>
+                        <Text style={styles.subSectionHead}>Per Mandor</Text>
+                        {laborSummary.map(m => {
+                          const pct = m.total_contracted_budget > 0
+                            ? Math.round((m.total_gross / m.total_contracted_budget) * 100)
+                            : 0;
+                          return (
+                            <View key={m.contract_id} style={styles.mandorRow}>
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.mandorName}>{m.mandor_name}</Text>
+                                <Text style={styles.mandorMeta}>
+                                  {(m.trade_categories ?? []).join(', ')} · {m.approved_opname_count} opname
+                                </Text>
+                              </View>
+                              <View style={{ alignItems: 'flex-end' }}>
+                                <Text style={styles.mandorAmount}>{formatRp(m.total_paid)}</Text>
+                                <Text style={[styles.mandorPct, { color: pct > 90 ? COLORS.critical : pct > 70 ? COLORS.warning : COLORS.textSec }]}>{pct}% budget</Text>
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </>
+                    )}
+                  </>
+                );
+              })()}
+            </Card>
 
-            <TouchableOpacity style={styles.workflowBtn} onPress={() => navigation.navigate('Opname')}>
-              <View style={[styles.workflowIcon, { backgroundColor: `${COLORS.accent}20` }]}>
-                <Ionicons name="receipt" size={20} color={COLORS.accentDark} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.workflowLabel}>Opname Mingguan</Text>
-                <Text style={styles.workflowHint}>Create, verify, approve, dan export opname</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color={COLORS.textSec} />
-            </TouchableOpacity>
-          </View>
-        </Card>
+            {/* ── Attendance Summary ───────────────────────────────────── */}
+            <Card title="Ringkasan Absensi (HOK)">
+              {(() => {
+                const totalRecords = attendance.length;
+                const totalHOK = attendance.reduce((s, a) => s + a.worker_count, 0);
+                const totalAmount = attendance.reduce((s, a) => s + (a.line_total ?? a.worker_count * a.daily_rate), 0);
+                const draftCount = attendance.filter(a => a.status === 'DRAFT').length;
+                const verifiedCount = attendance.filter(a => a.status === 'VERIFIED').length;
+                const settledCount = attendance.filter(a => a.status === 'SETTLED').length;
+                return (
+                  <>
+                    <View style={styles.kpiRow}>
+                      <View style={styles.kpiTile}>
+                        <Text style={[styles.kpiValue, { color: COLORS.accent }]}>{totalHOK.toLocaleString('id-ID')}</Text>
+                        <Text style={styles.kpiLabel}>Total HOK</Text>
+                      </View>
+                      <View style={styles.kpiTile}>
+                        <Text style={[styles.kpiValue, { color: COLORS.info }]}>{formatRp(totalAmount)}</Text>
+                        <Text style={styles.kpiLabel}>Total Biaya Harian</Text>
+                      </View>
+                    </View>
+                    <View style={styles.metricRow}>
+                      <Text style={styles.metricLabel}>Total Catatan</Text>
+                      <Text style={styles.metricValue}>{totalRecords}</Text>
+                    </View>
+                    <View style={styles.statusRow}>
+                      <View style={[styles.statusChip, { backgroundColor: 'rgba(158,158,158,0.12)' }]}>
+                        <Text style={[styles.statusChipText, { color: COLORS.textSec }]}>Draft {draftCount}</Text>
+                      </View>
+                      <View style={[styles.statusChip, { backgroundColor: `${COLORS.info}15` }]}>
+                        <Text style={[styles.statusChipText, { color: COLORS.info }]}>Verified {verifiedCount}</Text>
+                      </View>
+                      <View style={[styles.statusChip, { backgroundColor: `${COLORS.ok}15` }]}>
+                        <Text style={[styles.statusChipText, { color: COLORS.ok }]}>Settled {settledCount}</Text>
+                      </View>
+                    </View>
+                    {verifiedCount > 0 && (
+                      <Text style={[styles.hint, { color: COLORS.warning }]}>
+                        {verifiedCount} absensi sudah diverifikasi tapi belum masuk opname.
+                      </Text>
+                    )}
+                  </>
+                );
+              })()}
+            </Card>
+
+            {/* ── Opname Summary ───────────────────────────────────────── */}
+            <Card title="Ringkasan Opname Mingguan">
+              {(() => {
+                const totalOpname = laborSummary.reduce((s, m) => s + m.approved_opname_count, 0);
+                const latestDate = laborSummary
+                  .map(m => m.latest_approved_date)
+                  .filter(Boolean)
+                  .sort()
+                  .reverse()[0];
+                const avgVariance = laborSummary.length > 0
+                  ? Math.round(laborSummary.reduce((s, m) => s + (m.contract_vs_boq_variance_pct ?? 0), 0) / laborSummary.length * 10) / 10
+                  : 0;
+                return (
+                  <>
+                    <View style={styles.kpiRow}>
+                      <View style={styles.kpiTile}>
+                        <Text style={[styles.kpiValue, { color: COLORS.accent }]}>{totalOpname}</Text>
+                        <Text style={styles.kpiLabel}>Opname Disetujui</Text>
+                      </View>
+                      <View style={styles.kpiTile}>
+                        <Text style={[styles.kpiValue, { color: Math.abs(avgVariance) > 10 ? COLORS.critical : Math.abs(avgVariance) > 5 ? COLORS.warning : COLORS.ok }]}>
+                          {avgVariance > 0 ? '+' : ''}{avgVariance}%
+                        </Text>
+                        <Text style={styles.kpiLabel}>Avg Rate Variance</Text>
+                      </View>
+                    </View>
+                    {latestDate && (
+                      <View style={styles.metricRow}>
+                        <Text style={styles.metricLabel}>Opname Terakhir</Text>
+                        <Text style={styles.metricValue}>{new Date(latestDate).toLocaleDateString('id-ID')}</Text>
+                      </View>
+                    )}
+                    {laborSummary.map(m => (
+                      <View key={m.contract_id} style={styles.mandorRow}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.mandorName}>{m.mandor_name}</Text>
+                          <Text style={styles.mandorMeta}>
+                            Minggu ke-{m.latest_approved_week ?? '—'} · {(m.trade_categories ?? []).join(', ')}
+                          </Text>
+                        </View>
+                        <View style={{ alignItems: 'flex-end' }}>
+                          <Text style={styles.mandorAmount}>{m.approved_opname_count}x</Text>
+                          <Text style={[styles.mandorPct, {
+                            color: Math.abs(m.contract_vs_boq_variance_pct ?? 0) > 10 ? COLORS.critical
+                              : Math.abs(m.contract_vs_boq_variance_pct ?? 0) > 5 ? COLORS.warning : COLORS.textSec
+                          }]}>
+                            {(m.contract_vs_boq_variance_pct ?? 0) > 0 ? '+' : ''}{Math.round(m.contract_vs_boq_variance_pct ?? 0)}% var
+                          </Text>
+                        </View>
+                      </View>
+                    ))}
+                  </>
+                );
+              })()}
+            </Card>
+
+            {/* ── Kasbon Aging ─────────────────────────────────────────── */}
+            {kasbonAging.length > 0 && (
+              <Card title={`${kasbonAging.length} Kasbon Belum Terpotong`} borderColor={COLORS.warning}>
+                {kasbonAging.slice(0, 5).map(k => (
+                  <View key={k.id} style={styles.mandorRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.mandorName}>{k.mandor_name}</Text>
+                      <Text style={styles.mandorMeta}>{k.age_days} hari · {k.opname_cycles_since} siklus opname</Text>
+                    </View>
+                    <Text style={[styles.mandorAmount, { color: COLORS.warning }]}>{formatRp(k.amount)}</Text>
+                  </View>
+                ))}
+                {kasbonAging.length > 5 && (
+                  <Text style={[styles.hint, { marginTop: SPACE.sm }]}>+{kasbonAging.length - 5} kasbon lainnya</Text>
+                )}
+              </Card>
+            )}
+          </>
+        ) : (
+          <Card title="Mandor & Opname" subtitle="Workflow borongan dan opname mingguan untuk estimator dan admin.">
+            <View style={styles.workflowGrid}>
+              <TouchableOpacity style={styles.workflowBtn} onPress={() => navigation.navigate('Mandor')}>
+                <View style={[styles.workflowIcon, { backgroundColor: `${COLORS.info}15` }]}>
+                  <Ionicons name="people" size={20} color={COLORS.info} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.workflowLabel}>Setup Mandor</Text>
+                  <Text style={styles.workflowHint}>Kontrak, trade, dan rate borongan</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={COLORS.textSec} />
+              </TouchableOpacity>
+
+              <TouchableOpacity style={styles.workflowBtn} onPress={() => navigation.navigate('Opname')}>
+                <View style={[styles.workflowIcon, { backgroundColor: `${COLORS.accent}20` }]}>
+                  <Ionicons name="receipt" size={20} color={COLORS.accentDark} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.workflowLabel}>Opname Mingguan</Text>
+                  <Text style={styles.workflowHint}>Create, verify, approve, dan export opname</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={COLORS.textSec} />
+              </TouchableOpacity>
+            </View>
+          </Card>
+        )}
 
         {/* Export center */}
         <Card
@@ -322,6 +533,83 @@ const styles = StyleSheet.create({
   },
   metricLabel: { fontSize: TYPE.base, fontFamily: FONTS.regular, color: COLORS.textSec },
   metricValue: { fontSize: TYPE.base, fontFamily: FONTS.bold, color: COLORS.text },
+  // Principal summary cards
+  kpiRow: {
+    flexDirection: 'row',
+    gap: SPACE.sm,
+    marginBottom: SPACE.sm,
+  },
+  kpiTile: {
+    flex: 1,
+    backgroundColor: COLORS.surfaceAlt,
+    borderRadius: RADIUS,
+    padding: SPACE.md,
+    alignItems: 'center',
+  },
+  kpiValue: {
+    fontSize: TYPE.base + 1,
+    fontFamily: FONTS.bold,
+    color: COLORS.text,
+  },
+  kpiLabel: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.regular,
+    color: COLORS.textSec,
+    marginTop: 2,
+  },
+  subSectionHead: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.bold,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    color: COLORS.textSec,
+    marginTop: SPACE.md,
+    marginBottom: SPACE.sm,
+  },
+  mandorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.md,
+    paddingVertical: SPACE.sm + 2,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.borderSub,
+  },
+  mandorName: {
+    fontSize: TYPE.sm,
+    fontFamily: FONTS.semibold,
+    color: COLORS.text,
+  },
+  mandorMeta: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.regular,
+    color: COLORS.textSec,
+    marginTop: 1,
+  },
+  mandorAmount: {
+    fontSize: TYPE.sm,
+    fontFamily: FONTS.bold,
+    color: COLORS.text,
+  },
+  mandorPct: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.medium,
+    marginTop: 1,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    gap: SPACE.sm,
+    marginTop: SPACE.sm,
+    marginBottom: SPACE.xs,
+  },
+  statusChip: {
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.xs + 1,
+    borderRadius: 999,
+  },
+  statusChipText: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.semibold,
+  },
   workflowGrid: { gap: SPACE.sm },
   workflowBtn: {
     flexDirection: 'row',

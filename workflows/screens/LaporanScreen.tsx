@@ -325,7 +325,7 @@ export default function LaporanScreen() {
             <View style={styles.statRow}>
               <StatTile value={`${overallProgress}%`} label="Progress" color={COLORS.accent} />
               <StatTile value={completedItems} label="Selesai" color={COLORS.ok} />
-              <StatTile value={openDefects} label="Cacat Open" color={COLORS.critical} />
+              <StatTile value={openDefects} label="Perubahan Open" color={COLORS.critical} />
             </View>
 
             {/* Material status */}

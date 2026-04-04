@@ -688,19 +688,82 @@ export interface GateResult {
   extra?: GateResult;
 }
 
-// ─── Deprecated (removed from navigation) ─────────────────────────────
+// ─── Kasbon Ledger ───────────────────────────────────────────────────
 
-/** @deprecated Attendance is out of scope per SAN brief */
-export interface Attendance {
+export interface Kasbon {
   id: string;
   project_id: string;
-  recorded_by: string;
-  date: string;
-  worker_count: number;
-  start_time: string;
-  end_time: string;
-  notes: string | null;
+  contract_id: string;
+  amount: number;
+  kasbon_date: string;
+  reason: string | null;
+  status: 'REQUESTED' | 'APPROVED' | 'SETTLED';
+  requested_by: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  settled_in_opname_id: string | null;
+  settled_at: string | null;
+  created_at: string;
 }
+
+export interface KasbonAging {
+  id: string;
+  project_id: string;
+  contract_id: string;
+  mandor_name: string;
+  amount: number;
+  kasbon_date: string;
+  reason: string | null;
+  status: 'REQUESTED' | 'APPROVED';
+  requested_by: string;
+  approved_by: string | null;
+  created_at: string;
+  age_days: number;
+  opname_cycles_since: number;
+}
+
+// ─── Attendance / HOK ────────────────────────────────────────────────
+
+export type PaymentMode = 'borongan' | 'harian' | 'campuran';
+
+export interface MandorAttendance {
+  id: string;
+  project_id: string;
+  contract_id: string;
+  attendance_date: string;
+  worker_count: number;
+  daily_rate: number;
+  line_total: number;
+  work_description: string | null;
+  recorded_by: string;
+  verified_by: string | null;
+  verified_at: string | null;
+  status: 'DRAFT' | 'VERIFIED' | 'SETTLED';
+  settled_in_opname_id: string | null;
+  settled_at: string | null;
+  created_at: string;
+}
+
+export interface AttendanceWeeklySummary {
+  contract_id: string;
+  mandor_name: string;
+  project_id: string;
+  week_start: string;
+  work_days: number;
+  total_hok: number;
+  total_amount: number;
+  draft_count: number;
+  verified_count: number;
+  settled_count: number;
+}
+
+export interface AttendanceAnomaly {
+  is_anomaly: boolean;
+  avg_7day: number;
+  threshold: number;
+}
+
+// ─── Deprecated ─────────────────────────────────────────────────────
 
 /** @deprecated Use VOEntry with is_micro=true instead */
 export interface MicroVo {

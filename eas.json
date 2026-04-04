@@ -1,0 +1,29 @@
+{
+  "cli": {
+    "version": ">= 18.4.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://ufntlqvacjhmddwltcxf.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVmbnRscXZhY2pobWRkd2x0Y3hmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0MTk5NzgsImV4cCI6MjA4OTk5NTk3OH0.hyy3asKwqIfaOCpKgt69NcZ7RSu-GkF3AQ-xpasRm2g"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://ufntlqvacjhmddwltcxf.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVmbnRscXZhY2pobWRkd2x0Y3hmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ0MTk5NzgsImV4cCI6MjA4OTk5NTk3OH0.hyy3asKwqIfaOCpKgt69NcZ7RSu-GkF3AQ-xpasRm2g"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

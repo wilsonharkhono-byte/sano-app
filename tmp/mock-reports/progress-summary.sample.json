@@ -1,0 +1,47 @@
+{
+  "type": "progress_summary",
+  "title": "Laporan Ringkasan Progres",
+  "generated_at": "2026-03-27T15:30:00.000Z",
+  "project_id": "project-san-sample-001",
+  "data": {
+    "overall_progress": 43,
+    "total_items": 4,
+    "completed_items": 1,
+    "in_progress_items": 2,
+    "not_started_items": 1,
+    "items": [
+      {
+        "code": "STR-001",
+        "label": "Sloof Zona A",
+        "planned": 24,
+        "installed": 12,
+        "unit": "m3",
+        "progress": 50
+      },
+      {
+        "code": "ARC-014",
+        "label": "Pasangan Bata MRH Lt.1",
+        "planned": 820,
+        "installed": 410,
+        "unit": "unit",
+        "progress": 50
+      },
+      {
+        "code": "FIN-008",
+        "label": "Plester Acian Dinding Selatan",
+        "planned": 210,
+        "installed": 210,
+        "unit": "m2",
+        "progress": 100
+      },
+      {
+        "code": "MEP-003",
+        "label": "Instalasi Pipa Air Bersih",
+        "planned": 65,
+        "installed": 0,
+        "unit": "m'",
+        "progress": 0
+      }
+    ]
+  }
+}

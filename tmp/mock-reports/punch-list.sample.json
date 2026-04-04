@@ -1,0 +1,36 @@
+{
+  "type": "punch_list",
+  "title": "Punch List — Daftar Cacat",
+  "generated_at": "2026-03-27T15:30:00.000Z",
+  "project_id": "project-san-sample-001",
+  "data": {
+    "total_defects": 4,
+    "open": 2,
+    "critical_open": 1,
+    "major_open": 1,
+    "minor_open": 0,
+    "handover_eligible": false,
+    "items": [
+      {
+        "boq_ref": "FIN-008 — Plester Acian",
+        "location": "Lt.1 Dinding Timur",
+        "description": "Retak rambut 1.5m di area sambungan",
+        "severity": "Major",
+        "status": "IN_REPAIR",
+        "responsible_party": "Subkon Plester",
+        "target_date": "2026-03-29",
+        "reported_at": "2026-03-24T09:30:00.000Z"
+      },
+      {
+        "boq_ref": "MEP-003 — Pipa Air Bersih",
+        "location": "Shaft Belakang",
+        "description": "Kebocoran sambungan pipa utama",
+        "severity": "Critical",
+        "status": "OPEN",
+        "responsible_party": "Subkon MEP",
+        "target_date": "2026-03-28",
+        "reported_at": "2026-03-26T11:10:00.000Z"
+      }
+    ]
+  }
+}

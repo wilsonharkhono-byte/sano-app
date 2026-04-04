@@ -1,0 +1,21 @@
+SAN Contractor — Setup Guide
+=============================
+
+1. SUPABASE SETUP
+   - Create a new Supabase project at https://supabase.com
+   - Go to SQL Editor, paste and run tmp/supabase-schema.sql
+   - Copy your project URL and anon key from Settings > API
+   - Create .env file from tmp/.env.example with your credentials
+
+2. LOCAL DEVELOPMENT
+   npm install
+   npx expo start
+
+3. BUILD FOR MOBILE
+   npx eas build --platform ios
+   npx eas build --platform android
+
+4. FOLDER STRUCTURE
+   tmp/        — Database schema, env template, setup docs
+   tools/      — Supabase client, auth, storage, GPS, types, validation
+   workflows/  — App entry, navigation, screens, components, gates, hooks

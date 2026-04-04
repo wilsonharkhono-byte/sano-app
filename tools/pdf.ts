@@ -219,154 +219,6 @@ async function buildReceiptLog(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
-async function buildPunchList(sd: SanoDoc, d: any): Promise<void> {
-  sd.kpiRow([
-    { value: String(d.total_defects ?? 0), label: 'Total Cacat', color: C.info },
-    { value: String(d.critical_open ?? 0), label: 'Critical Open', color: C.critical },
-    { value: String(d.major_open ?? 0), label: 'Major Open', color: C.warning },
-    { value: String(d.minor_open ?? 0), label: 'Minor Open', color: C.accent },
-  ]);
-
-  // Handover eligibility
-  sd.gap(4);
-  const eligible = d.handover_eligible;
-  sd.metricRow(
-    'Status Serah Terima',
-    eligible ? 'ELIGIBLE' : 'BELUM ELIGIBLE',
-    { valueColor: eligible ? C.ok : C.critical },
-  );
-
-  sd.sectionTitle('Ringkasan');
-  sd.metricRow('Total Cacat', String(d.total_defects ?? 0));
-  sd.metricRow('Masih Open', String(d.open ?? 0), { valueColor: C.warning });
-  sd.metricRow('Critical Open', String(d.critical_open ?? 0), { valueColor: C.critical });
-  sd.metricRow('Major Open', String(d.major_open ?? 0), { valueColor: C.warning });
-
-  if ((d.items ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Daftar Cacat');
-    sd.table(
-      [
-        { header: 'Deskripsi', width: 0.28 },
-        { header: 'Lokasi', width: 0.15 },
-        { header: 'BoQ Ref', width: 0.12 },
-        { header: 'Severity', width: 0.12 },
-        { header: 'Status', width: 0.15 },
-        { header: 'PIC', width: 0.10 },
-        { header: 'Tanggal', width: 0.08 },
-      ],
-      (d.items ?? []).map((item: any) => [
-        item.description ?? '—',
-        item.location ?? '—',
-        item.boq_ref ?? '—',
-        item.severity ?? '—',
-        (item.status ?? '—').replace(/_/g, ' '),
-        item.responsible_party ?? '—',
-        fmtDate(item.reported_at),
-      ]),
-    );
-  }
-
-  // Photos
-  const photoUrls = (d.items ?? []).flatMap((item: any) => [
-    ...(item.report_photos ?? []).map((p: any) => p.photo_url),
-    ...(item.repair_photos ?? []).map((p: any) => p.photo_url),
-  ]).slice(0, 16);
-  if (photoUrls.length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Lampiran Foto');
-    await sd.photoGrid(photoUrls, { size: 100, perRow: 4 });
-  }
-}
-
-async function buildVoSummary(sd: SanoDoc, d: any): Promise<void> {
-  sd.kpiRow([
-    { value: String(d.total_vos ?? 0), label: 'Total VO', color: C.info },
-    { value: String(d.total_reworks ?? 0), label: 'Total Rework', color: C.warning },
-    { value: fmtRp(d.total_est_cost ?? 0), label: 'Est. Biaya VO', color: C.critical },
-  ]);
-
-  sd.sectionTitle('Ringkasan');
-  sd.metricRow('Total VO', String(d.total_vos ?? 0));
-  sd.metricRow('Total Rework', String(d.total_reworks ?? 0));
-  sd.metricRow('Estimasi Biaya VO', fmtRp(d.total_est_cost ?? 0), { valueColor: C.critical });
-  sd.metricRow('Estimasi Dampak Rework', fmtRp(d.total_rework_cost ?? 0), { valueColor: C.warning });
-
-  // By cause breakdown
-  if (d.by_cause) {
-    sd.gap(6);
-    sd.sectionTitle('Distribusi Penyebab');
-    Object.entries(d.by_cause).forEach(([cause, count]: any) => {
-      sd.metricRow(cause.replace(/_/g, ' '), String(count));
-    });
-  }
-
-  // VO table
-  if ((d.vos ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Daftar VO');
-    sd.table(
-      [
-        { header: 'No. VO', width: 0.09 },
-        { header: 'Tanggal', width: 0.10 },
-        { header: 'Lokasi', width: 0.15 },
-        { header: 'Deskripsi', width: 0.22 },
-        { header: 'Pemohon', width: 0.12 },
-        { header: 'Est. Biaya', width: 0.14, align: 'right' },
-        { header: 'Status', width: 0.10 },
-        { header: 'Tipe', width: 0.08 },
-      ],
-      (d.vos ?? []).map((v: any) => [
-        v.entry_code ?? 'VO-000',
-        fmtDate(v.created_at),
-        v.location ?? '—',
-        v.description ?? '—',
-        v.requested_by_name ?? '—',
-        v.est_cost != null ? fmtRp(v.est_cost) : '—',
-        (v.status ?? '—').replace(/_/g, ' '),
-        v.is_micro ? 'Mikro' : 'Standar',
-      ]),
-    );
-  }
-
-  // Rework table
-  if ((d.reworks ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Daftar Rework');
-    sd.table(
-      [
-        { header: 'No. RE', width: 0.10 },
-        { header: 'Tanggal', width: 0.10 },
-        { header: 'Kode BoQ', width: 0.12 },
-        { header: 'Item BoQ', width: 0.20 },
-        { header: 'Deskripsi', width: 0.20 },
-        { header: 'Penyebab', width: 0.14 },
-        { header: 'Biaya', width: 0.14, align: 'right' },
-      ],
-      (d.reworks ?? []).map((r: any) => [
-        r.entry_code ?? 'RE-000',
-        fmtDate(r.created_at),
-        r.boq_code ?? '—',
-        r.boq_label ?? '—',
-        r.description ?? '—',
-        (r.cause ?? '—').replace(/_/g, ' '),
-        r.cost_impact != null ? fmtRp(r.cost_impact) : '—',
-      ]),
-    );
-  }
-
-  // Photos (VO + rework combined)
-  const photoUrls = [
-    ...(d.vos ?? []).flatMap((v: any) => (v.photos ?? []).map((p: any) => p.photo_url)),
-    ...(d.reworks ?? []).flatMap((r: any) => (r.photos ?? []).map((p: any) => p.photo_url)),
-  ].slice(0, 16);
-  if (photoUrls.length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Lampiran Foto');
-    await sd.photoGrid(photoUrls, { size: 100, perRow: 4 });
-  }
-}
-
 async function buildScheduleVariance(sd: SanoDoc, d: any): Promise<void> {
   sd.kpiRow([
     { value: String(d.total_milestones ?? 0), label: 'Total Milestone', color: C.info },
@@ -815,14 +667,110 @@ async function buildExceptionHandlingLoad(sd: SanoDoc, d: any): Promise<void> {
   }
 }
 
+// ── Site Change Log ───────────────────────────────────────────────────
+
+async function buildSiteChangeLog(sd: SanoDoc, d: any): Promise<void> {
+  const s = d.summary ?? {};
+
+  sd.kpiRow([
+    { value: String(s.total_items ?? 0), label: 'Total', color: C.info },
+    { value: String(s.pending ?? 0), label: 'Pending', color: C.warning },
+    { value: String(s.impact_berat ?? 0), label: 'Berat', color: C.critical },
+    { value: String(s.selesai ?? 0), label: 'Selesai', color: C.ok },
+  ]);
+
+  sd.sectionTitle('Ringkasan');
+  sd.metricRow('Total Perubahan', String(s.total_items ?? 0));
+  sd.metricRow('Pending', String(s.pending ?? 0), { valueColor: C.warning });
+  sd.metricRow('Disetujui', String(s.disetujui ?? 0), { valueColor: C.info });
+  sd.metricRow('Ditolak', String(s.ditolak ?? 0), { valueColor: C.critical });
+  sd.metricRow('Selesai', String(s.selesai ?? 0), { valueColor: C.ok });
+  sd.metricRow('Urgent', String(s.urgent ?? 0), { valueColor: C.critical });
+  sd.metricRow('Impact Berat', String(s.impact_berat ?? 0), { valueColor: C.critical });
+  sd.metricRow('Open Rework', String(s.open_rework ?? 0), { valueColor: C.warning });
+  if (d.show_costs && s.approved_cost_total != null) {
+    sd.metricRow('Biaya Disetujui', fmtRp(s.approved_cost_total));
+  }
+
+  // By type breakdown
+  if ((d.by_type ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Per Jenis');
+    sd.table(
+      [
+        { header: 'Jenis Perubahan', width: 0.60 },
+        { header: 'Jumlah', width: 0.40, align: 'right' },
+      ],
+      (d.by_type ?? []).map((t: any) => [t.label ?? t.change_type ?? '—', String(t.count ?? 0)]),
+    );
+  }
+
+  // By decision breakdown
+  if ((d.by_decision ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Per Keputusan');
+    sd.table(
+      [
+        { header: 'Keputusan', width: 0.60 },
+        { header: 'Jumlah', width: 0.40, align: 'right' },
+      ],
+      (d.by_decision ?? []).map((t: any) => [t.label ?? t.decision ?? '—', String(t.count ?? 0)]),
+    );
+  }
+
+  // Item detail table
+  if ((d.items ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Daftar Perubahan');
+
+    const showCosts = Boolean(d.show_costs);
+    const cols = [
+      { header: 'Tgl', width: 0.09 },
+      { header: 'Lokasi', width: 0.14 },
+      { header: 'Deskripsi', width: showCosts ? 0.22 : 0.30 },
+      { header: 'Jenis', width: 0.12 },
+      { header: 'Impact', width: 0.09 },
+      { header: 'Keputusan', width: 0.11 },
+      ...(showCosts ? [{ header: 'Est. Biaya', width: 0.12, align: 'right' as const }] : []),
+      { header: 'Pelapor', width: 0.11 },
+    ];
+
+    sd.table(
+      cols,
+      (d.items ?? []).map((item: any) => {
+        const row = [
+          fmtDate(item.created_at),
+          item.location ?? '—',
+          item.description ?? '—',
+          item.change_type_label ?? item.change_type ?? '—',
+          (item.impact_label ?? item.impact ?? '—') + (item.is_urgent ? ' ⚠' : ''),
+          item.decision_label ?? item.decision ?? '—',
+        ];
+        if (showCosts) row.push(item.est_cost != null ? fmtRp(item.est_cost) : '—');
+        row.push(item.reporter_name ?? '—');
+        return row;
+      }),
+    );
+  }
+
+  // Photos
+  const allPhotoUrls = (d.items ?? []).flatMap((item: any) =>
+    (item.photos ?? []).map((p: any) => p.photo_url ?? p.url ?? p),
+  ).filter(Boolean).slice(0, 16);
+
+  if (allPhotoUrls.length > 0) {
+    sd.gap(6);
+    sd.sectionTitle(`Lampiran Foto (${allPhotoUrls.length})`);
+    await sd.photoGrid(allPhotoUrls, { size: 110, perRow: 4 });
+  }
+}
+
 // forward declarations populated below
 const BUILDERS: Partial<Record<string, (sd: SanoDoc, d: any) => Promise<void>>> = {};
 
 BUILDERS['progress_summary'] = buildProgressSummary;
 BUILDERS['material_balance'] = buildMaterialBalance;
 BUILDERS['receipt_log'] = buildReceiptLog;
-BUILDERS['punch_list'] = buildPunchList;
-BUILDERS['vo_summary'] = buildVoSummary;
 BUILDERS['schedule_variance'] = buildScheduleVariance;
 BUILDERS['weekly_digest'] = buildWeeklyDigest;
 BUILDERS['payroll_support_summary'] = buildPayrollSupportSummary;
@@ -833,6 +781,7 @@ BUILDERS['approval_sla_user'] = buildApprovalSLAUser;
 BUILDERS['operational_entry_discipline'] = buildOperationalEntryDiscipline;
 BUILDERS['tool_usage_summary'] = buildToolUsageSummary;
 BUILDERS['exception_handling_load'] = buildExceptionHandlingLoad;
+BUILDERS['site_change_log'] = buildSiteChangeLog;
 
 // ── Main export function ──────────────────────────────────────────────
 
