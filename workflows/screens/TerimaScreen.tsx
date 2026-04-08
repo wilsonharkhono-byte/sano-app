@@ -279,7 +279,7 @@ export default function TerimaScreen() {
         <Card title="Penerimaan Baru">
           <Text style={styles.label}>Pilih PO <Text style={styles.req}>*</Text></Text>
           <View style={styles.pickerWrap}>
-            <Picker selectedValue={poId} onValueChange={v => { setPoId(v); resetForm(); }}>
+            <Picker selectedValue={poId} onValueChange={v => { setPoId(v); resetForm(); }} style={{ color: COLORS.text }}>
               <Picker.Item label="-- Pilih PO --" value="" />
               {purchaseOrders.map(po => (
                 <Picker.Item
@@ -431,7 +431,7 @@ const styles = StyleSheet.create({
   },
   disabled:   { backgroundColor: COLORS.surfaceAlt, color: COLORS.textSec },
   textarea:   { minHeight: 80, textAlignVertical: 'top', paddingTop: SPACE.md - 1 },
-  pickerWrap: { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface, overflow: 'hidden' },
+  pickerWrap: { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface },
   hint:       { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 2, lineHeight: 17 },
   fieldHint:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs, lineHeight: 17 },
   row2:       { flexDirection: 'row', gap: SPACE.sm },

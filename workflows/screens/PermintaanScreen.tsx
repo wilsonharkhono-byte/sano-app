@@ -744,6 +744,7 @@ export default function PermintaanScreen() {
                         <Picker
                           selectedValue={line.boqItemId ?? ''}
                           onValueChange={value => updateLine(line.id, { boqItemId: value || null })}
+                          style={{ color: COLORS.text }}
                         >
                           <Picker.Item label="— Pilih item BoQ —" value="" />
                           {boqItems.map(item => (
@@ -1078,7 +1079,6 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     borderRadius: RADIUS,
     backgroundColor: COLORS.surface,
-    overflow: 'hidden',
   },
 
   row2: { flexDirection: 'row', gap: SPACE.sm },

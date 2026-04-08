@@ -2,7 +2,7 @@
   "expo": {
     "name": "SANO",
     "slug": "san-contractor-supervisor",
-    "version": "3.0.0",
+    "version": "3.0.1",
     "icon": "./assets/icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -21,6 +21,10 @@
     },
     "android": {
       "package": "com.sancontractor.supervisor",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#D2D0C4"
+      },
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.ACCESS_FINE_LOCATION",

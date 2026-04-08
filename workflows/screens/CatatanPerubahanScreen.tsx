@@ -505,7 +505,7 @@ export default function CatatanPerubahanScreen({ onBack }: { onBack: () => void 
             {/* BoQ item (optional) */}
             <Text style={styles.label}>Item BoQ Terkait</Text>
             <View style={styles.pickerWrap}>
-              <Picker selectedValue={formBoqItemId} onValueChange={setFormBoqItemId}>
+              <Picker selectedValue={formBoqItemId} onValueChange={setFormBoqItemId} style={{ color: COLORS.text }}>
                 <Picker.Item label="-- Tidak spesifik --" value="" />
                 {boqItems.map(b => (
                   <Picker.Item key={b.id} label={`${b.code} — ${b.label}`} value={b.id} />
@@ -518,7 +518,7 @@ export default function CatatanPerubahanScreen({ onBack }: { onBack: () => void 
               <>
                 <Text style={styles.label}>Mandor Terkait</Text>
                 <View style={styles.pickerWrap}>
-                  <Picker selectedValue={formContractId} onValueChange={setFormContractId}>
+                  <Picker selectedValue={formContractId} onValueChange={setFormContractId} style={{ color: COLORS.text }}>
                     <Picker.Item label="-- Pilih mandor --" value="" />
                     {mandorContracts.map(c => (
                       <Picker.Item key={c.id} label={c.mandor_name} value={c.id} />
@@ -731,7 +731,7 @@ const styles = StyleSheet.create({
   req:          { color: COLORS.critical },
   input:        { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: SPACE.md, fontSize: TYPE.sm, color: COLORS.text },
   textarea:     { minHeight: 80, textAlignVertical: 'top' },
-  pickerWrap:   { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface, overflow: 'hidden' },
+  pickerWrap:   { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface },
   impactHint:   { fontSize: TYPE.xs, color: COLORS.textSec, marginBottom: SPACE.sm },
   impactRow:    { flexDirection: 'row', gap: SPACE.sm },
   impactChip:   { flex: 1, padding: SPACE.sm, borderWidth: 2, borderColor: COLORS.border, borderRadius: RADIUS, alignItems: 'center' },

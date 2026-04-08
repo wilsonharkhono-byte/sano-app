@@ -167,7 +167,7 @@ export default function CacatScreen() {
           <Card title="Cacat Baru" style={{ marginTop: 12 }}>
             <Text style={styles.label}>Item BoQ <Text style={styles.req}>*</Text></Text>
             <View style={styles.pickerWrap}>
-              <Picker selectedValue={boqRef} onValueChange={setBoqRef}>
+              <Picker selectedValue={boqRef} onValueChange={setBoqRef} style={{ color: COLORS.text }}>
                 <Picker.Item label="-- Pilih --" value="" />
                 {boqItems.map(b => (
                   <Picker.Item key={b.id} label={`${b.code} — ${b.label}`} value={`${b.code} — ${b.label}`} />
@@ -254,7 +254,7 @@ const styles = StyleSheet.create({
   req:          { color: COLORS.critical },
   input:        { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: SPACE.md, fontSize: TYPE.md, color: COLORS.text },
   textarea:     { minHeight: 80, textAlignVertical: 'top' },
-  pickerWrap:   { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface, overflow: 'hidden' },
+  pickerWrap:   { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface },
   sevRow:       { flexDirection: 'row', gap: SPACE.sm },
   sevChip:      { flex: 1, padding: 10, borderWidth: 2, borderColor: COLORS.border, borderRadius: RADIUS, alignItems: 'center' },
   sevText:      { fontSize: TYPE.xs, fontFamily: FONTS.bold, textTransform: 'uppercase', color: COLORS.textSec },

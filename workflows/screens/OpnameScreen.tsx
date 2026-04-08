@@ -1358,6 +1358,7 @@ export default function OpnameScreen({
                           <Picker
                             selectedValue={addAllocationBoqItemId}
                             onValueChange={value => setAddAllocationBoqItemId(value || '')}
+                            style={{ color: COLORS.text }}
                           >
                             <Picker.Item label="— Pilih item BoQ —" value="" />
                             {harianAllocationCandidates.map(candidate => (
@@ -2104,7 +2105,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
     borderRadius: RADIUS,
-    overflow: 'hidden',
     marginTop: SPACE.sm,
     backgroundColor: COLORS.surface,
   },

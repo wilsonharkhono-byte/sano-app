@@ -465,6 +465,7 @@ export default function LaporanScreen() {
                         if (b) { setMtnMat(b.name); setMtnUnit(b.unit); setMtnAvailable(b.on_site); }
                         else { setMtnMat(''); setMtnUnit(''); setMtnAvailable(null); }
                       }}
+                      style={{ color: COLORS.text }}
                     >
                       <Picker.Item label="-- Pilih material --" value="" />
                       {mtnBalances.map(b => (
@@ -510,7 +511,7 @@ export default function LaporanScreen() {
               <Text style={styles.label}>Proyek Tujuan <Text style={styles.req}>*</Text></Text>
               {projects.filter(p => p.id !== project?.id).length > 0 ? (
                 <View style={styles.pickerWrap}>
-                  <Picker selectedValue={mtnDest} onValueChange={setMtnDest}>
+                  <Picker selectedValue={mtnDest} onValueChange={setMtnDest} style={{ color: COLORS.text }}>
                     <Picker.Item label="-- Pilih proyek tujuan --" value="" />
                     {projects.filter(p => p.id !== project?.id).map(p => (
                       <Picker.Item key={p.id} label={`${p.code} — ${p.name}`} value={p.id} />
@@ -668,7 +669,7 @@ const styles = StyleSheet.create({
 
   exportRow:   { flexDirection: 'row', alignItems: 'center', gap: SPACE.md - 2, paddingVertical: SPACE.md, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub },
   exportLabel: { flex: 1, fontSize: TYPE.sm, fontFamily: FONTS.medium },
-  pickerWrap:  { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface, overflow: 'hidden', marginBottom: 2 },
+  pickerWrap:  { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface, marginBottom: 2 },
 
   btn:          { backgroundColor: COLORS.primary, borderRadius: RADIUS, padding: SPACE.base, alignItems: 'center' },
   btnText:      { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' },

@@ -391,7 +391,7 @@ export default function ProgresScreen() {
             <Card title="Laporan Progres Baru">
               <Text style={styles.label}>Item BoQ <Text style={styles.req}>*</Text></Text>
               <View style={styles.pickerWrap}>
-                <Picker selectedValue={boqId} onValueChange={v => { setBoqId(v); setQty(''); }}>
+                <Picker selectedValue={boqId} onValueChange={v => { setBoqId(v); setQty(''); }} style={{ color: COLORS.text }}>
                   <Picker.Item label="-- Pilih item BoQ --" value="" />
                   {inProgressItems.map(b => (
                     <Picker.Item key={b.id} label={`${b.code} — ${b.label} (${b.progress}%)`} value={b.id} />
@@ -524,7 +524,7 @@ const styles = StyleSheet.create({
   },
   textarea:  { minHeight: 80, textAlignVertical: 'top', paddingTop: SPACE.md - 1 },
   disabled:  { backgroundColor: COLORS.surfaceAlt, color: COLORS.textSec },
-  pickerWrap:{ borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface, overflow: 'hidden' },
+  pickerWrap:{ borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface },
   fieldHint: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs, lineHeight: 17 },
   row2:      { flexDirection: 'row', gap: SPACE.sm },
   autoStatusBox: { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: SPACE.md, backgroundColor: COLORS.surfaceAlt, marginTop: SPACE.sm },

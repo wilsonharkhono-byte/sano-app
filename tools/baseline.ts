@@ -316,7 +316,7 @@ export async function parseAndStageWorkbook(
     }
     const aliasMap = new Map<string, string>();
     for (const a of aliasData ?? []) {
-      const code = (a as any).material_catalog?.code;
+      const code = (a as unknown as { material_catalog?: { code: string } }).material_catalog?.code;
       if (code) aliasMap.set(a.alias.toLowerCase().trim(), code);
     }
 
@@ -379,9 +379,10 @@ export async function parseAndStageWorkbook(
       stagingRowCount: insertedCount,
       anomalyCount: parsed.anomalies.length,
     };
-  } catch (err: any) {
-    await updateImportStatus(sessionId, 'FAILED', err.message);
-    return { success: false, error: err.message };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await updateImportStatus(sessionId, 'FAILED', msg);
+    return { success: false, error: msg };
   }
 }
 
@@ -627,8 +628,8 @@ export async function publishBaseline(
     await updateImportStatus(sessionId, 'PUBLISHED');
 
     return { success: true, boqCount, ahsCount, materialCount };
-  } catch (err: any) {
-    return { success: false, error: err.message };
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -678,11 +679,11 @@ export async function generateMaterialMaster(
     }
 
     // Aggregate: for each AHS line, calculate planned_quantity = boq_planned * usage_rate * (1 + waste_factor)
-    const masterLines = ahsLines.map((line: any) => ({
+    const masterLines = ahsLines.map((line) => ({
       master_id: master.id,
       material_id: line.material_id,
       boq_item_id: line.boq_item_id,
-      planned_quantity: line.boq_items.planned * line.usage_rate * (1 + (line.waste_factor || 0)),
+      planned_quantity: (line as unknown as { boq_items: { planned: number } }).boq_items.planned * line.usage_rate * (1 + (line.waste_factor || 0)),
       unit: line.unit,
     }));
 
@@ -693,8 +694,8 @@ export async function generateMaterialMaster(
     if (linesErr) return { success: false, error: `Master lines insert failed: ${linesErr.message}` };
 
     return { success: true, lineCount: masterLines.length };
-  } catch (err: any) {
-    return { success: false, error: err.message };
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 

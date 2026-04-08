@@ -155,9 +155,9 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
       .eq('project_id', projectId),
   ]);
 
-  const boqPlannedMap = new Map((boqItems ?? []).map((item: any) => [item.id, Number(item.planned ?? 0)]));
+  const boqPlannedMap = new Map((boqItems ?? []).map((item) => [item.id, Number(item.planned ?? 0)]));
   const derivedInstalledMap = new Map(boqTotals.map(total => [total.boq_item_id, Number(total.total_installed ?? 0)]));
-  const poMaterialMap = new Map((purchaseOrders ?? []).map((po: any) => [po.id, po.material_name]));
+  const poMaterialMap = new Map((purchaseOrders ?? []).map((po) => [po.id, po.material_name]));
   const receivedByName = new Map<string, number>();
 
   for (const receipt of receipts ?? []) {
@@ -231,7 +231,7 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
       const installed = boqInstalled * Number(line.usage_rate ?? 0) * multiplier;
       upsertAggregate(
         line.material_id ?? null,
-        (line as any).material_catalog?.name ?? null,
+        (line as unknown as { material_catalog?: { name: string } }).material_catalog?.name ?? null,
         line.unit ?? '',
         planned,
         installed,
@@ -287,8 +287,8 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
   const materialIds = Array.from(new Set(Array.from(aggregate.values()).map(item => item.material_id).filter(Boolean))) as string[];
   const { data: materials } = materialIds.length > 0
     ? await supabase.from('material_catalog').select('id, name, unit').in('id', materialIds)
-    : { data: [] as any[] };
-  const materialMap = new Map((materials ?? []).map((material: any) => [material.id, material]));
+    : { data: [] as Array<{ id: string; name: string; unit: string }> };
+  const materialMap = new Map((materials ?? []).map((material) => [material.id, material]));
 
   const balances: MaterialBalance[] = Array.from(aggregate.values()).map((bucket) => {
     const material = bucket.material_id ? materialMap.get(bucket.material_id) : null;
