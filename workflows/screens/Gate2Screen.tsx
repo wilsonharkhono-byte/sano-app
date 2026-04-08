@@ -10,10 +10,12 @@ import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { supabase } from '../../tools/supabase';
 import { getNextPurchaseOrderNumber, getPurchaseOrderDisplayNumber } from '../../tools/purchaseOrders';
-import { computeGate2, type Gate2Result, type Gate2Input } from '../gates/gate2';
+import { computeGate2, summarizeAhsBaselinePrices, type Gate2Result, type Gate2Input } from '../gates/gate2';
+import { buildMaterialScopeIndex, deriveAutomaticScopeTag, normalizeBoqRefToScopeTag } from '../../tools/procurementScope';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, FLAG_COLORS, FLAG_BG } from '../theme';
 import type {
+  AhsLine,
   PurchaseOrder,
   PurchaseOrderLine,
   PriceHistory,
@@ -77,6 +79,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
   const [poList, setPoList] = useState<POWithLines[]>([]);
   const [loading, setLoading] = useState(false);
   const [materialOptions, setMaterialOptions] = useState<MaterialOption[]>([]);
+  const [materialMasterLines, setMaterialMasterLines] = useState<ProjectMaterialMasterLine[]>([]);
   const [principalId, setPrincipalId] = useState<string | null>(null);
 
   // Admin: PO entry state
@@ -116,7 +119,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         supabase.from('profiles').select('id, role'),
         supabase
           .from('project_material_master')
-          .select('id')
+          .select('id, ahs_version_id')
           .eq('project_id', project.id)
           .order('created_at', { ascending: false })
           .limit(1),
@@ -128,13 +131,24 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       setMaterialOptions((materialRes.data as MaterialOption[]) ?? []);
 
       const masterId = masterHeaderRes.data?.[0]?.id ?? null;
-      const { data: masterLines } = masterId
-        ? await supabase.from('project_material_master_lines').select('*').eq('master_id', masterId)
-        : { data: [] as ProjectMaterialMasterLine[] };
+      const ahsVersionId = masterHeaderRes.data?.[0]?.ahs_version_id ?? null;
+      const [masterLinesRes, ahsLinesRes] = await Promise.all([
+        masterId
+          ? supabase.from('project_material_master_lines').select('*').eq('master_id', masterId)
+          : Promise.resolve({ data: [] as ProjectMaterialMasterLine[] }),
+        ahsVersionId
+          ? supabase.from('ahs_lines').select('material_id, unit_price, line_type').eq('ahs_version_id', ahsVersionId)
+          : Promise.resolve({ data: [] as Array<Pick<AhsLine, 'material_id' | 'unit_price' | 'line_type'>> }),
+      ]);
 
       const lines = (linesRes.data as PurchaseOrderLine[]) ?? [];
+      const masterLines = (masterLinesRes.data as ProjectMaterialMasterLine[]) ?? [];
       const priceHist = (priceRes.data as PriceHistory[]) ?? [];
       const scorecards = (scorecardRes.data as VendorScorecard[]) ?? [];
+      const ahsBaselinePriceMap = summarizeAhsBaselinePrices(
+        ((ahsLinesRes.data as Array<Pick<AhsLine, 'material_id' | 'unit_price' | 'line_type'>>) ?? []),
+      );
+      setMaterialMasterLines(masterLines);
 
       const linesByPO: Record<string, PurchaseOrderLine[]> = {};
       lines.forEach(l => {
@@ -148,16 +162,15 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
           const poLines = linesByPO[po.id] ?? [];
           const gate2Results = poLines.map(line => {
             const blLine = (masterLines ?? []).find(m => m.material_id === line.material_id) ?? null;
-            // Estimate baseline unit price from master line (planned_quantity as proxy)
-            const blPrice = blLine ? findBaselinePrice(line.material_id, priceHist ?? []) : null;
+            const baselinePrice = line.material_id ? ahsBaselinePriceMap.get(line.material_id) ?? null : null;
 
             const input: Gate2Input = {
               line,
               vendor: po.supplier,
               baselineLine: blLine,
-              baselineUnitPrice: blPrice,
+              baselinePrice,
               priceHistory: priceHist.filter(h => h.material_id === line.material_id),
-              vendorScorecard: scorecards.find(s => s.vendor === po.supplier) ?? null,
+              vendorScorecard: scorecards.find(s => normalizeVendorKey(s.vendor) === normalizeVendorKey(po.supplier)) ?? null,
             };
             return computeGate2(input);
           });
@@ -189,6 +202,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       }
     } catch (err: any) {
       console.warn('Gate2 load error:', err.message);
+      setMaterialMasterLines([]);
     } finally {
       setLoading(false);
     }
@@ -271,6 +285,39 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
   }, [boqItems, boqSearch]);
 
   const selectedBoqItem = boqItems.find(item => item.id === draftBoqId) ?? null;
+  const materialScopeIndex = useMemo(
+    () => buildMaterialScopeIndex(materialMasterLines, boqItems),
+    [materialMasterLines, boqItems],
+  );
+  const draftScopePreviewByLine = useMemo(() => {
+    const preview = new Map<string, string>();
+    for (const line of draftLines) {
+      preview.set(line.id, deriveAutomaticScopeTag({
+        boqMode: draftBoqMode,
+        selectedBoqItem,
+        draftBoqSummary,
+        materialId: line.material_id || null,
+        materialScopeIndex,
+      }));
+    }
+    return preview;
+  }, [draftBoqMode, draftBoqSummary, draftLines, materialScopeIndex, selectedBoqItem]);
+
+  const resolveLineScopeTag = useCallback((po: POWithLines, line: PurchaseOrderLine): string => {
+    if (line.scope_tag) return line.scope_tag;
+
+    const matchedBoqItem = po.boq_ref
+      ? boqItems.find(item => item.code === po.boq_ref) ?? null
+      : null;
+
+    return deriveAutomaticScopeTag({
+      boqMode: po.boq_ref === GENERAL_BOQ_REF ? 'general' : matchedBoqItem ? 'single' : 'multi',
+      selectedBoqItem: matchedBoqItem,
+      materialId: line.material_id,
+      materialScopeIndex,
+      fallbackBoqRef: po.boq_ref,
+    });
+  }, [boqItems, materialScopeIndex]);
 
   const closeMaterialPicker = () => {
     setMaterialPickerLineId(null);
@@ -417,6 +464,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         quantity: parseFloat(line.quantity),
         unit: line.unit,
         unit_price: parseFloat(line.unit_price),
+        scope_tag: draftScopePreviewByLine.get(line.id) ?? null,
       }));
       const { error: lineError } = await supabase.from('purchase_order_lines').insert(lineRecords);
       if (lineError) throw lineError;
@@ -523,6 +571,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
             {selectedPO.lines.map((line, idx) => {
               const g2 = selectedPO.gate2?.[idx];
               const edit = lineEdits[line.id] ?? { price: line.unit_price?.toString() ?? '', vendor: selectedPO.supplier, justification: '' };
+              const scopeTag = resolveLineScopeTag(selectedPO, line);
               return (
                 <View key={line.id} style={styles.lineBlock}>
                   <View style={styles.lineHeader}>
@@ -530,6 +579,10 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                     {g2 && <Badge flag={g2.overall.flag} />}
                   </View>
                   <Text style={styles.lineDetail}>{line.quantity} {line.unit}</Text>
+                  <View style={styles.scopeTagChip}>
+                    <Ionicons name="layers-outline" size={12} color={COLORS.primary} />
+                    <Text style={styles.scopeTagText}>{scopeTag}</Text>
+                  </View>
 
                   <Text style={styles.fieldLabel}>Harga Satuan (Rp)</Text>
                   <TextInput
@@ -667,12 +720,12 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   placeholder="Contoh: pasangan bata area lt 1-3 / beberapa item dinding"
                   multiline
                 />
-                <Text style={styles.inlineHint}>Pilih mode ini saat satu PO melayani beberapa item BoQ sekaligus.</Text>
+                <Text style={styles.inlineHint}>Pilih mode ini saat satu PO melayani beberapa item BoQ sekaligus. Scope tag line tetap diisi otomatis dari baseline material jika datanya tersedia.</Text>
               </>
             )}
 
             {draftBoqMode === 'general' && (
-              <Text style={styles.inlineHint}>Gunakan untuk pembelian stok umum yang belum dialokasikan ke satu item BoQ tertentu.</Text>
+              <Text style={styles.inlineHint}>Gunakan untuk pembelian stok umum yang belum dialokasikan ke satu item BoQ tertentu. Semua line akan ditandai otomatis sebagai stok umum.</Text>
             )}
 
             <Text style={styles.sectionHead}>Line Items PO</Text>
@@ -764,6 +817,14 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                     />
                   </View>
                 </View>
+
+                <View style={styles.autoScopeRow}>
+                  <Ionicons name="layers-outline" size={14} color={COLORS.primary} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.autoScopeLabel}>Scope otomatis</Text>
+                    <Text style={styles.autoScopeValue}>{draftScopePreviewByLine.get(line.id) ?? 'BELUM TERPETAKAN'}</Text>
+                  </View>
+                </View>
               </View>
             ))}
 
@@ -793,6 +854,13 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
               const order = ['OK', 'INFO', 'WARNING', 'HIGH', 'CRITICAL'] as FlagLevel[];
               return order.indexOf(g.overall.flag) > order.indexOf(w) ? g.overall.flag : w;
             }, 'OK') ?? 'INFO';
+            const scopeTags = Array.from(
+              new Set(
+                po.lines
+                  .map(line => resolveLineScopeTag(po, line))
+                  .filter(Boolean),
+              ),
+            );
 
             return (
               <TouchableOpacity key={po.id} onPress={() => setSelectedPO(po)}>
@@ -802,6 +870,11 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                       <Text style={styles.poSupplier}>{po.supplier}</Text>
                       <Text style={styles.poNumber}>{getPurchaseOrderDisplayNumber(po)}</Text>
                       <Text style={styles.hint}>{po.material_name} — {po.lines.length} line</Text>
+                      <Text style={styles.hint}>
+                        {scopeTags.length <= 1
+                          ? `Scope: ${scopeTags[0] ?? normalizeBoqRefToScopeTag(po.boq_ref) ?? 'BELUM TERPETAKAN'}`
+                          : `${scopeTags.length} scope otomatis`}
+                      </Text>
                       <Text style={styles.hint}>{new Date(po.ordered_date).toLocaleDateString('id-ID')}</Text>
                     </View>
                     <View style={{ alignItems: 'flex-end', gap: 4 }}>
@@ -848,6 +921,12 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                 <Text style={styles.lineDetail}>
                   {line?.quantity} {line?.unit} @ {line?.unit_price ? `Rp${line.unit_price.toLocaleString('id-ID')}` : '-'}
                 </Text>
+                {line && task.po ? (
+                  <View style={styles.scopeTagChip}>
+                    <Ionicons name="layers-outline" size={12} color={COLORS.primary} />
+                    <Text style={styles.scopeTagText}>{resolveLineScopeTag(task.po, line)}</Text>
+                  </View>
+                ) : null}
               </View>
               {g2 && <Badge flag={g2.overall.flag} />}
             </View>
@@ -1086,12 +1165,8 @@ function ApprovalActions({ taskId, onAction }: {
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function findBaselinePrice(materialId: string | null, history: PriceHistory[]): number | null {
-  if (!materialId) return null;
-  const relevant = history.filter(h => h.material_id === materialId).sort((a, b) =>
-    new Date(a.recorded_at).getTime() - new Date(b.recorded_at).getTime()
-  );
-  return relevant.length > 0 ? relevant[0].unit_price : null;
+function normalizeVendorKey(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 // ── Styles ──────────────────────────────────────────────────────────
@@ -1111,6 +1186,18 @@ const styles = StyleSheet.create({
   lineHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   lineName: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, flex: 1, marginRight: SPACE.sm },
   lineDetail: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2 },
+  scopeTagChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    marginTop: SPACE.xs + 2,
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: SPACE.xs,
+    borderRadius: 999,
+    backgroundColor: 'rgba(20,18,16,0.06)',
+  },
+  scopeTagText: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.primary },
   fieldLabel: { fontSize: TYPE.xs, fontFamily: FONTS.medium, marginTop: SPACE.sm + 2, marginBottom: SPACE.xs },
   input: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: SPACE.md, fontSize: TYPE.md, color: COLORS.text },
   inputDisabled: { backgroundColor: COLORS.surfaceAlt, color: COLORS.textSec },
@@ -1131,6 +1218,17 @@ const styles = StyleSheet.create({
   modeChipActive: { borderColor: COLORS.primary, backgroundColor: 'rgba(20,18,16,0.08)' },
   modeChipText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textSec, textTransform: 'uppercase' },
   modeChipTextActive: { color: COLORS.primary },
+  autoScopeRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginTop: SPACE.sm + 2,
+    padding: SPACE.sm,
+    borderRadius: RADIUS,
+    backgroundColor: 'rgba(20,18,16,0.04)',
+  },
+  autoScopeLabel: { fontSize: TYPE.xs, fontFamily: FONTS.bold, color: COLORS.textSec, textTransform: 'uppercase', letterSpacing: 0.5 },
+  autoScopeValue: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text, marginTop: 2 },
   selectorBtn: {
     flexDirection: 'row',
     alignItems: 'center',

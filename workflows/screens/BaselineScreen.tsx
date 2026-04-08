@@ -20,7 +20,8 @@ import {
   resolveAnomaly,
   deleteImportSession,
 } from '../../tools/baseline';
-import { parseBoqWorkbook, type ParsedWorkbook } from '../../tools/excelParser';
+import { parseBoqWorkbook, applyBoqGrouping, type ParsedWorkbook } from '../../tools/excelParser';
+import { applyAIBoqGrouping } from '../../tools/ai-assist';
 import { supabase } from '../../tools/supabase';
 import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools/types';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
@@ -145,6 +146,15 @@ export default function BaselineScreen({
 
       setParseProgress('Menganalisis struktur RAB...');
       const localParsed = parseBoqWorkbook(arrayBuffer.slice(0), fileName);
+
+      // AI-driven grouping: consolidate granular items into broader categories
+      setParseProgress('Mengelompokkan item BoQ (AI)...');
+      try {
+        await applyAIBoqGrouping(localParsed);
+      } catch {
+        applyBoqGrouping(localParsed); // keyword fallback
+      }
+
       setLastPreview(buildParsePreview(fileName, localParsed));
 
       // Upload raw file to Supabase Storage for traceability when the bucket exists.

@@ -19,9 +19,44 @@ export function computeGate1Flag(
   materialEnvelope?: MaterialEnvelopeStatus | null,
   /** Tier of the specific material line being checked */
   materialTier?: 1 | 2 | 3,
+  /** Name of the material being requested — used for composition compatibility check */
+  requestedMaterialName?: string,
 ): GateResult | null {
   if (requestedQty <= 0) {
     return { flag: 'WARNING', check: '1a', msg: 'Masukkan jumlah permintaan lebih dari 0.' };
+  }
+
+  // ── Check 1e: Material composition compatibility ───────────────────────
+  // Validate that the requested material is appropriate for the selected BoQ item
+  // by checking against tier1_material and tier2_material fields.
+  if (requestedMaterialName && (item.tier1_material || item.tier2_material)) {
+    const normalize = (s: string) =>
+      s.toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const reqNorm = normalize(requestedMaterialName);
+    const expectedMaterials = [item.tier1_material, item.tier2_material]
+      .filter(Boolean) as string[];
+
+    // Build keyword tokens from expected materials (min 3 chars to skip noise words)
+    const expectedTokens = expectedMaterials
+      .flatMap(m => normalize(m).split(' '))
+      .filter(t => t.length >= 3);
+
+    // Check if any expected token appears in the requested material name
+    const hasMatch = expectedTokens.some(token => reqNorm.includes(token)) ||
+      expectedMaterials.some(em => normalize(em).includes(reqNorm.split(' ').filter(t => t.length >= 3).join(' ')));
+
+    if (!hasMatch) {
+      const tierLabels = expectedMaterials.join(' / ');
+      return {
+        flag: 'WARNING',
+        check: '1e',
+        msg: `Material "${requestedMaterialName}" tidak sesuai komposisi BoQ "${item.code} — ${item.label}". Diharapkan: ${tierLabels}. Pastikan material yang diminta sudah benar.`,
+      };
+    }
   }
 
   const remaining = item.planned - item.installed;

@@ -199,6 +199,7 @@ const WASTE_FACTOR_RANGE = { min: 0.02, max: 0.25 };
 export function parseBoqWorkbook(
   fileInput: ArrayBuffer | string,
   fileName: string,
+  options?: { skipGrouping?: boolean },
 ): ParsedWorkbook {
   const workbook = typeof fileInput === 'string'
     ? XLSX.readFile(fileInput, { cellFormula: true, cellNF: true })
@@ -282,7 +283,13 @@ export function parseBoqWorkbook(
 
   disambiguateBoqLabels(boqItems);
 
-  // 5. Run AI anomaly checks on the complete parsed data
+  // 5. Optionally group with keyword fallback (sync).
+  //    For AI-driven grouping, callers should use applyBoqGrouping() after parse.
+  if (options?.skipGrouping === false) {
+    applyBoqGrouping({ projectInfo, boqItems, ahsBlocks, materials, laborRates, markupFactors, anomalies, ahsRowMap, rabToAhsLinks });
+  }
+
+  // 6. Run AI anomaly checks on the (possibly grouped) parsed data
   runAnomalyChecks(boqItems, ahsBlocks, materials, anomalies);
 
   return {
@@ -1848,4 +1855,347 @@ function buildLaborPriceMap(rates: ParsedLaborRate[]): Map<string, number> {
 
 function fmtRp(n: number): string {
   return `Rp ${Math.round(n).toLocaleString('id-ID')}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// BOQ ITEM GROUPING — Consolidates granular items into broader categories
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Work type archetypes for BoQ grouping.
+ * Items are classified by matching their label (then section/chapter context)
+ * against these patterns. First match wins, so more specific patterns come first.
+ */
+const WORK_TYPE_ARCHETYPES: Array<{
+  type: string;
+  label: (floor: string | null) => string;
+  keywords: string[];
+  excludeKeywords?: string[];
+}> = [
+  // ── Foundation / below grade ──────────────────────────────────────
+  { type: 'tiang_pancang',
+    keywords: ['tiang pancang', 'bore pile', 'mini pile', 'spun pile', 'cerucuk', 'strauss pile'],
+    label: () => 'Pekerjaan Tiang Pancang' },
+  { type: 'pondasi',
+    keywords: ['pondasi', 'pile cap', 'poer', 'tapak', 'footplate', 'foot plate', 'plat tapak', 'cakar ayam', 'pit lift'],
+    label: () => 'Struktur Pondasi Beton' },
+  { type: 'sloof',
+    keywords: ['sloof', 'tie beam', 'balok bawah'],
+    label: (f) => f ? `Sloof & Balok Pengikat ${f}` : 'Sloof & Balok Pengikat' },
+
+  // ── Structural — floor specific ───────────────────────────────────
+  { type: 'kolom',
+    keywords: ['kolom', 'column', 'tiang beton'],
+    excludeKeywords: ['bekist', 'besi', 'pembesian', 'tulangan'],
+    label: (f) => f ? `Struktur Kolom Beton ${f}` : 'Struktur Kolom Beton' },
+  { type: 'balok_plat',
+    keywords: ['balok', 'plat lantai', 'pelat', 'ring balok', 'ring balk', 'shear wall', 'dinding geser',
+               'konsol', 'canopy', 'kanopi', 'overtopping', 'topping', 'plat beton'],
+    excludeKeywords: ['bekist', 'besi', 'pembesian', 'tulangan'],
+    label: (f) => f ? `Struktur Beton ${f} (Balok dan Plat)` : 'Struktur Beton (Balok dan Plat)' },
+  { type: 'tangga',
+    keywords: ['tangga', 'bordes', 'stair'],
+    label: (f) => f ? `Struktur Tangga ${f}` : 'Struktur Tangga' },
+  { type: 'dak',
+    keywords: ['dak beton', 'roof slab', 'plat atap', 'plat dak'],
+    label: () => 'Struktur Dak / Plat Atap' },
+
+  // ── Structural support work ───────────────────────────────────────
+  { type: 'bekisting',
+    keywords: ['bekisting', 'formwork', 'cetakan beton'],
+    label: (f) => f ? `Bekisting Struktur ${f}` : 'Bekisting Struktur' },
+  { type: 'pembesian',
+    keywords: ['pembesian', 'tulangan', 'besi beton', 'besi ulir', 'besi polos', 'wiremesh', 'wire mesh'],
+    label: (f) => f ? `Pembesian Struktur ${f}` : 'Pembesian Struktur' },
+  { type: 'pengecoran',
+    keywords: ['pengecoran', 'cor beton', 'ready mix', 'readymix'],
+    label: (f) => f ? `Pengecoran Beton ${f}` : 'Pengecoran Beton' },
+
+  // ── Architectural — masonry & plaster ─────────────────────────────
+  { type: 'bata',
+    keywords: ['pasangan bata', 'bata merah', 'batako', 'bata ringan', 'hebel',
+               'dinding bata', 'pasangan dinding', 'roster', 'dinding partisi'],
+    label: (f) => f ? `Pasangan Dinding ${f}` : 'Pasangan Dinding' },
+  { type: 'plester',
+    keywords: ['plester', 'acian', 'plesteran', 'benangan', 'tali air', 'sponengan'],
+    label: (f) => f ? `Plesteran & Acian ${f}` : 'Plesteran & Acian' },
+
+  // ── Architectural — finishes ──────────────────────────────────────
+  { type: 'lantai',
+    keywords: ['keramik', 'granit', 'granite', 'homogeneous', 'vinyl', 'parquet',
+               'rabat beton', 'floor hardener', 'step nosing', 'lantai keramik'],
+    label: (f) => f ? `Pekerjaan Lantai ${f}` : 'Pekerjaan Lantai' },
+  { type: 'plafond',
+    keywords: ['plafond', 'plafon', 'ceiling', 'gypsum board', 'grc board', 'kalsiboard'],
+    label: (f) => f ? `Pekerjaan Plafond ${f}` : 'Pekerjaan Plafond' },
+  { type: 'cat',
+    keywords: ['cat tembok', 'pengecatan', 'cat kayu', 'cat besi', 'coating', 'cat dinding'],
+    label: (f) => f ? `Pengecatan ${f}` : 'Pengecatan' },
+  { type: 'waterproof',
+    keywords: ['waterproof', 'water proof', 'membrane', 'kedap air'],
+    label: (f) => f ? `Waterproofing ${f}` : 'Waterproofing' },
+  { type: 'kusen',
+    keywords: ['kusen', 'pintu', 'jendela', 'ventilasi', 'partisi kaca'],
+    label: (f) => f ? `Kusen, Pintu & Jendela ${f}` : 'Kusen, Pintu & Jendela' },
+  { type: 'sanitair',
+    keywords: ['sanitair', 'kloset', 'wastafel', 'shower', 'bathtub', 'floor drain', 'closet duduk'],
+    label: (f) => f ? `Perlengkapan Sanitair ${f}` : 'Perlengkapan Sanitair' },
+  { type: 'railing',
+    keywords: ['railing', 'railling', 'handrail', 'pegangan tangga', 'pagar besi'],
+    label: (f) => f ? `Railing & Pagar ${f}` : 'Railing & Pagar' },
+
+  // ── Roof ──────────────────────────────────────────────────────────
+  { type: 'atap',
+    keywords: ['atap', 'genteng', 'kuda kuda', 'kuda-kuda', 'rangka atap', 'zincalume',
+               'spandek', 'reng', 'usuk', 'nok', 'lisplang', 'talang', 'bubungan'],
+    label: () => 'Pekerjaan Atap & Penutup' },
+
+  // ── Civil / earthwork ─────────────────────────────────────────────
+  { type: 'galian',
+    keywords: ['galian', 'buang tanah', 'bowplank', 'bouwplank', 'land clearing',
+               'pembersihan lahan', 'potong tanah'],
+    label: () => 'Pekerjaan Tanah & Galian' },
+  { type: 'urugan',
+    keywords: ['urugan', 'timbunan', 'pemadatan', 'sirtu', 'pasir urug', 'tanah urug',
+               'sub base', 'base course', 'lantai kerja'],
+    label: () => 'Urugan & Pematangan Tanah' },
+
+  // ── MEP ───────────────────────────────────────────────────────────
+  { type: 'mep_pipa',
+    keywords: ['instalasi pipa', 'instalasi air', 'plumbing', 'air bersih', 'air kotor',
+               'drainase', 'riol', 'septictank', 'septic tank', 'saluran air', 'pipa pvc', 'pipa ppr'],
+    label: (f) => f ? `Instalasi Perpipaan ${f}` : 'Instalasi Perpipaan' },
+  { type: 'mep_listrik',
+    keywords: ['instalasi listrik', 'elektrikal', 'electrical', 'panel listrik', 'stop kontak',
+               'saklar', 'titik lampu', 'grounding', 'instalasi daya'],
+    label: (f) => f ? `Instalasi Elektrikal ${f}` : 'Instalasi Elektrikal' },
+  { type: 'mep_ac',
+    keywords: ['air conditioning', 'ac split', 'ducting ac', 'hvac'],
+    label: (f) => f ? `Instalasi AC ${f}` : 'Instalasi AC' },
+  { type: 'mep_fire',
+    keywords: ['sprinkler', 'fire alarm', 'hydrant', 'fire protection', 'apar'],
+    label: (f) => f ? `Fire Protection ${f}` : 'Fire Protection' },
+];
+
+/**
+ * Classify a BoQ item into a work type + floor level.
+ * First tries label keywords, then falls back to section/chapter context.
+ */
+function classifyBoqItem(item: ParsedBoqItem): { type: string; floor: string | null } {
+  const labelLower = normalize(item.label);
+  const floor = extractFloorFromBoqContext(item);
+
+  // Primary: match label directly
+  for (const arch of WORK_TYPE_ARCHETYPES) {
+    if (!arch.keywords.some(kw => labelLower.includes(kw))) continue;
+    if (arch.excludeKeywords?.some(kw => labelLower.includes(kw))) continue;
+    return { type: arch.type, floor };
+  }
+
+  // Fallback: match against section + chapter context
+  const contextLower = normalize(
+    [item.label, item.sectionLabel ?? '', item.chapter].join(' '),
+  );
+  for (const arch of WORK_TYPE_ARCHETYPES) {
+    if (!arch.keywords.some(kw => contextLower.includes(kw))) continue;
+    if (arch.excludeKeywords?.some(kw => contextLower.includes(kw))) continue;
+    return { type: arch.type, floor };
+  }
+
+  return { type: '_ungrouped', floor };
+}
+
+/**
+ * Extract floor level from a BoQ item's label, section, chapter, or sheet name.
+ * Reuses the existing extractFloorContext() helper.
+ */
+function extractFloorFromBoqContext(item: ParsedBoqItem): string | null {
+  for (const src of [item.label, item.sectionLabel ?? '', item.chapter, item.sourceSheet]) {
+    if (!src) continue;
+    const floor = extractFloorContext(src);
+    if (floor) return floor;
+  }
+  return null;
+}
+
+/**
+ * Consolidate granular BoQ items (e.g. "Pondasi PC1", "Pondasi PC2") into
+ * broader work-type categories (e.g. "Struktur Pondasi Beton").
+ *
+ * Grouping key: work type + floor level + unit.
+ * Single-item groups are kept as-is.
+ *
+ * Returns the grouped items and a mapping from each group's sourceRow to
+ * all original sourceRows (needed to update rabToAhsLinks).
+ */
+export interface BoqClassification {
+  type: string;
+  floor: string | null;
+}
+
+/**
+ * Group BoQ items using either AI-provided or keyword-based classifications.
+ *
+ * @param items           Raw parsed BoQ items
+ * @param aiClassifications  Optional map of item index → AI classification.
+ *                           If provided, overrides keyword classification.
+ *                           Items not in the map fall back to keyword matching.
+ */
+export function groupBoqItems(
+  items: ParsedBoqItem[],
+  aiClassifications?: Map<number, BoqClassification>,
+): {
+  grouped: ParsedBoqItem[];
+  sourceRowMapping: Map<number, number[]>;
+} {
+  // 1. Classify each item (AI-first, keyword fallback)
+  const classified = items.map((item, idx) => ({
+    item,
+    cls: aiClassifications?.get(idx) ?? classifyBoqItem(item),
+  }));
+
+  // 2. Group by type + floor + unit
+  const groups = new Map<string, typeof classified>();
+  for (const entry of classified) {
+    const key = `${entry.cls.type}|${entry.cls.floor ?? '_'}|${entry.item.unit}`;
+    const list = groups.get(key) ?? [];
+    list.push(entry);
+    groups.set(key, list);
+  }
+
+  // 3. Build aggregate items
+  const result: ParsedBoqItem[] = [];
+  const sourceRowMapping = new Map<number, number[]>();
+  const chapterCounters = new Map<string, number>();
+
+  for (const [, group] of groups) {
+    // Single-item groups: keep the original item unchanged
+    if (group.length === 1) {
+      result.push(group[0].item);
+      continue;
+    }
+
+    const { cls } = group[0];
+    const firstItem = group[0].item;
+
+    // ── Label ─────────────────────────────────────────────────────
+    const archetype = WORK_TYPE_ARCHETYPES.find(a => a.type === cls.type);
+    const label = archetype
+      ? archetype.label(cls.floor)
+      : `Pekerjaan Lainnya${cls.floor ? ` ${cls.floor}` : ''}`;
+
+    // ── Code ──────────────────────────────────────────────────────
+    const chapterIdx = firstItem.chapterIndex || 'I';
+    const counter = (chapterCounters.get(chapterIdx) ?? 0) + 1;
+    chapterCounters.set(chapterIdx, counter);
+    const code = `${chapterIdx}-G${String(counter).padStart(2, '0')}`;
+
+    // ── Aggregates ────────────────────────────────────────────────
+    const totalVolume = group.reduce((s, e) => s + e.item.volume, 0);
+    const totalCost = {
+      material: group.reduce((s, e) => s + e.item.costBreakdown.material, 0),
+      labor: group.reduce((s, e) => s + e.item.costBreakdown.labor, 0),
+      equipment: group.reduce((s, e) => s + e.item.costBreakdown.equipment, 0),
+      subkon: group.reduce((s, e) => s + e.item.costBreakdown.subkon, 0),
+      prelim: group.reduce((s, e) => s + e.item.costBreakdown.prelim, 0),
+    };
+
+    const allAhsRefs = group.flatMap(e => e.item.ahsReferences);
+
+    // Average composite factors (structural items)
+    const withComposite = group.filter(e => e.item.compositeFactors);
+    const avgComposite = withComposite.length > 0
+      ? {
+          formwork_ratio: withComposite.reduce((s, e) => s + (e.item.compositeFactors!.formwork_ratio), 0) / withComposite.length,
+          rebar_ratio: withComposite.reduce((s, e) => s + (e.item.compositeFactors!.rebar_ratio), 0) / withComposite.length,
+          wiremesh_ratio: withComposite.reduce((s, e) => s + (e.item.compositeFactors!.wiremesh_ratio), 0) / withComposite.length,
+        }
+      : null;
+
+    const totalInternalValue = group.reduce((s, e) => s + e.item.internalUnitPrice * e.item.volume, 0);
+    const totalClientValue = group.reduce((s, e) => s + e.item.clientUnitPrice * e.item.volume, 0);
+
+    // ── Source row tracking ───────────────────────────────────────
+    const minSourceRow = Math.min(...group.map(e => e.item.sourceRow));
+    sourceRowMapping.set(minSourceRow, group.map(e => e.item.sourceRow));
+
+    // ── Section detail (list of original items) ──────────────────
+    const subLabels = group.map(e => e.item.label.split('—')[0].trim());
+    const sectionDetail = subLabels.length <= 5
+      ? subLabels.join(', ')
+      : `${subLabels.slice(0, 4).join(', ')} (+${subLabels.length - 4} lainnya)`;
+
+    result.push({
+      code,
+      label,
+      unit: firstItem.unit,
+      volume: totalVolume,
+      chapter: firstItem.chapter,
+      chapterIndex: chapterIdx,
+      sectionLabel: sectionDetail,
+      parentCode: null,
+      sortOrder: Math.min(...group.map(e => e.item.sortOrder)),
+      elementCode: null,
+      costBreakdown: totalCost,
+      internalUnitPrice: totalVolume > 0 ? totalInternalValue / totalVolume : 0,
+      clientUnitPrice: totalVolume > 0 ? totalClientValue / totalVolume : 0,
+      compositeFactors: avgComposite,
+      sourceRow: minSourceRow,
+      sourceSheet: firstItem.sourceSheet,
+      ahsReferences: allAhsRefs,
+    });
+  }
+
+  // Sort by chapter index, then by sortOrder
+  result.sort((a, b) => a.sortOrder - b.sortOrder);
+
+  return { grouped: result, sourceRowMapping };
+}
+
+/**
+ * Apply BoQ grouping to a parsed workbook in place.
+ * Handles both item consolidation and rabToAhsLinks remapping.
+ *
+ * @param parsed              The parsed workbook to modify
+ * @param aiClassifications   Optional AI-provided classifications (index → type+floor).
+ *                            If omitted, uses keyword-based classification.
+ */
+export function applyBoqGrouping(
+  parsed: ParsedWorkbook,
+  aiClassifications?: Map<number, BoqClassification>,
+): void {
+  const { grouped, sourceRowMapping } = groupBoqItems(parsed.boqItems, aiClassifications);
+  parsed.boqItems.length = 0;
+  parsed.boqItems.push(...grouped);
+
+  // Merge sub-items' AHS links into the group item's sourceRow
+  for (const [groupRow, originalRows] of sourceRowMapping) {
+    const mergedRefs: AhsReference[] = [];
+    const mergedIndices = new Set<number>();
+    for (const origRow of originalRows) {
+      const link = parsed.rabToAhsLinks.get(origRow);
+      if (link) {
+        mergedRefs.push(...link.directRefs);
+        link.ahsBlockIndices.forEach(idx => mergedIndices.add(idx));
+        if (origRow !== groupRow) parsed.rabToAhsLinks.delete(origRow);
+      }
+    }
+    if (mergedRefs.length > 0 || mergedIndices.size > 0) {
+      parsed.rabToAhsLinks.set(groupRow, {
+        directRefs: mergedRefs,
+        ahsBlockIndices: Array.from(mergedIndices),
+      });
+    }
+  }
+}
+
+/** Valid work type codes for AI classification (exported for prompt construction). */
+export const BOQ_WORK_TYPES = WORK_TYPE_ARCHETYPES.map(a => a.type);
+
+/** Get the display label for a work type + floor combination. */
+export function getWorkTypeLabel(type: string, floor: string | null): string {
+  const arch = WORK_TYPE_ARCHETYPES.find(a => a.type === type);
+  return arch
+    ? arch.label(floor)
+    : `Pekerjaan Lainnya${floor ? ` ${floor}` : ''}`;
 }

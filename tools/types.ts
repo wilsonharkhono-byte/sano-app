@@ -299,6 +299,7 @@ export interface PurchaseOrderLine {
   quantity: number;
   unit: string;
   unit_price: number | null;
+  scope_tag: string | null;
 }
 
 export interface PriceHistory {

@@ -406,6 +406,131 @@ export async function suggestMaterialNaming(
   };
 }
 
+// ── BoQ Item Classification ──────────────────────────────────────────────────
+
+import type { ParsedBoqItem, ParsedWorkbook, BoqClassification } from './excelParser';
+import { BOQ_WORK_TYPES, applyBoqGrouping } from './excelParser';
+
+export interface BoqClassificationResult {
+  classifications: Map<number, BoqClassification>;
+  usage: { input_tokens: number; output_tokens: number };
+}
+
+/**
+ * Classify parsed BoQ items into work types + floor levels using Claude.
+ * Returns a map of item index → classification.
+ * Throws if the AI call fails — caller should catch and fall back to keywords.
+ */
+export async function classifyBoqItemsAI(
+  items: ParsedBoqItem[],
+  model: AIModel = 'haiku',
+): Promise<BoqClassificationResult> {
+  if (items.length === 0) {
+    return { classifications: new Map(), usage: { input_tokens: 0, output_tokens: 0 } };
+  }
+
+  // Build compact item list
+  const itemLines = items.map((item, idx) =>
+    `[${idx}] "${item.label}" | unit: ${item.unit} | section: ${item.sectionLabel ?? '-'} | chapter: ${item.chapter}`,
+  ).join('\n');
+
+  const instruction = [
+    'Klasifikasi item BoQ konstruksi Indonesia ini ke kategori pekerjaan dan level lantai.',
+    'Tujuan: mengelompokkan item granular (Pondasi PC1, PC2 dsb) ke kategori besar (pondasi, kolom, balok_plat, dsb).',
+    '',
+    'KODE TIPE PEKERJAAN yang valid:',
+    BOQ_WORK_TYPES.join(', '),
+    '',
+    'FLOOR: null (tanpa lantai), "Lantai 1", "Lantai 2", "Basement", "Semi Basement", "Lantai Dasar", "Mezzanine", "Dak / Atap", dsb.',
+    '',
+    'ATURAN:',
+    '- Pahami konteks section/chapter untuk item yang ambigu (misal "K1" di chapter "Struktur LT 1" = kolom Lantai 1)',
+    '- "PC1", "PC2" = pile cap = pondasi',
+    '- "B1", "B2" di chapter struktur = balok = balok_plat',
+    '- "S1", "S2" di chapter struktur = plat/slab = balok_plat',
+    '- Bekisting & pembesian tetap terpisah dari item beton-nya (tipe berbeda)',
+    '- Item yang tidak cocok ke tipe manapun: gunakan "_other"',
+    '- Floor diambil dari section/chapter/label — jika tidak ada konteks lantai, null',
+    '',
+    'ITEMS:',
+    itemLines,
+    '',
+    'Kembalikan JSON SAJA (tanpa penjelasan):',
+    '[{"i":0,"t":"pondasi","f":null},{"i":1,"t":"kolom","f":"Lantai 1"},...]',
+    'Gunakan key singkat: i=index, t=type, f=floor.',
+  ].join('\n');
+
+  const response = await askSanoAI(
+    [{ role: 'user', content: instruction }],
+    model,
+  );
+
+  // Parse response
+  const jsonBlock = extractJsonBlock(response.reply);
+  if (!jsonBlock) {
+    throw new Error('AI BoQ classifier did not return valid JSON.');
+  }
+
+  let rawParsed: unknown;
+  try {
+    rawParsed = JSON.parse(jsonBlock.startsWith('[') ? jsonBlock : `[${jsonBlock}]`);
+  } catch {
+    throw new Error('AI BoQ classifier returned malformed JSON.');
+  }
+
+  if (!Array.isArray(rawParsed)) {
+    throw new Error('AI BoQ classifier did not return an array.');
+  }
+
+  const validTypes = new Set([...BOQ_WORK_TYPES, '_other', '_ungrouped']);
+  const classifications = new Map<number, BoqClassification>();
+
+  for (const entry of rawParsed) {
+    const idx = Number(entry?.i ?? -1);
+    const type = String(entry?.t ?? '_other');
+    const floor = entry?.f == null ? null : String(entry.f);
+
+    if (idx < 0 || idx >= items.length) continue;
+    if (!validTypes.has(type)) continue;
+
+    classifications.set(idx, { type, floor });
+  }
+
+  return { classifications, usage: response.usage };
+}
+
+/**
+ * AI-driven BoQ grouping: classify items with Claude, then group.
+ * Falls back to keyword-based classification if AI call fails.
+ * Modifies the parsed workbook in place.
+ */
+export async function applyAIBoqGrouping(
+  parsed: ParsedWorkbook,
+  model: AIModel = 'haiku',
+): Promise<{ method: 'ai' | 'keyword'; itemCount: number }> {
+  const originalCount = parsed.boqItems.length;
+  if (originalCount === 0) return { method: 'keyword', itemCount: 0 };
+
+  let aiClassifications: Map<number, BoqClassification> | undefined;
+
+  try {
+    const result = await classifyBoqItemsAI(parsed.boqItems, model);
+    // Only use AI classifications if we got enough results
+    if (result.classifications.size >= originalCount * 0.5) {
+      aiClassifications = result.classifications;
+    }
+  } catch {
+    // AI failed — fall through to keyword classification
+  }
+
+  applyBoqGrouping(parsed, aiClassifications);
+
+  return {
+    method: aiClassifications ? 'ai' : 'keyword',
+    itemCount: parsed.boqItems.length,
+  };
+}
+
 // ── Usage logging ─────────────────────────────────────────────────────────────
 
 /**

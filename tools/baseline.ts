@@ -291,6 +291,16 @@ export async function parseAndStageWorkbook(
     // 1. Parse the workbook
     const parsed = parseBoqWorkbook(fileInput, fileName);
 
+    // 1b. AI-driven BoQ grouping (consolidates granular items into broader categories)
+    try {
+      const { applyAIBoqGrouping } = await import('./ai-assist');
+      await applyAIBoqGrouping(parsed);
+    } catch {
+      // If AI grouping fails entirely, apply keyword fallback
+      const { applyBoqGrouping } = await import('./excelParser');
+      applyBoqGrouping(parsed);
+    }
+
     // 2. Load material catalog for reconciliation
     const { data: catalogData, error: catalogError } = await supabase
       .from('material_catalog')

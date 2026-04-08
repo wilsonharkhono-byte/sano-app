@@ -399,7 +399,7 @@ export default function PermintaanScreen() {
 
         return {
           ...line,
-          lineResult: computeGate1Flag(targetBoq, requestedQty, envelopes, milestones, null, 1),
+          lineResult: computeGate1Flag(targetBoq, requestedQty, envelopes, milestones, null, 1, line.materialName),
           allocationPreview: [{
             boqItemId: targetBoq.id,
             boqCode: targetBoq.code,
