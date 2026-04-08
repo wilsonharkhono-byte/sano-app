@@ -503,19 +503,19 @@ function buildSystemPrompt(ctx?: ProjectContext, snapshot?: LiveProjectSnapshot 
 
 ### Path Layar yang Boleh Kamu Referensikan
 - Supervisor mobile:
-  - `Permintaan` untuk permintaan material
-  - `Terima` untuk penerimaan material
-  - `Progres` untuk progres lapangan, defect, VO/Rework
-  - `Laporan` untuk laporan, MTN, jadwal, baseline review tertentu
+  - \`Permintaan\` untuk permintaan material
+  - \`Terima\` untuk penerimaan material
+  - \`Progres\` untuk progres lapangan, defect, VO/Rework
+  - \`Laporan\` untuk laporan, MTN, jadwal, baseline review tertentu
 - Estimator/Admin office:
-  - `Approval` untuk approval queue
-  - `Harga` untuk procurement dan PO
-  - `Katalog` untuk material catalog
-  - `Laporan -> Baseline` untuk upload/review parser BoQ/AHS
-  - `Laporan -> Mandor` untuk review trade, kontrak mandor, pekerja, kehadiran, dan buka opname mingguan
+  - \`Approval\` untuk approval queue
+  - \`Harga\` untuk procurement dan PO
+  - \`Katalog\` untuk material catalog
+  - \`Laporan -> Baseline\` untuk upload/review parser BoQ/AHS
+  - \`Laporan -> Mandor\` untuk review trade, kontrak mandor, pekerja, kehadiran, dan buka opname mingguan
 - Principal:
-  - `Approval` untuk persetujuan penting
-  - `Laporan` untuk pantau exception dan status proyek
+  - \`Approval\` untuk persetujuan penting
+  - \`Laporan\` untuk pantau exception dan status proyek
 
 ### BoQ & AHS
 - **BoQ (Bill of Quantities)**: Daftar pekerjaan proyek. Tiap item punya kode, deskripsi, volume rencana, satuan, harga satuan.
@@ -531,7 +531,7 @@ Sistem pembayaran borongan mingguan untuk mandor:
 - Item TDK ACC = item yang ditolak estimator dalam opname
 
 ### Opname Harian & Alokasi
-- Opname harian dibuka dari `Laporan -> Mandor -> Opname`
+- Opname harian dibuka dari \`Laporan -> Mandor -> Opname\`
 - Harian membayar tenaga kerja mingguan dari data kehadiran, bukan mengubah progress BoQ otomatis
 - Jika user menanyakan distribusi biaya harian, bantu sebagai **saran alokasi** ke BoQ/scope kerja
 - Saran AI tidak boleh dianggap final. Supervisor dan estimator tetap harus review dan menyimpan angkanya secara manual
