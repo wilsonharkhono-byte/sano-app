@@ -13,6 +13,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from './supabase';
 import type { TradeCategory } from './laborTrade';
 import type { ParsedBoqItem, ParsedWorkbook } from './excelParser';
+import { OpnameStatus } from './constants';
 
 // ─── DEPRECATION NOTICE ──────────────────────────────────────────────────────
 // Client-side payment computation functions in this file are DEPRECATED.
@@ -145,7 +146,7 @@ export interface OpnameHeader {
   contract_id: string;
   week_number: number;
   opname_date: string;
-  status: 'DRAFT' | 'SUBMITTED' | 'VERIFIED' | 'APPROVED' | 'PAID';
+  status: import('./constants').OpnameStatusType;
   submitted_by: string | null;
   submitted_at: string | null;
   verified_by: string | null;
@@ -1047,7 +1048,7 @@ export async function createOpnameHeader(
       opname_date: opnameDate,
       retention_pct: retentionPct,
       prior_paid: priorPaid,
-      status: 'DRAFT',
+      status: OpnameStatus.DRAFT,
     })
     .select()
     .single();

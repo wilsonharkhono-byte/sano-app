@@ -8,6 +8,7 @@
 
 import { supabase } from './supabase';
 import type { OpnameProgressFlag } from './types';
+import { OpnameStatus, KasbonStatus } from './constants';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -124,12 +125,12 @@ export async function getLaborPaymentSummary(
       .from('opname_headers')
       .select('contract_id, week_number, opname_date, status, gross_total, retention_amount, net_this_week, kasbon')
       .eq('project_id', projectId)
-      .in('status', ['APPROVED', 'PAID']),
+      .in('status', [OpnameStatus.APPROVED, OpnameStatus.PAID]),
     supabase
       .from('mandor_kasbon')
       .select('contract_id, amount')
       .eq('project_id', projectId)
-      .in('status', ['REQUESTED', 'APPROVED']),
+      .in('status', [KasbonStatus.REQUESTED, KasbonStatus.APPROVED]),
     supabase
       .from('mandor_contract_rates')
       .select('contract_id, contracted_rate, boq_labor_rate')

@@ -2,6 +2,7 @@
 // Phase 2: BoQ/AHS import pipeline, staging, review, and publish
 
 import { supabase } from './supabase';
+import { BaselineReviewStatus, AnomalyResolution } from './constants';
 import type {
   ImportSession,
   ImportStagingRow,
@@ -140,7 +141,7 @@ export async function insertStagingRows(
     parsed_data: r.parsed_data,
     confidence: r.confidence,
     needs_review: r.needs_review,
-    review_status: 'PENDING' as const,
+    review_status: BaselineReviewStatus.PENDING,
   }));
 
   const { error, count } = await supabase
@@ -361,7 +362,7 @@ export async function parseAndStageWorkbook(
         expected_value: a.expectedValue,
         actual_value: a.actualValue,
         context: a.context,
-        resolution: 'PENDING' as const,
+        resolution: AnomalyResolution.PENDING,
       }));
 
       const { error: anomalyError } = await supabase.from('import_anomalies').insert(anomalyRecords);
@@ -400,7 +401,7 @@ export async function getImportAnomalies(
     .order('severity', { ascending: true });
 
   if (onlyPending) {
-    query = query.eq('resolution', 'PENDING');
+    query = query.eq('resolution', AnomalyResolution.PENDING);
   }
 
   const { data, error } = await query;
@@ -439,9 +440,9 @@ export async function publishBaseline(
     // 1. Get all approved staging rows
     const rows = await getStagingRows(sessionId);
     const approved = rows.filter(r =>
-      r.review_status === 'APPROVED'
-      || r.review_status === 'MODIFIED'
-      || (!r.needs_review && r.review_status === 'PENDING')
+      r.review_status === BaselineReviewStatus.APPROVED
+      || r.review_status === BaselineReviewStatus.MODIFIED
+      || (!r.needs_review && r.review_status === BaselineReviewStatus.PENDING)
     );
 
     if (approved.length === 0) {

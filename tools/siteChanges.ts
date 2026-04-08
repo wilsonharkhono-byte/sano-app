@@ -106,16 +106,23 @@ export async function getSiteChanges(projectId: string): Promise<SiteChange[]> {
     .eq('project_id', projectId)
     .order('created_at', { ascending: false });
 
-  return (data ?? []).map((row: any) => ({
-    ...row,
-    boq_code: row.boq_items?.code,
-    boq_label: row.boq_items?.label,
-    mandor_name: row.mandor_contracts?.mandor_name,
-    reporter_name: row.profiles?.full_name,
-    boq_items: undefined,
-    mandor_contracts: undefined,
-    profiles: undefined,
-  }));
+  return (data ?? []).map((row) => {
+    const r = row as unknown as Record<string, unknown> & {
+      boq_items?: { code?: string; label?: string } | null;
+      mandor_contracts?: { mandor_name?: string } | null;
+      profiles?: { full_name?: string } | null;
+    };
+    return {
+      ...row,
+      boq_code: r.boq_items?.code,
+      boq_label: r.boq_items?.label,
+      mandor_name: r.mandor_contracts?.mandor_name,
+      reporter_name: r.profiles?.full_name,
+      boq_items: undefined,
+      mandor_contracts: undefined,
+      profiles: undefined,
+    };
+  }) as SiteChange[];
 }
 
 export async function getSiteChangeSummary(projectId: string): Promise<SiteChangeSummary> {

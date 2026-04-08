@@ -5,6 +5,7 @@
 
 import { supabase } from './supabase';
 import type { UserRole } from './types';
+import { DefectStatus as DS, VOStatus, UserRole as UR } from './constants';
 
 // ── Score Dimensions ─────────────────────────────────────────────────
 
@@ -153,7 +154,7 @@ export async function scoreEstimator(
     .from('defects')
     .select('reported_at, status, updated_at')
     .eq('project_id', projectId)
-    .in('status', ['VALIDATED', 'IN_REPAIR', 'RESOLVED', 'VERIFIED', 'ACCEPTED_BY_PRINCIPAL'])
+    .in('status', [DS.VALIDATED, DS.IN_REPAIR, DS.RESOLVED, DS.VERIFIED, DS.ACCEPTED_BY_PRINCIPAL])
     .gte('reported_at', periodStart)
     .lte('reported_at', periodEnd);
 
@@ -199,7 +200,7 @@ export async function scoreEstimator(
     .gte('created_at', periodStart)
     .lte('created_at', periodEnd);
 
-  const reviewedVOs = (vos ?? []).filter(v => v.status !== 'AWAITING').length;
+  const reviewedVOs = (vos ?? []).filter(v => v.status !== VOStatus.AWAITING).length;
   const reviewCoverage = (vos ?? []).length > 0
     ? (reviewedVOs / (vos ?? []).length) * 100
     : 100;
@@ -261,21 +262,21 @@ export async function runProjectScoring(
   let estimatorCount = 0;
 
   for (const a of assignments ?? []) {
-    const role = (a.profiles as any)?.role as UserRole | undefined;
+    const role = (a.profiles as unknown as { role?: UserRole })?.role;
     if (!role) continue;
 
     try {
-      if (role === 'supervisor') {
+      if (role === UR.SUPERVISOR) {
         const result = await scoreSupervisor(a.user_id, projectId, periodStart, periodEnd);
         await saveScore(result);
         supervisorCount++;
-      } else if (role === 'estimator') {
+      } else if (role === UR.ESTIMATOR) {
         const result = await scoreEstimator(a.user_id, projectId, periodStart, periodEnd);
         await saveScore(result);
         estimatorCount++;
       }
-    } catch (err: any) {
-      console.warn(`Score failed for ${a.user_id}:`, err.message);
+    } catch (err: unknown) {
+      console.warn(`Score failed for ${a.user_id}:`, err instanceof Error ? err.message : err);
     }
   }
 

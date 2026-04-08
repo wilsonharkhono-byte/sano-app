@@ -4,6 +4,7 @@
 
 import { supabase } from './supabase';
 import type { FlagLevel } from './types';
+import { AuditCaseStatus, DefectSeverity, DefectStatus, POStatus } from './constants';
 
 // ── Audit Event Types ────────────────────────────────────────────────
 
@@ -70,8 +71,8 @@ export async function writeAuditEvent(event: AuditEvent): Promise<void> {
         flag: event.severity,
       });
     }
-  } catch (err: any) {
-    console.warn('Audit write failed:', err.message);
+  } catch (err: unknown) {
+    console.warn('Audit write failed:', err instanceof Error ? err.message : err);
     // Never throw — audit must not block main flow
   }
 }
@@ -116,7 +117,7 @@ export async function openAuditCase(
     .select('id')
     .eq('project_id', projectId)
     .eq('entity_id', entityId)
-    .eq('status', 'OPEN')
+    .eq('status', AuditCaseStatus.OPEN)
     .single();
 
   if (existing) return; // already open case for this entity
@@ -126,7 +127,7 @@ export async function openAuditCase(
     trigger_type: triggerType,
     entity_type: entityType,
     entity_id: entityId,
-    status: 'OPEN',
+    status: AuditCaseStatus.OPEN,
     notes,
     created_at: new Date().toISOString(),
   });
@@ -171,17 +172,17 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
     .from('defects')
     .select('id, reported_at, severity')
     .eq('project_id', projectId)
-    .eq('status', 'OPEN')
+    .eq('status', DefectStatus.OPEN)
     .lte('reported_at', new Date(now.getTime() - 14 * 86400000).toISOString());
 
   for (const d of stuckDefects ?? []) {
-    if (d.severity === 'Critical' || d.severity === 'Major') {
+    if (d.severity === DefectSeverity.CRITICAL || d.severity === DefectSeverity.MAJOR) {
       anomalies.push({
         type: 'defect_stuck',
         found: true,
         description: `${d.severity} defect belum divalidasi > 14 hari`,
         entityId: d.id,
-        severity: d.severity === 'Critical' ? 'CRITICAL' : 'HIGH',
+        severity: d.severity === DefectSeverity.CRITICAL ? 'CRITICAL' : 'HIGH',
       });
     }
   }
@@ -192,7 +193,7 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
     .from('purchase_orders')
     .select('id, po_number, material_name, ordered_date')
     .eq('project_id', projectId)
-    .eq('status', 'OPEN')
+    .eq('status', POStatus.OPEN)
     .lte('ordered_date', sevenDaysAgo);
 
   if ((stalePOs ?? []).length > 0) {
@@ -204,7 +205,7 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
       .select('po_id')
       .in('po_id', stalePOIds);
 
-    const posWithReceiptSet = new Set((posWithReceipts ?? []).map((r: any) => r.po_id));
+    const posWithReceiptSet = new Set((posWithReceipts ?? []).map((r) => r.po_id));
 
     for (const po of stalePOs ?? []) {
       if (!posWithReceiptSet.has(po.id)) {
@@ -262,7 +263,7 @@ export async function getOpenAuditCases(projectId: string) {
     .from('audit_cases')
     .select('*')
     .eq('project_id', projectId)
-    .eq('status', 'OPEN')
+    .eq('status', AuditCaseStatus.OPEN)
     .order('created_at', { ascending: false });
 
   return data ?? [];

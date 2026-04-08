@@ -12,6 +12,7 @@ import {
   DECISION_LABELS,
   IMPACT_LABELS,
 } from './siteChanges';
+import { OpnameStatus, AttendanceStatus, MRStatus, VOStatus, MTNStatus, KasbonStatus, AuditCaseStatus } from './constants';
 import type {
   BoqItem,
   PurchaseOrder,
@@ -1331,14 +1332,14 @@ export async function generateApprovalSLAUser(
   }> = [];
   const entityBuckets = new Map<string, number[]>();
   const pendingByQueue = [
-    { label: 'Permintaan Material', count: requestRows.filter((row: MRHeaderRow) => !row.reviewed_at && ['PENDING', 'UNDER_REVIEW', 'AUTO_HOLD'].includes(row.overall_status)).length },
-    { label: 'VO Menunggu Review', count: voRows.filter((row: VoSlaRow) => !row.reviewed_at && row.status === 'AWAITING').length },
-    { label: 'MTN Menunggu Review', count: mtnRows.filter((row: MtnSlaRow) => !row.reviewed_at && row.status === 'AWAITING').length },
+    { label: 'Permintaan Material', count: requestRows.filter((row: MRHeaderRow) => !row.reviewed_at && [MRStatus.PENDING, MRStatus.UNDER_REVIEW, MRStatus.AUTO_HOLD].includes(row.overall_status as any)).length },
+    { label: 'VO Menunggu Review', count: voRows.filter((row: VoSlaRow) => !row.reviewed_at && row.status === VOStatus.AWAITING).length },
+    { label: 'MTN Menunggu Review', count: mtnRows.filter((row: MtnSlaRow) => !row.reviewed_at && row.status === MTNStatus.AWAITING).length },
     { label: 'Approval Task Pending', count: taskRows.filter((row: ApprovalTaskRow) => !row.action).length },
-    { label: 'Opname Menunggu Verifikasi', count: opnameRows.filter((row: OpnameHeaderRow) => row.status === 'SUBMITTED').length },
-    { label: 'Opname Menunggu Approval', count: opnameRows.filter((row: OpnameHeaderRow) => row.status === 'VERIFIED').length },
-    { label: 'Attendance Draft', count: attendanceRows.filter((row: AttendanceSlaRow) => row.status === 'DRAFT').length },
-    { label: 'Kasbon Requested', count: kasbonRows.filter((row: KasbonSlaRow) => row.status === 'REQUESTED').length },
+    { label: 'Opname Menunggu Verifikasi', count: opnameRows.filter((row: OpnameHeaderRow) => row.status === OpnameStatus.SUBMITTED).length },
+    { label: 'Opname Menunggu Approval', count: opnameRows.filter((row: OpnameHeaderRow) => row.status === OpnameStatus.VERIFIED).length },
+    { label: 'Attendance Draft', count: attendanceRows.filter((row: AttendanceSlaRow) => row.status === AttendanceStatus.DRAFT).length },
+    { label: 'Kasbon Requested', count: kasbonRows.filter((row: KasbonSlaRow) => row.status === KasbonStatus.REQUESTED).length },
   ];
   const assignedPending = new Map<string, number>();
 
@@ -1895,7 +1896,7 @@ export async function generateExceptionHandlingLoad(
   };
 
   requestRows.forEach((row: MRHeaderRow) => {
-    if (row.overall_status === 'AUTO_HOLD') {
+    if (row.overall_status === MRStatus.AUTO_HOLD) {
       const creator = ensureUser(row.requested_by);
       creator.generated_count += 1;
       if (!creator.last_touch || row.created_at > creator.last_touch) creator.last_touch = row.created_at;
@@ -1905,7 +1906,7 @@ export async function generateExceptionHandlingLoad(
         reviewer.hold_reject_override += 1;
         if (!reviewer.last_touch || (row.reviewed_at && row.reviewed_at > reviewer.last_touch)) reviewer.last_touch = row.reviewed_at;
       }
-    } else if (row.overall_status === 'REJECTED' && row.reviewed_by) {
+    } else if (row.overall_status === MRStatus.REJECTED && row.reviewed_by) {
       const reviewer = ensureUser(row.reviewed_by);
       reviewer.handled_count += 1;
       reviewer.hold_reject_override += 1;
@@ -1914,7 +1915,7 @@ export async function generateExceptionHandlingLoad(
   });
 
   voRows.forEach((row: VoSlaRow) => {
-    if (row.status === 'REJECTED') {
+    if (row.status === VOStatus.REJECTED) {
       const creator = ensureUser(row.created_by);
       creator.generated_count += 1;
       if (!creator.last_touch || row.created_at > creator.last_touch) creator.last_touch = row.created_at;
@@ -1928,7 +1929,7 @@ export async function generateExceptionHandlingLoad(
   });
 
   mtnRows.forEach((row: MtnSlaRow) => {
-    if (row.status === 'REJECTED') {
+    if (row.status === MTNStatus.REJECTED) {
       const creator = ensureUser(row.requested_by);
       creator.generated_count += 1;
       if (!creator.last_touch || row.created_at > creator.last_touch) creator.last_touch = row.created_at;
@@ -1957,14 +1958,14 @@ export async function generateExceptionHandlingLoad(
     filters,
     data: {
       summary: {
-        auto_hold_requests: requestRows.filter((row: MRHeaderRow) => row.overall_status === 'AUTO_HOLD').length,
-        rejected_requests: requestRows.filter((row: MRHeaderRow) => row.overall_status === 'REJECTED').length,
-        rejected_vo: voRows.filter((row: VoSlaRow) => row.status === 'REJECTED').length,
-        rejected_mtn: mtnRows.filter((row: MtnSlaRow) => row.status === 'REJECTED').length,
+        auto_hold_requests: requestRows.filter((row: MRHeaderRow) => row.overall_status === MRStatus.AUTO_HOLD).length,
+        rejected_requests: requestRows.filter((row: MRHeaderRow) => row.overall_status === MRStatus.REJECTED).length,
+        rejected_vo: voRows.filter((row: VoSlaRow) => row.status === VOStatus.REJECTED).length,
+        rejected_mtn: mtnRows.filter((row: MtnSlaRow) => row.status === MTNStatus.REJECTED).length,
         hold_reject_override_actions: taskRows.filter((row: ApprovalTaskRow) => ['HOLD', 'REJECT', 'OVERRIDE'].includes(row.action ?? '')).length,
         anomalies_total: anomalyRows.length,
         anomalies_high_or_critical: anomalyRows.filter((row: AnomalyEventRow) => ['HIGH', 'CRITICAL'].includes(row.severity)).length,
-        audit_cases_open: auditRows.filter((row: AuditCaseMinRow) => row.status !== 'CLOSED').length,
+        audit_cases_open: auditRows.filter((row: AuditCaseMinRow) => row.status !== AuditCaseStatus.CLOSED).length,
       },
       users: Array.from(users.values()).sort((a, b) => {
         if (b.handled_count !== a.handled_count) return b.handled_count - a.handled_count;
@@ -1977,7 +1978,7 @@ export async function generateExceptionHandlingLoad(
         }, new Map<string, number>()).entries(),
       ).map(([event_type, count]) => ({ event_type, count })).sort((a, b) => b.count - a.count),
       audit_breakdown: Array.from(
-        auditRows.reduce((map: Map<string, number>, row: any) => {
+        auditRows.reduce((map: Map<string, number>, row: AuditCaseMinRow) => {
           map.set(`${row.trigger_type}::${row.status}`, (map.get(`${row.trigger_type}::${row.status}`) ?? 0) + 1);
           return map;
         }, new Map<string, number>()).entries(),

@@ -790,6 +790,7 @@ async function buildSiteChangeLog(sd: SanoDoc, d: SiteChangeLogData): Promise<vo
 }
 
 // forward declarations populated below
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous builder map requires flexible data param
 const BUILDERS: Partial<Record<string, (sd: SanoDoc, d: any) => Promise<void>>> = {};
 type AnyReportData = ProgressSummaryData | MaterialBalanceData | ReceiptLogData | SiteChangeLogData | ScheduleVarianceData | WeeklyDigestData | PayrollSupportData | ClientChargeData | AuditListData | AIUsageData | ApprovalSLAData | OperationalDisciplineData | ToolUsageData | ExceptionHandlingData;
 

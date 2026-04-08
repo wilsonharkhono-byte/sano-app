@@ -139,7 +139,7 @@ export async function askSanoAI(
 
   if (error) {
     // Surface a user-friendly Indonesian error
-    const message = (error as any)?.message ?? 'Gagal terhubung ke Asisten SANO.';
+    const message = (error instanceof Error ? error.message : null) ?? 'Gagal terhubung ke Asisten SANO.';
     throw new Error(message);
   }
 
@@ -270,7 +270,7 @@ export async function suggestHarianAllocation(
     throw new Error('Respons AI belum terbaca sebagai JSON. Coba generate ulang.');
   }
 
-  let parsed: any;
+  let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(jsonBlock);
   } catch {
@@ -369,7 +369,7 @@ export async function suggestMaterialNaming(
     throw new Error('Respons AI belum terbaca sebagai JSON. Coba ulangi usulan nama.');
   }
 
-  let parsed: any;
+  let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(jsonBlock);
   } catch {

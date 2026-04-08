@@ -8,6 +8,7 @@
 
 import { supabase } from './supabase';
 import type { DefectStatus, UserRole } from './types';
+import { DefectStatus as DS, DefectSeverity as DSev, UserRole as UR } from './constants';
 
 export interface DefectTransition {
   from: DefectStatus;
@@ -20,59 +21,59 @@ export interface DefectTransition {
 export const DEFECT_TRANSITIONS: DefectTransition[] = [
   // Estimator validates a new defect
   {
-    from: 'OPEN',
-    to: 'VALIDATED',
-    allowedRoles: ['estimator', 'admin', 'principal'],
+    from: DS.OPEN,
+    to: DS.VALIDATED,
+    allowedRoles: [UR.ESTIMATOR, UR.ADMIN, UR.PRINCIPAL],
     label: 'Validasi',
     requiresFields: ['responsible_party'],
   },
   // Supervisor/admin can start repair immediately from an open issue
   {
-    from: 'OPEN',
-    to: 'IN_REPAIR',
-    allowedRoles: ['supervisor', 'admin', 'estimator'],
+    from: DS.OPEN,
+    to: DS.IN_REPAIR,
+    allowedRoles: [UR.SUPERVISOR, UR.ADMIN, UR.ESTIMATOR],
     label: 'Mulai Perbaikan',
   },
   // Validated → assigned for repair
   {
-    from: 'VALIDATED',
-    to: 'IN_REPAIR',
-    allowedRoles: ['estimator', 'admin', 'supervisor'],
+    from: DS.VALIDATED,
+    to: DS.IN_REPAIR,
+    allowedRoles: [UR.ESTIMATOR, UR.ADMIN, UR.SUPERVISOR],
     label: 'Mulai Perbaikan',
   },
   // Supervisor marks repair done
   {
-    from: 'IN_REPAIR',
-    to: 'RESOLVED',
-    allowedRoles: ['supervisor', 'estimator', 'admin'],
+    from: DS.IN_REPAIR,
+    to: DS.RESOLVED,
+    allowedRoles: [UR.SUPERVISOR, UR.ESTIMATOR, UR.ADMIN],
     label: 'Selesai Diperbaiki',
   },
   // Estimator/Principal verifies the repair
   {
-    from: 'RESOLVED',
-    to: 'VERIFIED',
-    allowedRoles: ['estimator', 'principal'],
+    from: DS.RESOLVED,
+    to: DS.VERIFIED,
+    allowedRoles: [UR.ESTIMATOR, UR.PRINCIPAL],
     label: 'Verifikasi',
   },
   // Principal final acceptance
   {
-    from: 'VERIFIED',
-    to: 'ACCEPTED_BY_PRINCIPAL',
-    allowedRoles: ['principal'],
+    from: DS.VERIFIED,
+    to: DS.ACCEPTED_BY_PRINCIPAL,
+    allowedRoles: [UR.PRINCIPAL],
     label: 'Terima (Prinsipal)',
   },
   // Reject back to IN_REPAIR if verification fails
   {
-    from: 'RESOLVED',
-    to: 'IN_REPAIR',
-    allowedRoles: ['estimator', 'principal'],
+    from: DS.RESOLVED,
+    to: DS.IN_REPAIR,
+    allowedRoles: [UR.ESTIMATOR, UR.PRINCIPAL],
     label: 'Tolak — Perbaiki Ulang',
   },
   // Reject back from VERIFIED
   {
-    from: 'VERIFIED',
-    to: 'IN_REPAIR',
-    allowedRoles: ['principal'],
+    from: DS.VERIFIED,
+    to: DS.IN_REPAIR,
+    allowedRoles: [UR.PRINCIPAL],
     label: 'Tolak — Perbaiki Ulang',
   },
 ];
@@ -121,20 +122,20 @@ export async function transitionDefect(
   // Build update payload
   const update: Record<string, unknown> = { status: targetStatus };
 
-  if (targetStatus === 'VALIDATED' && extras?.responsible_party) {
+  if (targetStatus === DS.VALIDATED && extras?.responsible_party) {
     update.responsible_party = extras.responsible_party;
   }
   if (extras?.target_resolution_date) {
     update.target_resolution_date = extras.target_resolution_date;
   }
-  if (targetStatus === 'RESOLVED' && extras?.repair_photo_path) {
+  if (targetStatus === DS.RESOLVED && extras?.repair_photo_path) {
     update.repair_photo_path = extras.repair_photo_path;
   }
-  if (targetStatus === 'VERIFIED') {
+  if (targetStatus === DS.VERIFIED) {
     update.verifier_id = userId;
     update.verified_at = new Date().toISOString();
   }
-  if (targetStatus === 'RESOLVED') {
+  if (targetStatus === DS.RESOLVED) {
     update.resolved_at = new Date().toISOString();
   }
 
@@ -160,8 +161,8 @@ export async function transitionDefect(
 
 // Check if a defect blocks handover
 export function isHandoverBlocker(status: DefectStatus, severity: string): boolean {
-  const openStatuses: DefectStatus[] = ['OPEN', 'VALIDATED', 'IN_REPAIR', 'RESOLVED'];
-  return openStatuses.includes(status) && (severity === 'Critical' || severity === 'Major');
+  const openStatuses: DefectStatus[] = [DS.OPEN, DS.VALIDATED, DS.IN_REPAIR, DS.RESOLVED];
+  return openStatuses.includes(status) && (severity === DSev.CRITICAL || severity === DSev.MAJOR);
 }
 
 // Get handover summary for a project's defects
@@ -177,8 +178,8 @@ export function computeHandoverSummary(
   defects: Array<{ id: string; status: DefectStatus; severity: string; handover_impact: boolean }>
 ): HandoverSummary {
   const blockers = defects.filter(d => isHandoverBlocker(d.status, d.severity) || d.handover_impact);
-  const criticalOpen = blockers.filter(d => d.severity === 'Critical').length;
-  const majorOpen = blockers.filter(d => d.severity === 'Major').length;
+  const criticalOpen = blockers.filter(d => d.severity === DSev.CRITICAL).length;
+  const majorOpen = blockers.filter(d => d.severity === DSev.MAJOR).length;
 
   return {
     eligible: blockers.length === 0,
