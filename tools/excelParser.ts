@@ -1978,25 +1978,47 @@ const WORK_TYPE_ARCHETYPES: Array<{
 ];
 
 /**
+ * Umbrella chapters whose items should always stay together regardless of
+ * individual label keywords. Without this override, items like "bowplank"
+ * (keyword: galian) or "pengukuran titik bore pile" (keyword: tiang_pancang)
+ * get pulled out of their Pekerjaan Persiapan chapter into the wrong group.
+ */
+const UMBRELLA_CHAPTER_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+  { pattern: /pekerjaan\s+persiapan|preliminaries|prelim/i, label: 'Pekerjaan Persiapan' },
+  { pattern: /pekerjaan\s+(tanah|galian)/i, label: 'Pekerjaan Tanah & Galian' },
+];
+
+/**
  * Classify a BoQ item into a freeform group label + floor level.
  *
  * Strategy:
- *   1. Match label against known work-type archetypes → use archetype label
- *   2. Match section/chapter context against archetypes → use archetype label
- *   3. Chapter-based fallback so every item lands in *some* bucket
+ *   1. Chapter override — umbrella chapters (Pekerjaan Persiapan, Tanah)
+ *      keep all items together
+ *   2. Match label against known work-type archetypes
+ *   3. Match section/chapter context against archetypes
+ *   4. Chapter-name fallback so every item lands in *some* bucket
  */
 function classifyBoqItem(item: ParsedBoqItem): BoqClassification {
   const labelLower = normalize(item.label);
   const floor = extractFloorFromBoqContext(item);
 
-  // Primary: match label directly
+  // 1. Umbrella chapter override — forces everything in prelim/earthwork
+  //    chapters into a single canonical group before archetype matching.
+  const chapterRaw = item.chapter || '';
+  for (const umbrella of UMBRELLA_CHAPTER_PATTERNS) {
+    if (umbrella.pattern.test(chapterRaw)) {
+      return { group: umbrella.label, floor };
+    }
+  }
+
+  // 2. Primary: match label directly
   for (const arch of WORK_TYPE_ARCHETYPES) {
     if (!arch.keywords.some(kw => labelLower.includes(kw))) continue;
     if (arch.excludeKeywords?.some(kw => labelLower.includes(kw))) continue;
     return { group: arch.label(floor), floor };
   }
 
-  // Fallback: match against section + chapter context
+  // 3. Fallback: match against section + chapter context
   const contextLower = normalize(
     [item.label, item.sectionLabel ?? '', item.chapter].join(' '),
   );
@@ -2006,8 +2028,8 @@ function classifyBoqItem(item: ParsedBoqItem): BoqClassification {
     return { group: arch.label(floor), floor };
   }
 
-  // Last-resort fallback: chapter name so same-chapter items still collapse together
-  const chapterLabel = (item.chapter || '').trim() || 'Pekerjaan Lainnya';
+  // 4. Last-resort fallback: chapter name so same-chapter items still group
+  const chapterLabel = chapterRaw.trim() || 'Pekerjaan Lainnya';
   const group = floor && !chapterLabel.toLowerCase().includes('lantai')
     ? `${chapterLabel} ${floor}`
     : chapterLabel;

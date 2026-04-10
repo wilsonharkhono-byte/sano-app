@@ -151,15 +151,30 @@ export async function askSanoAI(
   return data;
 }
 
-function extractJsonBlock(raw: string): string | null {
-  const fenced = raw.match(/```json\s*([\s\S]*?)```/i);
+export function extractJsonBlock(raw: string): string | null {
+  // 1. Prefer fenced code block
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced?.[1]) return fenced[1].trim();
 
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    return raw.slice(start, end + 1).trim();
+  // 2. Try to locate either an array `[...]` or object `{...}` — whichever
+  //    appears first. Previously we only handled objects, which truncated
+  //    array responses to a single element and silently corrupted the
+  //    AI BoQ classifier output.
+  const arrStart = raw.indexOf('[');
+  const arrEnd = raw.lastIndexOf(']');
+  const objStart = raw.indexOf('{');
+  const objEnd = raw.lastIndexOf('}');
+
+  const hasArr = arrStart >= 0 && arrEnd > arrStart;
+  const hasObj = objStart >= 0 && objEnd > objStart;
+
+  // If both are present, pick whichever starts first in the raw text.
+  if (hasArr && hasObj) {
+    if (arrStart < objStart) return raw.slice(arrStart, arrEnd + 1).trim();
+    return raw.slice(objStart, objEnd + 1).trim();
   }
+  if (hasArr) return raw.slice(arrStart, arrEnd + 1).trim();
+  if (hasObj) return raw.slice(objStart, objEnd + 1).trim();
 
   return null;
 }
