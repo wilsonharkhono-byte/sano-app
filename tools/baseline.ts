@@ -252,9 +252,11 @@ import {
   parseBoqWorkbook,
   convertToStagingRows,
   reconcileMaterials,
+  applyBoqGrouping,
   type ParsedWorkbook,
   type CatalogEntry,
 } from './excelParser';
+import { applyAIBoqGrouping } from './ai-assist';
 import type { ImportAnomaly } from './types';
 
 /**
@@ -293,11 +295,9 @@ export async function parseAndStageWorkbook(
 
     // 1b. AI-driven BoQ grouping (consolidates granular items into broader categories)
     try {
-      const { applyAIBoqGrouping } = await import('./ai-assist');
       await applyAIBoqGrouping(parsed);
     } catch {
       // If AI grouping fails entirely, apply keyword fallback
-      const { applyBoqGrouping } = await import('./excelParser');
       applyBoqGrouping(parsed);
     }
 
