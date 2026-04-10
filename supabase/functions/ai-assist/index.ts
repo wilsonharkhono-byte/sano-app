@@ -15,7 +15,7 @@ interface ChatMessage {
   content: string;
 }
 
-type AIModel = 'haiku' | 'sonnet';
+type AIModel = 'haiku' | 'sonnet' | 'opus';
 
 interface ProjectContext {
   projectId?: string;
@@ -130,6 +130,7 @@ interface LiveProjectSnapshot {
 const MODEL_IDS: Record<AIModel, string> = {
   haiku:  'claude-haiku-4-5-20251001',
   sonnet: 'claude-sonnet-4-6',
+  opus:   'claude-opus-4-6',
 };
 
 // ── CORS headers ─────────────────────────────────────────────────────────────

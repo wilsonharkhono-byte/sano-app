@@ -1978,10 +1978,14 @@ const WORK_TYPE_ARCHETYPES: Array<{
 ];
 
 /**
- * Classify a BoQ item into a work type + floor level.
- * First tries label keywords, then falls back to section/chapter context.
+ * Classify a BoQ item into a freeform group label + floor level.
+ *
+ * Strategy:
+ *   1. Match label against known work-type archetypes → use archetype label
+ *   2. Match section/chapter context against archetypes → use archetype label
+ *   3. Chapter-based fallback so every item lands in *some* bucket
  */
-function classifyBoqItem(item: ParsedBoqItem): { type: string; floor: string | null } {
+function classifyBoqItem(item: ParsedBoqItem): BoqClassification {
   const labelLower = normalize(item.label);
   const floor = extractFloorFromBoqContext(item);
 
@@ -1989,7 +1993,7 @@ function classifyBoqItem(item: ParsedBoqItem): { type: string; floor: string | n
   for (const arch of WORK_TYPE_ARCHETYPES) {
     if (!arch.keywords.some(kw => labelLower.includes(kw))) continue;
     if (arch.excludeKeywords?.some(kw => labelLower.includes(kw))) continue;
-    return { type: arch.type, floor };
+    return { group: arch.label(floor), floor };
   }
 
   // Fallback: match against section + chapter context
@@ -1999,10 +2003,15 @@ function classifyBoqItem(item: ParsedBoqItem): { type: string; floor: string | n
   for (const arch of WORK_TYPE_ARCHETYPES) {
     if (!arch.keywords.some(kw => contextLower.includes(kw))) continue;
     if (arch.excludeKeywords?.some(kw => contextLower.includes(kw))) continue;
-    return { type: arch.type, floor };
+    return { group: arch.label(floor), floor };
   }
 
-  return { type: '_ungrouped', floor };
+  // Last-resort fallback: chapter name so same-chapter items still collapse together
+  const chapterLabel = (item.chapter || '').trim() || 'Pekerjaan Lainnya';
+  const group = floor && !chapterLabel.toLowerCase().includes('lantai')
+    ? `${chapterLabel} ${floor}`
+    : chapterLabel;
+  return { group, floor };
 }
 
 /**
@@ -2029,7 +2038,9 @@ function extractFloorFromBoqContext(item: ParsedBoqItem): string | null {
  * all original sourceRows (needed to update rabToAhsLinks).
  */
 export interface BoqClassification {
-  type: string;
+  /** Freeform group label like "Pekerjaan Persiapan" or "Struktur Kolom Beton Lantai 1". */
+  group: string;
+  /** Floor context (for display/sorting only — label may already embed it). */
   floor: string | null;
 }
 
@@ -2054,10 +2065,10 @@ export function groupBoqItems(
     cls: aiClassifications?.get(idx) ?? classifyBoqItem(item),
   }));
 
-  // 2. Group by type + floor + unit
+  // 2. Group purely by freeform group label — unit heterogeneity is handled below
   const groups = new Map<string, typeof classified>();
   for (const entry of classified) {
-    const key = `${entry.cls.type}|${entry.cls.floor ?? '_'}|${entry.item.unit}`;
+    const key = entry.cls.group;
     const list = groups.get(key) ?? [];
     list.push(entry);
     groups.set(key, list);
@@ -2068,21 +2079,14 @@ export function groupBoqItems(
   const sourceRowMapping = new Map<number, number[]>();
   const chapterCounters = new Map<string, number>();
 
-  for (const [, group] of groups) {
+  for (const [groupLabel, group] of groups) {
     // Single-item groups: keep the original item unchanged
     if (group.length === 1) {
       result.push(group[0].item);
       continue;
     }
 
-    const { cls } = group[0];
     const firstItem = group[0].item;
-
-    // ── Label ─────────────────────────────────────────────────────
-    const archetype = WORK_TYPE_ARCHETYPES.find(a => a.type === cls.type);
-    const label = archetype
-      ? archetype.label(cls.floor)
-      : `Pekerjaan Lainnya${cls.floor ? ` ${cls.floor}` : ''}`;
 
     // ── Code ──────────────────────────────────────────────────────
     const chapterIdx = firstItem.chapterIndex || 'I';
@@ -2090,8 +2094,18 @@ export function groupBoqItems(
     chapterCounters.set(chapterIdx, counter);
     const code = `${chapterIdx}-G${String(counter).padStart(2, '0')}`;
 
-    // ── Aggregates ────────────────────────────────────────────────
-    const totalVolume = group.reduce((s, e) => s + e.item.volume, 0);
+    // ── Unit reconciliation ──────────────────────────────────────
+    // If every sub-item shares one unit, preserve it and sum volumes.
+    // Otherwise, collapse to "paket" with volume=1 — this preserves
+    // total cost while avoiding physically meaningless sums.
+    const units = new Set(group.map(e => e.item.unit.trim()));
+    const homogeneousUnit = units.size === 1 ? [...units][0] : null;
+    const unit = homogeneousUnit ?? 'paket';
+    const totalVolume = homogeneousUnit
+      ? group.reduce((s, e) => s + e.item.volume, 0)
+      : 1;
+
+    // ── Cost aggregation (always sums regardless of unit) ────────
     const totalCost = {
       material: group.reduce((s, e) => s + e.item.costBreakdown.material, 0),
       labor: group.reduce((s, e) => s + e.item.costBreakdown.labor, 0),
@@ -2102,9 +2116,9 @@ export function groupBoqItems(
 
     const allAhsRefs = group.flatMap(e => e.item.ahsReferences);
 
-    // Average composite factors (structural items)
+    // Composite factors only meaningful when unit is preserved
     const withComposite = group.filter(e => e.item.compositeFactors);
-    const avgComposite = withComposite.length > 0
+    const avgComposite = homogeneousUnit && withComposite.length > 0
       ? {
           formwork_ratio: withComposite.reduce((s, e) => s + (e.item.compositeFactors!.formwork_ratio), 0) / withComposite.length,
           rebar_ratio: withComposite.reduce((s, e) => s + (e.item.compositeFactors!.rebar_ratio), 0) / withComposite.length,
@@ -2127,8 +2141,8 @@ export function groupBoqItems(
 
     result.push({
       code,
-      label,
-      unit: firstItem.unit,
+      label: groupLabel,
+      unit,
       volume: totalVolume,
       chapter: firstItem.chapter,
       chapterIndex: chapterIdx,

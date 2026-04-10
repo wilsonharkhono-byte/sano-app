@@ -12,12 +12,13 @@ export interface AIChatMessage {
   content: string;
 }
 
-/** Switch between cost-efficient Haiku and higher-capability Sonnet */
-export type AIModel = 'haiku' | 'sonnet';
+/** Switch between cost-efficient Haiku, capable Sonnet, and top-tier Opus */
+export type AIModel = 'haiku' | 'sonnet' | 'opus';
 
 export const AI_MODEL_LABELS: Record<AIModel, string> = {
   haiku:  'Haiku (Cepat)',
   sonnet: 'Sonnet (Lebih Pintar)',
+  opus:   'Opus (Paling Pintar)',
 };
 
 /**
@@ -409,7 +410,7 @@ export async function suggestMaterialNaming(
 // ── BoQ Item Classification ──────────────────────────────────────────────────
 
 import type { ParsedBoqItem, ParsedWorkbook, BoqClassification } from './excelParser';
-import { BOQ_WORK_TYPES, applyBoqGrouping } from './excelParser';
+import { applyBoqGrouping } from './excelParser';
 
 export interface BoqClassificationResult {
   classifications: Map<number, BoqClassification>;
@@ -421,9 +422,100 @@ export interface BoqClassificationResult {
  * Returns a map of item index → classification.
  * Throws if the AI call fails — caller should catch and fall back to keywords.
  */
+/**
+ * Prescribed BoQ grouping ruleset.
+ *
+ * This string is the single source of truth for how every BoQ is grouped.
+ * It must stay identical across calls so every import classifies consistently.
+ */
+const BOQ_GROUPING_RULESET = `
+Kamu sedang mengelompokkan Bill of Quantity (BoQ) konstruksi Indonesia menjadi
+kategori pekerjaan besar. Output kamu akan langsung dipakai untuk menyusun
+baseline proyek, jadi kualitas dan konsistensi mutlak.
+
+===== ATURAN WAJIB (TIDAK BOLEH DILANGGAR) =====
+
+1. TARGET JUMLAH KATEGORI: Maksimal 25 kategori per BoQ. Idealnya 10-20.
+   Jangan menciptakan ratusan kategori kecil.
+
+2. KONSISTENSI LABEL: Item yang mirip WAJIB mendapat label persis sama
+   (case-sensitive, tanpa variasi spasi). Jangan pernah menulis
+   "Struktur Pondasi Beton" dan "struktur pondasi beton" sekaligus.
+
+3. GUNAKAN KONTEKS SECTION/CHAPTER. Item ambigu seperti "K1", "B2", "S3",
+   "PC1" ditentukan dari chapter — misal "K1" di "Struktur Lantai 1" = kolom
+   Lantai 1.
+
+4. PISAH PER LANTAI HANYA JIKA ADA KONTEKS LANTAI. Kalau chapter/section
+   menyebut lantai (Lantai 1/2/3, Basement, Semi Basement, Lantai Dasar,
+   Mezzanine, Dak, Atap), cantumkan di label. Kalau tidak ada, jangan karang.
+
+5. SETIAP ITEM WAJIB DAPAT LABEL. Tidak boleh ada item yang "skipped".
+   Kalau benar-benar tidak tahu, pakai nama chapter-nya sebagai label.
+
+===== TEMPLATE LABEL STANDAR =====
+
+Gunakan label dari daftar ini SEBISA MUNGKIN (konsistensi > kreativitas):
+
+• "Pekerjaan Persiapan"                      — pagar proyek, bowplank,
+                                                uitzet, air kerja, listrik
+                                                kerja, papan nama, direksi kit
+• "Pekerjaan Tanah & Galian"                 — galian, buang tanah,
+                                                pembersihan lahan
+• "Urugan & Pematangan Tanah"                — urugan pasir, urugan tanah,
+                                                pemadatan, sirtu, lantai kerja
+• "Pekerjaan Tiang Pancang"                  — bore pile, spun pile, mini
+                                                pile, cerucuk
+• "Struktur Pondasi Beton"                   — pile cap (PC1/PC2/..), poer,
+                                                tapak, footplate, cakar ayam
+• "Sloof & Balok Pengikat {Lantai}"          — sloof, tie beam, balok bawah
+• "Struktur Kolom Beton {Lantai}"            — kolom beton (K1/K2/..)
+• "Struktur Beton {Lantai} (Balok & Plat)"   — balok, plat lantai, ring
+                                                balok, shear wall, kanopi
+• "Struktur Tangga {Lantai}"                 — tangga, bordes
+• "Struktur Dak / Plat Atap"                 — dak beton, plat atap
+• "Bekisting Struktur {Lantai}"              — bekisting, formwork
+• "Pembesian Struktur {Lantai}"              — pembesian, tulangan, besi
+                                                beton, wiremesh
+• "Pengecoran Beton {Lantai}"                — pengecoran, ready mix
+• "Pasangan Dinding {Lantai}"                — bata merah, batako, hebel,
+                                                bata ringan, partisi
+• "Plesteran & Acian {Lantai}"               — plester, acian, benangan
+• "Waterproofing {Lantai}"                   — waterproof, membrane
+• "Pekerjaan Lantai {Lantai}"                — keramik, granit, vinyl,
+                                                parquet, homogeneous tile
+• "Pekerjaan Plafond {Lantai}"               — plafond gypsum, GRC, kalsiboard
+• "Pengecatan {Lantai}"                      — cat tembok, cat kayu, cat besi
+• "Kusen, Pintu & Jendela {Lantai}"          — kusen alu, pintu, jendela
+• "Perlengkapan Sanitair {Lantai}"           — kloset, wastafel, shower
+• "Railing & Pagar {Lantai}"                 — railing, handrail, pegangan
+• "Pekerjaan Atap & Penutup"                 — atap genteng, spandek, kuda
+                                                kuda, rangka atap, nok, talang
+• "Instalasi Elektrikal {Lantai}"            — stop kontak, saklar, titik
+                                                lampu, panel, grounding
+• "Instalasi Perpipaan {Lantai}"             — air bersih, air kotor,
+                                                drainase, septictank
+• "Instalasi AC {Lantai}"                    — AC split, ducting, HVAC
+• "Fire Protection {Lantai}"                 — sprinkler, hydrant, fire alarm
+• "Pekerjaan Landscape"                      — taman, paving, planter
+• "Pekerjaan Eksterior"                      — fasad, ACP, curtain wall
+
+Ganti "{Lantai}" dengan "Lantai 1"/"Lantai 2"/"Basement"/dsb kalau
+relevan. Kalau item tidak punya lantai, hapus placeholder itu
+(contoh: "Pasangan Dinding", bukan "Pasangan Dinding {Lantai}").
+
+===== FORMAT OUTPUT =====
+
+Kembalikan JSON array SAJA (tanpa penjelasan, tanpa markdown, tanpa
+code fence). Key singkat: i=index, g=group label, f=floor (atau null).
+
+Contoh:
+[{"i":0,"g":"Pekerjaan Persiapan","f":null},{"i":1,"g":"Struktur Kolom Beton Lantai 1","f":"Lantai 1"}]
+`.trim();
+
 export async function classifyBoqItemsAI(
   items: ParsedBoqItem[],
-  model: AIModel = 'haiku',
+  model: AIModel = 'sonnet',
 ): Promise<BoqClassificationResult> {
   if (items.length === 0) {
     return { classifications: new Map(), usage: { input_tokens: 0, output_tokens: 0 } };
@@ -434,31 +526,11 @@ export async function classifyBoqItemsAI(
     `[${idx}] "${item.label}" | unit: ${item.unit} | section: ${item.sectionLabel ?? '-'} | chapter: ${item.chapter}`,
   ).join('\n');
 
-  const instruction = [
-    'Klasifikasi item BoQ konstruksi Indonesia ini ke kategori pekerjaan dan level lantai.',
-    'Tujuan: mengelompokkan item granular (Pondasi PC1, PC2 dsb) ke kategori besar (pondasi, kolom, balok_plat, dsb).',
-    '',
-    'KODE TIPE PEKERJAAN yang valid:',
-    BOQ_WORK_TYPES.join(', '),
-    '',
-    'FLOOR: null (tanpa lantai), "Lantai 1", "Lantai 2", "Basement", "Semi Basement", "Lantai Dasar", "Mezzanine", "Dak / Atap", dsb.',
-    '',
-    'ATURAN:',
-    '- Pahami konteks section/chapter untuk item yang ambigu (misal "K1" di chapter "Struktur LT 1" = kolom Lantai 1)',
-    '- "PC1", "PC2" = pile cap = pondasi',
-    '- "B1", "B2" di chapter struktur = balok = balok_plat',
-    '- "S1", "S2" di chapter struktur = plat/slab = balok_plat',
-    '- Bekisting & pembesian tetap terpisah dari item beton-nya (tipe berbeda)',
-    '- Item yang tidak cocok ke tipe manapun: gunakan "_other"',
-    '- Floor diambil dari section/chapter/label — jika tidak ada konteks lantai, null',
-    '',
-    'ITEMS:',
-    itemLines,
-    '',
-    'Kembalikan JSON SAJA (tanpa penjelasan):',
-    '[{"i":0,"t":"pondasi","f":null},{"i":1,"t":"kolom","f":"Lantai 1"},...]',
-    'Gunakan key singkat: i=index, t=type, f=floor.',
-  ].join('\n');
+  const instruction = `${BOQ_GROUPING_RULESET}
+
+===== ITEMS UNTUK DIKLASIFIKASI (${items.length} baris) =====
+
+${itemLines}`;
 
   const response = await askSanoAI(
     [{ role: 'user', content: instruction }],
@@ -482,31 +554,37 @@ export async function classifyBoqItemsAI(
     throw new Error('AI BoQ classifier did not return an array.');
   }
 
-  const validTypes = new Set([...BOQ_WORK_TYPES, '_other', '_ungrouped']);
   const classifications = new Map<number, BoqClassification>();
 
   for (const entry of rawParsed) {
-    const idx = Number(entry?.i ?? -1);
-    const type = String(entry?.t ?? '_other');
-    const floor = entry?.f == null ? null : String(entry.f);
+    const e = entry as { i?: unknown; g?: unknown; f?: unknown };
+    const idx = Number(e.i ?? -1);
+    const group = typeof e.g === 'string' ? e.g.trim() : '';
+    const floor = e.f == null || e.f === '' ? null : String(e.f);
 
     if (idx < 0 || idx >= items.length) continue;
-    if (!validTypes.has(type)) continue;
+    if (!group) continue;
 
-    classifications.set(idx, { type, floor });
+    classifications.set(idx, { group, floor });
   }
 
   return { classifications, usage: response.usage };
 }
 
 /**
- * AI-driven BoQ grouping: classify items with Claude, then group.
- * Falls back to keyword-based classification if AI call fails.
- * Modifies the parsed workbook in place.
+ * AI-driven BoQ grouping: classify items with Claude using the prescribed
+ * ruleset, then consolidate. Every parse runs through AI for consistency.
+ *
+ * Default model is `sonnet` so every BoQ gets the same reasoning quality.
+ * Caller can pass `opus` for highest consistency at higher cost.
+ *
+ * If the AI call fails mid-import, we fall back to the keyword classifier
+ * so the user never gets stuck — but the keyword fallback is the safety net,
+ * not the primary path.
  */
 export async function applyAIBoqGrouping(
   parsed: ParsedWorkbook,
-  model: AIModel = 'haiku',
+  model: AIModel = 'sonnet',
 ): Promise<{ method: 'ai' | 'keyword'; itemCount: number }> {
   const originalCount = parsed.boqItems.length;
   if (originalCount === 0) return { method: 'keyword', itemCount: 0 };
@@ -515,7 +593,8 @@ export async function applyAIBoqGrouping(
 
   try {
     const result = await classifyBoqItemsAI(parsed.boqItems, model);
-    // Only use AI classifications if we got enough results
+    // Accept AI results if at least half of items were classified — the rest
+    // fall back to keyword-based classification inside applyBoqGrouping.
     if (result.classifications.size >= originalCount * 0.5) {
       aiClassifications = result.classifications;
     }
