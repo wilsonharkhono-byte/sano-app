@@ -150,20 +150,56 @@ export interface ParsedAnomaly {
 // STANDARD REFERENCE DATA (for AI anomaly detection)
 // ═══════════════════════════════════════════════════════════════════════
 
-/** Standard coefficient ranges for common AHS components (per m2 or per m3) */
-const STANDARD_COEFFICIENTS: Record<string, { min: number; max: number; unit: string }> = {
-  // Bata merah per m2 dinding
-  'bata merah': { min: 50, max: 80, unit: 'pcs' },
-  'bata ringan': { min: 7, max: 10, unit: 'pcs' },
-  // Semen per m2 plesteran
-  'semen': { min: 0.15, max: 0.5, unit: 'zak' },
-  // Pasir per m2 plesteran
-  'pasir': { min: 0.02, max: 0.1, unit: 'm3' },
-  // Besi per m3 beton
-  'besi beton': { min: 60, max: 200, unit: 'kg' },
-  // Bekisting per m3 beton (ratio)
-  'bekisting': { min: 3.0, max: 12.0, unit: 'm2/m3' },
-};
+/**
+ * Context-aware coefficient rules for AHS components.
+ *
+ * Each rule pairs an AHS title regex (the "work context") with a material
+ * regex. The first rule that matches both is used to range-check the
+ * component. If no rule matches, the component is silently skipped — we
+ * prefer missing an anomaly to flagging a correct row with the wrong range.
+ *
+ * Previous design used a flat keyword → range map and flagged every "semen"
+ * row with plesteran-per-m² expectations. That produced dozens of false
+ * positives on concrete mix AHS (1:2:3 needs ~8 sak/m³, not 0.15-0.5).
+ */
+interface CoefficientRule {
+  title: RegExp;
+  material: RegExp;
+  min: number;
+  max: number;
+  unit: string;
+}
+
+const COEFFICIENT_RULES: CoefficientRule[] = [
+  // Plesteran / acian per m² (thin mortar layer)
+  { title: /plester|acian/i, material: /semen/i, min: 0.10, max: 0.35, unit: 'zak/m2' },
+  { title: /plester|acian/i, material: /pasir/i, min: 0.015, max: 0.045, unit: 'm3/m2' },
+
+  // Pasang bata merah per m² dinding. We don't range-check mortar cement/
+  // sand because usage scales with wall thickness (½ batu vs 1 batu vs
+  // 1.5 batu) and the AHS title rarely exposes that cleanly.
+  { title: /pasang.*bata merah|dinding.*bata merah|dinding.*batu bata/i, material: /bata merah/i, min: 50, max: 80, unit: 'pcs/m2' },
+
+  // Pasang bata ringan / hebel per m² dinding (thin-bed mortar, very little cement)
+  { title: /pasang.*bata ringan|dinding.*bata ringan|dinding hebel|hebel/i, material: /bata ringan|hebel/i, min: 7, max: 10, unit: 'pcs/m2' },
+
+  // Beton site mix 1:2:3 per m³ (K-225-ish, structural)
+  { title: /beton.*1\s*:\s*2\s*:\s*3|site mix.*1\s*:\s*2\s*:\s*3/i, material: /semen/i, min: 6.0, max: 9.5, unit: 'zak/m3' },
+  { title: /beton.*1\s*:\s*2\s*:\s*3|site mix.*1\s*:\s*2\s*:\s*3/i, material: /pasir/i, min: 0.35, max: 0.55, unit: 'm3/m3' },
+  { title: /beton.*1\s*:\s*2\s*:\s*3|site mix.*1\s*:\s*2\s*:\s*3/i, material: /kerikil|split|batu pecah|koral/i, min: 0.55, max: 0.85, unit: 'm3/m3' },
+
+  // Beton site mix 1:3:5 per m³ (leaner, typically lantai kerja / blinding)
+  { title: /(beton.*)?1\s*:\s*3\s*:\s*5|lantai kerja/i, material: /semen/i, min: 4.0, max: 6.5, unit: 'zak/m3' },
+  { title: /(beton.*)?1\s*:\s*3\s*:\s*5|lantai kerja/i, material: /pasir/i, min: 0.45, max: 0.65, unit: 'm3/m3' },
+  { title: /(beton.*)?1\s*:\s*3\s*:\s*5|lantai kerja/i, material: /kerikil|split|batu pecah|koral/i, min: 0.65, max: 0.95, unit: 'm3/m3' },
+
+  // Readymix concrete per m³ of BoQ item — near unity with waste
+  { title: /beton|cor\b|kolom|balok|plat|sloof|poer/i, material: /ready ?mix/i, min: 0.98, max: 1.10, unit: 'm3/m3' },
+
+  // Besi beton per m³ concrete (loose global range; per-element checks
+  // live in FORMWORK_RATIO_RANGES / REBAR_RATIO_RANGES)
+  { title: /beton|cor\b|kolom|balok|plat|sloof|poer/i, material: /besi beton|rebar|bjtp|bjtd/i, min: 60, max: 250, unit: 'kg/m3' },
+];
 
 /** Standard formwork ratios (m2 formwork per m3 concrete) by element type */
 const FORMWORK_RATIO_RANGES: Record<string, { min: number; max: number }> = {
@@ -175,14 +211,18 @@ const FORMWORK_RATIO_RANGES: Record<string, { min: number; max: number }> = {
   tangga: { min: 6.0, max: 12.0 },
 };
 
-/** Standard rebar ratios (kg rebar per m3 concrete) by element type */
+/**
+ * Standard rebar ratios (kg rebar per m³ concrete) by element type.
+ * Ranges span residential (low end) through heavily-loaded mid-rise
+ * columns / transfer beams (high end). Beyond max, flag as anomaly.
+ */
 const REBAR_RATIO_RANGES: Record<string, { min: number; max: number }> = {
-  kolom: { min: 80, max: 200 },
-  balok: { min: 100, max: 250 },
-  plat: { min: 50, max: 120 },
-  sloof: { min: 80, max: 180 },
-  poer: { min: 60, max: 150 },
-  tangga: { min: 70, max: 160 },
+  kolom: { min: 80, max: 500 },
+  balok: { min: 100, max: 350 },
+  plat: { min: 50, max: 150 },
+  sloof: { min: 80, max: 250 },
+  poer: { min: 60, max: 200 },
+  tangga: { min: 70, max: 200 },
 };
 
 /** Normal waste factor range */
@@ -1338,34 +1378,30 @@ function checkCoefficientDeviation(
   comp: ParsedAhsComponent,
   anomalies: ParsedAnomaly[],
 ): void {
-  const descLower = comp.description.toLowerCase();
+  const rule = COEFFICIENT_RULES.find(r => r.title.test(block.title) && r.material.test(comp.description));
+  if (!rule) return;
 
-  for (const [keyword, range] of Object.entries(STANDARD_COEFFICIENTS)) {
-    if (!descLower.includes(keyword)) continue;
+  // Strip waste factor to get base coefficient
+  const baseCoeff = comp.wasteFactor > 0
+    ? comp.coefficient / (1 + comp.wasteFactor)
+    : comp.coefficient;
 
-    // Strip waste factor to get base coefficient
-    const baseCoeff = comp.wasteFactor > 0
-      ? comp.coefficient / (1 + comp.wasteFactor)
-      : comp.coefficient;
+  if (baseCoeff >= rule.min * 0.5 && baseCoeff <= rule.max * 2.0) return;
 
-    if (baseCoeff < range.min * 0.5 || baseCoeff > range.max * 2.0) {
-      anomalies.push({
-        type: 'coefficient_deviation',
-        severity: baseCoeff < range.min * 0.3 || baseCoeff > range.max * 3.0 ? 'HIGH' : 'WARNING',
-        sourceSheet: block.sourceSheet,
-        sourceRow: comp.sourceRow,
-        description: `Coefficient for "${comp.description}" in "${block.title}" is ${baseCoeff.toFixed(2)} ${comp.unit}, expected ${range.min}-${range.max} ${range.unit}`,
-        expectedValue: `${range.min}-${range.max} ${range.unit}`,
-        actualValue: `${baseCoeff.toFixed(2)} ${comp.unit}`,
-        context: {
-          ahsTitle: block.title,
-          materialName: comp.description,
-          wasteFactor: comp.wasteFactor,
-        },
-      });
-    }
-    break;
-  }
+  anomalies.push({
+    type: 'coefficient_deviation',
+    severity: baseCoeff < rule.min * 0.3 || baseCoeff > rule.max * 3.0 ? 'HIGH' : 'WARNING',
+    sourceSheet: block.sourceSheet,
+    sourceRow: comp.sourceRow,
+    description: `Coefficient for "${comp.description}" in "${block.title}" is ${baseCoeff.toFixed(2)} ${comp.unit}, expected ${rule.min}-${rule.max} ${rule.unit}`,
+    expectedValue: `${rule.min}-${rule.max} ${rule.unit}`,
+    actualValue: `${baseCoeff.toFixed(2)} ${comp.unit}`,
+    context: {
+      ahsTitle: block.title,
+      materialName: comp.description,
+      wasteFactor: comp.wasteFactor,
+    },
+  });
 }
 
 function checkWasteFactor(
@@ -1374,6 +1410,10 @@ function checkWasteFactor(
   anomalies: ParsedAnomaly[],
 ): void {
   if (comp.wasteFactor <= 0) return;
+
+  // Bored pile concrete pours commonly use 30-50% waste to account for
+  // borehole losses, overpour, and cleanup — not an anomaly.
+  if (/bored pile|bore pile|tiang bor/i.test(block.title) && /ready ?mix|beton/i.test(comp.description)) return;
 
   if (comp.wasteFactor < WASTE_FACTOR_RANGE.min || comp.wasteFactor > WASTE_FACTOR_RANGE.max) {
     anomalies.push({
@@ -1527,27 +1567,32 @@ function checkDuplicateItems(
   }
 }
 
+/**
+ * Detect material rows whose unit price is a gross outlier relative to
+ * peers of the same category. Grouping by unit alone produced false
+ * positives because "bh" spans bricks (Rp 750) → anchors (Rp 150k) →
+ * floor drains (Rp 500k+). We now group by the first meaningful word
+ * of the material name AND require ≥5 peers with tight spread before
+ * flagging. When in doubt, skip.
+ */
 function checkPriceOutliers(
   materials: ParsedExcelMaterial[],
   anomalies: ParsedAnomaly[],
 ): void {
-  if (materials.length < 3) return;
+  if (materials.length < 5) return;
 
-  // Group by similar unit for comparison
-  const byUnit = new Map<string, ParsedExcelMaterial[]>();
+  const byCategory = new Map<string, ParsedExcelMaterial[]>();
   for (const mat of materials) {
     if (mat.unitPrice <= 0) continue;
-    const key = mat.unit.toLowerCase();
-    const list = byUnit.get(key) ?? [];
+    const category = priceCategoryKey(mat.name, mat.unit);
+    if (!category) continue;
+    const list = byCategory.get(category) ?? [];
     list.push(mat);
-    byUnit.set(key, list);
+    byCategory.set(category, list);
   }
 
-  // Check for prices that are 10x or 0.1x the median within their unit group
-  const unitEntries = Array.from(byUnit.entries());
-  for (let ui = 0; ui < unitEntries.length; ui++) {
-    const [unit, group] = unitEntries[ui];
-    if (group.length < 3) continue;
+  for (const [category, group] of byCategory) {
+    if (group.length < 5) continue;
     const prices = group.map(m => m.unitPrice).sort((a, b) => a - b);
     const median = prices[Math.floor(prices.length / 2)];
 
@@ -1558,14 +1603,43 @@ function checkPriceOutliers(
           severity: 'WARNING',
           sourceSheet: 'Material',
           sourceRow: mat.rowNumber,
-          description: `Price for "${mat.name}" (${fmtRp(mat.unitPrice)}/${mat.unit}) deviates significantly from median (${fmtRp(median)}/${unit})`,
-          expectedValue: `~${fmtRp(median)}/${unit}`,
-          actualValue: `${fmtRp(mat.unitPrice)}/${unit}`,
-          context: { materialName: mat.name },
+          description: `Price for "${mat.name}" (${fmtRp(mat.unitPrice)}/${mat.unit}) deviates significantly from peers in category "${category}" (median ${fmtRp(median)})`,
+          expectedValue: `~${fmtRp(median)}/${mat.unit}`,
+          actualValue: `${fmtRp(mat.unitPrice)}/${mat.unit}`,
+          context: { materialName: mat.name, category },
         });
       }
     }
   }
+}
+
+/**
+ * Bucket a material into a category key like "semen·zak" or "besi·kg"
+ * so price comparisons stay within apples-to-apples groups. Returns
+ * null for rows we don't want to classify.
+ */
+function priceCategoryKey(name: string, unit: string): string | null {
+  const n = name.toLowerCase();
+  const u = unit.toLowerCase();
+
+  const categories: Array<[RegExp, string]> = [
+    [/ready ?mix|beton.*k-\d|readymix/, 'readymix'],
+    [/semen|pc/, 'semen'],
+    [/besi beton|bjtp|bjtd|rebar/, 'besi'],
+    [/baja wf|cnp|hollow|plat baja/, 'baja'],
+    [/pasir/, 'pasir'],
+    [/kerikil|split|koral|batu pecah/, 'kerikil'],
+    [/bata merah|bata ringan|hebel|batako/, 'bata'],
+    [/kayu|balok|usuk|papan/, 'kayu'],
+    [/multipleks|plywood/, 'multipleks'],
+    [/pipa pvc|pipa/, 'pipa'],
+    [/keramik|granit|homogenous/, 'keramik'],
+    [/cat |paint /, 'cat'],
+  ];
+  for (const [pattern, key] of categories) {
+    if (pattern.test(n)) return `${key}·${u}`;
+  }
+  return null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
