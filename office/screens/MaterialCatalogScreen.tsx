@@ -51,6 +51,9 @@ export default function MaterialCatalogScreen() {
   const [search, setSearch] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [showPriceForm, setShowPriceForm] = useState<string | null>(null); // material id
+  const [autoOnly, setAutoOnly] = useState(false);
+  const [editingCodeId, setEditingCodeId] = useState<string | null>(null);
+  const [codeDraft, setCodeDraft] = useState('');
 
   // Add material form
   const [newCode, setNewCode] = useState('');
@@ -102,6 +105,30 @@ export default function MaterialCatalogScreen() {
     } catch (err: any) { toast(err.message, 'critical'); }
   };
 
+  const handleStartCodeEdit = (m: MaterialEntry) => {
+    setEditingCodeId(m.id);
+    setCodeDraft(m.code ?? '');
+  };
+
+  const handleSaveCodeRename = async (materialId: string) => {
+    const cleaned = sanitizeText(codeDraft).toUpperCase();
+    if (!cleaned) { toast('Kode tidak boleh kosong', 'critical'); return; }
+    if (/^AUTO-/.test(cleaned)) { toast('Kode baru tidak boleh diawali AUTO-', 'critical'); return; }
+    try {
+      const { error } = await supabase
+        .from('material_catalog')
+        .update({ code: cleaned })
+        .eq('id', materialId);
+      if (error) throw error;
+      toast('Kode diperbarui', 'ok');
+      setEditingCodeId(null);
+      setCodeDraft('');
+      loadMaterials();
+    } catch (err: any) {
+      toast(err.message ?? 'Gagal menyimpan kode', 'critical');
+    }
+  };
+
   const handleAddPrice = async (materialId: string) => {
     if (!priceVendor.trim() || !isPositiveNumber(priceValue)) {
       toast('Vendor dan harga wajib diisi', 'critical'); return;
@@ -121,9 +148,13 @@ export default function MaterialCatalogScreen() {
     } catch (err: any) { toast(err.message, 'critical'); }
   };
 
-  const filtered = materials.filter(m =>
-    !search || [m.code, m.name, m.category].some(value => value?.toLowerCase().includes(search.toLowerCase()))
-  );
+  const filtered = materials.filter(m => {
+    if (autoOnly && !/^AUTO-/i.test(m.code ?? '')) return false;
+    if (!search) return true;
+    return [m.code, m.name, m.category].some(value => value?.toLowerCase().includes(search.toLowerCase()));
+  });
+
+  const autoCount = materials.filter(m => /^AUTO-/i.test(m.code ?? '')).length;
 
   const canEdit = profile?.role === 'admin' || profile?.role === 'estimator';
 
@@ -144,6 +175,25 @@ export default function MaterialCatalogScreen() {
             placeholderTextColor={COLORS.textSec}
           />
         </View>
+
+        {/* AUTO code filter — lets estimators quickly find auto-generated
+            material codes that were created during import and still need
+            a cleaned-up canonical code. */}
+        {autoCount > 0 && (
+          <TouchableOpacity
+            style={[styles.autoFilter, autoOnly && styles.autoFilterActive]}
+            onPress={() => setAutoOnly(prev => !prev)}
+          >
+            <Ionicons
+              name={autoOnly ? 'checkbox' : 'square-outline'}
+              size={16}
+              color={autoOnly ? COLORS.warning : COLORS.textSec}
+            />
+            <Text style={[styles.autoFilterText, autoOnly && { color: COLORS.warning }]}>
+              {autoCount} kode AUTO perlu diverifikasi
+            </Text>
+          </TouchableOpacity>
+        )}
 
         {/* Add material button */}
         {canEdit && !showAddForm && (
@@ -194,14 +244,48 @@ export default function MaterialCatalogScreen() {
         {filtered.map(m => {
           const latestPrice = prices.filter(p => p.material_id === m.id)[0];
           const isExpanded = showPriceForm === m.id;
+          const isAuto = /^AUTO-/i.test(m.code ?? '');
+          const isEditingCode = editingCodeId === m.id;
           return (
-            <Card key={m.id}>
+            <Card key={m.id} borderColor={isAuto ? COLORS.warning : undefined}>
               <View style={styles.matHeader}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.matName}>{m.name}</Text>
-                  {!!m.code && (
-                    <Text style={styles.hint}>{m.code}{m.category ? ` · ${m.category}` : ''}</Text>
-                  )}
+                  {isEditingCode ? (
+                    <View style={styles.codeEditRow}>
+                      <TextInput
+                        style={[styles.input, { flex: 1, paddingVertical: SPACE.sm }]}
+                        value={codeDraft}
+                        onChangeText={setCodeDraft}
+                        placeholder="Kode baru, mis. SEMEN-PC50"
+                        autoCapitalize="characters"
+                      />
+                      <TouchableOpacity
+                        style={styles.codeSaveBtn}
+                        onPress={() => handleSaveCodeRename(m.id)}
+                      >
+                        <Ionicons name="checkmark" size={16} color={COLORS.textInverse} />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.codeCancelBtn}
+                        onPress={() => { setEditingCodeId(null); setCodeDraft(''); }}
+                      >
+                        <Ionicons name="close" size={16} color={COLORS.textSec} />
+                      </TouchableOpacity>
+                    </View>
+                  ) : !!m.code ? (
+                    <View style={styles.codeRow}>
+                      {isAuto && <Badge flag="WARNING" label="AUTO" />}
+                      <Text style={[styles.hint, isAuto && { color: COLORS.warning, fontFamily: FONTS.semibold }]}>
+                        {m.code}{m.category ? ` · ${m.category}` : ''}
+                      </Text>
+                      {canEdit && (
+                        <TouchableOpacity onPress={() => handleStartCodeEdit(m)} style={styles.codeEditBtn}>
+                          <Ionicons name="pencil" size={12} color={COLORS.info} />
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  ) : null}
                   <Text style={styles.hint}>{m.unit} · {TIER_LABELS[m.tier]}</Text>
                 </View>
                 <Badge flag={TIER_FLAGS[m.tier]} label={`T${m.tier}`} />
@@ -337,5 +421,38 @@ const styles = StyleSheet.create({
     color: COLORS.textInverse,
     textTransform: 'uppercase',
     letterSpacing: 0.4,
+  },
+  autoFilter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.sm,
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.sm + 2,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: RADIUS,
+    marginBottom: SPACE.md - 2,
+    backgroundColor: COLORS.surface,
+  },
+  autoFilterActive: { borderColor: COLORS.warning, backgroundColor: 'rgba(255,152,0,0.08)' },
+  autoFilterText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textSec },
+  codeRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.xs, marginTop: 2 },
+  codeEditBtn: { padding: 2, marginLeft: 2 },
+  codeEditRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.xs, marginTop: SPACE.sm - 2 },
+  codeSaveBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: RADIUS,
+    padding: SPACE.sm + 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  codeCancelBtn: {
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: RADIUS,
+    padding: SPACE.sm + 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

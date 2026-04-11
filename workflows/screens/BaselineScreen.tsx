@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Platform, TextInput } from 'react-native';
+import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import Header from '../components/Header';
@@ -27,6 +28,46 @@ import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 type ScreenView = 'sessions' | 'review' | 'anomalies' | 'detail';
+
+/**
+ * Enumerated values used by the correction editor for material rows.
+ * Tier is constrained by the DB check (1, 2, 3); unit and category are
+ * free-text in the schema but we restrict the editor to the in-use set
+ * from the material_master seed so estimators can't invent new variants
+ * every import.
+ */
+const MATERIAL_TIER_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: '1', label: 'Tier 1 — Precise' },
+  { value: '2', label: 'Tier 2 — Bulk' },
+  { value: '3', label: 'Tier 3 — Consumables' },
+];
+
+const MATERIAL_UNIT_OPTIONS: string[] = [
+  'pcs', 'btg', 'lbr', 'set', 'bh', 'unit',
+  'kg', 'ton', 'zak', 'sak', 'pail', 'liter',
+  'm', 'm2', 'm3', 'roll', 'ls',
+];
+
+const MATERIAL_CATEGORY_OPTIONS: string[] = [
+  'Struktur',
+  'Material Beton',
+  'Kayu & Bekisting',
+  'Dinding',
+  'Atap',
+  'Finishing & Coating',
+  'Lantai & Dinding Finishing',
+  'Plafon & Partisi',
+  'Waterproofing',
+  'Elektrikal',
+  'Plumbing',
+  'Earthwork',
+];
+
+const MATERIAL_DROPDOWNS: Record<string, string[]> = {
+  tier: MATERIAL_TIER_OPTIONS.map(o => o.value),
+  unit: MATERIAL_UNIT_OPTIONS,
+  category: MATERIAL_CATEGORY_OPTIONS,
+};
 
 interface ParsePreview {
   fileName: string;
@@ -649,18 +690,40 @@ export default function BaselineScreen({
                     : 'Ubah hasil parse sebelum baseline dipublish.'}
                 </Text>
 
-                {Object.entries((editingRow.parsed_data ?? {}) as Record<string, unknown>).map(([key]) => (
-                  <View key={key} style={styles.editorField}>
-                    <Text style={styles.editorLabel}>{key}</Text>
-                    <TextInput
-                      style={styles.editorInput}
-                      value={editDraft[key] ?? ''}
-                      onChangeText={(text) => setEditDraft(prev => ({ ...prev, [key]: text }))}
-                      placeholder={`Isi ${key}`}
-                      placeholderTextColor={COLORS.textSec}
-                    />
-                  </View>
-                ))}
+                {Object.entries((editingRow.parsed_data ?? {}) as Record<string, unknown>).map(([key]) => {
+                  const dropdownOptions = editingRow.row_type === 'material' ? MATERIAL_DROPDOWNS[key] : null;
+                  return (
+                    <View key={key} style={styles.editorField}>
+                      <Text style={styles.editorLabel}>{key}</Text>
+                      {dropdownOptions ? (
+                        <View style={styles.pickerWrap}>
+                          <Picker
+                            selectedValue={editDraft[key] ?? ''}
+                            onValueChange={(val) => setEditDraft(prev => ({ ...prev, [key]: String(val) }))}
+                            style={styles.picker}
+                          >
+                            <Picker.Item label={`Pilih ${key}...`} value="" color={COLORS.textSec} />
+                            {key === 'tier'
+                              ? MATERIAL_TIER_OPTIONS.map(opt => (
+                                  <Picker.Item key={opt.value} label={opt.label} value={opt.value} />
+                                ))
+                              : dropdownOptions.map(opt => (
+                                  <Picker.Item key={opt} label={opt} value={opt} />
+                                ))}
+                          </Picker>
+                        </View>
+                      ) : (
+                        <TextInput
+                          style={styles.editorInput}
+                          value={editDraft[key] ?? ''}
+                          onChangeText={(text) => setEditDraft(prev => ({ ...prev, [key]: text }))}
+                          placeholder={`Isi ${key}`}
+                          placeholderTextColor={COLORS.textSec}
+                        />
+                      )}
+                    </View>
+                  );
+                })}
 
                 <View style={styles.reviewActions}>
                   <TouchableOpacity
@@ -904,6 +967,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACE.md,
     paddingVertical: SPACE.sm + 2,
     fontSize: TYPE.sm,
+    color: COLORS.text,
+    backgroundColor: COLORS.surface,
+  },
+  pickerWrap: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: RADIUS,
+    backgroundColor: COLORS.surface,
+    overflow: 'hidden',
+  },
+  picker: {
     color: COLORS.text,
     backgroundColor: COLORS.surface,
   },
