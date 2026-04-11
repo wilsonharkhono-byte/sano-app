@@ -449,8 +449,8 @@ function parseMaterialSheet(
     const nameCell = sheet[XLSX.utils.encode_cell({ r, c: colMap.name })];
     if (!nameCell || !nameCell.v) continue;
 
-    const name = String(nameCell.v).trim();
-    if (!name || name.length < 2) continue;
+    const rawName = String(nameCell.v).trim();
+    if (!rawName || rawName.length < 2) continue;
 
     const specCell = colMap.spec >= 0
       ? sheet[XLSX.utils.encode_cell({ r, c: colMap.spec })]
@@ -460,7 +460,7 @@ function parseMaterialSheet(
 
     results.push({
       rowNumber: r + 1,
-      name,
+      name: normalizeConcreteGrade(rawName),
       spec: specCell ? String(specCell.v ?? '').trim() || null : null,
       unit: unitCell ? String(unitCell.v ?? '').trim() : '',
       unitPrice: priceCell ? Number(priceCell.v ?? 0) : 0,
@@ -469,7 +469,45 @@ function parseMaterialSheet(
     });
   }
 
-  return results;
+  // Dedupe rows that collapsed to the same name+unit after concrete
+  // grade normalization (e.g. three "fc' 30 MPa" rows → one "K-350").
+  // Keep the highest-priced variant — usually the premium spec.
+  return dedupeByNameUnit(results);
+}
+
+function dedupeByNameUnit(rows: ParsedExcelMaterial[]): ParsedExcelMaterial[] {
+  const winners = new Map<string, ParsedExcelMaterial>();
+  for (const row of rows) {
+    const key = `${row.name.toLowerCase()}|${row.unit.toLowerCase()}`;
+    const existing = winners.get(key);
+    if (!existing || row.unitPrice > existing.unitPrice) {
+      winners.set(key, row);
+    }
+  }
+  const kept = new Set(winners.values());
+  return rows.filter(r => kept.has(r));
+}
+
+const CONCRETE_MPA_TO_K: Record<string, number> = {
+  '15':   175,
+  '17.5': 200,
+  '20':   250,
+  '22.5': 275,
+  '25':   300,
+  '27.5': 325,
+  '30':   350,
+  '32.5': 400,
+  '35':   450,
+  '40':   500,
+};
+
+export function normalizeConcreteGrade(name: string): string {
+  const match = name.match(/fc\s*['\u2019]?\s*(\d+(?:[.,]\d+)?)\s*mpa/i);
+  if (!match) return name;
+  const mpa = match[1].replace(',', '.');
+  const k = CONCRETE_MPA_TO_K[mpa];
+  if (!k) return name;
+  return name.replace(match[0], `K-${k}`).replace(/\s+/g, ' ').trim();
 }
 
 function detectMaterialColumns(
@@ -1202,12 +1240,21 @@ function normalize(s: string): string {
     .trim();
 }
 
+const NUMERIC_TOKEN = /^\d+([.,]\d+)?$/;
+const FUZZY_THRESHOLD = 0.8;
+
+function extractDimensionTokens(tokens: string[]): string[] {
+  return tokens.filter(t => NUMERIC_TOKEN.test(t));
+}
+
 function fuzzyMatch(
   query: string,
   catalog: CatalogEntry[],
 ): { entry: CatalogEntry; score: number } | null {
   const queryTokenArr = query.split(' ').filter(t => t.length > 1);
   if (queryTokenArr.length === 0) return null;
+
+  const queryDims = extractDimensionTokens(queryTokenArr);
 
   let bestScore = 0;
   let bestEntry: CatalogEntry | null = null;
@@ -1216,24 +1263,25 @@ function fuzzyMatch(
     const entryTokenArr = normalize(entry.name).split(' ').filter(t => t.length > 1);
     if (entryTokenArr.length === 0) continue;
 
-    // Count overlapping tokens
+    // Dimension guard: if query has size/grade numbers (e.g. "10 cm",
+    // "8 inch", "u24"), catalog must contain every one of them. Prevents
+    // "Pipa PVC 8" collapsing into a different-sized PVC entry.
+    const entryDims = extractDimensionTokens(entryTokenArr);
+    if (queryDims.length > 0) {
+      const allPresent = queryDims.every(d => entryDims.includes(d));
+      if (!allPresent) continue;
+    }
+
+    // Exact token overlap only — substring matches are too permissive
+    // ("batako".includes("bata") was wrongly matching batako to bata ringan).
     let overlap = 0;
-    for (let qi = 0; qi < queryTokenArr.length; qi++) {
-      const t = queryTokenArr[qi];
-      for (let ei = 0; ei < entryTokenArr.length; ei++) {
-        const et = entryTokenArr[ei];
-        if (t === et || t.includes(et) || et.includes(t)) {
-          overlap++;
-          break;
-        }
-      }
+    for (const t of queryTokenArr) {
+      if (entryTokenArr.includes(t)) overlap++;
     }
 
     // Jaccard-like score: unique tokens in union
-    const allTokens: string[] = [];
-    queryTokenArr.forEach(t => { if (allTokens.indexOf(t) < 0) allTokens.push(t); });
-    entryTokenArr.forEach(t => { if (allTokens.indexOf(t) < 0) allTokens.push(t); });
-    const score = overlap / allTokens.length;
+    const allTokens = new Set([...queryTokenArr, ...entryTokenArr]);
+    const score = overlap / allTokens.size;
 
     if (score > bestScore) {
       bestScore = score;
@@ -1241,7 +1289,7 @@ function fuzzyMatch(
     }
   }
 
-  return bestEntry ? { entry: bestEntry, score: bestScore } : null;
+  return bestEntry && bestScore >= FUZZY_THRESHOLD ? { entry: bestEntry, score: bestScore } : null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
