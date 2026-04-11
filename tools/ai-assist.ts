@@ -530,7 +530,7 @@ Contoh:
 
 export async function classifyBoqItemsAI(
   items: ParsedBoqItem[],
-  model: AIModel = 'sonnet',
+  model: AIModel = 'opus',
 ): Promise<BoqClassificationResult> {
   if (items.length === 0) {
     return { classifications: new Map(), usage: { input_tokens: 0, output_tokens: 0 } };
@@ -599,7 +599,7 @@ ${itemLines}`;
  */
 export async function applyAIBoqGrouping(
   parsed: ParsedWorkbook,
-  model: AIModel = 'sonnet',
+  model: AIModel = 'opus',
 ): Promise<{ method: 'ai' | 'keyword'; itemCount: number }> {
   const originalCount = parsed.boqItems.length;
   if (originalCount === 0) return { method: 'keyword', itemCount: 0 };

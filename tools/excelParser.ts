@@ -1167,11 +1167,32 @@ export function reconcileMaterials(
       continue;
     }
 
-    // Unresolved
-    unresolved.push({ ...mat, resolvedCode: null, matchConfidence: 0 });
+    // Unresolved — auto-generate a deterministic code from name + spec so
+    // publish succeeds. matchConfidence stays 0 so the anomaly still fires
+    // and the row is flagged needs_review.
+    unresolved.push({
+      ...mat,
+      resolvedCode: autoMaterialCode(mat.name, mat.spec),
+      matchConfidence: 0,
+    });
   }
 
   return { resolved, unresolved };
+}
+
+export function autoMaterialCode(name: string, spec?: string | null): string {
+  const slug = (s: string): string =>
+    s
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+
+  const nameSlug = slug(name || 'UNKNOWN');
+  const specSlug = spec ? slug(spec) : '';
+  const parts = ['AUTO', nameSlug, specSlug].filter(Boolean);
+  return parts.join('-').slice(0, 60);
 }
 
 function normalize(s: string): string {
