@@ -339,17 +339,32 @@ export async function parseAndStageWorkbook(
     );
     parsed.materials = [...resolved, ...unresolved];
 
-    // Add anomalies for unresolved materials
-    for (const mat of unresolved) {
+    // Collapse all unresolved materials into a single summary anomaly.
+    // Each unresolved row already got a deterministic AUTO-* code from
+    // autoMaterialCode(), so publish will succeed without per-row action.
+    // We still surface the list so the estimator can sanity-check new
+    // catalog entries in one click instead of 50+.
+    if (unresolved.length > 0) {
+      const preview = unresolved.slice(0, 5).map(m => m.name).join(', ');
+      const more = unresolved.length > 5 ? `, +${unresolved.length - 5} more` : '';
       parsed.anomalies.push({
         type: 'unresolved_material',
         severity: 'WARNING',
         sourceSheet: 'Material',
-        sourceRow: mat.rowNumber,
-        description: `Material "${mat.name}" could not be matched to any catalog entry`,
-        expectedValue: 'Known material code',
-        actualValue: mat.name,
-        context: { unit: mat.unit, unitPrice: mat.unitPrice },
+        sourceRow: unresolved[0].rowNumber,
+        description: `${unresolved.length} materi baru akan ditambahkan ke katalog dengan kode otomatis saat publish: ${preview}${more}`,
+        expectedValue: 'Known material codes',
+        actualValue: `${unresolved.length} new materials`,
+        context: {
+          count: unresolved.length,
+          materials: unresolved.map(m => ({
+            name: m.name,
+            code: m.resolvedCode,
+            unit: m.unit,
+            unitPrice: m.unitPrice,
+            rowNumber: m.rowNumber,
+          })),
+        },
       });
     }
 
