@@ -6,6 +6,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import Header from '../components/Header';
 import Card from '../components/Card';
 import Badge from '../components/Badge';
+import AuditTraceScreen from './AuditTraceScreen';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { readPickedWorkbook } from '../utils/workbookPicker';
@@ -148,6 +149,7 @@ export default function BaselineScreen({
   const [parseProgress, setParseProgress] = useState('');
   const [lastPreview, setLastPreview] = useState<ParsePreview | null>(null);
   const [lastImportIssue, setLastImportIssue] = useState<string | null>(null);
+  const [showAuditModal, setShowAuditModal] = useState(false);
 
   const loadSessions = useCallback(async () => {
     if (!project) return;
@@ -679,6 +681,20 @@ export default function BaselineScreen({
               </View>
             </View>
 
+            <TouchableOpacity
+              style={styles.auditBtn}
+              onPress={() => setShowAuditModal(true)}
+            >
+              <Ionicons name="analytics-outline" size={18} color={COLORS.primary} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.auditBtnTitle}>Audit & Edit Parser</Text>
+                <Text style={styles.hint}>
+                  Lihat & perbaiki interpretasi parser per material, BoQ, atau AHS block sebelum publish.
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
+            </TouchableOpacity>
+
             {editingRow && (
               <Card borderColor={COLORS.info}>
                 <Text style={styles.previewTitle}>
@@ -840,6 +856,18 @@ export default function BaselineScreen({
           </>
         )}
 
+        {/* ── Audit Trace Modal ── */}
+        {activeSession && activeSession.status === 'REVIEW' && (
+          <AuditTraceScreen
+            visible={showAuditModal}
+            onClose={() => setShowAuditModal(false)}
+            sessionId={activeSession.id}
+            sessionName={activeSession.original_file_name}
+            stagingRows={stagingRows}
+            onRowsChange={setStagingRows}
+          />
+        )}
+
         {/* ── Anomaly detail view ── */}
         {view === 'anomalies' && activeSession && (
           <>
@@ -993,4 +1021,11 @@ const styles = StyleSheet.create({
   anomalyBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(255,152,0,0.08)', borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: 14, marginBottom: SPACE.md },
   anomalyBannerTitle: { fontSize: TYPE.sm, fontFamily: FONTS.bold },
   severityDot: { width: 8, height: 8, borderRadius: 4 },
+  auditBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: 'rgba(33,150,243,0.06)',
+    borderWidth: 1, borderColor: COLORS.primary,
+    borderRadius: RADIUS, padding: 14, marginBottom: SPACE.md,
+  },
+  auditBtnTitle: { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.primary },
 });

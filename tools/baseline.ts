@@ -191,6 +191,77 @@ export async function reviewStagingRow(
   await supabase.from('import_staging_rows').update(update).eq('id', rowId);
 }
 
+/**
+ * Audit-trace edits update both parsed_data and raw_data and auto-mark the
+ * row as MODIFIED. publishBaseline reads coefficient/unit_price from raw_data
+ * first, so writes to coefficient-family fields must land in both places.
+ */
+export async function updateStagingRowAudit(
+  rowId: string,
+  parsedData: object,
+  rawData: object,
+  notes?: string,
+): Promise<{ success: boolean; error?: string }> {
+  const { error } = await supabase
+    .from('import_staging_rows')
+    .update({
+      parsed_data: parsedData,
+      raw_data: rawData,
+      review_status: BaselineReviewStatus.MODIFIED,
+      reviewer_notes: notes ?? 'Audit trace edit',
+    })
+    .eq('id', rowId);
+
+  if (error) return { success: false, error: error.message };
+  return { success: true };
+}
+
+/**
+ * Insert a single new AHS staging row from the audit trace screen.
+ * Used when the estimator adds a missing AHS component to an existing BoQ.
+ */
+export async function insertAuditAhsRow(
+  sessionId: string,
+  rowNumber: number,
+  parsedData: ParsedAhsRow,
+  rawData: object,
+): Promise<{ success: boolean; row?: ImportStagingRow; error?: string }> {
+  const { data, error } = await supabase
+    .from('import_staging_rows')
+    .insert({
+      session_id: sessionId,
+      row_number: rowNumber,
+      row_type: 'ahs',
+      raw_data: rawData,
+      parsed_data: parsedData,
+      confidence: 1,
+      needs_review: false,
+      review_status: BaselineReviewStatus.MODIFIED,
+      reviewer_notes: 'Added via audit trace',
+    })
+    .select()
+    .single();
+
+  if (error) return { success: false, error: error.message };
+  return { success: true, row: data as ImportStagingRow };
+}
+
+/**
+ * Hard-delete a staging row from the audit trace screen. Only safe during
+ * REVIEW phase — nothing references staging rows from outside the session.
+ */
+export async function deleteStagingRow(
+  rowId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const { error } = await supabase
+    .from('import_staging_rows')
+    .delete()
+    .eq('id', rowId);
+
+  if (error) return { success: false, error: error.message };
+  return { success: true };
+}
+
 // ─── Parsing Helpers ──────────────────────────────────────────────────
 
 export interface ParsedBoqRow {
