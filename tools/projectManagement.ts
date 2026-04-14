@@ -75,6 +75,25 @@ export async function createProject(
   return { data };
 }
 
+/**
+ * Hard-delete a project and all its descendants. All FKs referencing
+ * projects(id) use ON DELETE CASCADE so a single DELETE propagates to
+ * BoQ items, AHS versions/lines, milestones, import sessions, purchase
+ * orders, assignments, etc. RLS (028_projects_delete_rls.sql) gates this
+ * to assigned principals/admins only.
+ */
+export async function deleteProject(
+  projectId: string,
+): Promise<{ error?: string }> {
+  const { error } = await supabase
+    .from('projects')
+    .delete()
+    .eq('id', projectId);
+
+  if (error) return { error: error.message };
+  return {};
+}
+
 // ─── Team CRUD ───────────────────────────────────────────────────────────────
 
 export async function getProjectTeam(projectId: string): Promise<TeamMember[]> {

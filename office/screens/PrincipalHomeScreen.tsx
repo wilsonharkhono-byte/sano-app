@@ -11,7 +11,7 @@ import { signOut } from '../../tools/auth';
 import { supabase } from '../../tools/supabase';
 import { useToast } from '../../workflows/components/Toast';
 import {
-  createProject, getProjectTeam, listAllProfiles, addUserToProject, removeUserFromProject,
+  createProject, deleteProject, getProjectTeam, listAllProfiles, addUserToProject, removeUserFromProject,
   inviteUser, updateUserRole,
   type TeamMember, type ProfileOption, ROLE_LABELS,
 } from '../../tools/projectManagement';
@@ -415,6 +415,24 @@ export default function PrincipalHomeScreen() {
     setHomeView('dashboard');
   };
 
+  const handleDeleteProject = async (projectId: string, projectName: string) => {
+    const runDelete = async () => {
+      const { error } = await deleteProject(projectId);
+      if (error) { toast(error, 'critical'); return; }
+      toast(`Proyek ${projectName} dihapus`, 'ok');
+      await refresh();
+    };
+    const warning = `Menghapus "${projectName}" akan menghapus semua BoQ, AHS, milestone, PO, dan data terkait. Tindakan ini tidak bisa di-undo.`;
+    if (Platform.OS === 'web') {
+      if (window.confirm(`${warning}\n\nLanjutkan?`)) await runDelete();
+    } else {
+      Alert.alert('Hapus Proyek', warning, [
+        { text: 'Batal', style: 'cancel' },
+        { text: 'Hapus', style: 'destructive', onPress: runDelete },
+      ]);
+    }
+  };
+
   const handleAddUser = async (userId: string) => {
     if (!project) return;
     const { error } = await addUserToProject(project.id, userId);
@@ -500,22 +518,36 @@ export default function PrincipalHomeScreen() {
     overProgressItems.length === 0;
 
   // ── JSX fragments ────────────────────────────────────────────────────
-  const projectSelectorCard = projects.length > 1 ? (
+  const canDeleteProjects = profile?.role === 'principal' || profile?.role === 'admin';
+  const projectSelectorCard = projects.length >= 1 ? (
     <Card title="Proyek Aktif">
       {projects.map(p => (
-        <TouchableOpacity
+        <View
           key={p.id}
           style={[styles.projectRow, p.id === project?.id && styles.projectRowActive]}
-          onPress={() => setActiveProject(p.id)}
         >
-          <View style={{ flex: 1 }}>
-            <Text style={styles.projectCode}>{p.code}</Text>
-            <Text style={styles.projectName}>{p.name}</Text>
-          </View>
-          {p.id === project?.id && (
-            <Ionicons name="checkmark-circle" size={20} color={COLORS.primary} />
+          <TouchableOpacity
+            style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+            onPress={() => setActiveProject(p.id)}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={styles.projectCode}>{p.code}</Text>
+              <Text style={styles.projectName}>{p.name}</Text>
+            </View>
+            {p.id === project?.id && (
+              <Ionicons name="checkmark-circle" size={20} color={COLORS.primary} />
+            )}
+          </TouchableOpacity>
+          {canDeleteProjects && (
+            <TouchableOpacity
+              style={styles.projectDeleteBtn}
+              onPress={() => handleDeleteProject(p.id, p.name)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="trash-outline" size={18} color={COLORS.critical} />
+            </TouchableOpacity>
           )}
-        </TouchableOpacity>
+        </View>
       ))}
     </Card>
   ) : null;
@@ -1740,6 +1772,10 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   projectName: { fontSize: TYPE.base, fontFamily: FONTS.medium, color: COLORS.text, marginTop: 2 },
+  projectDeleteBtn: {
+    padding: SPACE.xs,
+    marginLeft: SPACE.sm,
+  },
   ghostBtn: {
     borderWidth: 1,
     borderColor: COLORS.border,
