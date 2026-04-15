@@ -36,6 +36,28 @@ describe('extractCatalogRows', () => {
     });
   });
 
+  it('parses Indonesian-formatted string prices (thousands dot)', async () => {
+    const wb = await buildFixtureWorkbook([
+      {
+        name: 'Material',
+        cells: [
+          { address: 'A1', value: 'Kode' },
+          { address: 'B1', value: 'Nama' },
+          { address: 'C1', value: 'Satuan' },
+          { address: 'D1', value: 'Harga' },
+          { address: 'A2', value: 'M010' },
+          { address: 'B2', value: 'Besi tulangan' },
+          { address: 'C2', value: 'kg' },
+          { address: 'D2', value: '1.662.746' },
+        ],
+      },
+    ]);
+    const { cells } = await harvestWorkbook(wb);
+    const rows = extractCatalogRows(cells, ['Material']);
+    expect(rows.length).toBe(1);
+    expect(rows[0].reference_unit_price).toBe(1662746);
+  });
+
   it('skips rows without a code', async () => {
     const wb = await buildFixtureWorkbook([
       {

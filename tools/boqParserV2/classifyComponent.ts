@@ -52,7 +52,7 @@ export interface ComponentClassification {
   cost_split: CostSplit | null;
 }
 
-function toNumber(v: unknown): number {
+export function toNumber(v: unknown): number {
   if (typeof v === 'number') return v;
   if (typeof v === 'string') {
     const cleaned = v.replace(/\s/g, '').replace(/\./g, '').replace(/,/g, '.');

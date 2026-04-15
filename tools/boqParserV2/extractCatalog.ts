@@ -1,4 +1,5 @@
 import type { HarvestedCell } from './types';
+import { toNumber } from './classifyComponent';
 
 export interface CatalogRow {
   code: string;
@@ -15,8 +16,7 @@ function cellText(c: HarvestedCell | undefined): string {
 
 function cellNumber(c: HarvestedCell | undefined): number {
   if (!c || c.value == null) return 0;
-  const n = typeof c.value === 'number' ? c.value : Number(c.value);
-  return Number.isFinite(n) ? n : 0;
+  return toNumber(c.value);
 }
 
 export function extractCatalogRows(

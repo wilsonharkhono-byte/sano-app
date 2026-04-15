@@ -28,6 +28,26 @@ describe('extractBoqRows', () => {
     });
   });
 
+  it('parses Indonesian-formatted string quantities (decimal comma)', async () => {
+    const wb = await buildFixtureWorkbook([
+      {
+        name: 'RAB (A)',
+        cells: [
+          { address: 'B15', value: 'A.2' },
+          { address: 'C15', value: 'Pekerjaan Beton' },
+          { address: 'D15', value: '5.000,50' },
+          { address: 'E15', value: 750000 },
+          { address: 'F15', value: 937500000 },
+          { address: 'G15', value: 'm3' },
+        ],
+      },
+    ]);
+    const { cells, lookup } = await harvestWorkbook(wb);
+    const rows = extractBoqRows(cells, lookup, 'RAB (A)');
+    expect(rows.length).toBe(1);
+    expect(rows[0].planned).toBe(5000.5);
+  });
+
   it('attaches takeoff_ref provenance when quantity is SUMIFS', async () => {
     const wb = await buildFixtureWorkbook([
       {

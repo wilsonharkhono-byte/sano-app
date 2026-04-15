@@ -1,5 +1,5 @@
 import type { HarvestedCell, HarvestLookup, CostBasis, RefCells } from './types';
-import { parseFormulaRef } from './classifyComponent';
+import { parseFormulaRef, toNumber } from './classifyComponent';
 
 export interface BoqRowV2 {
   code: string;
@@ -18,8 +18,7 @@ function cellText(c: HarvestedCell | undefined): string {
 
 function cellNumber(c: HarvestedCell | undefined): number {
   if (!c || c.value == null) return 0;
-  const n = typeof c.value === 'number' ? c.value : Number(c.value);
-  return Number.isFinite(n) ? n : 0;
+  return toNumber(c.value);
 }
 
 const SUM_ARG_RE = /'([^']+)'!(\$?[A-Z]+\$?\d+)/g;
