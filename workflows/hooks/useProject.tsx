@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../tools/supabase';
+import { autoPurgeStaleDrafts } from '../../tools/schedule';
 import type { Profile, Project, BoqItem, PurchaseOrder, Envelope, Milestone, Defect, ActivityLog } from '../../tools/types';
 
 interface ProjectContextType {
@@ -137,6 +138,11 @@ export function ProjectProvider({ userId, children }: { userId: string; children
       setDefects(results[4].data ?? []);
       setActivityLog(results[5].data ?? []);
       setMilestoneDrafts(results[6].data ?? []);
+
+      const purged = await autoPurgeStaleDrafts(pid);
+      if (purged > 0) {
+        console.log(`[auto-purge] removed ${purged} stale drafts`);
+      }
     } catch (err) {
       console.warn('Project data load failed:', err);
     } finally {

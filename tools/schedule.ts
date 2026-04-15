@@ -630,3 +630,32 @@ export async function createMilestonesBulk(
   }
   return { success: true, data: data as Milestone[] };
 }
+
+// ── autoPurgeStaleDrafts ─────────────────────────────────────────────
+
+/**
+ * Soft-deletes AI drafts older than 14 days for this project. Janitorial —
+ * no user notification. Returns the count purged.
+ * Spec §9 "Abandoned drafts".
+ */
+export async function autoPurgeStaleDrafts(projectId: string): Promise<number> {
+  const cutoff = new Date(Date.now() - 14 * 86400000).toISOString();
+  const { data: stale, error } = await supabase
+    .from('milestones')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('author_status', 'draft')
+    .is('deleted_at', null)
+    .lt('created_at', cutoff);
+
+  if (error || !stale || stale.length === 0) return 0;
+
+  const nowIso = new Date().toISOString();
+  for (const row of stale) {
+    await supabase
+      .from('milestones')
+      .update({ deleted_at: nowIso })
+      .eq('id', row.id);
+  }
+  return stale.length;
+}

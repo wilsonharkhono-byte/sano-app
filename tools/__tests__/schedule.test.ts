@@ -478,3 +478,72 @@ describe('createMilestonesBulk', () => {
     expect(result.success).toBe(false);
   });
 });
+
+import { autoPurgeStaleDrafts } from '../schedule';
+
+describe('autoPurgeStaleDrafts', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('returns 0 when no stale drafts are found', async () => {
+    (supabase.from as jest.Mock).mockImplementation(() => ({
+      select: jest.fn().mockReturnValue({
+        eq: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            is: jest.fn().mockReturnValue({
+              lt: jest.fn().mockResolvedValue({ data: [], error: null }),
+            }),
+          }),
+        }),
+      }),
+    }));
+    const count = await autoPurgeStaleDrafts('p1');
+    expect(count).toBe(0);
+  });
+
+  it('returns 0 when the query errors', async () => {
+    (supabase.from as jest.Mock).mockImplementation(() => ({
+      select: jest.fn().mockReturnValue({
+        eq: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            is: jest.fn().mockReturnValue({
+              lt: jest.fn().mockResolvedValue({ data: null, error: { message: 'bad' } }),
+            }),
+          }),
+        }),
+      }),
+    }));
+    const count = await autoPurgeStaleDrafts('p1');
+    expect(count).toBe(0);
+  });
+
+  it('soft-deletes every stale draft and returns the count', async () => {
+    const staleRows = [{ id: 'd1' }, { id: 'd2' }, { id: 'd3' }];
+    const updateCalls: Array<{ id: string; payload: any }> = [];
+
+    (supabase.from as jest.Mock).mockImplementation(() => ({
+      select: jest.fn().mockReturnValue({
+        eq: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            is: jest.fn().mockReturnValue({
+              lt: jest.fn().mockResolvedValue({ data: staleRows, error: null }),
+            }),
+          }),
+        }),
+      }),
+      update: jest.fn().mockImplementation((payload: any) => ({
+        eq: jest.fn().mockImplementation((_col: string, id: string) => {
+          updateCalls.push({ id, payload });
+          return Promise.resolve({ error: null });
+        }),
+      })),
+    }));
+
+    const count = await autoPurgeStaleDrafts('p1');
+    expect(count).toBe(3);
+    expect(updateCalls).toHaveLength(3);
+    expect(updateCalls.map(c => c.id).sort()).toEqual(['d1', 'd2', 'd3']);
+    for (const call of updateCalls) {
+      expect(typeof call.payload.deleted_at).toBe('string');
+    }
+  });
+});
