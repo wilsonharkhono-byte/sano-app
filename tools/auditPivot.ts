@@ -379,6 +379,8 @@ export interface AhsBlockView {
     subkon: number;
     grand: number;
   };
+  validationStatus: 'ok' | 'imbalanced' | 'has_nested' | null;
+  validationDelta: number;
 }
 
 export function pivotByAhsBlock(ahsRows: AuditAhsRow[]): AhsBlockView[] {
@@ -397,6 +399,8 @@ export function pivotByAhsBlock(ahsRows: AuditAhsRow[]): AhsBlockView[] {
         linkedBoqCodes: [],
         components: [],
         totals: { material: 0, labor: 0, equipment: 0, subkon: 0, grand: 0 },
+        validationStatus: null,
+        validationDelta: 0,
       };
       buckets.set(key, bucket);
     }
@@ -421,6 +425,16 @@ export function pivotByAhsBlock(ahsRows: AuditAhsRow[]): AhsBlockView[] {
       bucket.totals[ahs.lineType] += pUnit;
       bucket.totals.grand += pUnit;
     }
+  }
+
+  for (const bucket of buckets.values()) {
+    const hasNested = bucket.components.some(c => c.ahs.costBasis === 'nested_ahs');
+    // jumlahCachedValue is not available on AuditAhsRow, so we can't compute
+    // expected/delta here. Validation badges rely on import_sessions.validation_report
+    // fetched directly in the UI (see AuditTraceScreen). When a block has nested
+    // components we still surface that here; otherwise status stays null.
+    bucket.validationStatus = hasNested ? 'has_nested' : null;
+    bucket.validationDelta = 0;
   }
 
   return Array.from(buckets.values()).sort((a, b) => b.totals.grand - a.totals.grand);
