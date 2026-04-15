@@ -1,3 +1,5 @@
+import type { HarvestedCell, HarvestLookup, CostBasis, RefCells, CostSplit } from './types';
+
 export type FormulaRef =
   | { kind: 'literal' }
   | { kind: 'cross_sheet_abs'; sheet: string; address: string }
@@ -42,4 +44,110 @@ const AGGREGATOR_SHEET_PATTERN =
 
 export function isCatalogSheet(sheetName: string): boolean {
   return !AGGREGATOR_SHEET_PATTERN.test(sheetName);
+}
+
+export interface ComponentClassification {
+  cost_basis: CostBasis;
+  ref_cells: RefCells | null;
+  cost_split: CostSplit | null;
+}
+
+function toNumber(v: unknown): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
+export function classifyComponent(
+  eCell: HarvestedCell,
+  fCell: HarvestedCell | null,
+  gCell: HarvestedCell | null,
+  hCell: HarvestedCell | null,
+  lookup: HarvestLookup,
+): ComponentClassification {
+  const eRef = parseFormulaRef(eCell.formula, eCell.sheet);
+  const fRef = parseFormulaRef(fCell?.formula ?? null, fCell?.sheet ?? eCell.sheet);
+
+  // Rebar split: F column uses a cross-cell multiply to another block's material cell
+  if (fRef.kind === 'cross_multiply') {
+    return {
+      cost_basis: 'cross_ref',
+      ref_cells: {
+        unit_price: {
+          sheet: eCell.sheet,
+          cell: eCell.address,
+          cached_value: toNumber(eCell.value),
+        },
+      },
+      cost_split: {
+        material: toNumber(fCell?.value),
+        labor: toNumber(gCell?.value),
+        equipment: toNumber(hCell?.value),
+      },
+    };
+  }
+
+  // E column intra-sheet absolute → nested_ahs
+  if (eRef.kind === 'intra_sheet_abs') {
+    const target = lookup.get(`${eRef.sheet}!${eRef.address}`);
+    return {
+      cost_basis: 'nested_ahs',
+      ref_cells: {
+        unit_price: {
+          sheet: eRef.sheet,
+          cell: eRef.address,
+          cached_value: target ? toNumber(target.value) : null,
+        },
+      },
+      cost_split: null,
+    };
+  }
+
+  // E column cross-sheet absolute → catalog or takeoff_ref
+  if (eRef.kind === 'cross_sheet_abs') {
+    const basis: CostBasis = isCatalogSheet(eRef.sheet) ? 'catalog' : 'takeoff_ref';
+    const target = lookup.get(`${eRef.sheet}!${eRef.address}`);
+    return {
+      cost_basis: basis,
+      ref_cells: {
+        unit_price: {
+          sheet: eRef.sheet,
+          cell: eRef.address,
+          cached_value: target ? toNumber(target.value) : null,
+        },
+      },
+      cost_split: null,
+    };
+  }
+
+  // E column aggregation → takeoff_ref
+  if (eRef.kind === 'aggregation') {
+    return {
+      cost_basis: 'takeoff_ref',
+      ref_cells: {
+        unit_price: {
+          sheet: eCell.sheet,
+          cell: eCell.address,
+          cached_value: toNumber(eCell.value),
+        },
+      },
+      cost_split: null,
+    };
+  }
+
+  // Literal — E column is a typed number, no formula
+  return {
+    cost_basis: 'literal',
+    ref_cells: {
+      unit_price: {
+        sheet: eCell.sheet,
+        cell: eCell.address,
+        cached_value: toNumber(eCell.value),
+      },
+    },
+    cost_split: null,
+  };
 }
