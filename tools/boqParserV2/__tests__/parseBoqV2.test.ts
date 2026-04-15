@@ -90,4 +90,42 @@ describe('parseBoqV2 nested AHS resolution', () => {
       `block:${parentBlock?.row_number}`,
     );
   });
+
+  it('resolves nested_ahs parent link when analisaSheet is overridden', async () => {
+    const buffer = await buildFixtureBuffer([
+      {
+        name: 'AHS',
+        cells: [
+          { address: 'B140', value: '1 m3 Beton K250' },
+          { address: 'B144', value: 'Semen' },
+          { address: 'E144', value: 75000 },
+          { address: 'F144', value: 37500 },
+          { address: 'B148', value: 'Jumlah' },
+          { address: 'F148', formula: 'SUM(F140:F147)', result: 37500 },
+          { address: 'I148', formula: 'F148', result: 37500 },
+          { address: 'B175', value: '1 m3 Beton site mix' },
+          { address: 'B177', value: 'Beton ready-mix' },
+          { address: 'E177', formula: '$I$148', result: 37500 },
+          { address: 'F177', value: 37500 },
+          { address: 'B180', value: 'Jumlah' },
+          { address: 'F180', formula: 'SUM(F175:F179)', result: 37500 },
+          { address: 'I180', formula: 'F180', result: 37500 },
+        ],
+      },
+    ]);
+    const result = await parseBoqV2(buffer, { analisaSheet: 'AHS' });
+    const nested = result.stagingRows.find(
+      r => r.cost_basis === 'nested_ahs',
+    );
+    expect(nested).toBeDefined();
+    expect(nested?.parent_ahs_staging_id).not.toBeNull();
+    const parentBlock = result.stagingRows.find(
+      r =>
+        r.row_type === 'ahs_block' &&
+        (r.parsed_data as { title?: string }).title === '1 m3 Beton K250',
+    );
+    expect(nested?.parent_ahs_staging_id).toBe(
+      `block:${parentBlock?.row_number}`,
+    );
+  });
 });

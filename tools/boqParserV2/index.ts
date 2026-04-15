@@ -1,7 +1,7 @@
 import ExcelJS from 'exceljs';
 import { harvestWorkbook } from './harvest';
 import { detectAhsBlocks } from './detectBlocks';
-import { classifyComponent } from './classifyComponent';
+import { classifyComponent, toNumber } from './classifyComponent';
 import { extractCatalogRows, type CatalogRow } from './extractCatalog';
 import { extractBoqRows, type BoqRowV2 } from './extractTakeoffs';
 import { validateBlocks } from './validate';
@@ -111,7 +111,7 @@ export async function parseBoqV2(
         parsed_data: {
           material_name: materialName,
           unit_price:
-            typeof eCell.value === 'number' ? eCell.value : Number(eCell.value) || 0,
+            typeof eCell.value === 'number' ? eCell.value : toNumber(eCell.value),
         },
         needs_review: classification.cost_basis === 'literal',
         confidence: classification.cost_basis === 'literal' ? 0.5 : 1,
@@ -152,7 +152,7 @@ export async function parseBoqV2(
     if (r.row_type !== 'ahs_block') continue;
     const raw = r.raw_data as { grandTotalAddress?: string | null };
     if (raw.grandTotalAddress) {
-      blockByGrandTotalAddress.set(`Analisa!${raw.grandTotalAddress}`, r.row_number);
+      blockByGrandTotalAddress.set(`${analisaSheet}!${raw.grandTotalAddress}`, r.row_number);
     }
   }
   for (const r of stagingRows) {
