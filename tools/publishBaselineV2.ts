@@ -152,3 +152,84 @@ export function flattenBlock(
   }
   return out;
 }
+
+import { supabase } from './supabase';
+
+export async function publishBaselineV2(
+  sessionId: string,
+  projectId: string,
+): Promise<{
+  success: boolean;
+  error?: string;
+  boqCount?: number;
+  ahsCount?: number;
+  materialCount?: number;
+}> {
+  const { data: stagingRowsDB, error: fetchErr } = await supabase
+    .from('import_staging_rows')
+    .select('*')
+    .eq('session_id', sessionId)
+    .neq('review_status', 'REJECTED')
+    .order('row_number', { ascending: true });
+
+  if (fetchErr) return { success: false, error: fetchErr.message };
+  if (!stagingRowsDB) return { success: false, error: 'No staging rows' };
+
+  const rows = stagingRowsDB as unknown as StagingRowV2[];
+
+  // Translate DB uuids into row_number keys for topological sort
+  const blockRowNumberByUuid = new Map<string, number>();
+  for (const r of rows) {
+    if (r.row_type === 'ahs_block') {
+      blockRowNumberByUuid.set(
+        (r as unknown as { id: string }).id,
+        r.row_number,
+      );
+    }
+  }
+  // Rewrite parent_ahs_staging_id from uuid form (DB) back to block:<row_number>
+  // so topoSort + flatten can work on it.
+  for (const r of rows) {
+    if (r.cost_basis === 'nested_ahs' && r.parent_ahs_staging_id) {
+      const parentUuid = r.parent_ahs_staging_id;
+      const parentRow = blockRowNumberByUuid.get(parentUuid);
+      if (parentRow != null) {
+        r.parent_ahs_staging_id = `block:${parentRow}`;
+      }
+    }
+  }
+
+  const sortedBlocks = topoSortBlocks(rows);
+
+  // Group components by their owning block (determined by staging row order)
+  const componentsByBlock = new Map<number, StagingRowV2[]>();
+  let currentBlockRow: number | null = null;
+  for (const r of rows) {
+    if (r.row_type === 'ahs_block') {
+      currentBlockRow = r.row_number;
+      componentsByBlock.set(currentBlockRow, []);
+      continue;
+    }
+    if (r.row_type === 'ahs' && currentBlockRow != null) {
+      componentsByBlock.get(currentBlockRow)?.push(r);
+    }
+  }
+
+  // Flatten parents first — parent cache keyed by block row_number
+  const parentCache = new Map<number, FlattenedLine[]>();
+  for (const block of sortedBlocks) {
+    const components = componentsByBlock.get(block.row_number) ?? [];
+    parentCache.set(block.row_number, flattenBlock(components, parentCache));
+  }
+
+  // TODO: Write flattened lines into ahs_versions + ahs_lines + boq_items
+  // using the same shape as v1 publishBaseline. This step is deferred to
+  // Task 20 because it touches real DB tables.
+
+  return {
+    success: true,
+    boqCount: rows.filter(r => r.row_type === 'boq').length,
+    ahsCount: Array.from(parentCache.values()).reduce((n, arr) => n + arr.length, 0),
+    materialCount: rows.filter(r => r.row_type === 'material').length,
+  };
+}

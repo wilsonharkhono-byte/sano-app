@@ -1,3 +1,5 @@
+jest.mock('../supabase', () => ({ supabase: {} }));
+
 import { topoSortBlocks, flattenBlock, type FlattenedLine } from '../publishBaselineV2';
 
 describe('topoSortBlocks', () => {
