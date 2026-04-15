@@ -48,9 +48,69 @@ import {
   type AhsLineTypeStr,
 } from '../../tools/auditPivot';
 import type { ImportStagingRow } from '../../tools/types';
+import type { CostBasis } from '../../tools/boqParserV2/types';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 type AuditTab = 'material' | 'boq' | 'ahs';
+
+// ─── Trace chip (v2 rows only) ─────────────────────────────────────────
+
+const CHIP_STYLES: Record<
+  CostBasis,
+  { bg: string; fg: string; label: (row: AuditAhsRow) => string }
+> = {
+  catalog: {
+    bg: '#e6f4ff',
+    fg: '#0958d9',
+    label: row => `Katalog: ${row.refCells?.unit_price?.sheet ?? '?'}!${row.refCells?.unit_price?.cell ?? '?'}`,
+  },
+  nested_ahs: {
+    bg: '#e0f2e9',
+    fg: '#237804',
+    label: row => `Turunan: ${row.refCells?.unit_price?.sheet ?? '?'}!${row.refCells?.unit_price?.cell ?? '?'}`,
+  },
+  literal: {
+    bg: '#fff7e6',
+    fg: '#d48806',
+    label: () => 'Literal (hardcoded)',
+  },
+  takeoff_ref: {
+    bg: '#e6f4ff',
+    fg: '#0958d9',
+    label: row => {
+      const q = row.refCells?.quantity?.[0];
+      return `Takeoff: ${q?.sheet ?? '?'}!${q?.cell ?? '?'}`;
+    },
+  },
+  cross_ref: {
+    bg: '#fff1f0',
+    fg: '#cf1322',
+    label: () => 'Split F/G/H',
+  },
+};
+
+function TraceChip({ row }: { row: AuditAhsRow }) {
+  if (row.parserVersion !== 'v2' || !row.costBasis) return null;
+  const cfg = CHIP_STYLES[row.costBasis];
+  const handlePress = () => {
+    Alert.alert(cfg.label(row), 'Sumber formula v2 parser');
+  };
+  return (
+    <TouchableOpacity
+      onPress={handlePress}
+      style={{
+        backgroundColor: cfg.bg,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+        marginLeft: 8,
+        alignSelf: 'flex-start',
+      }}
+    >
+      <Text style={{ color: cfg.fg, fontSize: 11 }}>{cfg.label(row)}</Text>
+    </TouchableOpacity>
+  );
+}
 
 interface Props {
   visible: boolean;
@@ -636,6 +696,7 @@ function MaterialDetail({
                 numeric align="right"
                 onCommit={v => onEdit(line.ahs.stagingId, 'ahs.unit_price', v)}
               />
+              <TraceChip row={line.ahs} />
             </View>
           </View>
 
@@ -863,6 +924,7 @@ function BoqDetail({
                       numeric align="right"
                       onCommit={v => onEdit(line.ahs.stagingId, 'ahs.unit_price', v)}
                     />
+                    <TraceChip row={line.ahs} />
                   </View>
                 </View>
 
@@ -1007,6 +1069,7 @@ function AhsBlockDetail({
                 numeric align="right"
                 onCommit={v => onEdit(c.ahs.stagingId, 'ahs.unit_price', v)}
               />
+              <TraceChip row={c.ahs} />
             </View>
           </View>
           <View style={styles.lineFooter}>
