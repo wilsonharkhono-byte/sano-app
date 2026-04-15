@@ -171,3 +171,127 @@ describe('cascadeCleanupDependsOn', () => {
     expect(patches).toEqual([{ id: 'b', depends_on: [] }]);
   });
 });
+
+import { createMilestone } from '../schedule';
+import { supabase } from '../supabase';
+
+describe('createMilestone', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const validInput = {
+    project_id: 'p1',
+    label: 'Pondasi',
+    planned_date: '2026-06-15',
+    boq_ids: ['b1'],
+    depends_on: [] as string[],
+  };
+
+  const mockFromChain = (opts: {
+    selectResult?: { data: any; error: any };
+    insertResult?: { data: any; error: any };
+  }) => {
+    const insertChain = {
+      select: jest.fn().mockReturnValue({
+        single: jest.fn().mockResolvedValue(
+          opts.insertResult ?? { data: null, error: null },
+        ),
+      }),
+    };
+    return {
+      select: jest.fn().mockReturnValue({
+        eq: jest.fn().mockReturnValue({
+          is: jest.fn().mockResolvedValue(
+            opts.selectResult ?? { data: [], error: null },
+          ),
+        }),
+      }),
+      insert: jest.fn().mockReturnValue(insertChain),
+    };
+  };
+
+  it('rejects empty label', async () => {
+    const result = await createMilestone({ ...validInput, label: '  ' });
+    expect(result.success).toBe(false);
+    expect((result as { success: false; error: string }).error).toMatch(/nama/i);
+  });
+
+  it('rejects duplicate label within project (case-insensitive)', async () => {
+    (supabase.from as jest.Mock).mockReturnValue(
+      mockFromChain({
+        selectResult: {
+          data: [{ id: 'existing', label: 'Pondasi' }],
+          error: null,
+        },
+      }),
+    );
+
+    const result = await createMilestone(validInput);
+    expect(result.success).toBe(false);
+    expect((result as { success: false; error: string }).error).toMatch(/sudah ada/i);
+  });
+
+  it('rejects when planned_date is before a predecessor', async () => {
+    (supabase.from as jest.Mock).mockReturnValue(
+      mockFromChain({
+        selectResult: {
+          data: [{
+            id: 'pre',
+            project_id: 'p1',
+            label: 'Previous',
+            planned_date: '2026-07-01',
+            revised_date: null,
+            depends_on: [],
+            author_status: 'confirmed',
+            deleted_at: null,
+            boq_ids: [],
+            status: 'ON_TRACK',
+            revision_reason: null,
+            proposed_by: 'human',
+            confidence_score: null,
+            ai_explanation: null,
+          }],
+          error: null,
+        },
+      }),
+    );
+
+    const result = await createMilestone({
+      ...validInput,
+      depends_on: ['pre'],
+      planned_date: '2026-06-15',
+    });
+    expect(result.success).toBe(false);
+    expect((result as { success: false; error: string }).error).toMatch(/tanggal/i);
+  });
+
+  it('inserts on happy path and returns the new milestone', async () => {
+    const newRow = {
+      id: 'new1',
+      project_id: 'p1',
+      label: 'Pondasi',
+      planned_date: '2026-06-15',
+      revised_date: null,
+      revision_reason: null,
+      boq_ids: ['b1'],
+      status: 'ON_TRACK',
+      depends_on: [],
+      proposed_by: 'human',
+      confidence_score: null,
+      ai_explanation: null,
+      author_status: 'confirmed',
+      deleted_at: null,
+    };
+    (supabase.from as jest.Mock).mockReturnValue(
+      mockFromChain({
+        selectResult: { data: [], error: null },
+        insertResult: { data: newRow, error: null },
+      }),
+    );
+
+    const result = await createMilestone(validInput);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.id).toBe('new1');
+  });
+});

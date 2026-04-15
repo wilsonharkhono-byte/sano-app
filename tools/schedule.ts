@@ -3,7 +3,7 @@
 // Status engine: ON_TRACK | AT_RISK | DELAYED | AHEAD | COMPLETE
 
 import { supabase } from './supabase';
-import type { Milestone, MilestoneStatus, BoqItem } from './types';
+import type { Milestone, MilestoneStatus, BoqItem, CreateMilestoneInput, UpdateMilestoneInput } from './types';
 
 // ── Status Engine ────────────────────────────────────────────────────
 
@@ -348,4 +348,102 @@ export function cascadeCleanupDependsOn(
       id: m.id,
       depends_on: m.depends_on.filter(d => d !== deletedId),
     }));
+}
+
+// ── Result type (spec §4) ────────────────────────────────────────────
+
+export type MilestoneResult<T> =
+  | { success: true; data: T }
+  | { success: false; error: string };
+
+// ── createMilestone ──────────────────────────────────────────────────
+
+export async function createMilestone(
+  input: CreateMilestoneInput,
+): Promise<MilestoneResult<Milestone>> {
+  // 1. Validate label
+  const label = input.label.trim();
+  if (!label) {
+    return { success: false, error: 'Nama milestone wajib diisi.' };
+  }
+
+  // 2. Fetch existing project milestones (for uniqueness + cycle + date checks)
+  const { data: existing, error: fetchErr } = await supabase
+    .from('milestones')
+    .select('*')
+    .eq('project_id', input.project_id)
+    .is('deleted_at', null);
+
+  if (fetchErr) return { success: false, error: fetchErr.message };
+  const existingRows: Milestone[] = existing ?? [];
+
+  // 3. Uniqueness (case-insensitive)
+  const clash = existingRows.find(
+    m => m.label.trim().toLowerCase() === label.toLowerCase(),
+  );
+  if (clash) {
+    return { success: false, error: `Milestone "${label}" sudah ada di proyek ini.` };
+  }
+
+  // 4. Predecessor project scoping
+  for (const predId of input.depends_on) {
+    if (!existingRows.some(m => m.id === predId)) {
+      return { success: false, error: 'Predecessor milestone tidak ditemukan di proyek ini.' };
+    }
+  }
+
+  // 5. Planned-date vs predecessors
+  const dateCheck = validatePlannedDate(existingRows, input.depends_on, input.planned_date);
+  if (!dateCheck.ok) {
+    const conflict = existingRows.find(m => m.id === dateCheck.conflictMilestoneId);
+    return {
+      success: false,
+      error: `Target tanggal harus ≥ ${dateCheck.conflictDate} (milestone "${conflict?.label ?? dateCheck.conflictMilestoneId}").`,
+    };
+  }
+
+  // 6. Cycle check against a synthetic projected graph
+  const synthetic: Milestone = {
+    id: '__new__',
+    project_id: input.project_id,
+    label,
+    planned_date: input.planned_date,
+    revised_date: null,
+    revision_reason: null,
+    boq_ids: input.boq_ids,
+    status: 'ON_TRACK',
+    depends_on: input.depends_on,
+    proposed_by: input.proposed_by ?? 'human',
+    confidence_score: input.confidence_score ?? null,
+    ai_explanation: input.ai_explanation ?? null,
+    author_status: input.author_status ?? 'confirmed',
+    deleted_at: null,
+  };
+  if (!validateNoCycle(existingRows, synthetic)) {
+    return { success: false, error: 'Milestone ini akan membuat siklus dependensi.' };
+  }
+
+  // 7. Insert
+  const { data: inserted, error: insertErr } = await supabase
+    .from('milestones')
+    .insert({
+      project_id: input.project_id,
+      label,
+      planned_date: input.planned_date,
+      boq_ids: input.boq_ids,
+      depends_on: input.depends_on,
+      proposed_by: input.proposed_by ?? 'human',
+      confidence_score: input.confidence_score ?? null,
+      ai_explanation: input.ai_explanation ?? null,
+      author_status: input.author_status ?? 'confirmed',
+      status: 'ON_TRACK',
+    })
+    .select()
+    .single();
+
+  if (insertErr || !inserted) {
+    return { success: false, error: insertErr?.message ?? 'Gagal membuat milestone.' };
+  }
+
+  return { success: true, data: inserted as Milestone };
 }
