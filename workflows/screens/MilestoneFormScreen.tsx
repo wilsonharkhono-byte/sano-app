@@ -188,6 +188,36 @@ export default function MilestoneFormScreen({ onBack, milestoneId, initialDraft 
     }
   };
 
+  const handleDelete = () => {
+    if (!existing) return;
+
+    const dependents = allProjectMilestones.filter(
+      m => m.id !== existing.id && m.depends_on.includes(existing.id),
+    );
+    const dependentsText = dependents.length > 0
+      ? `\n\nMilestone berikut bergantung dan akan kehilangan dependensi:\n${dependents.map(d => `• ${d.label}`).join('\n')}`
+      : '';
+
+    Alert.alert(
+      'Hapus milestone?',
+      `"${existing.label}" akan dihapus.${dependentsText}`,
+      [
+        { text: 'Batal', style: 'cancel' },
+        {
+          text: 'Hapus',
+          style: 'destructive',
+          onPress: async () => {
+            const result = await deleteMilestone(existing.id);
+            if (!result.success) { toast(result.error, 'critical'); return; }
+            toast('Milestone dihapus', 'ok');
+            await refresh();
+            onBack();
+          },
+        },
+      ],
+    );
+  };
+
   return (
     <View style={styles.flex}>
       <Header />
@@ -246,6 +276,15 @@ export default function MilestoneFormScreen({ onBack, milestoneId, initialDraft 
           <TouchableOpacity style={styles.cancelBtn} onPress={onBack}>
             <Text style={styles.cancelBtnText}>Batal</Text>
           </TouchableOpacity>
+          {existing && (
+            <TouchableOpacity
+              style={styles.deleteBtn}
+              onPress={() => handleDelete()}
+            >
+              <Ionicons name="trash" size={14} color={COLORS.critical} />
+              <Text style={styles.deleteBtnText}>Hapus</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </ScrollView>
 
@@ -277,6 +316,8 @@ const styles = StyleSheet.create({
   saveBtnText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
   cancelBtn: { flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: SPACE.md, alignItems: 'center' },
   cancelBtnText: { fontSize: TYPE.sm, fontFamily: FONTS.medium, textTransform: 'uppercase' },
+  deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: SPACE.xs, borderWidth: 1, borderColor: COLORS.critical, borderRadius: RADIUS, padding: SPACE.md, justifyContent: 'center' },
+  deleteBtnText: { color: COLORS.critical, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
 });
 
 const stylesLocal = StyleSheet.create({
