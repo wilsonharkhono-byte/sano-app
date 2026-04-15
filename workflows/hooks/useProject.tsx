@@ -16,6 +16,7 @@ interface ProjectContextType {
   purchaseOrders: PurchaseOrder[];
   envelopes: Envelope[];
   milestones: Milestone[];
+  milestoneDrafts: Milestone[];
   defects: Defect[];
   activityLog: ActivityLog[];
 
@@ -32,6 +33,7 @@ const ProjectContext = createContext<ProjectContextType>({
   purchaseOrders: [],
   envelopes: [],
   milestones: [],
+  milestoneDrafts: [],
   defects: [],
   activityLog: [],
   loading: true,
@@ -50,6 +52,7 @@ export function ProjectProvider({ userId, children }: { userId: string; children
   const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
   const [envelopes, setEnvelopes] = useState<Envelope[]>([]);
   const [milestones, setMilestones] = useState<Milestone[]>([]);
+  const [milestoneDrafts, setMilestoneDrafts] = useState<Milestone[]>([]);
   const [defects, setDefects] = useState<Defect[]>([]);
   const [activityLog, setActivityLog] = useState<ActivityLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -107,9 +110,20 @@ export function ProjectProvider({ userId, children }: { userId: string; children
         supabase.from('boq_items').select('*').eq('project_id', pid).order('code'),
         supabase.from('purchase_orders').select('*').eq('project_id', pid),
         supabase.from('envelopes').select('*').eq('project_id', pid),
-        supabase.from('milestones').select('*').eq('project_id', pid).order('planned_date'),
+        supabase.from('milestones')
+          .select('*')
+          .eq('project_id', pid)
+          .eq('author_status', 'confirmed')
+          .is('deleted_at', null)
+          .order('planned_date'),
         supabase.from('defects').select('*').eq('project_id', pid).order('reported_at', { ascending: false }),
         supabase.from('activity_log').select('*').eq('project_id', pid).order('created_at', { ascending: false }).limit(20),
+        supabase.from('milestones')
+          .select('*')
+          .eq('project_id', pid)
+          .eq('author_status', 'draft')
+          .is('deleted_at', null)
+          .order('planned_date'),
       ]);
 
       for (const r of results) {
@@ -122,6 +136,7 @@ export function ProjectProvider({ userId, children }: { userId: string; children
       setMilestones(results[3].data ?? []);
       setDefects(results[4].data ?? []);
       setActivityLog(results[5].data ?? []);
+      setMilestoneDrafts(results[6].data ?? []);
     } catch (err) {
       console.warn('Project data load failed:', err);
     } finally {
@@ -168,6 +183,7 @@ export function ProjectProvider({ userId, children }: { userId: string; children
         purchaseOrders,
         envelopes,
         milestones,
+        milestoneDrafts,
         defects,
         activityLog,
         loading,
