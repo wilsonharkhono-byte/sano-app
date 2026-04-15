@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
@@ -7,7 +7,7 @@ import Badge from '../components/Badge';
 import DateSelectField from '../components/DateSelectField';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
-import { reviseMilestone, syncMilestoneStatuses, computeProjectHealth, type ProjectHealthSummary } from '../../tools/schedule';
+import { reviseMilestone, syncMilestoneStatuses, computeProjectHealth, topologicalSort, type ProjectHealthSummary } from '../../tools/schedule';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, FLAG_COLORS } from '../theme';
 import type { Milestone, MilestoneStatus } from '../../tools/types';
 
@@ -41,6 +41,8 @@ export function MilestonePanel({
   // BaselineScreen tracks publish state on the import session level, but project-level
   // proxy is whether published BoQ rows exist (publish writes to boq_items).
   const baselinePublished = boqItems.length > 0;
+
+  const sortedMilestones = useMemo(() => topologicalSort(milestones), [milestones]);
 
   const [health, setHealth] = useState<ProjectHealthSummary | null>(null);
   const [revising, setRevising] = useState<string | null>(null); // milestone id being revised
@@ -212,14 +214,29 @@ export function MilestonePanel({
           </Text>
         </Card>
       )}
-      {milestones.map(m => (
+      {sortedMilestones.map(m => (
         <Card
           key={m.id}
           borderColor={FLAG_COLORS[STATUS_FLAG[m.status] ?? 'INFO']}
         >
           <View style={styles.msRow}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.msLabel}>{m.label}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                <Text style={styles.msLabel}>{m.label}</Text>
+                {m.proposed_by === 'ai' && (
+                  <TouchableOpacity
+                    style={styles.aiBadge}
+                    onPress={() => {
+                      Alert.alert('Penjelasan AI', m.ai_explanation ?? 'Tidak ada penjelasan.');
+                    }}
+                  >
+                    <Ionicons name="sparkles" size={10} color={COLORS.info} />
+                    <Text style={styles.aiBadgeText}>
+                      AI {m.confidence_score != null ? `${Math.round(m.confidence_score * 100)}%` : ''}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
               <Text style={styles.hint}>
                 Rencana: {new Date(m.planned_date).toLocaleDateString('id-ID')}
                 {m.revised_date ? ` → Revisi: ${new Date(m.revised_date).toLocaleDateString('id-ID')}` : ''}
@@ -252,6 +269,20 @@ export function MilestonePanel({
             <Text style={[styles.hint, { marginTop: 6 }]}>
               {m.boq_ids.length} item BoQ terhubung
             </Text>
+          )}
+
+          {m.depends_on.length > 0 && (
+            <View style={styles.depsRow}>
+              <Text style={styles.hint}>Tergantung pada:</Text>
+              {m.depends_on.map(depId => {
+                const dep = milestones.find(x => x.id === depId);
+                return (
+                  <View key={depId} style={styles.depChip}>
+                    <Text style={styles.depChipText}>{dep?.label ?? '[dihapus]'}</Text>
+                  </View>
+                );
+              })}
+            </View>
           )}
         </Card>
       ))}
@@ -306,4 +337,9 @@ const styles = StyleSheet.create({
   entryBtnSecondary: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.primary },
   entryBtnText:   { color: COLORS.textInverse, fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
   entryBtnTextSecondary: { color: COLORS.primary },
+  depsRow:        { flexDirection: 'row', flexWrap: 'wrap', gap: 4, alignItems: 'center', marginTop: 4 },
+  depChip:        { backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 },
+  depChipText:    { fontSize: TYPE.xs, color: COLORS.text },
+  aiBadge:        { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.info, borderRadius: 10, paddingHorizontal: 6, paddingVertical: 1 },
+  aiBadgeText:    { fontSize: 10, color: COLORS.info, fontFamily: FONTS.semibold },
 });
