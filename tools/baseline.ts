@@ -1,8 +1,30 @@
 // SAN Contractor — Baseline Import & Management Service
 // Phase 2: BoQ/AHS import pipeline, staging, review, and publish
 
+import * as fs from 'fs';
 import { supabase } from './supabase';
 import { BaselineReviewStatus, AnomalyResolution } from './constants';
+
+/**
+ * Resolve a file input to an ArrayBuffer for parsers that can't read paths.
+ *
+ * v1's parser (`parseBoqWorkbook`) accepts a string path directly and lets
+ * `XLSX.readFile` handle it. v2's parser only accepts `Buffer | ArrayBuffer`,
+ * so when the dispatcher receives a string path we must read it into memory
+ * ourselves before handing it off. Keeping both branches in sync means
+ * neither silently drops the input.
+ */
+async function resolveFileInput(
+  fileInput: ArrayBuffer | string,
+): Promise<ArrayBuffer> {
+  if (typeof fileInput !== 'string') return fileInput;
+  const buf = await fs.promises.readFile(fileInput);
+  // Copy into a fresh ArrayBuffer so we don't share memory with the
+  // Node Buffer pool (which can be reused and corrupt the parser input).
+  const ab = new ArrayBuffer(buf.byteLength);
+  new Uint8Array(ab).set(buf);
+  return ab;
+}
 import type {
   ImportSession,
   ImportStagingRow,
@@ -370,9 +392,11 @@ export async function parseAndStageWorkbook(
       .single();
     if (sessionRow?.parser_version === 'v2') {
       const { parseBoqV2 } = await import('./boqParserV2');
-      const v2Result = await parseBoqV2(
-        typeof fileInput === 'string' ? new ArrayBuffer(0) : fileInput as ArrayBuffer,
-      );
+      // Task 22 bug fix: previously a string fileInput was coerced to an
+      // empty ArrayBuffer, which made v2 silently parse nothing. Resolve
+      // the path the same way v1 would (read local file into memory).
+      const v2Buffer = await resolveFileInput(fileInput);
+      const v2Result = await parseBoqV2(v2Buffer);
       // Insert v2 staging rows with the new fields populated.
       const inserts = v2Result.stagingRows.map(r => ({
         session_id: sessionId,
@@ -420,11 +444,15 @@ export async function parseAndStageWorkbook(
           .eq('id', u.id);
       }
 
-      // Store validation report
+      // Persist the v2-only validation_report column with a raw update —
+      // updateImportStatus doesn't know about this field, but we still run
+      // the status transition through the helper so any side effects
+      // (published_at stamping, future notifications) stay consistent.
       await supabase
         .from('import_sessions')
-        .update({ validation_report: v2Result.validationReport, status: 'REVIEW' })
+        .update({ validation_report: v2Result.validationReport })
         .eq('id', sessionId);
+      await updateImportStatus(sessionId, 'REVIEW');
 
       return { success: true };
     }

@@ -235,6 +235,20 @@ export async function publishBaselineV2(
     parentCache.set(block.row_number, flattenBlock(components, parentCache));
   }
 
+  // Demote any previously current ahs_version for this project before
+  // inserting the new one. Supabase doesn't give us a cross-table
+  // transaction from the client, so this runs as a best-effort sequence:
+  // demote → insert. If the demote fails we bail out instead of risking
+  // two rows with is_current=true for the same project.
+  const { error: demoteErr } = await supabase
+    .from('ahs_versions')
+    .update({ is_current: false })
+    .eq('project_id', projectId)
+    .eq('is_current', true);
+  if (demoteErr) {
+    return { success: false, error: `demote previous current ahs_version failed: ${demoteErr.message}` };
+  }
+
   // Create new ahs_version for this session
   const { data: versionRow, error: versionErr } = await supabase
     .from('ahs_versions')
