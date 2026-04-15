@@ -6,7 +6,7 @@
 // to the same staging rows the rest of BaselineScreen sees, so the
 // review queue summary updates instantly when audit edits land.
 
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import {
   Modal,
   View,
@@ -48,7 +48,8 @@ import {
   type AhsLineTypeStr,
 } from '../../tools/auditPivot';
 import type { ImportStagingRow } from '../../tools/types';
-import type { CostBasis } from '../../tools/boqParserV2/types';
+import type { CostBasis, ValidationReport } from '../../tools/boqParserV2/types';
+import { supabase } from '../../tools/supabase';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 type AuditTab = 'material' | 'boq' | 'ahs';
@@ -88,6 +89,29 @@ const CHIP_STYLES: Record<
     label: () => 'Split F/G/H',
   },
 };
+
+function ValidationBadge({
+  title,
+  report,
+}: {
+  title: string;
+  report: ValidationReport | null;
+}) {
+  const entry = report?.blocks.find(b => b.block_title === title);
+  if (!entry) return null;
+  if (entry.status === 'ok') {
+    return (
+      <Text style={{ color: '#237804', fontSize: 12, marginTop: 2 }}>
+        ✓ balanced
+      </Text>
+    );
+  }
+  return (
+    <Text style={{ color: '#d48806', fontSize: 12, marginTop: 2 }}>
+      ⚠ Tidak balans: Rp {entry.delta.toLocaleString('id-ID')}
+    </Text>
+  );
+}
 
 function TraceChip({ row }: { row: AuditAhsRow }) {
   if (row.parserVersion !== 'v2' || !row.costBasis) return null;
@@ -249,6 +273,22 @@ export default function AuditTraceScreen({
   const [tab, setTab] = useState<AuditTab>('material');
   const [search, setSearch] = useState('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [validationReport, setValidationReport] = useState<ValidationReport | null>(null);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('import_sessions')
+        .select('validation_report')
+        .eq('id', sessionId)
+        .single();
+      if (cancelled) return;
+      setValidationReport((data?.validation_report as ValidationReport | null) ?? null);
+    })();
+    return () => { cancelled = true; };
+  }, [sessionId]);
 
   // Pivot views — memoized so edits recompute automatically
   const boqRows = useMemo(() => extractBoqRows(stagingRows), [stagingRows]);
@@ -519,7 +559,11 @@ export default function AuditTraceScreen({
 
           {/* AHS block tab */}
           {tab === 'ahs' && !selectedBlock && (
-            <AhsBlockList items={filteredAhsPivot} onSelect={k => setSelectedKey(k)} />
+            <AhsBlockList
+              items={filteredAhsPivot}
+              onSelect={k => setSelectedKey(k)}
+              validationReport={validationReport}
+            />
           )}
           {tab === 'ahs' && selectedBlock && (
             <AhsBlockDetail
@@ -527,6 +571,7 @@ export default function AuditTraceScreen({
               onBack={() => setSelectedKey(null)}
               onEdit={commitEdit}
               onDeleteAhs={handleDeleteAhs}
+              validationReport={validationReport}
             />
           )}
         </ScrollView>
@@ -949,8 +994,12 @@ function BoqDetail({
 // ─── AHS Block tab views ───────────────────────────────────────────────
 
 function AhsBlockList({
-  items, onSelect,
-}: { items: AhsBlockView[]; onSelect: (key: string) => void }) {
+  items, onSelect, validationReport,
+}: {
+  items: AhsBlockView[];
+  onSelect: (key: string) => void;
+  validationReport: ValidationReport | null;
+}) {
   if (items.length === 0) {
     return <Card><Text style={styles.hint}>Tidak ada AHS block yang cocok.</Text></Card>;
   }
@@ -963,6 +1012,7 @@ function AhsBlockList({
             <View style={styles.listRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.listTitle}>{b.title}</Text>
+                <ValidationBadge title={b.title} report={validationReport} />
                 <Text style={styles.hint}>
                   {b.components.length} komponen
                   {b.linkedBoqCodes.length > 0 ? ` · BoQ: ${b.linkedBoqCodes.slice(0, 3).join(', ')}${b.linkedBoqCodes.length > 3 ? ` +${b.linkedBoqCodes.length - 3}` : ''}` : ' · Belum ter-link'}
@@ -982,12 +1032,13 @@ function AhsBlockList({
 }
 
 function AhsBlockDetail({
-  block, onBack, onEdit, onDeleteAhs,
+  block, onBack, onEdit, onDeleteAhs, validationReport,
 }: {
   block: AhsBlockView;
   onBack: () => void;
   onEdit: (rowId: string, field: EditableField, value: string) => Promise<void>;
   onDeleteAhs: (ahs: AuditAhsRow) => void;
+  validationReport: ValidationReport | null;
 }) {
   return (
     <>
@@ -998,6 +1049,7 @@ function AhsBlockDetail({
 
       <Card borderColor={COLORS.primary}>
         <Text style={styles.detailTitle}>{block.title}</Text>
+        <ValidationBadge title={block.title} report={validationReport} />
         <Text style={styles.hint}>
           {block.titleRow != null ? `Baris judul: row ${block.titleRow} · ` : ''}
           BoQ linked: {block.linkedBoqCodes.length > 0 ? block.linkedBoqCodes.join(', ') : '—'}
