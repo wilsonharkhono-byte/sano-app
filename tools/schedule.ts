@@ -447,3 +447,101 @@ export async function createMilestone(
 
   return { success: true, data: inserted as Milestone };
 }
+
+// ── updateMilestone ──────────────────────────────────────────────────
+
+export async function updateMilestone(
+  id: string,
+  patch: UpdateMilestoneInput,
+): Promise<MilestoneResult<Milestone>> {
+  // 1. Load existing
+  const { data: existing, error: loadErr } = await supabase
+    .from('milestones')
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (loadErr || !existing) {
+    return { success: false, error: 'Milestone tidak ditemukan.' };
+  }
+  const current = existing as Milestone;
+  if (current.deleted_at) {
+    return { success: false, error: 'Milestone sudah dihapus.' };
+  }
+
+  // 2. Load siblings for validation
+  const { data: siblings, error: sibErr } = await supabase
+    .from('milestones')
+    .select('*')
+    .eq('project_id', current.project_id)
+    .is('deleted_at', null);
+  if (sibErr) return { success: false, error: sibErr.message };
+  const all: Milestone[] = siblings ?? [];
+
+  // 3. Compute projected row
+  const projected: Milestone = {
+    ...current,
+    label: patch.label !== undefined ? patch.label.trim() : current.label,
+    planned_date: patch.planned_date ?? current.planned_date,
+    boq_ids: patch.boq_ids ?? current.boq_ids,
+    depends_on: patch.depends_on ?? current.depends_on,
+    author_status: patch.author_status ?? current.author_status,
+  };
+
+  if (!projected.label) {
+    return { success: false, error: 'Nama milestone wajib diisi.' };
+  }
+
+  // 4. Uniqueness (exclude self)
+  const clash = all.find(
+    m => m.id !== id && m.label.trim().toLowerCase() === projected.label.toLowerCase(),
+  );
+  if (clash) {
+    return { success: false, error: `Milestone "${projected.label}" sudah ada di proyek ini.` };
+  }
+
+  // 5. Project scoping of predecessors
+  for (const predId of projected.depends_on) {
+    if (predId === id) {
+      return { success: false, error: 'Milestone ini akan membuat siklus dependensi.' };
+    }
+    if (!all.some(m => m.id === predId)) {
+      return { success: false, error: 'Predecessor milestone tidak ditemukan di proyek ini.' };
+    }
+  }
+
+  // 6. Date check
+  const dateCheck = validatePlannedDate(all, projected.depends_on, projected.planned_date);
+  if (!dateCheck.ok) {
+    const conflict = all.find(m => m.id === dateCheck.conflictMilestoneId);
+    return {
+      success: false,
+      error: `Target tanggal harus ≥ ${dateCheck.conflictDate} (milestone "${conflict?.label ?? dateCheck.conflictMilestoneId}").`,
+    };
+  }
+
+  // 7. Cycle check
+  if (!validateNoCycle(all, projected)) {
+    return { success: false, error: 'Milestone ini akan membuat siklus dependensi.' };
+  }
+
+  // 8. Write
+  const updatePayload: Record<string, unknown> = {};
+  if (patch.label !== undefined) updatePayload.label = projected.label;
+  if (patch.planned_date !== undefined) updatePayload.planned_date = projected.planned_date;
+  if (patch.boq_ids !== undefined) updatePayload.boq_ids = projected.boq_ids;
+  if (patch.depends_on !== undefined) updatePayload.depends_on = projected.depends_on;
+  if (patch.author_status !== undefined) updatePayload.author_status = projected.author_status;
+
+  const { data: updated, error: updateErr } = await supabase
+    .from('milestones')
+    .update(updatePayload)
+    .eq('id', id)
+    .select()
+    .single();
+
+  if (updateErr || !updated) {
+    return { success: false, error: updateErr?.message ?? 'Gagal memperbarui milestone.' };
+  }
+  return { success: true, data: updated as Milestone };
+}

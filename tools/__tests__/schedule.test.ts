@@ -295,3 +295,80 @@ describe('createMilestone', () => {
     if (result.success) expect(result.data.id).toBe('new1');
   });
 });
+
+import { updateMilestone } from '../schedule';
+
+describe('updateMilestone', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const existingRow = {
+    id: 'm1',
+    project_id: 'p1',
+    label: 'Pondasi',
+    planned_date: '2026-06-15',
+    revised_date: null,
+    revision_reason: null,
+    boq_ids: ['b1'],
+    status: 'ON_TRACK' as const,
+    depends_on: [] as string[],
+    proposed_by: 'human' as const,
+    confidence_score: null,
+    ai_explanation: null,
+    author_status: 'confirmed' as const,
+    deleted_at: null,
+  };
+
+  const mockExistingFetch = (row: any) => {
+    (supabase.from as jest.Mock).mockImplementation(() => ({
+      select: jest.fn().mockReturnValue({
+        eq: jest.fn().mockImplementation((col: string, val: string) => {
+          // first call: fetch by id (.eq('id', id).single())
+          if (col === 'id') {
+            return {
+              single: jest.fn().mockResolvedValue({ data: row, error: null }),
+              is: jest.fn().mockResolvedValue({ data: [row], error: null }),
+            };
+          }
+          // second call: fetch siblings (.eq('project_id', pid).is('deleted_at', null))
+          return {
+            is: jest.fn().mockResolvedValue({ data: [row], error: null }),
+          };
+        }),
+      }),
+      update: jest.fn().mockReturnValue({
+        eq: jest.fn().mockReturnValue({
+          select: jest.fn().mockReturnValue({
+            single: jest.fn().mockResolvedValue({ data: { ...row, label: 'New Label' }, error: null }),
+          }),
+        }),
+      }),
+    }));
+  };
+
+  it('returns error if milestone not found', async () => {
+    (supabase.from as jest.Mock).mockImplementation(() => ({
+      select: jest.fn().mockReturnValue({
+        eq: jest.fn().mockReturnValue({
+          single: jest.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      }),
+    }));
+    const result = await updateMilestone('missing', { label: 'X' });
+    expect(result.success).toBe(false);
+    expect((result as { success: false; error: string }).error).toMatch(/tidak ditemukan/i);
+  });
+
+  it('patches label on happy path', async () => {
+    mockExistingFetch(existingRow);
+    const result = await updateMilestone('m1', { label: 'New Label' });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.label).toBe('New Label');
+  });
+
+  it('rejects self-loop in depends_on', async () => {
+    mockExistingFetch(existingRow);
+    const result = await updateMilestone('m1', { depends_on: ['m1'] });
+    expect(result.success).toBe(false);
+    expect((result as { success: false; error: string }).error).toMatch(/siklus/i);
+  });
+});
