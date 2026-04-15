@@ -11,6 +11,11 @@
 //   per-material   = Σ (per-BoQ total) across every AHS line that uses it
 
 import type { ImportStagingRow } from './types';
+import type {
+  CostBasis,
+  RefCells,
+  CostSplit,
+} from './boqParserV2/types';
 
 export type AhsLineTypeStr = 'material' | 'labor' | 'equipment' | 'subkon';
 
@@ -50,6 +55,12 @@ export interface AuditAhsRow {
   reviewStatus: string;
   needsReview: boolean;
   confidence: number;
+  // v2-only — present on rows parsed by boqParserV2, null for v1 rows
+  costBasis: CostBasis | null;
+  parentAhsStagingId: string | null;
+  refCells: RefCells | null;
+  costSplit: CostSplit | null;
+  parserVersion: 'v1' | 'v2';
 }
 
 export interface AuditMaterialRow {
@@ -140,6 +151,11 @@ export function extractAhsRows(rows: ImportStagingRow[]): AuditAhsRow[] {
         reviewStatus: r.review_status,
         needsReview: r.needs_review,
         confidence: r.confidence,
+        costBasis: (r as unknown as { cost_basis: CostBasis | null }).cost_basis ?? null,
+        parentAhsStagingId: (r as unknown as { parent_ahs_staging_id: string | null }).parent_ahs_staging_id ?? null,
+        refCells: (r as unknown as { ref_cells: RefCells | null }).ref_cells ?? null,
+        costSplit: (r as unknown as { cost_split: CostSplit | null }).cost_split ?? null,
+        parserVersion: ((r as unknown as { parser_version?: string }).parser_version ?? 'v1') as 'v1' | 'v2',
       };
     });
 }
