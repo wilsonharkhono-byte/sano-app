@@ -7,7 +7,7 @@ import Badge from '../components/Badge';
 import DateSelectField from '../components/DateSelectField';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
-import { reviseMilestone, syncMilestoneStatuses, computeProjectHealth, topologicalSort, type ProjectHealthSummary } from '../../tools/schedule';
+import { reviseMilestone, syncMilestoneStatuses, computeProjectHealth, deleteMilestone, topologicalSort, type ProjectHealthSummary } from '../../tools/schedule';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, FLAG_COLORS } from '../theme';
 import type { Milestone, MilestoneStatus } from '../../tools/types';
 
@@ -96,6 +96,32 @@ export function MilestonePanel({
     setRevisionReason('');
     refresh();
     loadHealth();
+  };
+
+  const handleDeleteCard = (m: Milestone) => {
+    const dependents = milestones.filter(other => other.id !== m.id && other.depends_on.includes(m.id));
+    const dependentsText = dependents.length > 0
+      ? `\n\nMilestone berikut bergantung:\n${dependents.map(d => `• ${d.label}`).join('\n')}`
+      : '';
+
+    Alert.alert(
+      'Hapus milestone?',
+      `"${m.label}" akan dihapus.${dependentsText}`,
+      [
+        { text: 'Batal', style: 'cancel' },
+        {
+          text: 'Hapus',
+          style: 'destructive',
+          onPress: async () => {
+            const result = await deleteMilestone(m.id);
+            if (!result.success) { toast(result.error ?? 'Gagal menghapus milestone', 'critical'); return; }
+            toast('Milestone dihapus', 'ok');
+            refresh();
+            loadHealth();
+          },
+        },
+      ],
+    );
   };
 
   const daysLabel = (m: Milestone): string => {
@@ -249,17 +275,30 @@ export function MilestonePanel({
             <View style={{ alignItems: 'flex-end', gap: 6 }}>
               <Badge flag={STATUS_FLAG[m.status] ?? 'INFO'} label={m.status.replace('_', ' ')} />
               {canRevise && !revising && (
-                <TouchableOpacity
-                  style={styles.reviseBtn}
-                  onPress={() => {
-                    setRevising(m.id);
-                    setNewDate(m.revised_date ?? m.planned_date);
-                    setRevisionReason('');
-                  }}
-                >
-                  <Ionicons name="create" size={14} color={COLORS.primary} />
-                  <Text style={styles.reviseBtnText}>Revisi</Text>
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', gap: 4 }}>
+                  <TouchableOpacity style={styles.actBtn} onPress={() => onOpenForm?.(m.id)}>
+                    <Ionicons name="create-outline" size={12} color={COLORS.primary} />
+                    <Text style={styles.actBtnText}>Edit</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.actBtn}
+                    onPress={() => {
+                      setRevising(m.id);
+                      setNewDate(m.revised_date ?? m.planned_date);
+                      setRevisionReason('');
+                    }}
+                  >
+                    <Ionicons name="time-outline" size={12} color={COLORS.warning} />
+                    <Text style={[styles.actBtnText, { color: COLORS.warning }]}>Revisi</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.actBtn}
+                    onPress={() => handleDeleteCard(m)}
+                  >
+                    <Ionicons name="trash-outline" size={12} color={COLORS.critical} />
+                    <Text style={[styles.actBtnText, { color: COLORS.critical }]}>Hapus</Text>
+                  </TouchableOpacity>
+                </View>
               )}
             </View>
           </View>
@@ -342,4 +381,6 @@ const styles = StyleSheet.create({
   depChipText:    { fontSize: TYPE.xs, color: COLORS.text },
   aiBadge:        { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.info, borderRadius: 10, paddingHorizontal: 6, paddingVertical: 1 },
   aiBadgeText:    { fontSize: 10, color: COLORS.info, fontFamily: FONTS.semibold },
+  actBtn:         { flexDirection: 'row', alignItems: 'center', gap: 2, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, paddingHorizontal: 6, paddingVertical: 3 },
+  actBtnText:     { fontSize: 10, fontFamily: FONTS.semibold, textTransform: 'uppercase', color: COLORS.primary },
 });
