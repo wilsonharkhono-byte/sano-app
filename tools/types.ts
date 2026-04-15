@@ -808,3 +808,14 @@ export interface OpnameProgressFlag {
   variance_pct: number;
   variance_flag: 'OK' | 'WARNING' | 'HIGH';
 }
+
+export type {
+  CostBasis,
+  CellRef,
+  RefCells,
+  CostSplit,
+  HarvestedCell,
+  HarvestLookup,
+  ValidationReport,
+  StagingRowV2,
+} from './boqParserV2/types';
