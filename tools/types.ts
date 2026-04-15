@@ -205,9 +205,37 @@ export interface Milestone {
   revision_reason: string | null;
   boq_ids: string[];
   status: MilestoneStatus;
+
+  // ── Authoring fields (spec §4) ─────────────────────────────────
+  depends_on: string[];
+  proposed_by: 'human' | 'ai';
+  confidence_score: number | null;
+  ai_explanation: string | null;
+  author_status: 'draft' | 'confirmed';
+  deleted_at: string | null;
 }
 
 export type MilestoneStatus = 'ON_TRACK' | 'AT_RISK' | 'DELAYED' | 'AHEAD' | 'COMPLETE';
+
+export interface CreateMilestoneInput {
+  project_id: string;
+  label: string;
+  planned_date: string;
+  boq_ids: string[];
+  depends_on: string[];
+  proposed_by?: 'human' | 'ai';
+  confidence_score?: number | null;
+  ai_explanation?: string | null;
+  author_status?: 'draft' | 'confirmed';
+}
+
+export interface UpdateMilestoneInput {
+  label?: string;
+  planned_date?: string;
+  boq_ids?: string[];
+  depends_on?: string[];
+  author_status?: 'draft' | 'confirmed';
+}
 
 // ─── Gate 1: Material Request (Header + Lines) ───────────────────────
 
