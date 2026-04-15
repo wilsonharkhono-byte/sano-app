@@ -372,3 +372,63 @@ describe('updateMilestone', () => {
     expect((result as { success: false; error: string }).error).toMatch(/siklus/i);
   });
 });
+
+import { deleteMilestone } from '../schedule';
+
+describe('deleteMilestone', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('returns error when milestone is missing', async () => {
+    (supabase.from as jest.Mock).mockImplementation(() => ({
+      select: jest.fn().mockReturnValue({
+        eq: jest.fn().mockReturnValue({
+          single: jest.fn().mockResolvedValue({ data: null, error: null }),
+        }),
+      }),
+    }));
+    const result = await deleteMilestone('missing');
+    expect(result.success).toBe(false);
+  });
+
+  it('soft-deletes and removes references from dependents', async () => {
+    const target = {
+      id: 'a', project_id: 'p1', label: 'A',
+      planned_date: '2026-06-01', revised_date: null, revision_reason: null,
+      boq_ids: [], status: 'ON_TRACK', depends_on: [],
+      proposed_by: 'human', confidence_score: null, ai_explanation: null,
+      author_status: 'confirmed', deleted_at: null,
+    };
+    const dependents = [
+      { ...target, id: 'b', depends_on: ['a'] },
+      { ...target, id: 'c', depends_on: ['a', 'x'] },
+    ];
+
+    const updateCalls: Array<{ id: string; payload: any }> = [];
+
+    (supabase.from as jest.Mock).mockImplementation(() => ({
+      select: jest.fn().mockReturnValue({
+        eq: jest.fn().mockImplementation((col: string, val: string) => ({
+          single: jest.fn().mockResolvedValue({ data: col === 'id' ? target : null, error: null }),
+          is: jest.fn().mockResolvedValue({ data: [target, ...dependents], error: null }),
+        })),
+      }),
+      update: jest.fn().mockImplementation((payload: any) => ({
+        eq: jest.fn().mockImplementation((col: string, id: string) => {
+          updateCalls.push({ id, payload });
+          return Promise.resolve({ error: null });
+        }),
+      })),
+    }));
+
+    const result = await deleteMilestone('a');
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.cleanedReferences).toBe(2);
+
+    // Target row soft-deleted
+    const softDelete = updateCalls.find(c => c.id === 'a' && c.payload.deleted_at);
+    expect(softDelete).toBeTruthy();
+    // Dependents cleaned
+    expect(updateCalls.find(c => c.id === 'b')?.payload.depends_on).toEqual([]);
+    expect(updateCalls.find(c => c.id === 'c')?.payload.depends_on).toEqual(['x']);
+  });
+});

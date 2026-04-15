@@ -545,3 +545,53 @@ export async function updateMilestone(
   }
   return { success: true, data: updated as Milestone };
 }
+
+// ── deleteMilestone ──────────────────────────────────────────────────
+
+export async function deleteMilestone(
+  id: string,
+): Promise<MilestoneResult<{ cleanedReferences: number }>> {
+  // 1. Load target
+  const { data: target, error: loadErr } = await supabase
+    .from('milestones')
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (loadErr || !target) {
+    return { success: false, error: 'Milestone tidak ditemukan.' };
+  }
+  const current = target as Milestone;
+  if (current.deleted_at) {
+    return { success: false, error: 'Milestone sudah dihapus.' };
+  }
+
+  // 2. Load siblings for cascade
+  const { data: siblings, error: sibErr } = await supabase
+    .from('milestones')
+    .select('*')
+    .eq('project_id', current.project_id)
+    .is('deleted_at', null);
+  if (sibErr) return { success: false, error: sibErr.message };
+
+  const cleanups = cascadeCleanupDependsOn(siblings ?? [], id);
+
+  // 3. Soft-delete target
+  const nowIso = new Date().toISOString();
+  const { error: deleteErr } = await supabase
+    .from('milestones')
+    .update({ deleted_at: nowIso })
+    .eq('id', id);
+  if (deleteErr) return { success: false, error: deleteErr.message };
+
+  // 4. Apply cascade patches
+  for (const patch of cleanups) {
+    const { error: patchErr } = await supabase
+      .from('milestones')
+      .update({ depends_on: patch.depends_on })
+      .eq('id', patch.id);
+    if (patchErr) console.warn('cascade cleanup failed for', patch.id, patchErr.message);
+  }
+
+  return { success: true, data: { cleanedReferences: cleanups.length } };
+}
