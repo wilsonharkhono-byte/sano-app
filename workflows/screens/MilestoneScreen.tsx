@@ -34,7 +34,7 @@ export function MilestonePanel({
   onOpenAiDraft?: () => void;
   onOpenAiReview?: () => void;
 }) {
-  const { project, profile, milestones, boqItems, refresh } = useProject();
+  const { project, profile, milestones, milestoneDrafts, boqItems, refresh } = useProject();
   const { show: toast } = useToast();
 
   // Baseline is considered published once BoQ items exist for the project.
@@ -118,6 +118,27 @@ export function MilestonePanel({
             toast('Milestone dihapus', 'ok');
             refresh();
             loadHealth();
+          },
+        },
+      ],
+    );
+  };
+
+  const handleAbandonAllDrafts = () => {
+    Alert.alert(
+      'Buang semua draf AI?',
+      `${milestoneDrafts.length} draf akan dihapus.`,
+      [
+        { text: 'Batal', style: 'cancel' },
+        {
+          text: 'Buang',
+          style: 'destructive',
+          onPress: async () => {
+            for (const d of milestoneDrafts) {
+              await deleteMilestone(d.id);
+            }
+            toast('Semua draf AI dihapus', 'ok');
+            refresh();
           },
         },
       ],
@@ -224,6 +245,25 @@ export function MilestonePanel({
             <Text style={[styles.entryBtnText, styles.entryBtnTextSecondary]}>Saran Jadwal AI</Text>
           </TouchableOpacity>
         </View>
+      )}
+
+      {canRevise && milestoneDrafts.length > 0 && (
+        <Card borderColor={COLORS.warning}>
+          <Text style={styles.msLabel}>
+            Ada {milestoneDrafts.length} draf AI belum dikonfirmasi
+          </Text>
+          <View style={{ flexDirection: 'row', gap: SPACE.sm, marginTop: SPACE.sm }}>
+            <TouchableOpacity style={styles.entryBtn} onPress={() => onOpenAiReview?.()}>
+              <Text style={styles.entryBtnText}>Lanjutkan Review</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.entryBtn, styles.entryBtnSecondary]}
+              onPress={() => handleAbandonAllDrafts()}
+            >
+              <Text style={[styles.entryBtnText, styles.entryBtnTextSecondary]}>Buang Semua</Text>
+            </TouchableOpacity>
+          </View>
+        </Card>
       )}
 
       <Text style={styles.sectionHead}>Daftar Milestone</Text>
