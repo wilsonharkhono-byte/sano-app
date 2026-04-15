@@ -150,6 +150,8 @@ export default function BaselineScreen({
   const [lastPreview, setLastPreview] = useState<ParsePreview | null>(null);
   const [lastImportIssue, setLastImportIssue] = useState<string | null>(null);
   const [showAuditModal, setShowAuditModal] = useState(false);
+  const [parserVersion, setParserVersion] = useState<'v1' | 'v2'>('v1');
+  const canSeeParserToggle = profile?.role === 'principal' || profile?.role === 'admin';
 
   const loadSessions = useCallback(async () => {
     if (!project) return;
@@ -244,7 +246,7 @@ export default function BaselineScreen({
       }
 
       // Create import session record
-      const sessionResult = await createImportSession(project.id, profile.id, persistedFilePath, fileName);
+      const sessionResult = await createImportSession(project.id, profile.id, persistedFilePath, fileName, parserVersion);
       if (!sessionResult.session) {
         setLastImportIssue(`Gagal membuat sesi import: ${sessionResult.error ?? 'Unknown error'}`);
         toast(`Gagal membuat sesi import: ${sessionResult.error ?? 'Unknown error'}`, 'critical');
@@ -553,6 +555,38 @@ export default function BaselineScreen({
         {view === 'sessions' && (
           <>
             <Text style={styles.sectionHead}>Baseline Import — {project?.name}</Text>
+
+            {canSeeParserToggle && (
+              <View style={styles.parserToggleRow}>
+                <Text style={styles.parserToggleLabel}>Parser:</Text>
+                <TouchableOpacity
+                  onPress={() => setParserVersion('v1')}
+                  style={[
+                    styles.parserToggleBtn,
+                    parserVersion === 'v1' && styles.parserToggleBtnActive,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Gunakan parser v1 stable"
+                >
+                  <Text style={parserVersion === 'v1' ? styles.parserToggleTextActive : styles.parserToggleText}>
+                    v1 (stable)
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setParserVersion('v2')}
+                  style={[
+                    styles.parserToggleBtn,
+                    parserVersion === 'v2' && styles.parserToggleBtnActive,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Gunakan parser v2 beta"
+                >
+                  <Text style={parserVersion === 'v2' ? styles.parserToggleTextActive : styles.parserToggleText}>
+                    v2 (beta)
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
             <TouchableOpacity style={[styles.uploadBtn, parsing && { opacity: 0.6 }]} onPress={handleUpload} disabled={parsing}>
               {parsing ? (
@@ -1064,4 +1098,19 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS, padding: 14, marginBottom: SPACE.md,
   },
   auditBtnTitle: { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.primary },
+  parserToggleRow: {
+    flexDirection: 'row', alignItems: 'center', gap: SPACE.sm,
+    marginBottom: SPACE.sm,
+  },
+  parserToggleLabel: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textSec },
+  parserToggleBtn: {
+    paddingHorizontal: SPACE.md, paddingVertical: 8,
+    borderRadius: RADIUS, borderWidth: 1, borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+  },
+  parserToggleBtnActive: {
+    backgroundColor: COLORS.primary, borderColor: COLORS.primary,
+  },
+  parserToggleText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.text },
+  parserToggleTextActive: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textInverse },
 });

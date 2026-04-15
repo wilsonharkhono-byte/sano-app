@@ -43,6 +43,7 @@ export async function createImportSession(
   userId: string,
   filePath: string,
   fileName: string,
+  parserVersion: 'v1' | 'v2' = 'v1',
 ): Promise<{ session: ImportSession | null; error: string | null }> {
   const { data, error } = await supabase
     .from('import_sessions')
@@ -51,6 +52,7 @@ export async function createImportSession(
       uploaded_by: userId,
       original_file_path: filePath,
       original_file_name: fileName,
+      parser_version: parserVersion,
       status: 'UPLOADED',
     })
     .select()
