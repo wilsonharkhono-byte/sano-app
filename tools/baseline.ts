@@ -361,6 +361,74 @@ export async function parseAndStageWorkbook(
     // Mark session as parsing
     await updateImportStatus(sessionId, 'PARSING');
 
+    // v2 dispatch — if the session is tagged parser_version='v2', use the
+    // new parser. v1 path is untouched.
+    const { data: sessionRow } = await supabase
+      .from('import_sessions')
+      .select('parser_version')
+      .eq('id', sessionId)
+      .single();
+    if (sessionRow?.parser_version === 'v2') {
+      const { parseBoqV2 } = await import('./boqParserV2');
+      const v2Result = await parseBoqV2(
+        typeof fileInput === 'string' ? new ArrayBuffer(0) : fileInput as ArrayBuffer,
+      );
+      // Insert v2 staging rows with the new fields populated.
+      const inserts = v2Result.stagingRows.map(r => ({
+        session_id: sessionId,
+        row_number: r.row_number,
+        row_type: r.row_type,
+        raw_data: r.raw_data,
+        parsed_data: r.parsed_data,
+        needs_review: r.needs_review,
+        confidence: r.confidence,
+        review_status: r.review_status,
+        cost_basis: r.cost_basis,
+        parent_ahs_staging_id: null, // post-fixed below after rows have UUIDs
+        ref_cells: r.ref_cells,
+        cost_split: r.cost_split,
+      }));
+      const { data: inserted, error: insErr } = await supabase
+        .from('import_staging_rows')
+        .insert(inserts)
+        .select('id, row_number');
+      if (insErr) return { success: false, error: insErr.message };
+
+      // Post-fix: translate `block:<row_number>` synthetic parent keys to
+      // real UUIDs now that rows have IDs.
+      const uuidByRowNumber = new Map<number, string>();
+      for (const ins of inserted ?? []) {
+        uuidByRowNumber.set(ins.row_number as number, ins.id as string);
+      }
+      const parentUpdates: Array<{ id: string; parent_uuid: string }> = [];
+      for (let i = 0; i < v2Result.stagingRows.length; i++) {
+        const sr = v2Result.stagingRows[i];
+        if (sr.cost_basis !== 'nested_ahs' || !sr.parent_ahs_staging_id) continue;
+        const m = /^block:(\d+)$/.exec(sr.parent_ahs_staging_id);
+        if (!m) continue;
+        const parentRow = Number(m[1]);
+        const parentUuid = uuidByRowNumber.get(parentRow);
+        const childUuid = uuidByRowNumber.get(sr.row_number);
+        if (parentUuid && childUuid) {
+          parentUpdates.push({ id: childUuid, parent_uuid: parentUuid });
+        }
+      }
+      for (const u of parentUpdates) {
+        await supabase
+          .from('import_staging_rows')
+          .update({ parent_ahs_staging_id: u.parent_uuid })
+          .eq('id', u.id);
+      }
+
+      // Store validation report
+      await supabase
+        .from('import_sessions')
+        .update({ validation_report: v2Result.validationReport, status: 'REVIEW' })
+        .eq('id', sessionId);
+
+      return { success: true };
+    }
+
     // 1. Parse the workbook
     const parsed = parseBoqWorkbook(fileInput, fileName);
 
@@ -533,6 +601,16 @@ export async function publishBaseline(
   projectId: string,
 ): Promise<{ success: boolean; error?: string; boqCount?: number; ahsCount?: number; materialCount?: number }> {
   try {
+    const { data: session } = await supabase
+      .from('import_sessions')
+      .select('parser_version')
+      .eq('id', sessionId)
+      .single();
+    if (session?.parser_version === 'v2') {
+      const { publishBaselineV2 } = await import('./publishBaselineV2');
+      return publishBaselineV2(sessionId, projectId);
+    }
+
     // 1. Get all approved staging rows
     const rows = await getStagingRows(sessionId);
     const approved = rows.filter(r =>
