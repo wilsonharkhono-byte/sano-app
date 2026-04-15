@@ -1,4 +1,4 @@
-import { parseFormulaRef } from '../classifyComponent';
+import { parseFormulaRef, isCatalogSheet } from '../classifyComponent';
 
 describe('parseFormulaRef', () => {
   it('returns null for a literal (no formula)', () => {
@@ -49,5 +49,21 @@ describe('parseFormulaRef', () => {
 
   it('falls back to unknown for unrecognized formulas', () => {
     expect(parseFormulaRef('=IF(A1>0,B1,C1)', 'Analisa').kind).toBe('unknown');
+  });
+});
+
+describe('isCatalogSheet', () => {
+  it('treats Material and Upah as catalog', () => {
+    expect(isCatalogSheet('Material')).toBe(true);
+    expect(isCatalogSheet('Upah')).toBe(true);
+  });
+  it('rejects REKAP-style sheets', () => {
+    expect(isCatalogSheet('REKAP Balok')).toBe(false);
+    expect(isCatalogSheet('Data-Kolom')).toBe(false);
+    expect(isCatalogSheet('Hasil-PC')).toBe(false);
+    expect(isCatalogSheet('Besi Balok')).toBe(false);
+  });
+  it('defaults unknown sheets to catalog=true (conservative)', () => {
+    expect(isCatalogSheet('Pipa')).toBe(true);
   });
 });

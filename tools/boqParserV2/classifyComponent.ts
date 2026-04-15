@@ -36,3 +36,10 @@ export function parseFormulaRef(formula: string | null, currentSheet: string): F
 
   return { kind: 'unknown' };
 }
+
+const AGGREGATOR_SHEET_PATTERN =
+  /^(REKAP|Data[-\s]|Hasil[-\s]|Besi |Detail |Plat|Tangga|COVER|Proses|TABEL)/i;
+
+export function isCatalogSheet(sheetName: string): boolean {
+  return !AGGREGATOR_SHEET_PATTERN.test(sheetName);
+}
