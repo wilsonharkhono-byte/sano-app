@@ -1,4 +1,5 @@
 import type { StagingRowV2, CostSplit } from './boqParserV2/types';
+import { toNumber } from './boqParserV2/classifyComponent';
 
 export function topoSortBlocks(stagingRows: StagingRowV2[]): StagingRowV2[] {
   const blocks = stagingRows.filter(r => r.row_type === 'ahs_block');
@@ -58,6 +59,18 @@ export function topoSortBlocks(stagingRows: StagingRowV2[]): StagingRowV2[] {
     }
   }
 
+  if (result.length < blocks.length) {
+    const stuck = blocks
+      .filter(b => !result.includes(b))
+      .map(b => {
+        const title = (b.parsed_data as Record<string, unknown>)?.title;
+        return `${title ?? '(untitled)'} (row ${b.row_number})`;
+      });
+    throw new Error(
+      `Cycle detected in AHS nested references. Stuck blocks: ${stuck.join(', ')}`,
+    );
+  }
+
   return result;
 }
 
@@ -81,8 +94,8 @@ export function flattenBlock(
   const out: FlattenedLine[] = [];
   for (const c of components) {
     const materialName = pd(c, 'material_name', '');
-    const coefficient = pd(c, 'coefficient', 1) as number;
-    const unitPriceRaw = pd(c, 'unit_price', 0) as number;
+    const coefficient = toNumber(pd(c, 'coefficient', 1));
+    const unitPriceRaw = toNumber(pd(c, 'unit_price', 0));
 
     switch (c.cost_basis) {
       case 'catalog':
@@ -91,7 +104,7 @@ export function flattenBlock(
       case null: {
         const unitPrice =
           c.ref_cells?.unit_price?.cached_value != null
-            ? Number(c.ref_cells.unit_price.cached_value)
+            ? toNumber(c.ref_cells.unit_price.cached_value)
             : unitPriceRaw;
         out.push({
           line_type: 'material',

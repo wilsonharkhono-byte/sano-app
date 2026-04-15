@@ -4,17 +4,31 @@ import { topoSortBlocks, flattenBlock, type FlattenedLine } from '../publishBase
 
 describe('topoSortBlocks', () => {
   it('orders children after parents (deepest-first via reverse)', () => {
-    // Block A references B (A is child of B)
+    // Block A references B (A is child of B).
+    // Staging row order matters: components belong to the most recent ahs_block.
+    // So A's component (which references B) must appear between A and B.
     const stagingRows = [
       { row_number: 1, row_type: 'ahs_block' as const, parent_ahs_staging_id: null, parsed_data: { title: 'A' } },
-      { row_number: 2, row_type: 'ahs_block' as const, parent_ahs_staging_id: null, parsed_data: { title: 'B' } },
       // Component in block A with nested_ahs → block B (via synthetic parent key)
-      { row_number: 3, row_type: 'ahs' as const, parent_ahs_staging_id: 'block:2', parsed_data: {} },
+      { row_number: 2, row_type: 'ahs' as const, parent_ahs_staging_id: 'block:3', parsed_data: {} },
+      { row_number: 3, row_type: 'ahs_block' as const, parent_ahs_staging_id: null, parsed_data: { title: 'B' } },
     ];
     const ordered = topoSortBlocks(stagingRows as never);
     const titles = ordered.map(b => (b.parsed_data as { title: string }).title);
     // Parent B must be processed before child A
     expect(titles.indexOf('B')).toBeLessThan(titles.indexOf('A'));
+  });
+
+  it('throws when AHS nested references form a cycle', () => {
+    // Block A (row 1) has a component referencing block B (row 2)
+    // Block B (row 2) has a component referencing block A (row 1) — cycle.
+    const stagingRows = [
+      { row_number: 1, row_type: 'ahs_block' as const, parent_ahs_staging_id: null, parsed_data: { title: 'A' } },
+      { row_number: 10, row_type: 'ahs' as const, parent_ahs_staging_id: 'block:2', parsed_data: {} },
+      { row_number: 2, row_type: 'ahs_block' as const, parent_ahs_staging_id: null, parsed_data: { title: 'B' } },
+      { row_number: 20, row_type: 'ahs' as const, parent_ahs_staging_id: 'block:1', parsed_data: {} },
+    ];
+    expect(() => topoSortBlocks(stagingRows as never)).toThrow(/cycle/i);
   });
 });
 
@@ -67,6 +81,30 @@ describe('flattenBlock', () => {
     expect(byType.material).toBe(1000);
     expect(byType.labor).toBe(500);
     expect(byType.equipment).toBe(200);
+  });
+
+  it('parses Indonesian-formatted numeric strings in parsed_data via toNumber', () => {
+    // "1,5" → 1.5 and "50.000" → 50000 under Indonesian locale conventions.
+    // ref_cells is absent so unit_price must come from parsed_data.unit_price.
+    const components = [
+      {
+        row_number: 40,
+        row_type: 'ahs' as const,
+        parsed_data: { material_name: 'Pasir', coefficient: '1,5', unit_price: '50.000' },
+        cost_basis: 'catalog' as const,
+        ref_cells: null,
+        cost_split: null,
+        parent_ahs_staging_id: null,
+        raw_data: {},
+        needs_review: false,
+        confidence: 1,
+        review_status: 'APPROVED' as const,
+      },
+    ];
+    const lines = flattenBlock(components, new Map());
+    expect(lines.length).toBe(1);
+    expect(lines[0].coefficient).toBe(1.5);
+    expect(lines[0].unit_price).toBe(50000);
   });
 
   it('inlines parent block lines when nested_ahs component resolves', () => {
