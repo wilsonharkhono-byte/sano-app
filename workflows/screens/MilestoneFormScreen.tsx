@@ -11,6 +11,102 @@ import { createMilestone, updateMilestone, deleteMilestone } from '../../tools/s
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import type { Milestone } from '../../tools/types';
 
+interface PredecessorPickerProps {
+  allMilestones: Milestone[];
+  currentId: string | null;
+  selected: string[];
+  onChange: (ids: string[]) => void;
+}
+
+function PredecessorPicker({ allMilestones, currentId, selected, onChange }: PredecessorPickerProps) {
+  const [search, setSearch] = useState('');
+
+  // Build the set of ineligible ids: self + any descendant of self (to block cycles at selection time)
+  const forbidden = useMemo(() => {
+    const out = new Set<string>();
+    if (!currentId) return out;
+    out.add(currentId);
+    // BFS downward: find anything that transitively depends on currentId
+    const childrenOf = new Map<string, string[]>();
+    for (const m of allMilestones) {
+      for (const p of m.depends_on) {
+        if (!childrenOf.has(p)) childrenOf.set(p, []);
+        childrenOf.get(p)!.push(m.id);
+      }
+    }
+    const queue = [currentId];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      for (const child of childrenOf.get(id) ?? []) {
+        if (out.has(child)) continue;
+        out.add(child);
+        queue.push(child);
+      }
+    }
+    return out;
+  }, [allMilestones, currentId]);
+
+  const candidates = useMemo(() => {
+    const q = search.toLowerCase();
+    return allMilestones
+      .filter(m => !forbidden.has(m.id))
+      .filter(m => !m.deleted_at)
+      .filter(m => !q || m.label.toLowerCase().includes(q));
+  }, [allMilestones, forbidden, search]);
+
+  const toggle = (id: string) => {
+    if (selected.includes(id)) onChange(selected.filter(x => x !== id));
+    else onChange([...selected, id]);
+  };
+
+  return (
+    <>
+      <TextInput
+        style={stylesLocal.search}
+        value={search}
+        onChangeText={setSearch}
+        placeholder="Cari milestone…"
+      />
+
+      <View style={stylesLocal.selectedChipRow}>
+        {selected.map(id => {
+          const m = allMilestones.find(x => x.id === id);
+          if (!m) return null;
+          return (
+            <TouchableOpacity key={id} style={stylesLocal.chipSelected} onPress={() => toggle(id)}>
+              <Text style={stylesLocal.chipSelectedText}>{m.label}</Text>
+              <Ionicons name="close" size={14} color={COLORS.textInverse} />
+            </TouchableOpacity>
+          );
+        })}
+        {selected.length === 0 && (
+          <Text style={{ fontSize: TYPE.xs, color: COLORS.textSec }}>Belum ada predecessor</Text>
+        )}
+      </View>
+
+      <View style={{ marginTop: SPACE.sm }}>
+        {candidates.map(m => {
+          const checked = selected.includes(m.id);
+          return (
+            <TouchableOpacity key={m.id} style={stylesLocal.candidateRow} onPress={() => toggle(m.id)}>
+              <View style={[stylesLocal.candidateBox, checked && stylesLocal.candidateBoxOn]}>
+                {checked && <Ionicons name="checkmark" size={12} color={COLORS.textInverse} />}
+              </View>
+              <Text style={stylesLocal.candidateText}>{m.label}</Text>
+              <Text style={stylesLocal.candidateDate}>{new Date(m.planned_date).toLocaleDateString('id-ID')}</Text>
+            </TouchableOpacity>
+          );
+        })}
+        {candidates.length === 0 && (
+          <Text style={{ fontSize: TYPE.xs, color: COLORS.textSec, paddingVertical: SPACE.sm }}>
+            Tidak ada kandidat
+          </Text>
+        )}
+      </View>
+    </>
+  );
+}
+
 interface Props {
   onBack: () => void;
   milestoneId?: string | null; // null/undefined = create mode
@@ -129,7 +225,15 @@ export default function MilestoneFormScreen({ onBack, milestoneId, initialDraft 
           <Text style={styles.hint}>Kosongkan jika milestone tidak terhubung ke item BoQ.</Text>
         </Card>
 
-        {/* Depends-on picker added in Task 14 */}
+        <Card title="Tergantung Pada">
+          <Text style={styles.hint}>Milestone ini hanya mulai setelah predecessor selesai.</Text>
+          <PredecessorPicker
+            allMilestones={allProjectMilestones}
+            currentId={existing?.id ?? null}
+            selected={dependsOn}
+            onChange={setDependsOn}
+          />
+        </Card>
 
         <View style={styles.actionRow}>
           <TouchableOpacity
@@ -173,4 +277,16 @@ const styles = StyleSheet.create({
   saveBtnText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
   cancelBtn: { flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: SPACE.md, alignItems: 'center' },
   cancelBtnText: { fontSize: TYPE.sm, fontFamily: FONTS.medium, textTransform: 'uppercase' },
+});
+
+const stylesLocal = StyleSheet.create({
+  search: { backgroundColor: COLORS.bg, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: SPACE.sm, fontSize: TYPE.sm, marginTop: SPACE.sm },
+  selectedChipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: SPACE.sm },
+  chipSelected: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.primary, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 4 },
+  chipSelectedText: { color: COLORS.textInverse, fontSize: TYPE.xs, fontFamily: FONTS.medium },
+  candidateRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  candidateBox: { width: 16, height: 16, borderWidth: 2, borderColor: COLORS.border, borderRadius: 3, alignItems: 'center', justifyContent: 'center' },
+  candidateBoxOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  candidateText: { flex: 1, fontSize: TYPE.sm, color: COLORS.text },
+  candidateDate: { fontSize: TYPE.xs, color: COLORS.textSec },
 });
