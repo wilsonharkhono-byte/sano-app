@@ -59,11 +59,7 @@ export function extractBoqRows(
     const unit = cellText(map.get('G'));
 
     const dCell = map.get('D');
-    const rawFormula = dCell?.formula ?? null;
-    // exceljs strips the leading '=' when harvesting formula cells; parseFormulaRef's
-    // regexes expect it, so we re-prefix before classifying.
-    const normalized = rawFormula ? (rawFormula.startsWith('=') ? rawFormula : `=${rawFormula}`) : null;
-    const ref = parseFormulaRef(normalized, boqSheetName);
+    const ref = parseFormulaRef(dCell?.formula ?? null, boqSheetName);
     let cost_basis: CostBasis | null = null;
     let ref_cells: RefCells | null = null;
     if (ref.kind === 'aggregation') {

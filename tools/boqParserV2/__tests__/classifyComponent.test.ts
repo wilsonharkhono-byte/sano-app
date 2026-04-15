@@ -1,4 +1,6 @@
 import { parseFormulaRef, isCatalogSheet, classifyComponent } from '../classifyComponent';
+import { harvestWorkbook } from '../harvest';
+import { buildFixtureWorkbook } from './fixtures';
 import type { HarvestedCell, HarvestLookup } from '../types';
 
 function mockCell(
@@ -63,6 +65,21 @@ describe('parseFormulaRef', () => {
 
   it('falls back to unknown for unrecognized formulas', () => {
     expect(parseFormulaRef('=IF(A1>0,B1,C1)', 'Analisa').kind).toBe('unknown');
+  });
+
+  it('parses harvested cross-sheet formulas end-to-end', async () => {
+    const wb = await buildFixtureWorkbook([
+      {
+        name: 'Analisa',
+        cells: [
+          { address: 'F199', value: 100, formula: "'Harga Bahan'!$D$42", result: 100 },
+        ],
+      },
+    ]);
+    const { lookup } = await harvestWorkbook(wb);
+    const cell = lookup.get('Analisa!F199');
+    const ref = parseFormulaRef(cell?.formula ?? null, 'Analisa');
+    expect(ref.kind).toBe('cross_sheet_abs');
   });
 });
 

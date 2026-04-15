@@ -30,7 +30,7 @@ describe('harvestWorkbook', () => {
     ]);
     const { lookup } = await harvestWorkbook(wb);
     const cell = lookup.get('Analisa!F150');
-    expect(cell?.formula).toBe('SUM(F142:F149)');
+    expect(cell?.formula).toBe('=SUM(F142:F149)');
     expect(cell?.value).toBe(785220);
   });
 

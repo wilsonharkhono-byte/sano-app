@@ -22,7 +22,7 @@ export async function harvestWorkbook(
 
         if (raw && typeof raw === 'object' && 'formula' in raw) {
           const fc = raw as { formula: string; result?: unknown };
-          formula = fc.formula;
+          formula = fc.formula.startsWith('=') ? fc.formula : `=${fc.formula}`;
           value = fc.result ?? null;
         }
 
