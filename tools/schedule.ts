@@ -203,3 +203,62 @@ export async function computeProjectHealth(projectId: string): Promise<ProjectHe
     health,
   };
 }
+
+// ── Graph Utilities (spec §4) ────────────────────────────────────────
+
+/**
+ * Kahn's algorithm topological sort over `depends_on` edges.
+ * Tie-breaks by planned_date ascending.
+ * On cycle detection, logs a warning and returns input in date order.
+ */
+export function topologicalSort(milestones: Milestone[]): Milestone[] {
+  if (milestones.length === 0) return [];
+
+  const byId = new Map(milestones.map(m => [m.id, m]));
+  const inDegree = new Map<string, number>();
+  const successors = new Map<string, string[]>();
+
+  for (const m of milestones) {
+    inDegree.set(m.id, 0);
+    successors.set(m.id, []);
+  }
+
+  for (const m of milestones) {
+    for (const predId of m.depends_on) {
+      if (!byId.has(predId)) continue; // ignore dangling edge
+      inDegree.set(m.id, (inDegree.get(m.id) ?? 0) + 1);
+      successors.get(predId)!.push(m.id);
+    }
+  }
+
+  const cmp = (a: Milestone, b: Milestone) =>
+    a.planned_date.localeCompare(b.planned_date);
+
+  const ready: Milestone[] = milestones
+    .filter(m => (inDegree.get(m.id) ?? 0) === 0)
+    .sort(cmp);
+
+  const out: Milestone[] = [];
+  while (ready.length > 0) {
+    const next = ready.shift()!;
+    out.push(next);
+    for (const succId of successors.get(next.id) ?? []) {
+      const d = (inDegree.get(succId) ?? 0) - 1;
+      inDegree.set(succId, d);
+      if (d === 0) {
+        const succ = byId.get(succId)!;
+        // insert sorted
+        const idx = ready.findIndex(r => cmp(succ, r) < 0);
+        if (idx < 0) ready.push(succ);
+        else ready.splice(idx, 0, succ);
+      }
+    }
+  }
+
+  if (out.length !== milestones.length) {
+    console.warn('topologicalSort: cycle detected, falling back to date order');
+    return [...milestones].sort(cmp);
+  }
+
+  return out;
+}
