@@ -30,3 +30,43 @@ export function levenshteinRatio(a: string, b: string): number {
   if (maxLen === 0) return 1;
   return 1 - levenshtein(a, b) / maxLen;
 }
+
+export function tokenSetRatio(a: string, b: string): number {
+  const tokensA = new Set(normalizeMaterialName(a).split(' ').filter(Boolean));
+  const tokensB = new Set(normalizeMaterialName(b).split(' ').filter(Boolean));
+  if (tokensA.size === 0 && tokensB.size === 0) return 1;
+  if (tokensA.size === 0 || tokensB.size === 0) return 0;
+  let intersection = 0;
+  for (const t of tokensA) if (tokensB.has(t)) intersection++;
+  const union = tokensA.size + tokensB.size - intersection;
+  return intersection / union;
+}
+
+export interface FuzzyMatchCandidate {
+  id: string;
+  name: string;
+  score: number;
+}
+
+export interface CatalogMatchRow {
+  id: string;
+  name: string;
+}
+
+export function fuzzyMatchMaterial(
+  query: string,
+  catalog: CatalogMatchRow[],
+  threshold = 0.7,
+): FuzzyMatchCandidate[] {
+  const qNorm = normalizeMaterialName(query);
+  const scored = catalog
+    .map(row => {
+      const rNorm = normalizeMaterialName(row.name);
+      const lev = levenshteinRatio(qNorm, rNorm);
+      const tok = tokenSetRatio(qNorm, rNorm);
+      return { id: row.id, name: row.name, score: Math.max(lev, tok) };
+    })
+    .filter(c => c.score >= threshold)
+    .sort((a, b) => b.score - a.score);
+  return scored;
+}

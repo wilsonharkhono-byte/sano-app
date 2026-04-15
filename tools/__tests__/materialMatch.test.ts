@@ -1,4 +1,4 @@
-import { normalizeMaterialName, levenshteinRatio } from '../materialMatch';
+import { normalizeMaterialName, levenshteinRatio, tokenSetRatio, fuzzyMatchMaterial } from '../materialMatch';
 
 describe('normalizeMaterialName', () => {
   it('lowercases and trims', () => {
@@ -30,5 +30,42 @@ describe('levenshteinRatio', () => {
   it('handles empty strings', () => {
     expect(levenshteinRatio('', '')).toBe(1);
     expect(levenshteinRatio('abc', '')).toBe(0);
+  });
+});
+
+describe('tokenSetRatio', () => {
+  it('ignores word order', () => {
+    expect(tokenSetRatio('semen pc 40kg', '40kg pc semen')).toBe(1);
+  });
+  it('penalizes missing tokens', () => {
+    const score = tokenSetRatio('semen pc 40kg', 'semen pc');
+    expect(score).toBeGreaterThan(0.5);
+    expect(score).toBeLessThan(1);
+  });
+});
+
+describe('fuzzyMatchMaterial', () => {
+  const catalog = [
+    { id: '1', name: 'Semen Portland 40 kg' },
+    { id: '2', name: 'Pasir halus Lumajang' },
+    { id: '3', name: 'Kerikil beton 1-2 cm' },
+  ];
+
+  it('returns best match for a clean query', () => {
+    const result = fuzzyMatchMaterial('Semen Portland 40kg', catalog);
+    expect(result[0].id).toBe('1');
+    expect(result[0].score).toBeGreaterThan(0.9);
+  });
+
+  it('returns empty array when no candidate scores >= 0.7', () => {
+    const result = fuzzyMatchMaterial('cat food', catalog);
+    expect(result).toEqual([]);
+  });
+
+  it('sorts candidates by score descending', () => {
+    const result = fuzzyMatchMaterial('semen', catalog);
+    if (result.length > 1) {
+      expect(result[0].score).toBeGreaterThanOrEqual(result[1].score);
+    }
   });
 });
