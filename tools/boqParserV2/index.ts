@@ -145,5 +145,26 @@ export async function parseBoqV2(
     });
   }
 
+  // parent key format: "block:<blockRowNumber>" — the DB insert phase
+  // translates these to real UUIDs after inserts complete.
+  const blockByGrandTotalAddress = new Map<string, number>();
+  for (const r of stagingRows) {
+    if (r.row_type !== 'ahs_block') continue;
+    const raw = r.raw_data as { grandTotalAddress?: string | null };
+    if (raw.grandTotalAddress) {
+      blockByGrandTotalAddress.set(`Analisa!${raw.grandTotalAddress}`, r.row_number);
+    }
+  }
+  for (const r of stagingRows) {
+    if (r.cost_basis !== 'nested_ahs') continue;
+    const up = r.ref_cells?.unit_price;
+    if (!up) continue;
+    const key = `${up.sheet}!${up.cell}`;
+    const blockRowNumber = blockByGrandTotalAddress.get(key);
+    if (blockRowNumber != null) {
+      r.parent_ahs_staging_id = `block:${blockRowNumber}`;
+    }
+  }
+
   return { cells, lookup, materialRows, ahsBlocks, boqRows, validationReport, stagingRows };
 }
