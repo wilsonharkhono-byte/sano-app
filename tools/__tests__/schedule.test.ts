@@ -2,7 +2,7 @@ jest.mock('../supabase', () => ({
   supabase: { from: jest.fn(), rpc: jest.fn() },
 }));
 
-import { topologicalSort } from '../schedule';
+import { topologicalSort, validateNoCycle } from '../schedule';
 import type { Milestone } from '../types';
 
 const mk = (id: string, depends_on: string[] = [], planned_date = '2026-06-01'): Milestone => ({
@@ -70,5 +70,50 @@ describe('topologicalSort', () => {
     const result = topologicalSort(ms);
     expect(result).toHaveLength(2);
     expect(result.map(m => m.id)).toEqual(['a', 'b']); // date order
+  });
+});
+
+describe('validateNoCycle', () => {
+  it('passes for empty graph', () => {
+    expect(validateNoCycle([], mk('new'))).toBe(true);
+  });
+
+  it('passes for new milestone with no dependencies', () => {
+    const existing = [mk('a')];
+    expect(validateNoCycle(existing, mk('new'))).toBe(true);
+  });
+
+  it('rejects self-reference', () => {
+    const existing = [mk('a')];
+    const updated = mk('a', ['a']);
+    expect(validateNoCycle(existing, updated)).toBe(false);
+  });
+
+  it('rejects 2-cycle a → b → a', () => {
+    const existing = [mk('b', ['a'])];
+    const updated = mk('a', ['b']);
+    expect(validateNoCycle(existing, updated)).toBe(false);
+  });
+
+  it('rejects 3-cycle a → b → c → a', () => {
+    const existing = [mk('b', ['a']), mk('c', ['b'])];
+    const updated = mk('a', ['c']);
+    expect(validateNoCycle(existing, updated)).toBe(false);
+  });
+
+  it('accepts edit that does not create a cycle', () => {
+    const existing = [mk('a'), mk('b', ['a'])];
+    const updated = mk('c', ['b']);
+    expect(validateNoCycle(existing, updated)).toBe(true);
+  });
+
+  it('detects transitive cycle through multiple hops', () => {
+    const existing = [
+      mk('b', ['a']),
+      mk('c', ['b']),
+      mk('d', ['c']),
+    ];
+    const updated = mk('a', ['d']);
+    expect(validateNoCycle(existing, updated)).toBe(false);
   });
 });

@@ -262,3 +262,41 @@ export function topologicalSort(milestones: Milestone[]): Milestone[] {
 
   return out;
 }
+
+/**
+ * Returns true iff the projected post-edit graph (existing + updated) has no cycle.
+ * DFS-based. The updated milestone replaces any existing entry with the same id,
+ * or is appended if new.
+ */
+export function validateNoCycle(existing: Milestone[], updated: Milestone): boolean {
+  const projected: Milestone[] = existing
+    .filter(m => m.id !== updated.id)
+    .concat(updated);
+
+  const byId = new Map(projected.map(m => [m.id, m]));
+
+  const WHITE = 0, GRAY = 1, BLACK = 2;
+  const color = new Map<string, number>();
+  for (const m of projected) color.set(m.id, WHITE);
+
+  const visit = (id: string): boolean => {
+    if (color.get(id) === GRAY) return false; // back-edge ⇒ cycle
+    if (color.get(id) === BLACK) return true;
+    color.set(id, GRAY);
+    const node = byId.get(id);
+    if (node) {
+      for (const predId of node.depends_on) {
+        if (predId === id) return false; // self-loop
+        if (!byId.has(predId)) continue; // dangling
+        if (!visit(predId)) return false;
+      }
+    }
+    color.set(id, BLACK);
+    return true;
+  };
+
+  for (const m of projected) {
+    if (!visit(m.id)) return false;
+  }
+  return true;
+}
