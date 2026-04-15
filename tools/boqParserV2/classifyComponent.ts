@@ -55,7 +55,8 @@ export interface ComponentClassification {
 function toNumber(v: unknown): number {
   if (typeof v === 'number') return v;
   if (typeof v === 'string') {
-    const n = Number(v);
+    const cleaned = v.replace(/\s/g, '').replace(/\./g, '').replace(/,/g, '.');
+    const n = Number(cleaned);
     return Number.isFinite(n) ? n : 0;
   }
   return 0;

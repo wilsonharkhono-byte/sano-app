@@ -125,4 +125,30 @@ describe('classifyComponent', () => {
       equipment: 73744,
     });
   });
+
+  it('parses Indonesian-formatted string values in cost_split (commas as decimal)', () => {
+    const eCell = mockCell('Analisa', 'E155', 11218, '=$I$132+1300');
+    const fCell = mockCell('Analisa', 'F155', '1.662.746', '=$F$240*B155');
+    const gCell = mockCell('Analisa', 'G155', 0);
+    const hCell = mockCell('Analisa', 'H155', '73.744', '=1300*B155');
+    const lookup = buildLookup([eCell, fCell, gCell, hCell]);
+    const result = classifyComponent(eCell, fCell, gCell, hCell, lookup);
+    expect(result.cost_basis).toBe('cross_ref');
+    expect(result.cost_split).toEqual({
+      material: 1662746,
+      labor: 0,
+      equipment: 73744,
+    });
+  });
+
+  it('classifies takeoff_ref component (cross-sheet abs into REKAP-style sheet)', () => {
+    const eCell = mockCell('RAB (A)', 'E150', 45000, "='REKAP Balok'!$K$526");
+    const fCell = mockCell('RAB (A)', 'F150', 45000);
+    const srcCell = mockCell('REKAP Balok', 'K526', 45000);
+    const lookup = buildLookup([eCell, fCell, srcCell]);
+    const result = classifyComponent(eCell, fCell, null, null, lookup);
+    expect(result.cost_basis).toBe('takeoff_ref');
+    expect(result.ref_cells?.unit_price?.sheet).toBe('REKAP Balok');
+    expect(result.ref_cells?.unit_price?.cell).toBe('K526');
+  });
 });
