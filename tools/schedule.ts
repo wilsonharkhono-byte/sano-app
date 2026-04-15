@@ -60,7 +60,9 @@ export async function deriveMilestoneStatuses(projectId: string): Promise<
   const { data: milestones } = await supabase
     .from('milestones')
     .select('*')
-    .eq('project_id', projectId);
+    .eq('project_id', projectId)
+    .is('deleted_at', null)
+    .eq('author_status', 'confirmed');
 
   const { data: boqItems } = await supabase
     .from('boq_items')
@@ -127,11 +129,11 @@ export async function reviseMilestone(
   // Load existing milestone to record old date
   const { data: existing, error: fetchErr } = await supabase
     .from('milestones')
-    .select('planned_date, revised_date, label')
+    .select('planned_date, revised_date, label, deleted_at')
     .eq('id', milestoneId)
     .single();
 
-  if (fetchErr || !existing) {
+  if (fetchErr || !existing || existing.deleted_at) {
     return { success: false, error: 'Milestone tidak ditemukan.' };
   }
 

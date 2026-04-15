@@ -731,6 +731,8 @@ export async function generateScheduleVariance(projectId: string): Promise<Repor
     .from('milestones')
     .select('*')
     .eq('project_id', projectId)
+    .is('deleted_at', null)
+    .eq('author_status', 'confirmed')
     .order('planned_date');
 
   const today = new Date();
