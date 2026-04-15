@@ -63,9 +63,10 @@ describe('fuzzyMatchMaterial', () => {
   });
 
   it('sorts candidates by score descending', () => {
-    const result = fuzzyMatchMaterial('semen', catalog);
-    if (result.length > 1) {
-      expect(result[0].score).toBeGreaterThanOrEqual(result[1].score);
+    const result = fuzzyMatchMaterial('semen', catalog, 0);
+    expect(result.length).toBeGreaterThanOrEqual(2);
+    for (let i = 1; i < result.length; i++) {
+      expect(result[i - 1].score).toBeGreaterThanOrEqual(result[i].score);
     }
   });
 });
