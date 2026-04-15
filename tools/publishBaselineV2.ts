@@ -235,14 +235,70 @@ export async function publishBaselineV2(
     parentCache.set(block.row_number, flattenBlock(components, parentCache));
   }
 
-  // TODO: Write flattened lines into ahs_versions + ahs_lines + boq_items
-  // using the same shape as v1 publishBaseline. This step is deferred to
-  // Task 20 because it touches real DB tables.
+  // Create new ahs_version for this session
+  const { data: versionRow, error: versionErr } = await supabase
+    .from('ahs_versions')
+    .insert({ project_id: projectId, import_session_id: sessionId, is_current: true })
+    .select('id')
+    .single();
+  if (versionErr || !versionRow) {
+    return { success: false, error: versionErr?.message ?? 'version insert failed' };
+  }
+  const ahsVersionId = versionRow.id as string;
+
+  // Build boq_items map (code → id) by inserting BoQ rows first
+  const boqInserts = rows
+    .filter(r => r.row_type === 'boq')
+    .map(r => {
+      const pd = r.parsed_data as { code: string; label: string; unit: string; planned: number };
+      return {
+        project_id: projectId,
+        code: pd.code,
+        label: pd.label,
+        unit: pd.unit,
+        planned: pd.planned,
+      };
+    });
+  const { data: boqData, error: boqErr } = await supabase
+    .from('boq_items')
+    .upsert(boqInserts, { onConflict: 'project_id,code' })
+    .select('id, code');
+  if (boqErr) return { success: false, error: boqErr.message };
+  const boqIdByCode = new Map<string, string>(
+    (boqData ?? []).map(b => [b.code as string, b.id as string]),
+  );
+
+  // Now write ahs_lines — one batch per block
+  const ahsLineInserts: Record<string, unknown>[] = [];
+  for (const block of sortedBlocks) {
+    const blockParsed = block.parsed_data as { title: string };
+    const lines = parentCache.get(block.row_number) ?? [];
+    // Look up which BoQ item this block is linked to.
+    // For the first pass we rely on raw_data.linkedBoqCode populated by parser
+    // (a future enhancement — skipped here, block may be orphan).
+    for (const line of lines) {
+      ahsLineInserts.push({
+        ahs_version_id: ahsVersionId,
+        boq_item_id: null,  // wired in a follow-up
+        material_spec: line.material_name,
+        coefficient: line.coefficient,
+        unit_price: line.unit_price,
+        line_type: line.line_type,
+        description: line.material_name,
+        ahs_block_title: blockParsed.title,
+        origin_parent_ahs_id: line.origin_parent_ahs_id ?? null,
+      });
+    }
+  }
+  if (ahsLineInserts.length > 0) {
+    const { error: lineErr } = await supabase.from('ahs_lines').insert(ahsLineInserts);
+    if (lineErr) return { success: false, error: lineErr.message };
+  }
 
   return {
     success: true,
-    boqCount: rows.filter(r => r.row_type === 'boq').length,
-    ahsCount: Array.from(parentCache.values()).reduce((n, arr) => n + arr.length, 0),
+    boqCount: boqInserts.length,
+    ahsCount: ahsLineInserts.length,
     materialCount: rows.filter(r => r.row_type === 'material').length,
   };
 }
