@@ -17,6 +17,9 @@ describe('isTitleRow', () => {
     expect(isTitleRow('Semen PC')).toBe(false);
     expect(isTitleRow('')).toBe(false);
   });
+  it('rejects title with no space between digit and m', () => {
+    expect(isTitleRow('1m3 Beton')).toBe(false);
+  });
 });
 
 describe('isHeaderRow', () => {

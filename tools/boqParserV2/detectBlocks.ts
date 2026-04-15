@@ -10,7 +10,7 @@ export interface AhsBlock {
   componentRows: number[];            // row numbers
 }
 
-const TITLE_RE = /^\s*\d+\s*m\s*[²³23]?\s+\S/i;
+const TITLE_RE = /^\s*\d+\s+m\s*[²³23]?\s+\S/i;
 const HEADER_LABELS = new Set([
   'uraian', 'satuan', 'koefisien', 'harga', 'jumlah harga', 'no', 'kode', 'bahan',
 ]);
