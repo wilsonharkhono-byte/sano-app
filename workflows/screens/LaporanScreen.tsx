@@ -15,6 +15,9 @@ import MandorSetupScreen from './MandorSetupScreen';
 import OpnameScreen from './OpnameScreen';
 import AttendanceScreen from './AttendanceScreen';
 import { MilestonePanel } from './MilestoneScreen';
+import MilestoneFormScreen from './MilestoneFormScreen';
+import MilestoneAiDraftScreen from './MilestoneAiDraftScreen';
+import MilestoneAiReviewScreen from './MilestoneAiReviewScreen';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { isPositiveNumber, isNonEmpty, sanitizeText } from '../../tools/validation';
@@ -28,7 +31,7 @@ import { deriveMaterialBalance } from '../../tools/derivation';
 import { getProjectTeam, type TeamMember, ROLE_LABELS } from '../../tools/projectManagement';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
-type Section = 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'katalog' | 'mandor' | 'opname' | 'attendance';
+type Section = 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'katalog' | 'mandor' | 'opname' | 'attendance';
 
 // ── Report preview renderers ──────────────────────────────────────────────────
 
@@ -50,6 +53,7 @@ export default function LaporanScreen() {
   const { show: toast } = useToast();
   const [activeSection, setActiveSection] = useState<Section>(route.params?.initialSection ?? 'overview');
   const [focusedContractId, setFocusedContractId] = useState<string | undefined>(route.params?.contractId);
+  const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
   const [detailBackSection, setDetailBackSection] = useState<'overview' | 'mandor'>('overview');
   const [reportPreview, setReportPreview] = useState<ReportPayload | null>(null);
   const [exportingFormat, setExportingFormat] = useState<'excel' | 'pdf' | null>(null);
@@ -227,6 +231,30 @@ export default function LaporanScreen() {
   // Show BaselineScreen as full takeover when selected
   if (activeSection === 'baseline') {
     return <BaselineScreen onBack={() => setActiveSection('overview')} />;
+  }
+
+  // Show MilestoneFormScreen as full takeover (create/edit)
+  if (activeSection === 'jadwal-form') {
+    return (
+      <MilestoneFormScreen
+        milestoneId={editingMilestoneId}
+        onBack={() => { setEditingMilestoneId(null); setActiveSection('jadwal'); }}
+      />
+    );
+  }
+
+  // Show AI draft screen as full takeover
+  if (activeSection === 'jadwal-ai-draft') {
+    return (
+      <MilestoneAiDraftScreen onBack={() => setActiveSection('jadwal')} />
+    );
+  }
+
+  // Show AI draft review screen as full takeover
+  if (activeSection === 'jadwal-ai-review') {
+    return (
+      <MilestoneAiReviewScreen onBack={() => setActiveSection('jadwal')} />
+    );
   }
 
   // Show Gate2Screen as full takeover when selected
@@ -541,7 +569,16 @@ export default function LaporanScreen() {
         )}
 
         {activeSection === 'jadwal' && (
-          <MilestonePanel embedded onBack={() => setActiveSection('overview')} />
+          <MilestonePanel
+            embedded
+            onBack={() => setActiveSection('overview')}
+            onOpenForm={(id) => {
+              setEditingMilestoneId(id);
+              setActiveSection('jadwal-form');
+            }}
+            onOpenAiDraft={() => setActiveSection('jadwal-ai-draft')}
+            onOpenAiReview={() => setActiveSection('jadwal-ai-review')}
+          />
         )}
       </ScrollView>
 
