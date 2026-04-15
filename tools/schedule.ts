@@ -111,7 +111,8 @@ export async function syncMilestoneStatuses(projectId: string): Promise<number> 
     const { error } = await supabase
       .from('milestones')
       .update({ status: s.computed_status })
-      .eq('id', s.milestone_id);
+      .eq('id', s.milestone_id)
+      .is('deleted_at', null);
     if (!error) updated++;
   }
   return updated;

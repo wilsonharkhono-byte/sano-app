@@ -63,4 +63,10 @@ CREATE POLICY ai_draft_runs_insert
 CREATE POLICY ai_draft_runs_update
   ON ai_draft_runs
   FOR UPDATE
-  USING (user_id = auth.uid());
+  USING (user_id = auth.uid())
+  WITH CHECK (
+    user_id = auth.uid() AND
+    project_id IN (
+      SELECT project_id FROM project_assignments WHERE user_id = auth.uid()
+    )
+  );
