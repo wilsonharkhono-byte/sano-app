@@ -9,6 +9,7 @@ export default function OfficeBaselineScreen() {
     <BaselineScreen
       onBack={() => navigation.navigate('Home')}
       backLabel="Kembali ke Beranda"
+      onGoToJadwal={() => navigation.navigate('Reports', { initialSection: 'jadwal' })}
     />
   );
 }

@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Modal, useWindowDimensions } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../../workflows/components/Header';
 import Card from '../../workflows/components/Card';
 import StatTile from '../../workflows/components/StatTile';
 import Badge from '../../workflows/components/Badge';
 import DateSelectField, { formatDisplayDate } from '../../workflows/components/DateSelectField';
+import { MilestonePanel } from '../../workflows/screens/MilestoneScreen';
+import MilestoneFormScreen from '../../workflows/screens/MilestoneFormScreen';
+import MilestoneAiDraftScreen from '../../workflows/screens/MilestoneAiDraftScreen';
+import MilestoneAiReviewScreen from '../../workflows/screens/MilestoneAiReviewScreen';
 import { useProject } from '../../workflows/hooks/useProject';
 import { useToast } from '../../workflows/components/Toast';
 import { getSiteChangeSummary, type SiteChangeSummary } from '../../tools/siteChanges';
@@ -26,10 +30,20 @@ function formatTs(v: string) {
   return new Date(v).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+type Section = 'overview' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review';
+
 export default function OfficeReportsScreen() {
   const navigation = useNavigation<any>();
+  const route = useRoute<any>();
   const { project, profile, boqItems, purchaseOrders, defects, milestones } = useProject();
   const { show: toast } = useToast();
+  const [activeSection, setActiveSection] = useState<Section>(route.params?.initialSection ?? 'overview');
+  const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const nextSection = route.params?.initialSection as Section | undefined;
+    if (nextSection) setActiveSection(nextSection);
+  }, [route.params?.initialSection]);
   const { width } = useWindowDimensions();
   const isTablet  = width >= BREAKPOINTS.tablet;
   const isDesktop = width >= BREAKPOINTS.desktop;
@@ -83,10 +97,61 @@ export default function OfficeReportsScreen() {
     ] : []),
   ];
 
+  // ── Full-screen takeovers for milestone authoring ────────────────────
+  if (activeSection === 'jadwal-form') {
+    return (
+      <MilestoneFormScreen
+        milestoneId={editingMilestoneId}
+        onBack={() => { setEditingMilestoneId(null); setActiveSection('jadwal'); }}
+      />
+    );
+  }
+  if (activeSection === 'jadwal-ai-draft') {
+    return <MilestoneAiDraftScreen onBack={() => setActiveSection('jadwal')} />;
+  }
+  if (activeSection === 'jadwal-ai-review') {
+    return <MilestoneAiReviewScreen onBack={() => setActiveSection('jadwal')} />;
+  }
+
+  const sectionTabs: Array<{ key: Section; label: string; icon: string }> = [
+    { key: 'overview', label: 'Ringkasan', icon: 'stats-chart' },
+    { key: 'jadwal', label: 'Jadwal', icon: 'calendar' },
+  ];
+
   return (
     <View style={styles.flex}>
       <Header />
+
+      <View style={styles.tabRow} accessibilityRole="tablist">
+        {sectionTabs.map(tab => (
+          <TouchableOpacity
+            key={tab.key}
+            style={[styles.tab, activeSection === tab.key && styles.tabActive]}
+            onPress={() => setActiveSection(tab.key)}
+            accessibilityRole="tab"
+            accessibilityLabel={tab.label}
+            accessibilityState={{ selected: activeSection === tab.key }}
+          >
+            <Ionicons name={tab.icon as any} size={16} color={activeSection === tab.key ? COLORS.primary : COLORS.textSec} />
+            <Text style={[styles.tabText, activeSection === tab.key && styles.tabTextActive]}>{tab.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
       <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, contentMaxWidth != null && { alignSelf: 'center', width: '100%', maxWidth: contentMaxWidth }]}>
+        {activeSection === 'jadwal' && (
+          <MilestonePanel
+            embedded
+            onOpenForm={(id) => {
+              setEditingMilestoneId(id);
+              setActiveSection('jadwal-form');
+            }}
+            onOpenAiDraft={() => setActiveSection('jadwal-ai-draft')}
+            onOpenAiReview={() => setActiveSection('jadwal-ai-review')}
+          />
+        )}
+
+        {activeSection === 'overview' && (<>
         <Text style={styles.sectionHead}>Laporan & Export</Text>
 
         {/* KPI row */}
@@ -390,6 +455,7 @@ export default function OfficeReportsScreen() {
             </TouchableOpacity>
           ))}
         </Card>
+        </>)}
       </ScrollView>
 
       {/* Filter date-range modal */}
@@ -511,6 +577,11 @@ const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: COLORS.bg },
   scroll: { flex: 1 },
   content: { padding: SPACE.base, paddingBottom: SPACE.xxxl },
+  tabRow: { flexDirection: 'row', backgroundColor: COLORS.surface, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.xs + 2, paddingVertical: SPACE.md },
+  tabActive: { borderBottomWidth: 2, borderBottomColor: COLORS.primary },
+  tabText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', color: COLORS.textSec },
+  tabTextActive: { color: COLORS.primary },
   sectionHead: {
     fontSize: TYPE.sm,
     fontFamily: FONTS.bold,
