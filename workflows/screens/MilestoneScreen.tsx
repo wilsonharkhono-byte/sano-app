@@ -44,6 +44,13 @@ export function MilestonePanel({
 
   const sortedMilestones = useMemo(() => topologicalSort(milestones), [milestones]);
 
+  const staleMilestoneCount = useMemo(() => {
+    const liveBoqIds = new Set(boqItems.map(b => b.id));
+    return milestones.filter(m =>
+      m.boq_ids.length > 0 && m.boq_ids.some(id => !liveBoqIds.has(id))
+    ).length;
+  }, [boqItems, milestones]);
+
   const [health, setHealth] = useState<ProjectHealthSummary | null>(null);
   const [revising, setRevising] = useState<string | null>(null); // milestone id being revised
   const [newDate, setNewDate] = useState('');
@@ -263,6 +270,14 @@ export function MilestonePanel({
               <Text style={[styles.entryBtnText, styles.entryBtnTextSecondary]}>Buang Semua</Text>
             </TouchableOpacity>
           </View>
+        </Card>
+      )}
+
+      {staleMilestoneCount > 0 && (
+        <Card borderColor={COLORS.warning}>
+          <Text style={styles.hint}>
+            ⚠️ Baseline dipublish ulang — {staleMilestoneCount} milestone mungkin perlu ditinjau
+          </Text>
         </Card>
       )}
 
