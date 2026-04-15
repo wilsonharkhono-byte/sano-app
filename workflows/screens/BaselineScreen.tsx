@@ -900,6 +900,7 @@ export default function BaselineScreen({
             sessionName={activeSession.original_file_name}
             stagingRows={stagingRows}
             onRowsChange={setStagingRows}
+            userId={profile?.id ?? null}
           />
         )}
 

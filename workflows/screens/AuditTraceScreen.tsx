@@ -29,6 +29,7 @@ import {
   updateStagingRowAudit,
   insertAuditAhsRow,
   deleteStagingRow,
+  getStagingRows,
   type ParsedAhsRow,
 } from '../../tools/baseline';
 import {
@@ -145,6 +146,43 @@ interface Props {
   sessionName: string;
   stagingRows: ImportStagingRow[];
   onRowsChange: (next: ImportStagingRow[]) => void;
+  userId: string | null;
+}
+
+// ─── Edit history helpers ──────────────────────────────────────────────
+
+function diffParsed(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Array<{ field: string; oldValue: unknown; newValue: unknown }> {
+  const changes: Array<{ field: string; oldValue: unknown; newValue: unknown }> = [];
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    const prev = before[key];
+    const next = after[key];
+    if (JSON.stringify(prev) !== JSON.stringify(next)) {
+      changes.push({ field: key, oldValue: prev ?? null, newValue: next ?? null });
+    }
+  }
+  return changes;
+}
+
+async function logStagingEdits(
+  sessionId: string,
+  stagingRowId: string,
+  userId: string,
+  changes: Array<{ field: string; oldValue: unknown; newValue: unknown }>,
+): Promise<void> {
+  if (changes.length === 0) return;
+  const inserts = changes.map(c => ({
+    staging_row_id: stagingRowId,
+    import_session_id: sessionId,
+    edited_by: userId,
+    field_path: `parsed_data.${c.field}`,
+    old_value: c.oldValue,
+    new_value: c.newValue,
+  }));
+  await supabase.from('import_staging_edits').insert(inserts);
 }
 
 // ─── Field edit helper ─────────────────────────────────────────────────
@@ -407,6 +445,7 @@ export default function AuditTraceScreen({
   sessionName,
   stagingRows,
   onRowsChange,
+  userId,
 }: Props) {
   const { show: toast } = useToast();
 
@@ -479,7 +518,12 @@ export default function AuditTraceScreen({
     async (rowId: string, field: EditableField, value: string) => {
       const target = stagingRows.find(r => r.id === rowId);
       if (!target) return;
+      const before = (target.parsed_data ?? {}) as Record<string, unknown>;
       const { parsed, raw } = applyAuditEdit(target, field, value);
+      const changes = diffParsed(before, parsed);
+      if (userId) {
+        await logStagingEdits(sessionId, rowId, userId, changes);
+      }
       const result = await updateStagingRowAudit(rowId, parsed, raw);
       if (!result.success) {
         toast(`Gagal simpan: ${result.error ?? 'unknown'}`, 'critical');
@@ -491,7 +535,7 @@ export default function AuditTraceScreen({
         review_status: 'MODIFIED',
       });
     },
-    [stagingRows, toast, updateOneRow],
+    [stagingRows, toast, updateOneRow, sessionId, userId],
   );
 
   const saveAhsEdit = useCallback(
@@ -507,7 +551,8 @@ export default function AuditTraceScreen({
     ) => {
       const target = stagingRows.find(r => r.id === rowId);
       if (!target) return;
-      let parsed: Record<string, unknown> = (target.parsed_data ?? {}) as Record<string, unknown>;
+      const before = (target.parsed_data ?? {}) as Record<string, unknown>;
+      let parsed: Record<string, unknown> = before;
       let raw: Record<string, unknown> = (target.raw_data ?? {}) as Record<string, unknown>;
       const edits: Array<[EditableField, string]> = [
         ['ahs.material_name', values.materialName],
@@ -520,6 +565,10 @@ export default function AuditTraceScreen({
         const next = applyAuditEdit({ ...target, parsed_data: parsed, raw_data: raw }, field, value);
         parsed = next.parsed;
         raw = next.raw;
+      }
+      const changes = diffParsed(before, parsed);
+      if (userId) {
+        await logStagingEdits(sessionId, rowId, userId, changes);
       }
       const result = await updateStagingRowAudit(rowId, parsed, raw);
       if (!result.success) {
@@ -534,8 +583,41 @@ export default function AuditTraceScreen({
       closeEditPanel();
       toast('Perubahan tersimpan', 'ok');
     },
-    [stagingRows, toast, updateOneRow, closeEditPanel],
+    [stagingRows, toast, updateOneRow, closeEditPanel, sessionId, userId],
   );
+
+  const handleUndo = useCallback(async () => {
+    const { data: lastEdit } = await supabase
+      .from('import_staging_edits')
+      .select('*')
+      .eq('import_session_id', sessionId)
+      .order('edited_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!lastEdit) {
+      toast('Tidak ada riwayat edit', 'warning');
+      return;
+    }
+    const stagingRowId = lastEdit.staging_row_id as string;
+    const target = stagingRows.find(r => r.id === stagingRowId);
+    if (!target) {
+      toast('Baris staging tidak ditemukan', 'warning');
+      return;
+    }
+    const field = (lastEdit.field_path as string).replace(/^parsed_data\./, '');
+    const parsed = { ...((target.parsed_data ?? {}) as Record<string, unknown>) };
+    parsed[field] = lastEdit.old_value;
+    const raw = (target.raw_data ?? {}) as Record<string, unknown>;
+    const result = await updateStagingRowAudit(stagingRowId, parsed, raw);
+    if (!result.success) {
+      toast(`Gagal undo: ${result.error ?? 'unknown'}`, 'critical');
+      return;
+    }
+    await supabase.from('import_staging_edits').delete().eq('id', lastEdit.id);
+    const refreshed = await getStagingRows(sessionId);
+    onRowsChange(refreshed);
+    toast('Perubahan di-undo', 'ok');
+  }, [sessionId, stagingRows, toast, onRowsChange]);
 
   const handleDeleteAhs = useCallback(
     (ahs: AuditAhsRow) => {
@@ -680,6 +762,15 @@ export default function AuditTraceScreen({
             <Text style={styles.title}>Audit & Edit Parser</Text>
             <Text style={styles.subtitle} numberOfLines={1}>{sessionName}</Text>
           </View>
+          <TouchableOpacity
+            onPress={handleUndo}
+            style={styles.undoBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Undo edit terakhir"
+          >
+            <Ionicons name="arrow-undo" size={16} color={COLORS.primary} />
+            <Text style={styles.undoText}>Undo</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Tab bar */}
@@ -1430,6 +1521,13 @@ const styles = StyleSheet.create({
   },
   closeBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 6, paddingRight: 8 },
   closeText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.primary },
+  undoBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderWidth: 1, borderColor: COLORS.primary, borderRadius: 6,
+    backgroundColor: 'rgba(22,119,255,0.04)',
+  },
+  undoText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.primary },
   title: { fontSize: TYPE.base, fontFamily: FONTS.bold, color: COLORS.text },
   subtitle: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 1 },
 
