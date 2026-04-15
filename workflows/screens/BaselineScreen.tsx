@@ -161,6 +161,35 @@ export default function BaselineScreen({
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
 
+  const handleDryRunV2 = async () => {
+    if (!__DEV__) return;
+    try {
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ],
+      });
+      if (picked.canceled || !picked.assets?.[0]) return;
+      const response = await fetch(picked.assets[0].uri);
+      const buffer = await response.arrayBuffer();
+      const { parseBoqV2 } = await import('../../tools/boqParserV2');
+      const result = await parseBoqV2(buffer);
+      console.log('[parseBoqV2 dry-run]', {
+        materials: result.materialRows.length,
+        blocks: result.ahsBlocks.length,
+        boqRows: result.boqRows.length,
+        validation: result.validationReport,
+        staging: result.stagingRows.slice(0, 5),
+      });
+      Alert.alert(
+        'Dry run complete',
+        `Materials: ${result.materialRows.length}\nBlocks: ${result.ahsBlocks.length}\nBoQ rows: ${result.boqRows.length}`,
+      );
+    } catch (e) {
+      Alert.alert('Dry run failed', e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const handleUpload = async () => {
     if (!project || !profile) return;
     try {
@@ -538,6 +567,12 @@ export default function BaselineScreen({
                 </>
               )}
             </TouchableOpacity>
+
+            {__DEV__ && (
+              <TouchableOpacity onPress={handleDryRunV2} style={{ padding: 12, backgroundColor: '#333' }}>
+                <Text style={{ color: '#fff' }}>DEV: Dry-run parseBoqV2</Text>
+              </TouchableOpacity>
+            )}
 
             <Card borderColor={COLORS.border}>
               <Text style={styles.previewTitle}>Panduan Penggunaan</Text>
