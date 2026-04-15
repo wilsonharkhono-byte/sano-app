@@ -53,6 +53,7 @@ import {
 import type { ImportStagingRow } from '../../tools/types';
 import type { CostBasis, ValidationReport } from '../../tools/boqParserV2/types';
 import { supabase } from '../../tools/supabase';
+import { fuzzyMatchMaterial, type FuzzyMatchCandidate, type CatalogMatchRow } from '../../tools/materialMatch';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 type AuditTab = 'material' | 'boq' | 'ahs';
@@ -454,6 +455,7 @@ export default function AuditTraceScreen({
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [validationReport, setValidationReport] = useState<ValidationReport | null>(null);
   const [expandedEditKey, setExpandedEditKey] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<CatalogMatchRow[]>([]);
 
   const toggleEditKey = useCallback((key: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -479,6 +481,16 @@ export default function AuditTraceScreen({
     })();
     return () => { cancelled = true; };
   }, [sessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from('material_catalog').select('id, name');
+      if (cancelled) return;
+      setCatalog((data ?? []) as CatalogMatchRow[]);
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Pivot views — memoized so edits recompute automatically
   const boqRows = useMemo(() => extractBoqRows(stagingRows), [stagingRows]);
@@ -584,6 +596,54 @@ export default function AuditTraceScreen({
       toast('Perubahan tersimpan', 'ok');
     },
     [stagingRows, toast, updateOneRow, closeEditPanel, sessionId, userId],
+  );
+
+  const materialBadges = useMemo(() => {
+    const map = new Map<string, { badge: 'check' | 'ambigu' | 'none'; candidates: FuzzyMatchCandidate[] }>();
+    for (const usage of materialPivot) {
+      if (usage.material) {
+        map.set(usage.materialKey, { badge: 'check', candidates: [] });
+        continue;
+      }
+      const candidates = fuzzyMatchMaterial(usage.displayName, catalog);
+      const topScore = candidates[0]?.score ?? 0;
+      const badge = topScore >= 0.9 ? 'check' : candidates.length > 0 ? 'ambigu' : 'none';
+      map.set(usage.materialKey, { badge, candidates });
+    }
+    return map;
+  }, [materialPivot, catalog]);
+
+  const pickMaterialForUsage = useCallback(
+    async (usage: MaterialUsage, candidate: FuzzyMatchCandidate) => {
+      for (const line of usage.lines) {
+        const target = stagingRows.find(r => r.id === line.ahs.stagingId);
+        if (!target) continue;
+        const before = (target.parsed_data ?? {}) as Record<string, unknown>;
+        const parsed: Record<string, unknown> = {
+          ...before,
+          material_code: candidate.id,
+          material_name: candidate.name,
+        };
+        const raw = (target.raw_data ?? {}) as Record<string, unknown>;
+        const changes = diffParsed(before, parsed);
+        if (userId) {
+          await logStagingEdits(sessionId, line.ahs.stagingId, userId, changes);
+        }
+        const result = await updateStagingRowAudit(line.ahs.stagingId, parsed, raw);
+        if (!result.success) {
+          toast(`Gagal simpan: ${result.error ?? 'unknown'}`, 'critical');
+          return;
+        }
+        updateOneRow(line.ahs.stagingId, {
+          parsed_data: parsed,
+          raw_data: raw,
+          review_status: 'MODIFIED',
+        });
+      }
+      closeEditPanel();
+      toast('Material dipilih', 'ok');
+    },
+    [stagingRows, userId, sessionId, updateOneRow, toast, closeEditPanel],
   );
 
   const handleUndo = useCallback(async () => {
@@ -817,6 +877,11 @@ export default function AuditTraceScreen({
             <MaterialList
               items={filteredMaterialPivot}
               onSelect={k => setSelectedKey(k)}
+              badges={materialBadges}
+              expandedPickerKey={expandedEditKey}
+              onTogglePicker={toggleEditKey}
+              onPickCandidate={pickMaterialForUsage}
+              onCancelPicker={closeEditPanel}
             />
           )}
           {tab === 'material' && selectedMaterial && (
@@ -896,8 +961,16 @@ function StatusBadge({ status, needsReview }: { status: string; needsReview: boo
 // ─── Material tab views ────────────────────────────────────────────────
 
 function MaterialList({
-  items, onSelect,
-}: { items: MaterialUsage[]; onSelect: (key: string) => void }) {
+  items, onSelect, badges, expandedPickerKey, onTogglePicker, onPickCandidate, onCancelPicker,
+}: {
+  items: MaterialUsage[];
+  onSelect: (key: string) => void;
+  badges: Map<string, { badge: 'check' | 'ambigu' | 'none'; candidates: FuzzyMatchCandidate[] }>;
+  expandedPickerKey: string | null;
+  onTogglePicker: (key: string) => void;
+  onPickCandidate: (usage: MaterialUsage, candidate: FuzzyMatchCandidate) => Promise<void>;
+  onCancelPicker: () => void;
+}) {
   if (items.length === 0) {
     return (
       <Card>
@@ -908,30 +981,74 @@ function MaterialList({
   return (
     <>
       <Text style={styles.sectionHead}>Daftar Material ({items.length})</Text>
-      {items.map(m => (
-        <TouchableOpacity key={m.materialKey} onPress={() => onSelect(m.materialKey)} activeOpacity={0.7}>
-          <Card borderColor={m.hasOrphan ? COLORS.warning : COLORS.border}>
-            <View style={styles.listRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.listTitle}>{m.displayName}</Text>
-                <Text style={styles.hint}>
-                  {m.lines.length} AHS line · {m.material?.code ?? 'no-code'} · satuan {m.displayUnit}
-                </Text>
-                {m.hasOrphan && (
-                  <Text style={[styles.hint, { color: COLORS.warning }]}>
-                    Ada baris AHS yang belum ter-link ke BoQ item.
-                  </Text>
-                )}
+      {items.map(m => {
+        const info = badges.get(m.materialKey) ?? { badge: 'none', candidates: [] };
+        const pickerKey = `matpick:${m.materialKey}`;
+        const pickerOpen = expandedPickerKey === pickerKey;
+        return (
+          <View key={m.materialKey}>
+            <TouchableOpacity onPress={() => onSelect(m.materialKey)} activeOpacity={0.7}>
+              <Card borderColor={m.hasOrphan ? COLORS.warning : COLORS.border}>
+                <View style={styles.listRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.listTitle}>{m.displayName}</Text>
+                    <Text style={styles.hint}>
+                      {m.lines.length} AHS line · {m.material?.code ?? 'no-code'} · satuan {m.displayUnit}
+                    </Text>
+                    {m.hasOrphan && (
+                      <Text style={[styles.hint, { color: COLORS.warning }]}>
+                        Ada baris AHS yang belum ter-link ke BoQ item.
+                      </Text>
+                    )}
+                    {info.badge === 'ambigu' && (
+                      <TouchableOpacity
+                        onPress={(e) => { e.stopPropagation?.(); onTogglePicker(pickerKey); }}
+                        accessibilityRole="button"
+                        accessibilityLabel="Pilih kandidat material"
+                      >
+                        <Text style={styles.ambiguBadge}>Ambigu — pilih</Text>
+                      </TouchableOpacity>
+                    )}
+                    {info.badge === 'check' && !m.material && (
+                      <Text style={styles.checkBadge}>Cocok katalog</Text>
+                    )}
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={styles.listTotal}>{formatRupiah(m.grandCost)}</Text>
+                    <Text style={styles.hint}>{formatQuantity(m.grandQty)} {m.displayUnit}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={COLORS.textSec} />
+                </View>
+              </Card>
+            </TouchableOpacity>
+            {pickerOpen && (
+              <View style={styles.pickerPanel} accessibilityLabel={`Picker material ${m.displayName}`}>
+                <Text style={styles.editPanelTitle}>Pilih Kandidat Material</Text>
+                {info.candidates.slice(0, 5).map(c => (
+                  <TouchableOpacity
+                    key={c.id}
+                    style={styles.pickerOption}
+                    onPress={() => { void onPickCandidate(m, c); }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Pilih ${c.name}`}
+                  >
+                    <Text style={styles.pickerOptionName}>{c.name}</Text>
+                    <Text style={styles.pickerOptionScore}>{(c.score * 100).toFixed(0)}%</Text>
+                  </TouchableOpacity>
+                ))}
+                <TouchableOpacity
+                  style={styles.pickerCancel}
+                  onPress={onCancelPicker}
+                  accessibilityRole="button"
+                  accessibilityLabel="Batal pilih material"
+                >
+                  <Text style={styles.editCancelText}>Batal</Text>
+                </TouchableOpacity>
               </View>
-              <View style={{ alignItems: 'flex-end' }}>
-                <Text style={styles.listTotal}>{formatRupiah(m.grandCost)}</Text>
-                <Text style={styles.hint}>{formatQuantity(m.grandQty)} {m.displayUnit}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={16} color={COLORS.textSec} />
-            </View>
-          </Card>
-        </TouchableOpacity>
-      ))}
+            )}
+          </View>
+        );
+      })}
     </>
   );
 }
@@ -1685,4 +1802,31 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.primary,
   },
   editSaveText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textInverse },
+
+  ambiguBadge: {
+    marginTop: 4, fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.critical,
+  },
+  checkBadge: {
+    marginTop: 4, fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.ok,
+  },
+  pickerPanel: {
+    marginTop: -SPACE.sm, marginBottom: SPACE.sm,
+    marginHorizontal: SPACE.sm,
+    padding: SPACE.sm + 2,
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
+    backgroundColor: 'rgba(0,0,0,0.02)',
+  },
+  pickerOption: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 8, paddingHorizontal: 10,
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: 6,
+    backgroundColor: COLORS.surface, marginBottom: 6,
+  },
+  pickerOptionName: { flex: 1, fontSize: TYPE.sm, color: COLORS.text, fontFamily: FONTS.semibold },
+  pickerOptionScore: { fontSize: TYPE.xs, color: COLORS.textSec, marginLeft: 8 },
+  pickerCancel: {
+    alignItems: 'center', justifyContent: 'center', paddingVertical: 8,
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: 6,
+    backgroundColor: COLORS.surface, marginTop: 2,
+  },
 });
