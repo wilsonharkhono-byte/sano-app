@@ -2,7 +2,7 @@ jest.mock('../supabase', () => ({
   supabase: { from: jest.fn(), rpc: jest.fn() },
 }));
 
-import { topologicalSort, validateNoCycle } from '../schedule';
+import { topologicalSort, validateNoCycle, validatePlannedDate, cascadeCleanupDependsOn } from '../schedule';
 import type { Milestone } from '../types';
 
 const mk = (id: string, depends_on: string[] = [], planned_date = '2026-06-01'): Milestone => ({
@@ -115,5 +115,59 @@ describe('validateNoCycle', () => {
     ];
     const updated = mk('a', ['d']);
     expect(validateNoCycle(existing, updated)).toBe(false);
+  });
+});
+
+describe('validatePlannedDate', () => {
+  it('passes when no predecessors', () => {
+    const result = validatePlannedDate([], [], '2026-06-01');
+    expect(result.ok).toBe(true);
+  });
+
+  it('passes when date is after all predecessors', () => {
+    const all = [mk('a', [], '2026-06-01'), mk('b', [], '2026-06-05')];
+    const result = validatePlannedDate(all, ['a', 'b'], '2026-06-10');
+    expect(result.ok).toBe(true);
+  });
+
+  it('passes when date equals max predecessor date', () => {
+    const all = [mk('a', [], '2026-06-05')];
+    const result = validatePlannedDate(all, ['a'], '2026-06-05');
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects when date is before any predecessor', () => {
+    const all = [mk('a', [], '2026-06-10')];
+    const result = validatePlannedDate(all, ['a'], '2026-06-05');
+    expect(result.ok).toBe(false);
+    expect(result.conflictMilestoneId).toBe('a');
+  });
+
+  it('ignores predecessor IDs not found in graph', () => {
+    const result = validatePlannedDate([], ['missing'], '2026-06-01');
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('cascadeCleanupDependsOn', () => {
+  it('returns empty list when nothing depends on deleted id', () => {
+    const all = [mk('a'), mk('b')];
+    const patches = cascadeCleanupDependsOn(all, 'c');
+    expect(patches).toEqual([]);
+  });
+
+  it('returns patches that remove deleted id from direct dependents', () => {
+    const all = [mk('a'), mk('b', ['a']), mk('c', ['a', 'x'])];
+    const patches = cascadeCleanupDependsOn(all, 'a');
+    expect(patches).toEqual([
+      { id: 'b', depends_on: [] },
+      { id: 'c', depends_on: ['x'] },
+    ]);
+  });
+
+  it('does not affect transitive descendants', () => {
+    const all = [mk('a'), mk('b', ['a']), mk('c', ['b'])];
+    const patches = cascadeCleanupDependsOn(all, 'a');
+    expect(patches).toEqual([{ id: 'b', depends_on: [] }]);
   });
 });

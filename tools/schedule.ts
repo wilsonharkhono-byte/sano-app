@@ -300,3 +300,52 @@ export function validateNoCycle(existing: Milestone[], updated: Milestone): bool
   }
   return true;
 }
+
+export interface PlannedDateValidation {
+  ok: boolean;
+  conflictMilestoneId?: string;
+  conflictDate?: string;
+}
+
+/**
+ * A milestone's planned_date must be ≥ max(planned_date of its predecessors).
+ * Dangling predecessor IDs are ignored.
+ */
+export function validatePlannedDate(
+  all: Milestone[],
+  dependsOn: string[],
+  plannedDate: string,
+): PlannedDateValidation {
+  const byId = new Map(all.map(m => [m.id, m]));
+  for (const predId of dependsOn) {
+    const pred = byId.get(predId);
+    if (!pred) continue;
+    const predDate = pred.revised_date ?? pred.planned_date;
+    if (plannedDate < predDate) {
+      return {
+        ok: false,
+        conflictMilestoneId: predId,
+        conflictDate: predDate,
+      };
+    }
+  }
+  return { ok: true };
+}
+
+/**
+ * When milestone `deletedId` is soft-deleted, every other milestone that has
+ * it in `depends_on` needs to have that reference removed. Returns the patches
+ * to apply. Transitive descendants are NOT updated here — they keep their
+ * other predecessors unchanged.
+ */
+export function cascadeCleanupDependsOn(
+  all: Milestone[],
+  deletedId: string,
+): Array<{ id: string; depends_on: string[] }> {
+  return all
+    .filter(m => m.id !== deletedId && m.depends_on.includes(deletedId))
+    .map(m => ({
+      id: m.id,
+      depends_on: m.depends_on.filter(d => d !== deletedId),
+    }));
+}
