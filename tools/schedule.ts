@@ -448,6 +448,15 @@ export async function createMilestone(
     return { success: false, error: insertErr?.message ?? 'Gagal membuat milestone.' };
   }
 
+  // Activity log entry
+  await supabase.from('activity_log').insert({
+    project_id: input.project_id,
+    user_id: null,
+    type: 'permintaan',
+    label: `Milestone "${label}" dibuat (${input.proposed_by ?? 'human'})`,
+    flag: 'INFO',
+  });
+
   return { success: true, data: inserted as Milestone };
 }
 
@@ -546,6 +555,16 @@ export async function updateMilestone(
   if (updateErr || !updated) {
     return { success: false, error: updateErr?.message ?? 'Gagal memperbarui milestone.' };
   }
+
+  // Activity log entry
+  await supabase.from('activity_log').insert({
+    project_id: current.project_id,
+    user_id: null,
+    type: 'permintaan',
+    label: `Milestone "${projected.label}" diperbarui`,
+    flag: 'INFO',
+  });
+
   return { success: true, data: updated as Milestone };
 }
 
@@ -596,6 +615,15 @@ export async function deleteMilestone(
     if (patchErr) console.warn('cascade cleanup failed for', patch.id, patchErr.message);
   }
 
+  // Activity log entry
+  await supabase.from('activity_log').insert({
+    project_id: current.project_id,
+    user_id: null,
+    type: 'permintaan',
+    label: `Milestone "${current.label}" dihapus (cascade: ${cleanups.length})`,
+    flag: 'WARNING',
+  });
+
   return { success: true, data: { cleanedReferences: cleanups.length } };
 }
 
@@ -628,6 +656,16 @@ export async function createMilestonesBulk(
   if (error || !data) {
     return { success: false, error: error?.message ?? 'Gagal membuat draf milestone.' };
   }
+
+  // Activity log entry
+  await supabase.from('activity_log').insert({
+    project_id: projectId,
+    user_id: null,
+    type: 'permintaan',
+    label: `${data.length} draf milestone AI dibuat`,
+    flag: 'INFO',
+  });
+
   return { success: true, data: data as Milestone[] };
 }
 

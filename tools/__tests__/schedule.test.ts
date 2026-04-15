@@ -176,8 +176,11 @@ import { createMilestone } from '../schedule';
 import { supabase } from '../supabase';
 
 describe('createMilestone', () => {
+  const activityLogInserts: any[] = [];
+
   beforeEach(() => {
     jest.clearAllMocks();
+    activityLogInserts.length = 0;
   });
 
   const validInput = {
@@ -192,23 +195,33 @@ describe('createMilestone', () => {
     selectResult?: { data: any; error: any };
     insertResult?: { data: any; error: any };
   }) => {
-    const insertChain = {
-      select: jest.fn().mockReturnValue({
-        single: jest.fn().mockResolvedValue(
-          opts.insertResult ?? { data: null, error: null },
-        ),
-      }),
-    };
-    return {
-      select: jest.fn().mockReturnValue({
-        eq: jest.fn().mockReturnValue({
-          is: jest.fn().mockResolvedValue(
-            opts.selectResult ?? { data: [], error: null },
+    (supabase.from as jest.Mock).mockImplementation((table: string) => {
+      if (table === 'activity_log') {
+        return {
+          insert: jest.fn().mockImplementation((payload: any) => {
+            activityLogInserts.push(payload);
+            return Promise.resolve({ error: null });
+          }),
+        };
+      }
+      const insertChain = {
+        select: jest.fn().mockReturnValue({
+          single: jest.fn().mockResolvedValue(
+            opts.insertResult ?? { data: null, error: null },
           ),
         }),
-      }),
-      insert: jest.fn().mockReturnValue(insertChain),
-    };
+      };
+      return {
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            is: jest.fn().mockResolvedValue(
+              opts.selectResult ?? { data: [], error: null },
+            ),
+          }),
+        }),
+        insert: jest.fn().mockReturnValue(insertChain),
+      };
+    });
   };
 
   it('rejects empty label', async () => {
@@ -218,14 +231,12 @@ describe('createMilestone', () => {
   });
 
   it('rejects duplicate label within project (case-insensitive)', async () => {
-    (supabase.from as jest.Mock).mockReturnValue(
-      mockFromChain({
-        selectResult: {
-          data: [{ id: 'existing', label: 'Pondasi' }],
-          error: null,
-        },
-      }),
-    );
+    mockFromChain({
+      selectResult: {
+        data: [{ id: 'existing', label: 'Pondasi' }],
+        error: null,
+      },
+    });
 
     const result = await createMilestone(validInput);
     expect(result.success).toBe(false);
@@ -233,29 +244,27 @@ describe('createMilestone', () => {
   });
 
   it('rejects when planned_date is before a predecessor', async () => {
-    (supabase.from as jest.Mock).mockReturnValue(
-      mockFromChain({
-        selectResult: {
-          data: [{
-            id: 'pre',
-            project_id: 'p1',
-            label: 'Previous',
-            planned_date: '2026-07-01',
-            revised_date: null,
-            depends_on: [],
-            author_status: 'confirmed',
-            deleted_at: null,
-            boq_ids: [],
-            status: 'ON_TRACK',
-            revision_reason: null,
-            proposed_by: 'human',
-            confidence_score: null,
-            ai_explanation: null,
-          }],
-          error: null,
-        },
-      }),
-    );
+    mockFromChain({
+      selectResult: {
+        data: [{
+          id: 'pre',
+          project_id: 'p1',
+          label: 'Previous',
+          planned_date: '2026-07-01',
+          revised_date: null,
+          depends_on: [],
+          author_status: 'confirmed',
+          deleted_at: null,
+          boq_ids: [],
+          status: 'ON_TRACK',
+          revision_reason: null,
+          proposed_by: 'human',
+          confidence_score: null,
+          ai_explanation: null,
+        }],
+        error: null,
+      },
+    });
 
     const result = await createMilestone({
       ...validInput,
@@ -283,16 +292,34 @@ describe('createMilestone', () => {
       author_status: 'confirmed',
       deleted_at: null,
     };
-    (supabase.from as jest.Mock).mockReturnValue(
-      mockFromChain({
-        selectResult: { data: [], error: null },
-        insertResult: { data: newRow, error: null },
-      }),
-    );
+    mockFromChain({
+      selectResult: { data: [], error: null },
+      insertResult: { data: newRow, error: null },
+    });
 
     const result = await createMilestone(validInput);
     expect(result.success).toBe(true);
     if (result.success) expect(result.data.id).toBe('new1');
+  });
+
+  it('writes an activity log entry on successful create', async () => {
+    const newRow = {
+      id: 'new1', project_id: 'p1', label: 'Pondasi', planned_date: '2026-06-15',
+      revised_date: null, revision_reason: null, boq_ids: ['b1'], status: 'ON_TRACK',
+      depends_on: [], proposed_by: 'human', confidence_score: null, ai_explanation: null,
+      author_status: 'confirmed', deleted_at: null,
+    };
+    mockFromChain({
+      selectResult: { data: [], error: null },
+      insertResult: { data: newRow, error: null },
+    });
+
+    await createMilestone(validInput);
+    expect(activityLogInserts).toHaveLength(1);
+    expect(activityLogInserts[0].type).toBe('permintaan');
+    expect(activityLogInserts[0].flag).toBe('INFO');
+    expect(activityLogInserts[0].label).toMatch(/Pondasi/);
+    expect(activityLogInserts[0].label).toMatch(/dibuat/);
   });
 });
 
@@ -318,31 +345,44 @@ describe('updateMilestone', () => {
     deleted_at: null,
   };
 
+  const activityLogInserts: any[] = [];
+
   const mockExistingFetch = (row: any) => {
-    (supabase.from as jest.Mock).mockImplementation(() => ({
-      select: jest.fn().mockReturnValue({
-        eq: jest.fn().mockImplementation((col: string, val: string) => {
-          // first call: fetch by id (.eq('id', id).single())
-          if (col === 'id') {
+    activityLogInserts.length = 0;
+    (supabase.from as jest.Mock).mockImplementation((table: string) => {
+      if (table === 'activity_log') {
+        return {
+          insert: jest.fn().mockImplementation((payload: any) => {
+            activityLogInserts.push(payload);
+            return Promise.resolve({ error: null });
+          }),
+        };
+      }
+      return {
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockImplementation((col: string, val: string) => {
+            // first call: fetch by id (.eq('id', id).single())
+            if (col === 'id') {
+              return {
+                single: jest.fn().mockResolvedValue({ data: row, error: null }),
+                is: jest.fn().mockResolvedValue({ data: [row], error: null }),
+              };
+            }
+            // second call: fetch siblings (.eq('project_id', pid).is('deleted_at', null))
             return {
-              single: jest.fn().mockResolvedValue({ data: row, error: null }),
               is: jest.fn().mockResolvedValue({ data: [row], error: null }),
             };
-          }
-          // second call: fetch siblings (.eq('project_id', pid).is('deleted_at', null))
-          return {
-            is: jest.fn().mockResolvedValue({ data: [row], error: null }),
-          };
-        }),
-      }),
-      update: jest.fn().mockReturnValue({
-        eq: jest.fn().mockReturnValue({
-          select: jest.fn().mockReturnValue({
-            single: jest.fn().mockResolvedValue({ data: { ...row, label: 'New Label' }, error: null }),
           }),
         }),
-      }),
-    }));
+        update: jest.fn().mockReturnValue({
+          eq: jest.fn().mockReturnValue({
+            select: jest.fn().mockReturnValue({
+              single: jest.fn().mockResolvedValue({ data: { ...row, label: 'New Label' }, error: null }),
+            }),
+          }),
+        }),
+      };
+    });
   };
 
   it('returns error if milestone not found', async () => {
@@ -363,6 +403,15 @@ describe('updateMilestone', () => {
     const result = await updateMilestone('m1', { label: 'New Label' });
     expect(result.success).toBe(true);
     if (result.success) expect(result.data.label).toBe('New Label');
+  });
+
+  it('writes an activity log entry on successful update', async () => {
+    mockExistingFetch(existingRow);
+    await updateMilestone('m1', { label: 'New Label' });
+    expect(activityLogInserts).toHaveLength(1);
+    expect(activityLogInserts[0].type).toBe('permintaan');
+    expect(activityLogInserts[0].flag).toBe('INFO');
+    expect(activityLogInserts[0].label).toMatch(/diperbarui/);
   });
 
   it('rejects self-loop in depends_on', async () => {
@@ -390,7 +439,7 @@ describe('deleteMilestone', () => {
     expect(result.success).toBe(false);
   });
 
-  it('soft-deletes and removes references from dependents', async () => {
+  const setupDeleteMock = () => {
     const target = {
       id: 'a', project_id: 'p1', label: 'A',
       planned_date: '2026-06-01', revised_date: null, revision_reason: null,
@@ -404,21 +453,38 @@ describe('deleteMilestone', () => {
     ];
 
     const updateCalls: Array<{ id: string; payload: any }> = [];
+    const activityLogInserts: any[] = [];
 
-    (supabase.from as jest.Mock).mockImplementation(() => ({
-      select: jest.fn().mockReturnValue({
-        eq: jest.fn().mockImplementation((col: string, val: string) => ({
-          single: jest.fn().mockResolvedValue({ data: col === 'id' ? target : null, error: null }),
-          is: jest.fn().mockResolvedValue({ data: [target, ...dependents], error: null }),
-        })),
-      }),
-      update: jest.fn().mockImplementation((payload: any) => ({
-        eq: jest.fn().mockImplementation((col: string, id: string) => {
-          updateCalls.push({ id, payload });
-          return Promise.resolve({ error: null });
+    (supabase.from as jest.Mock).mockImplementation((table: string) => {
+      if (table === 'activity_log') {
+        return {
+          insert: jest.fn().mockImplementation((payload: any) => {
+            activityLogInserts.push(payload);
+            return Promise.resolve({ error: null });
+          }),
+        };
+      }
+      return {
+        select: jest.fn().mockReturnValue({
+          eq: jest.fn().mockImplementation((col: string, val: string) => ({
+            single: jest.fn().mockResolvedValue({ data: col === 'id' ? target : null, error: null }),
+            is: jest.fn().mockResolvedValue({ data: [target, ...dependents], error: null }),
+          })),
         }),
-      })),
-    }));
+        update: jest.fn().mockImplementation((payload: any) => ({
+          eq: jest.fn().mockImplementation((col: string, id: string) => {
+            updateCalls.push({ id, payload });
+            return Promise.resolve({ error: null });
+          }),
+        })),
+      };
+    });
+
+    return { updateCalls, activityLogInserts };
+  };
+
+  it('soft-deletes and removes references from dependents', async () => {
+    const { updateCalls } = setupDeleteMock();
 
     const result = await deleteMilestone('a');
     expect(result.success).toBe(true);
@@ -431,12 +497,45 @@ describe('deleteMilestone', () => {
     expect(updateCalls.find(c => c.id === 'b')?.payload.depends_on).toEqual([]);
     expect(updateCalls.find(c => c.id === 'c')?.payload.depends_on).toEqual(['x']);
   });
+
+  it('writes an activity log entry on successful delete with cascade count', async () => {
+    const { activityLogInserts } = setupDeleteMock();
+    await deleteMilestone('a');
+    expect(activityLogInserts).toHaveLength(1);
+    expect(activityLogInserts[0].type).toBe('permintaan');
+    expect(activityLogInserts[0].flag).toBe('WARNING');
+    expect(activityLogInserts[0].label).toMatch(/dihapus/);
+    expect(activityLogInserts[0].label).toMatch(/cascade: 2/);
+  });
 });
 
 import { createMilestonesBulk } from '../schedule';
 
 describe('createMilestonesBulk', () => {
-  beforeEach(() => jest.clearAllMocks());
+  const activityLogInserts: any[] = [];
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    activityLogInserts.length = 0;
+  });
+
+  const mockBulk = (result: { data: any; error: any }) => {
+    (supabase.from as jest.Mock).mockImplementation((table: string) => {
+      if (table === 'activity_log') {
+        return {
+          insert: jest.fn().mockImplementation((payload: any) => {
+            activityLogInserts.push(payload);
+            return Promise.resolve({ error: null });
+          }),
+        };
+      }
+      return {
+        insert: jest.fn().mockReturnValue({
+          select: jest.fn().mockResolvedValue(result),
+        }),
+      };
+    });
+  };
 
   it('inserts a sequence of drafts and returns their rows', async () => {
     const insertedRows = [
@@ -450,11 +549,7 @@ describe('createMilestonesBulk', () => {
         author_status: 'draft', deleted_at: null },
     ];
 
-    (supabase.from as jest.Mock).mockImplementation(() => ({
-      insert: jest.fn().mockReturnValue({
-        select: jest.fn().mockResolvedValue({ data: insertedRows, error: null }),
-      }),
-    }));
+    mockBulk({ data: insertedRows, error: null });
 
     const result = await createMilestonesBulk('p1', [
       { project_id: 'p1', label: 'A', planned_date: '2026-06-01', boq_ids: [], depends_on: [],
@@ -467,15 +562,30 @@ describe('createMilestonesBulk', () => {
   });
 
   it('returns the insert error on failure', async () => {
-    (supabase.from as jest.Mock).mockImplementation(() => ({
-      insert: jest.fn().mockReturnValue({
-        select: jest.fn().mockResolvedValue({ data: null, error: { message: 'boom' } }),
-      }),
-    }));
+    mockBulk({ data: null, error: { message: 'boom' } });
     const result = await createMilestonesBulk('p1', [
       { project_id: 'p1', label: 'A', planned_date: '2026-06-01', boq_ids: [], depends_on: [] },
     ]);
     expect(result.success).toBe(false);
+  });
+
+  it('writes an activity log entry on successful bulk create', async () => {
+    const insertedRows = [
+      { id: 'x', label: 'A', project_id: 'p1', planned_date: '2026-06-01',
+        revised_date: null, revision_reason: null, boq_ids: [], status: 'ON_TRACK',
+        depends_on: [], proposed_by: 'ai', confidence_score: 0.8, ai_explanation: 'r',
+        author_status: 'draft', deleted_at: null },
+    ];
+    mockBulk({ data: insertedRows, error: null });
+
+    await createMilestonesBulk('p1', [
+      { project_id: 'p1', label: 'A', planned_date: '2026-06-01', boq_ids: [], depends_on: [],
+        proposed_by: 'ai', author_status: 'draft' },
+    ]);
+    expect(activityLogInserts).toHaveLength(1);
+    expect(activityLogInserts[0].type).toBe('permintaan');
+    expect(activityLogInserts[0].flag).toBe('INFO');
+    expect(activityLogInserts[0].label).toMatch(/draf milestone AI/);
   });
 });
 
