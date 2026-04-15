@@ -106,7 +106,7 @@ RLS mirrors `import_staging_rows`: access granted when the current user has a `p
 
 ### 1.5 Reference pattern → `cost_basis` mapping
 
-1. `=Sheet!$X$Y` → `catalog` (or `takeoff_ref` if sheet is REKAP-style aggregator). `ref_cells.unit_price` populated.
+1. `=Sheet!$X$Y` → `catalog` when the referenced sheet is a catalog sheet (`Material`, `Upah`, or any sheet whose name does NOT match `/^(REKAP|Data|Hasil|Besi|Detail|Plat|Tangga|COVER)/i`). If the sheet name matches a known REKAP/aggregator pattern, treat as `takeoff_ref` instead. `ref_cells.unit_price` populated either way.
 2. `=$X$Y` or `=XY` intra-sheet → `nested_ahs` when target is a Jumlah row. Walk backward from `$I$XX` to the nearest title row to resolve `parent_ahs_staging_id`.
 3. `=SUMIFS(...)` / `=SUM(range)` in quantity cell → `takeoff_ref`. No unfolding; cached value + provenance stored.
 4. `=B*E` (simple coefficient × unit price) → no classification flag; default path.
@@ -142,11 +142,11 @@ Sub-phases; each reads `harvestedCells` and emits staging rows.
 
 **2a. Catalog extraction.** Sweep `Material`, `Upah`, and any catalog-patterned sheet. Emit `row_type = 'material'` staging rows with `code`, `name`, `unit`, `reference_unit_price` from `.v`. No formulas expected.
 
-**2b. AHS block detection.** Sweep `Analisa` (and any sheet with AHS layout). Detect block boundaries by scanning column B/C for title rows matching `/^\d+\s*m[²³]?\s+/i` (e.g. "1 m3 Beton site mix"), then scan forward for the `Jumlah` row — recognized either by the literal text "Jumlah" in column A/B/C or by a SUM formula in column F whose range starts at the title row. Every row between title and Jumlah is a component.
+**2b. AHS block detection.** Sweep `Analisa` (and any sheet with AHS layout). Detect block boundaries by scanning column B/C for title rows matching `/^\d+\s*m[²³23]?\s+/i` (accepts both Unicode superscripts and plain "m2"/"m3" — e.g. "1 m3 Beton site mix"), then scan forward for the `Jumlah` row — recognized either by the literal text "Jumlah" in column A/B/C or by a SUM formula in column F whose range starts at the title row. Rows between title and Jumlah are candidate components; skip rows whose column B/C text matches column-header labels (`/^(Uraian|Satuan|Koefisien|Harga|Jumlah Harga|No)$/i`) or that are empty (no value in columns B-F).
 
 For each block:
-- One `row_type = 'ahs_block'` staging row for the title (stores block unit, Jumlah cached value, `$I$XX` grand-total address)
-- One `row_type = 'ahs_line'` staging row per component
+- One `row_type = 'ahs_block'` staging row for the title (new row type in v2; stores block unit, Jumlah cached value, `$I$XX` grand-total address)
+- One `row_type = 'ahs'` staging row per component (matches existing v1 row type, so the existing `auditPivot.ts` filter at [tools/auditPivot.ts:94](tools/auditPivot.ts#L94) continues to see v2 components without modification)
 
 **2c. Component classification.** For each component row, examine formulas in columns E, F, G, H and apply the reference-pattern matcher — a regex table of ~30 lines.
 
