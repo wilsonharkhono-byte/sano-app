@@ -21,9 +21,26 @@ const STATUS_FLAG: Record<MilestoneStatus, string> = {
 
 const HEALTH_COLORS = { GREEN: COLORS.ok, AT_RISK: COLORS.warning, RED: COLORS.critical };
 
-export function MilestonePanel({ onBack, embedded = false }: { onBack?: () => void; embedded?: boolean }) {
-  const { project, profile, milestones, refresh } = useProject();
+export function MilestonePanel({
+  onBack,
+  embedded = false,
+  onOpenForm,
+  onOpenAiDraft,
+  onOpenAiReview,
+}: {
+  onBack?: () => void;
+  embedded?: boolean;
+  onOpenForm?: (milestoneId: string | null) => void;
+  onOpenAiDraft?: () => void;
+  onOpenAiReview?: () => void;
+}) {
+  const { project, profile, milestones, boqItems, refresh } = useProject();
   const { show: toast } = useToast();
+
+  // Baseline is considered published once BoQ items exist for the project.
+  // BaselineScreen tracks publish state on the import session level, but project-level
+  // proxy is whether published BoQ rows exist (publish writes to boq_items).
+  const baselinePublished = boqItems.length > 0;
 
   const [health, setHealth] = useState<ProjectHealthSummary | null>(null);
   const [revising, setRevising] = useState<string | null>(null); // milestone id being revised
@@ -168,9 +185,32 @@ export function MilestonePanel({ onBack, embedded = false }: { onBack?: () => vo
       )}
 
       {/* Milestone list */}
+      {canRevise && baselinePublished && (
+        <View style={styles.entryRow}>
+          <TouchableOpacity style={styles.entryBtn} onPress={() => onOpenForm?.(null)}>
+            <Ionicons name="add" size={16} color={COLORS.textInverse} />
+            <Text style={styles.entryBtnText}>Tambah Milestone</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.entryBtn, styles.entryBtnSecondary]} onPress={() => onOpenAiDraft?.()}>
+            <Ionicons name="sparkles" size={16} color={COLORS.primary} />
+            <Text style={[styles.entryBtnText, styles.entryBtnTextSecondary]}>Saran Jadwal AI</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <Text style={styles.sectionHead}>Daftar Milestone</Text>
-      {milestones.length === 0 && (
-        <Card><Text style={styles.hint}>Belum ada milestone. Tersedia setelah baseline import.</Text></Card>
+
+      {!baselinePublished && (
+        <Card><Text style={styles.hint}>Publikasikan baseline dulu untuk mengaktifkan jadwal.</Text></Card>
+      )}
+
+      {baselinePublished && milestones.length === 0 && (
+        <Card>
+          <Text style={[styles.msLabel, { marginBottom: 6 }]}>Belum ada jadwal</Text>
+          <Text style={styles.hint}>
+            Mulai dengan menambah milestone manual, atau biarkan AI menyusun draf awal dari BoQ yang sudah dipublikasi.
+          </Text>
+        </Card>
       )}
       {milestones.map(m => (
         <Card
@@ -261,4 +301,9 @@ const styles = StyleSheet.create({
   saveBtnText:    { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
   cancelBtn:      { flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: SPACE.md, alignItems: 'center' },
   cancelBtnText:  { fontSize: TYPE.sm, fontFamily: FONTS.medium, textTransform: 'uppercase' },
+  entryRow:       { flexDirection: 'row', gap: SPACE.sm, marginBottom: SPACE.md },
+  entryBtn:       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: COLORS.primary, borderRadius: RADIUS, padding: SPACE.sm + 2 },
+  entryBtnSecondary: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.primary },
+  entryBtnText:   { color: COLORS.textInverse, fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
+  entryBtnTextSecondary: { color: COLORS.primary },
 });
