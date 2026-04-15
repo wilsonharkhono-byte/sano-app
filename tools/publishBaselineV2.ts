@@ -273,13 +273,13 @@ export async function publishBaselineV2(
   for (const block of sortedBlocks) {
     const blockParsed = block.parsed_data as { title: string };
     const lines = parentCache.get(block.row_number) ?? [];
-    // Look up which BoQ item this block is linked to.
-    // For the first pass we rely on raw_data.linkedBoqCode populated by parser
-    // (a future enhancement — skipped here, block may be orphan).
+    const linkedBoqCode = (block.parsed_data as { linked_boq_code?: string | null })
+      .linked_boq_code;
+    const linkedBoqId = linkedBoqCode ? boqIdByCode.get(linkedBoqCode) ?? null : null;
     for (const line of lines) {
       ahsLineInserts.push({
         ahs_version_id: ahsVersionId,
-        boq_item_id: null,  // wired in a follow-up
+        boq_item_id: linkedBoqId,
         material_spec: line.material_name,
         coefficient: line.coefficient,
         unit_price: line.unit_price,

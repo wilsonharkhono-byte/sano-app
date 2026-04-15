@@ -70,6 +70,21 @@ export async function parseBoqV2(
     });
   }
 
+  const boqCodeByAnalisaAddress = new Map<string, string>();
+  for (const b of boqRows) {
+    const iCell = lookup.get(`${boqSheet}!I${b.sourceRow}`);
+    const jCell = lookup.get(`${boqSheet}!J${b.sourceRow}`);
+    for (const c of [iCell, jCell]) {
+      if (!c?.formula) continue;
+      const m = /^=?\s*(?:'([^']+)'|([A-Za-z0-9_\- ]+))!\$?([A-Z]+)\$?(\d+)/.exec(c.formula);
+      if (m) {
+        const sheet = m[1] ?? m[2];
+        const addr = `${m[3]}${m[4]}`;
+        boqCodeByAnalisaAddress.set(`${sheet}!${addr}`, b.code);
+      }
+    }
+  }
+
   for (const block of ahsBlocks) {
     const blockRowNumber = ++rowNumber;
     stagingRows.push({
@@ -83,6 +98,13 @@ export async function parseBoqV2(
       parsed_data: {
         title: block.title,
         jumlah_cached_value: block.jumlahCachedValue,
+        linked_boq_code:
+          (block.grandTotalAddress
+            ? boqCodeByAnalisaAddress.get(`${analisaSheet}!${block.grandTotalAddress}`)
+            : undefined) ??
+          boqCodeByAnalisaAddress.get(`${analisaSheet}!F${block.jumlahRow}`) ??
+          boqCodeByAnalisaAddress.get(`${analisaSheet}!I${block.jumlahRow}`) ??
+          null,
       },
       needs_review: false,
       confidence: 1,

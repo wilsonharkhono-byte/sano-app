@@ -128,4 +128,34 @@ describe('parseBoqV2 nested AHS resolution', () => {
       `block:${parentBlock?.row_number}`,
     );
   });
+
+  it('links ahs_block.linked_boq_code when BoQ row references the block', async () => {
+    const buffer = await buildFixtureBuffer([
+      {
+        name: 'Analisa',
+        cells: [
+          { address: 'B142', value: '1 m3 Lantai Kerja' },
+          { address: 'B144', value: 'Semen' },
+          { address: 'E144', value: 75000 },
+          { address: 'F144', value: 75000 },
+          { address: 'B150', value: 'Jumlah' },
+          { address: 'F150', formula: 'SUM(F142:F149)', result: 75000 },
+          { address: 'I150', formula: 'F150', result: 75000 },
+        ],
+      },
+      {
+        name: 'RAB (A)',
+        cells: [
+          { address: 'B33', value: 'A.1' },
+          { address: 'C33', value: 'Lantai kerja poer' },
+          { address: 'D33', value: 100 },
+          { address: 'G33', value: 'm3' },
+          { address: 'I33', formula: 'Analisa!$F$150', result: 75000 },
+        ],
+      },
+    ]);
+    const result = await parseBoqV2(buffer);
+    const block = result.stagingRows.find(r => r.row_type === 'ahs_block');
+    expect((block?.parsed_data as { linked_boq_code: string }).linked_boq_code).toBe('A.1');
+  });
 });
