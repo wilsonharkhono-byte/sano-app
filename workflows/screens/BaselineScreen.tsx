@@ -127,9 +127,11 @@ function buildParsePreview(fileName: string, parsed: ParsedWorkbook): ParsePrevi
 export default function BaselineScreen({
   onBack,
   backLabel = 'Kembali ke Laporan',
+  onGoToJadwal,
 }: {
   onBack: () => void;
   backLabel?: string;
+  onGoToJadwal?: () => void;
 }) {
   const { project, profile, refresh } = useProject();
   const { show: toast } = useToast();
@@ -147,6 +149,7 @@ export default function BaselineScreen({
   const [editingAnomalyId, setEditingAnomalyId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<Record<string, string>>({});
   const [parseProgress, setParseProgress] = useState('');
+  const [publishedJustNow, setPublishedJustNow] = useState(false);
   const [lastPreview, setLastPreview] = useState<ParsePreview | null>(null);
   const [lastImportIssue, setLastImportIssue] = useState<string | null>(null);
   const [showAuditModal, setShowAuditModal] = useState(false);
@@ -432,6 +435,7 @@ export default function BaselineScreen({
       }
 
       toast(`Baseline published: ${result.boqCount} BoQ, ${result.ahsCount} AHS, ${result.materialCount} material`, 'ok');
+      setPublishedJustNow(true);
 
       // Generate material master
       const masterResult = await generateMaterialMaster(project.id);
@@ -524,6 +528,18 @@ export default function BaselineScreen({
         {view === 'sessions' && (
           <>
             <Text style={styles.sectionHead}>Baseline Import — {project?.name}</Text>
+
+            {publishedJustNow && onGoToJadwal && (
+              <Card borderColor={COLORS.ok}>
+                <Text style={styles.msLabel}>Baseline berhasil dipublikasi</Text>
+                <Text style={{ fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 4 }}>
+                  Langkah selanjutnya: atur jadwal milestone untuk proyek ini.
+                </Text>
+                <TouchableOpacity style={styles.primaryBtn} onPress={onGoToJadwal}>
+                  <Text style={styles.primaryBtnText}>Atur Jadwal →</Text>
+                </TouchableOpacity>
+              </Card>
+            )}
 
             <TouchableOpacity style={[styles.uploadBtn, parsing && { opacity: 0.6 }]} onPress={handleUpload} disabled={parsing}>
               {parsing ? (
@@ -959,6 +975,9 @@ const styles = StyleSheet.create({
   hint: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: SPACE.xs },
   uploadBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.sm, backgroundColor: COLORS.primary, borderRadius: RADIUS, padding: SPACE.base, marginBottom: SPACE.base },
   uploadText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
+  msLabel: { fontSize: TYPE.sm, fontFamily: FONTS.bold },
+  primaryBtn: { backgroundColor: COLORS.primary, borderRadius: RADIUS, padding: SPACE.md, alignItems: 'center', marginTop: SPACE.sm },
+  primaryBtnText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.bold, textTransform: 'uppercase' },
   sessionRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sessionName: { fontSize: TYPE.sm, fontFamily: FONTS.semibold },
   ghostBtn: { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: 10, alignItems: 'center', marginTop: SPACE.sm + 2, minHeight: 44, justifyContent: 'center' },

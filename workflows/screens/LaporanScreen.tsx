@@ -230,7 +230,12 @@ export default function LaporanScreen() {
 
   // Show BaselineScreen as full takeover when selected
   if (activeSection === 'baseline') {
-    return <BaselineScreen onBack={() => setActiveSection('overview')} />;
+    return (
+      <BaselineScreen
+        onBack={() => setActiveSection('overview')}
+        onGoToJadwal={() => setActiveSection('jadwal')}
+      />
+    );
   }
 
   // Show MilestoneFormScreen as full takeover (create/edit)
