@@ -595,3 +595,35 @@ export async function deleteMilestone(
 
   return { success: true, data: { cleanedReferences: cleanups.length } };
 }
+
+// ── createMilestonesBulk ─────────────────────────────────────────────
+
+export async function createMilestonesBulk(
+  projectId: string,
+  drafts: CreateMilestoneInput[],
+): Promise<MilestoneResult<Milestone[]>> {
+  if (drafts.length === 0) return { success: true, data: [] };
+
+  const payload = drafts.map(d => ({
+    project_id: projectId,
+    label: d.label.trim(),
+    planned_date: d.planned_date,
+    boq_ids: d.boq_ids,
+    depends_on: d.depends_on,
+    proposed_by: d.proposed_by ?? 'ai',
+    confidence_score: d.confidence_score ?? null,
+    ai_explanation: d.ai_explanation ?? null,
+    author_status: d.author_status ?? 'draft',
+    status: 'ON_TRACK',
+  }));
+
+  const { data, error } = await supabase
+    .from('milestones')
+    .insert(payload)
+    .select();
+
+  if (error || !data) {
+    return { success: false, error: error?.message ?? 'Gagal membuat draf milestone.' };
+  }
+  return { success: true, data: data as Milestone[] };
+}

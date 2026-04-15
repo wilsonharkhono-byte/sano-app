@@ -432,3 +432,49 @@ describe('deleteMilestone', () => {
     expect(updateCalls.find(c => c.id === 'c')?.payload.depends_on).toEqual(['x']);
   });
 });
+
+import { createMilestonesBulk } from '../schedule';
+
+describe('createMilestonesBulk', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('inserts a sequence of drafts and returns their rows', async () => {
+    const insertedRows = [
+      { id: 'x', label: 'A', project_id: 'p1', planned_date: '2026-06-01',
+        revised_date: null, revision_reason: null, boq_ids: [], status: 'ON_TRACK',
+        depends_on: [], proposed_by: 'ai', confidence_score: 0.8, ai_explanation: 'r',
+        author_status: 'draft', deleted_at: null },
+      { id: 'y', label: 'B', project_id: 'p1', planned_date: '2026-06-10',
+        revised_date: null, revision_reason: null, boq_ids: [], status: 'ON_TRACK',
+        depends_on: ['x'], proposed_by: 'ai', confidence_score: 0.7, ai_explanation: 'r',
+        author_status: 'draft', deleted_at: null },
+    ];
+
+    (supabase.from as jest.Mock).mockImplementation(() => ({
+      insert: jest.fn().mockReturnValue({
+        select: jest.fn().mockResolvedValue({ data: insertedRows, error: null }),
+      }),
+    }));
+
+    const result = await createMilestonesBulk('p1', [
+      { project_id: 'p1', label: 'A', planned_date: '2026-06-01', boq_ids: [], depends_on: [],
+        proposed_by: 'ai', confidence_score: 0.8, ai_explanation: 'r', author_status: 'draft' },
+      { project_id: 'p1', label: 'B', planned_date: '2026-06-10', boq_ids: [], depends_on: ['x'],
+        proposed_by: 'ai', confidence_score: 0.7, ai_explanation: 'r', author_status: 'draft' },
+    ]);
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data).toHaveLength(2);
+  });
+
+  it('returns the insert error on failure', async () => {
+    (supabase.from as jest.Mock).mockImplementation(() => ({
+      insert: jest.fn().mockReturnValue({
+        select: jest.fn().mockResolvedValue({ data: null, error: { message: 'boom' } }),
+      }),
+    }));
+    const result = await createMilestonesBulk('p1', [
+      { project_id: 'p1', label: 'A', planned_date: '2026-06-01', boq_ids: [], depends_on: [] },
+    ]);
+    expect(result.success).toBe(false);
+  });
+});
