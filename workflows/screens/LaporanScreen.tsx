@@ -24,8 +24,6 @@ import { isPositiveNumber, isNonEmpty, sanitizeText } from '../../tools/validati
 import { pickAndUploadPhoto } from '../../tools/storage';
 import { supabase } from '../../tools/supabase';
 import { generateReport, recordReportExport, type ReportPayload, type ReportType, type ReportFilters } from '../../tools/reports';
-import { exportReportToExcel } from '../../tools/excel';
-import { exportReportToPdf } from '../../tools/pdf';
 import { ReportPreview } from '../components/ReportPreview';
 import { deriveMaterialBalance } from '../../tools/derivation';
 import { getProjectTeam, type TeamMember, ROLE_LABELS } from '../../tools/projectManagement';
@@ -623,6 +621,7 @@ export default function LaporanScreen() {
                       if (!reportPreview) return;
                       setExportingFormat('pdf');
                       try {
+                        const { exportReportToPdf } = await import('../../tools/pdf');
                         await exportReportToPdf(reportPreview, project?.name);
                         toast('File PDF siap', 'ok');
                       } catch (err: any) {
@@ -644,6 +643,7 @@ export default function LaporanScreen() {
                       if (!reportPreview) return;
                       setExportingFormat('excel');
                       try {
+                        const { exportReportToExcel } = await import('../../tools/excel');
                         await exportReportToExcel(reportPreview, project?.name);
                         toast('File Excel siap', 'ok');
                       } catch (err: any) {

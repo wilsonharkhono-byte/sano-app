@@ -20,8 +20,6 @@ import { getKasbonAging } from '../../tools/kasbon';
 import { formatRp } from '../../tools/opname';
 import type { MandorAttendance, KasbonAging } from '../../tools/types';
 import { generateReport, recordReportExport, type ReportPayload, type ReportType, type ReportFilters } from '../../tools/reports';
-import { exportReportToExcel } from '../../tools/excel';
-import { exportReportToPdf } from '../../tools/pdf';
 import { ReportPreview } from '../../workflows/components/ReportPreview';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE, BREAKPOINTS, MAX_CONTENT_WIDTH } from '../../workflows/theme';
 
@@ -78,6 +76,34 @@ export default function OfficeReportsScreen() {
   const handoverEligible = pendingBerat === 0 && openRework === 0;
   const openPOs = purchaseOrders.filter(po => po.status === 'OPEN' || po.status === 'PARTIAL_RECEIVED').length;
   const atRisk = milestones.filter(m => m.status === 'AT_RISK' || m.status === 'DELAYED').length;
+  const delayedMilestones = milestones.filter(m => m.status === 'DELAYED').length;
+  const completedMilestones = milestones.filter(m => m.status === 'COMPLETE').length;
+  const baselinePublished = boqItems.length > 0;
+  const nextMilestone = milestones
+    .filter(m => m.status !== 'COMPLETE')
+    .sort((a, b) => {
+      const aDate = new Date(a.revised_date ?? a.planned_date).getTime();
+      const bDate = new Date(b.revised_date ?? b.planned_date).getTime();
+      return aDate - bDate;
+    })[0] ?? null;
+  const milestoneBadgeFlag = !baselinePublished
+    ? 'INFO'
+    : delayedMilestones > 0
+    ? 'CRITICAL'
+    : atRisk > 0
+    ? 'WARNING'
+    : milestones.length > 0
+    ? 'OK'
+    : 'INFO';
+  const milestoneBadgeLabel = !baselinePublished
+    ? 'Baseline belum publish'
+    : delayedMilestones > 0
+    ? 'Ada yang terlambat'
+    : atRisk > 0
+    ? 'Perlu perhatian'
+    : milestones.length > 0
+    ? 'Sehat'
+    : 'Belum ada milestone';
   const isPrincipal = profile?.role === 'principal';
 
   const REPORTS: Array<{ type: ReportType; label: string; icon: string; filtered?: boolean }> = [
@@ -160,6 +186,49 @@ export default function OfficeReportsScreen() {
           <StatTile value={openPOs} label="PO Aktif" color={COLORS.warning} />
           <StatTile value={atRisk} label="Milestone Risiko" color={COLORS.critical} />
         </View>
+
+        <Card
+          title="Jadwal & Milestone"
+          subtitle={baselinePublished
+            ? 'Panel milestone ada di tab Jadwal. Ringkasan ini memberi akses cepat dari halaman laporan.'
+            : 'Publikasikan baseline dulu untuk mulai menyusun milestone proyek.'
+          }
+          borderColor={delayedMilestones > 0 ? COLORS.critical : atRisk > 0 ? COLORS.warning : COLORS.info}
+          rightAction={<Badge flag={milestoneBadgeFlag} label={milestoneBadgeLabel} />}
+        >
+          <View style={styles.kpiRow}>
+            <View style={styles.kpiTile}>
+              <Text style={[styles.kpiValue, { color: COLORS.info }]}>{milestones.length}</Text>
+              <Text style={styles.kpiLabel}>Total Milestone</Text>
+            </View>
+            <View style={styles.kpiTile}>
+              <Text style={[styles.kpiValue, { color: COLORS.ok }]}>{completedMilestones}</Text>
+              <Text style={styles.kpiLabel}>Selesai</Text>
+            </View>
+          </View>
+
+          <View style={styles.metricRow}>
+            <Text style={styles.metricLabel}>At Risk / Delayed</Text>
+            <Text style={[styles.metricValue, { color: atRisk > 0 ? COLORS.warning : COLORS.text }]}>
+              {atRisk}
+            </Text>
+          </View>
+          <View style={styles.metricRow}>
+            <Text style={styles.metricLabel}>Milestone Berikutnya</Text>
+            <Text style={[styles.metricValue, styles.metricValueFlexible]}>
+              {nextMilestone
+                ? `${nextMilestone.label} · ${new Date(nextMilestone.revised_date ?? nextMilestone.planned_date).toLocaleDateString('id-ID')}`
+                : baselinePublished
+                ? 'Belum ada milestone aktif'
+                : 'Menunggu baseline'}
+            </Text>
+          </View>
+
+          <TouchableOpacity style={styles.inlineActionBtn} onPress={() => setActiveSection('jadwal')}>
+            <Ionicons name="calendar-outline" size={16} color={COLORS.textInverse} />
+            <Text style={styles.inlineActionBtnText}>Buka Panel Milestone</Text>
+          </TouchableOpacity>
+        </Card>
 
         {/* Handover eligibility */}
         <Card title="Status Serah Terima" borderColor={handoverEligible ? COLORS.ok : COLORS.critical}>
@@ -530,6 +599,7 @@ export default function OfficeReportsScreen() {
                     onPress={async () => {
                       setExportingFormat('pdf');
                       try {
+                        const { exportReportToPdf } = await import('../../tools/pdf');
                         await exportReportToPdf(reportPreview, project?.name);
                         toast('File PDF siap', 'ok');
                       } catch (err: any) {
@@ -548,6 +618,7 @@ export default function OfficeReportsScreen() {
                     onPress={async () => {
                       setExportingFormat('excel');
                       try {
+                        const { exportReportToExcel } = await import('../../tools/excel');
                         await exportReportToExcel(reportPreview, project?.name);
                         toast('File Excel siap', 'ok');
                       } catch (err: any) {
@@ -577,9 +648,31 @@ const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: COLORS.bg },
   scroll: { flex: 1 },
   content: { padding: SPACE.base, paddingBottom: SPACE.xxxl },
-  tabRow: { flexDirection: 'row', backgroundColor: COLORS.surface, borderBottomWidth: 1, borderBottomColor: COLORS.border },
-  tab: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.xs + 2, paddingVertical: SPACE.md },
-  tabActive: { borderBottomWidth: 2, borderBottomColor: COLORS.primary },
+  tabRow: {
+    flexDirection: 'row',
+    gap: SPACE.sm,
+    paddingHorizontal: SPACE.base,
+    paddingVertical: SPACE.sm,
+    backgroundColor: COLORS.bgOat,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.borderSub,
+  },
+  tab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACE.xs + 2,
+    paddingVertical: SPACE.sm + 2,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    backgroundColor: 'rgba(253,250,246,0.45)',
+  },
+  tabActive: {
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.border,
+  },
   tabText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', color: COLORS.textSec },
   tabTextActive: { color: COLORS.primary },
   sectionHead: {
@@ -604,6 +697,7 @@ const styles = StyleSheet.create({
   },
   metricLabel: { fontSize: TYPE.base, fontFamily: FONTS.regular, color: COLORS.textSec },
   metricValue: { fontSize: TYPE.base, fontFamily: FONTS.bold, color: COLORS.text },
+  metricValueFlexible: { flex: 1, textAlign: 'right', paddingLeft: SPACE.md },
   // Principal summary cards
   kpiRow: {
     flexDirection: 'row',
@@ -680,6 +774,24 @@ const styles = StyleSheet.create({
   statusChipText: {
     fontSize: TYPE.xs,
     fontFamily: FONTS.semibold,
+  },
+  inlineActionBtn: {
+    marginTop: SPACE.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACE.sm,
+    backgroundColor: COLORS.primary,
+    borderRadius: RADIUS,
+    paddingVertical: SPACE.md,
+    paddingHorizontal: SPACE.base,
+  },
+  inlineActionBtnText: {
+    color: COLORS.textInverse,
+    fontSize: TYPE.sm,
+    fontFamily: FONTS.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
   workflowGrid: { gap: SPACE.sm },
   workflowBtn: {

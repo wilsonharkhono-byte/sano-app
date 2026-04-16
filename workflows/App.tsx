@@ -1,16 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, Platform, View } from 'react-native';
 import * as Font from 'expo-font';
 import { supabase } from '../tools/supabase';
 import { Session } from '@supabase/supabase-js';
-import AppNavigation from './navigation';
-import GlobalAIChatLauncher from './components/GlobalAIChatLauncher';
-import LoginScreen from './screens/LoginScreen';
 import { ProjectProvider, useProject } from './hooks/useProject';
-import OfficeNavigation from '../office/navigation';
-import PrincipalNavigation from '../office/PrincipalNavigation';
 import { COLORS } from './theme';
+import { lazyScreen } from './components/LazyScreen';
+
+const AppNavigation = lazyScreen(() => import('./navigation'));
+const LoginScreen = lazyScreen(() => import('./screens/LoginScreen'));
+const OfficeNavigation = lazyScreen(() => import('../office/navigation'));
+const PrincipalNavigation = lazyScreen(() => import('../office/PrincipalNavigation'));
+const GlobalAIChatLauncher = React.lazy(() => import('./components/GlobalAIChatLauncher'));
 
 // Routes to supervisor app or office dashboard based on profile role.
 // Must be rendered inside ProjectProvider so useProject() works.
@@ -32,19 +34,28 @@ function RoleRouter() {
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
-
-  const [fontsLoaded, setFontsLoaded] = useState(false);
+  const shouldBlockForFonts = Platform.OS !== 'web';
+  const [fontsLoaded, setFontsLoaded] = useState(!shouldBlockForFonts);
 
   useEffect(() => {
+    let active = true;
+
     Font.loadAsync({
       SpaceGrotesk_300Light:   require('@expo-google-fonts/space-grotesk/300Light/SpaceGrotesk_300Light.ttf'),
       SpaceGrotesk_400Regular: require('@expo-google-fonts/space-grotesk/400Regular/SpaceGrotesk_400Regular.ttf'),
       SpaceGrotesk_500Medium:  require('@expo-google-fonts/space-grotesk/500Medium/SpaceGrotesk_500Medium.ttf'),
       SpaceGrotesk_600SemiBold: require('@expo-google-fonts/space-grotesk/600SemiBold/SpaceGrotesk_600SemiBold.ttf'),
       SpaceGrotesk_700Bold:    require('@expo-google-fonts/space-grotesk/700Bold/SpaceGrotesk_700Bold.ttf'),
-    }).then(() => setFontsLoaded(true))
-      .catch(() => setFontsLoaded(true)); // fallback to system fonts if loading fails
-  }, []);
+    }).then(() => {
+      if (active && shouldBlockForFonts) setFontsLoaded(true);
+    }).catch(() => {
+      if (active && shouldBlockForFonts) setFontsLoaded(true);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [shouldBlockForFonts]);
 
   useEffect(() => {
     let mounted = true;
@@ -95,7 +106,9 @@ export default function App() {
         <ProjectProvider userId={session.user.id}>
           <View style={{ flex: 1 }}>
             <RoleRouter />
-            <GlobalAIChatLauncher />
+            <Suspense fallback={null}>
+              <GlobalAIChatLauncher />
+            </Suspense>
           </View>
         </ProjectProvider>
       ) : (

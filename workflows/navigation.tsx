@@ -5,12 +5,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, Text, useWindowDimensions } from 'react-native';
 import { COLORS, FONTS, TYPE, SPACE, BREAKPOINTS } from './theme';
+import { lazyScreen } from './components/LazyScreen';
 
-import BerandaScreen    from './screens/BerandaScreen';
-import PermintaanScreen from './screens/PermintaanScreen';
-import TerimaScreen     from './screens/TerimaScreen';
-import ProgresScreen    from './screens/ProgresScreen';
-import LaporanScreen    from './screens/LaporanScreen';
+const BerandaScreen = lazyScreen(() => import('./screens/BerandaScreen'));
+const PermintaanScreen = lazyScreen(() => import('./screens/PermintaanScreen'));
+const TerimaScreen = lazyScreen(() => import('./screens/TerimaScreen'));
+const ProgresScreen = lazyScreen(() => import('./screens/ProgresScreen'));
+const LaporanScreen = lazyScreen(() => import('./screens/LaporanScreen'));
 
 export type TabParamList = {
   Beranda:    undefined;

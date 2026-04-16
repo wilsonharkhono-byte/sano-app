@@ -95,14 +95,14 @@ export function ProjectProvider({ userId, children }: { userId: string; children
       const loadedProjects = projectList ?? [];
       setProjects(loadedProjects);
 
-      // Auto-select first project if none active
-      if (loadedProjects.length > 0 && !activeProjectId) {
-        setActiveProjectId(loadedProjects[0].id);
+      // Auto-select first project if none active without retriggering loadProjects.
+      if (loadedProjects.length > 0) {
+        setActiveProjectId(current => current ?? loadedProjects[0].id);
       }
     } catch (err) {
       console.warn('Project load failed:', err);
     }
-  }, [userId, activeProjectId]);
+  }, [userId]);
 
   // Load project-scoped data when active project changes
   const loadProjectData = useCallback(async (pid: string) => {
@@ -139,10 +139,13 @@ export function ProjectProvider({ userId, children }: { userId: string; children
       setActivityLog(results[5].data ?? []);
       setMilestoneDrafts(results[6].data ?? []);
 
-      const purged = await autoPurgeStaleDrafts(pid);
-      if (purged > 0) {
-        console.log(`[auto-purge] removed ${purged} stale drafts`);
-      }
+      void autoPurgeStaleDrafts(pid).then((purged) => {
+        if (purged > 0) {
+          console.log(`[auto-purge] removed ${purged} stale drafts`);
+        }
+      }).catch((err) => {
+        console.warn('Auto purge failed:', err);
+      });
     } catch (err) {
       console.warn('Project data load failed:', err);
     } finally {

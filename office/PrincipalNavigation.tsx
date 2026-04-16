@@ -5,10 +5,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, Text, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACE, TYPE, BREAKPOINTS } from '../workflows/theme';
+import { lazyScreen } from '../workflows/components/LazyScreen';
 
-import PrincipalHomeScreen from './screens/PrincipalHomeScreen';
-import ApprovalsScreen from './screens/ApprovalsScreen';
-import OfficeReportsScreen from './screens/OfficeReportsScreen';
+const PrincipalHomeScreen = lazyScreen(() => import('./screens/PrincipalHomeScreen'));
+const ApprovalsScreen = lazyScreen(() => import('./screens/ApprovalsScreen'));
+const OfficeReportsScreen = lazyScreen(() => import('./screens/OfficeReportsScreen'));
 
 export type PrincipalTabParamList = {
   Home: undefined;

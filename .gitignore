@@ -10,3 +10,4 @@ web-build/
 *.mobileprovision
 *.orig.*
 .DS_Store
+.vercel

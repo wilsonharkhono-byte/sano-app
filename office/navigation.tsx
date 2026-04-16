@@ -5,15 +5,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, Text, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACE, TYPE, BREAKPOINTS } from '../workflows/theme';
+import { lazyScreen } from '../workflows/components/LazyScreen';
 
-import OfficeHomeScreen from './screens/OfficeHomeScreen';
-import ApprovalsScreen from './screens/ApprovalsScreen';
-import OfficeProcurementScreen from './screens/OfficeProcurementScreen';
-import MaterialCatalogScreen from './screens/MaterialCatalogScreen';
-import OfficeReportsScreen from './screens/OfficeReportsScreen';
-import OfficeBaselineScreen from './screens/OfficeBaselineScreen';
-import MandorSetupScreen from '../workflows/screens/MandorSetupScreen';
-import OpnameScreen from '../workflows/screens/OpnameScreen';
+const OfficeHomeScreen = lazyScreen(() => import('./screens/OfficeHomeScreen'));
+const ApprovalsScreen = lazyScreen(() => import('./screens/ApprovalsScreen'));
+const OfficeProcurementScreen = lazyScreen(() => import('./screens/OfficeProcurementScreen'));
+const MaterialCatalogScreen = lazyScreen(() => import('./screens/MaterialCatalogScreen'));
+const OfficeReportsScreen = lazyScreen(() => import('./screens/OfficeReportsScreen'));
+const OfficeBaselineScreen = lazyScreen(() => import('./screens/OfficeBaselineScreen'));
+const MandorSetupScreen = lazyScreen(() => import('../workflows/screens/MandorSetupScreen'));
+const OpnameScreen = lazyScreen(() => import('../workflows/screens/OpnameScreen'));
 
 export type OfficeTabParamList = {
   Home: undefined;
