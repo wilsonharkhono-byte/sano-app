@@ -151,7 +151,7 @@ export default function BaselineScreen({
   const [lastImportIssue, setLastImportIssue] = useState<string | null>(null);
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [parserVersion, setParserVersion] = useState<'v1' | 'v2'>('v1');
-  const canSeeParserToggle = profile?.role === 'principal' || profile?.role === 'admin';
+  const canSeeParserToggle = profile?.role === 'principal' || profile?.role === 'admin' || profile?.role === 'estimator';
 
   const loadSessions = useCallback(async () => {
     if (!project) return;
@@ -172,10 +172,9 @@ export default function BaselineScreen({
         ],
       });
       if (picked.canceled || !picked.assets?.[0]) return;
-      const response = await fetch(picked.assets[0].uri);
-      const buffer = await response.arrayBuffer();
+      const { arrayBuffer } = await readPickedWorkbook(picked.assets[0]);
       const { parseBoqV2 } = await import('../../tools/boqParserV2');
-      const result = await parseBoqV2(buffer);
+      const result = await parseBoqV2(arrayBuffer);
       console.log('[parseBoqV2 dry-run]', {
         materials: result.materialRows.length,
         blocks: result.ahsBlocks.length,

@@ -1,6 +1,6 @@
 import { detectAhsBlocks, isTitleRow, isHeaderRow } from '../detectBlocks';
 import { harvestWorkbook } from '../harvest';
-import { buildFixtureWorkbook } from './fixtures';
+import { buildFixtureBuffer } from './fixtures';
 
 describe('isTitleRow', () => {
   it('matches "1 m3 Beton site mix"', () => {
@@ -35,7 +35,7 @@ describe('isHeaderRow', () => {
 
 describe('detectAhsBlocks', () => {
   it('detects one block with title, components, and Jumlah', async () => {
-    const wb = await buildFixtureWorkbook([
+    const wb = await buildFixtureBuffer([
       {
         name: 'Analisa',
         cells: [
@@ -64,7 +64,7 @@ describe('detectAhsBlocks', () => {
   });
 
   it('returns empty when no title rows present', async () => {
-    const wb = await buildFixtureWorkbook([
+    const wb = await buildFixtureBuffer([
       { name: 'Analisa', cells: [{ address: 'B1', value: 'random' }] },
     ]);
     const { cells } = await harvestWorkbook(wb);

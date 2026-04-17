@@ -10,14 +10,23 @@ export interface AhsBlock {
   componentRows: number[];            // row numbers
 }
 
-const TITLE_RE = /^\s*\d+\s+m\s*[²³23]?\s+\S/i;
+// AHS title conventions in Indonesian BoQ workbooks:
+//  (a) "N <unit> <description>"  — e.g. "1 m2 Bekisting", "1 kg Pembesian",
+//      "1 ls Pekerjaan Sementara", "10 titik Pemasangan Stop Kontak".
+//      Supported units cover what v1's parser accepts.
+//  (b) Workbooks sometimes use pure-verb headers like
+//      "Pekerjaan Persiapan" or "Pasangan Bata". Match the common leading
+//      verbs so those blocks aren't silently dropped.
+const TITLE_UNIT_RE = /^\s*\d+\s+(m[123²³]|kg|ls|bh|pcs|titik|set|unit)\s+\S/i;
+const TITLE_WORK_RE = /^(pekerjaan|pasangan|pemasangan|pengecoran|pembetonan|pembesian)\b/i;
 const HEADER_LABELS = new Set([
   'uraian', 'satuan', 'koefisien', 'harga', 'jumlah harga', 'no', 'kode', 'bahan',
 ]);
 
 export function isTitleRow(text: string | null | undefined): boolean {
   if (!text) return false;
-  return TITLE_RE.test(text);
+  const trimmed = text.trim();
+  return TITLE_UNIT_RE.test(trimmed) || TITLE_WORK_RE.test(trimmed);
 }
 
 export function isHeaderRow(text: string | null | undefined): boolean {
@@ -25,9 +34,11 @@ export function isHeaderRow(text: string | null | undefined): boolean {
   return HEADER_LABELS.has(text.trim().toLowerCase());
 }
 
+// Match "Jumlah", "Jumlah:", "Jumlah Harga", etc. in whatever column the
+// workbook chose to put the end-of-block marker.
 function isJumlahRow(text: string | null | undefined): boolean {
   if (!text) return false;
-  return text.trim().toLowerCase() === 'jumlah';
+  return /^\s*jumlah\b/i.test(text);
 }
 
 function cellText(cell: HarvestedCell | undefined): string | null {
@@ -67,18 +78,20 @@ export function detectAhsBlocks(cells: HarvestedCell[], sheetName: string): AhsB
     const titleText = isTitleRow(b) ? b : isTitleRow(c) ? c : null;
     if (!titleText) continue;
 
-    // Scan forward for Jumlah row
+    // Scan forward for Jumlah row. Standard Indonesian BoQ layout puts
+    // "Jumlah" in col E (per v1 parser); other workbooks vary. Check every
+    // cell in the row so layout drift doesn't silently drop the block.
     let jumlahRow = -1;
     for (let j = i + 1; j < sortedRows.length; j++) {
       const r = sortedRows[j];
-      const aText = cellText(cellAt(r, 'A'));
-      const bText = cellText(cellAt(r, 'B'));
-      const cText = cellText(cellAt(r, 'C'));
-      if (isJumlahRow(aText) || isJumlahRow(bText) || isJumlahRow(cText)) {
+      const rowCells = byRow.get(r) ?? [];
+      if (rowCells.some(cell => isJumlahRow(cellText(cell)))) {
         jumlahRow = r;
         break;
       }
       // Safety: stop if we encounter another title row
+      const bText = cellText(cellAt(r, 'B'));
+      const cText = cellText(cellAt(r, 'C'));
       if (isTitleRow(bText) || isTitleRow(cText)) break;
     }
     if (jumlahRow === -1) continue;

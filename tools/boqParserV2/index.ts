@@ -1,4 +1,3 @@
-import ExcelJS from 'exceljs';
 import { harvestWorkbook } from './harvest';
 import { detectAhsBlocks } from './detectBlocks';
 import { classifyComponent, toNumber } from './classifyComponent';
@@ -37,10 +36,7 @@ export async function parseBoqV2(
   const boqSheet = options.boqSheet ?? 'RAB (A)';
   const catalogSheets = options.catalogSheets ?? ['Material', 'Upah'];
 
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(fileBuffer as ArrayBuffer);
-
-  const { cells, lookup } = await harvestWorkbook(workbook);
+  const { cells, lookup } = await harvestWorkbook(fileBuffer);
   const materialRows = extractCatalogRows(cells, catalogSheets);
   const ahsBlocks = detectAhsBlocks(cells, analisaSheet);
   const boqRows = extractBoqRows(cells, lookup, boqSheet);

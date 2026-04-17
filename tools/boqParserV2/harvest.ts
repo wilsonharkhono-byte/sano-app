@@ -1,5 +1,13 @@
 // tools/boqParserV2/harvest.ts
-import type ExcelJS from 'exceljs';
+//
+// Reads an Excel workbook buffer into flat `HarvestedCell[]` for the v2
+// parser. Uses SheetJS (`xlsx`) — the same library v1 uses — because
+// ExcelJS blows React Native's native stack depth at module init.
+//
+// Downstream extractors expect formula strings to start with `=`; SheetJS
+// stores `f` without the prefix, so we normalize on the way out.
+
+import * as XLSX from 'xlsx';
 import type { HarvestedCell, HarvestLookup } from './types';
 
 export interface HarvestResult {
@@ -8,37 +16,46 @@ export interface HarvestResult {
 }
 
 export async function harvestWorkbook(
-  workbook: ExcelJS.Workbook,
+  input: Buffer | ArrayBuffer | XLSX.WorkBook,
 ): Promise<HarvestResult> {
+  const workbook: XLSX.WorkBook =
+    input && typeof input === 'object' && 'SheetNames' in input
+      ? (input as XLSX.WorkBook)
+      : XLSX.read(input as Buffer | ArrayBuffer, {
+          type: input instanceof ArrayBuffer ? 'array' : 'buffer',
+          cellFormula: true,
+          cellNF: true,
+        });
+
   const cells: HarvestedCell[] = [];
   const lookup: HarvestLookup = new Map();
 
-  workbook.eachSheet((sheet) => {
-    sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-      row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
-        const raw = cell.value;
-        let formula: string | null = null;
-        let value: unknown = raw;
+  for (const sheetName of workbook.SheetNames) {
+    const ws = workbook.Sheets[sheetName];
+    if (!ws) continue;
+    for (const addr of Object.keys(ws)) {
+      if (addr.startsWith('!')) continue;
+      const cell = ws[addr] as XLSX.CellObject;
+      if (cell == null) continue;
+      const { r, c } = XLSX.utils.decode_cell(addr);
 
-        if (raw && typeof raw === 'object' && 'formula' in raw) {
-          const fc = raw as { formula: string; result?: unknown };
-          formula = fc.formula.startsWith('=') ? fc.formula : `=${fc.formula}`;
-          value = fc.result ?? null;
-        }
+      let formula: string | null = null;
+      if (typeof cell.f === 'string' && cell.f.length > 0) {
+        formula = cell.f.startsWith('=') ? cell.f : `=${cell.f}`;
+      }
 
-        const harvested: HarvestedCell = {
-          sheet: sheet.name,
-          address: cell.address,
-          row: rowNumber,
-          col: colNumber,
-          value,
-          formula,
-        };
-        cells.push(harvested);
-        lookup.set(`${sheet.name}!${cell.address}`, harvested);
-      });
-    });
-  });
+      const harvested: HarvestedCell = {
+        sheet: sheetName,
+        address: addr,
+        row: r + 1,
+        col: c + 1,
+        value: cell.v ?? null,
+        formula,
+      };
+      cells.push(harvested);
+      lookup.set(`${sheetName}!${addr}`, harvested);
+    }
+  }
 
   return { cells, lookup };
 }

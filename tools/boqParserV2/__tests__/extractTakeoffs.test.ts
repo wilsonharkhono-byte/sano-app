@@ -1,10 +1,10 @@
 import { extractBoqRows } from '../extractTakeoffs';
 import { harvestWorkbook } from '../harvest';
-import { buildFixtureWorkbook } from './fixtures';
+import { buildFixtureBuffer } from './fixtures';
 
 describe('extractBoqRows', () => {
   it('extracts BoQ rows with literal quantities', async () => {
-    const wb = await buildFixtureWorkbook([
+    const wb = await buildFixtureBuffer([
       {
         name: 'RAB (A)',
         cells: [
@@ -29,7 +29,7 @@ describe('extractBoqRows', () => {
   });
 
   it('parses Indonesian-formatted string quantities (decimal comma)', async () => {
-    const wb = await buildFixtureWorkbook([
+    const wb = await buildFixtureBuffer([
       {
         name: 'RAB (A)',
         cells: [
@@ -49,7 +49,7 @@ describe('extractBoqRows', () => {
   });
 
   it('attaches takeoff_ref provenance when quantity is SUMIFS', async () => {
-    const wb = await buildFixtureWorkbook([
+    const wb = await buildFixtureBuffer([
       {
         name: 'RAB (A)',
         cells: [

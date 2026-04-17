@@ -1,10 +1,10 @@
 // tools/boqParserV2/__tests__/harvest.test.ts
 import { harvestWorkbook } from '../harvest';
-import { buildFixtureWorkbook } from './fixtures';
+import { buildFixtureBuffer } from './fixtures';
 
 describe('harvestWorkbook', () => {
   it('reads literal cells from every sheet', async () => {
-    const wb = await buildFixtureWorkbook([
+    const wb = await buildFixtureBuffer([
       {
         name: 'Analisa',
         cells: [
@@ -20,7 +20,7 @@ describe('harvestWorkbook', () => {
   });
 
   it('distinguishes formula cells and stores both .f and .v', async () => {
-    const wb = await buildFixtureWorkbook([
+    const wb = await buildFixtureBuffer([
       {
         name: 'Analisa',
         cells: [
@@ -35,7 +35,8 @@ describe('harvestWorkbook', () => {
   });
 
   it('returns empty harvest for empty workbook', async () => {
-    const wb = await buildFixtureWorkbook([{ name: 'Empty', cells: [] }]);
+    const wb = await buildFixtureBuffer([{ name: 'Empty', cells: [] }]);
+
     const { cells } = await harvestWorkbook(wb);
     expect(cells).toEqual([]);
   });

@@ -1,7 +1,6 @@
 // SAN Contractor — Baseline Import & Management Service
 // Phase 2: BoQ/AHS import pipeline, staging, review, and publish
 
-import * as fs from 'fs';
 import { supabase } from './supabase';
 import { BaselineReviewStatus, AnomalyResolution } from './constants';
 
@@ -11,16 +10,22 @@ import { BaselineReviewStatus, AnomalyResolution } from './constants';
  * v1's parser (`parseBoqWorkbook`) accepts a string path directly and lets
  * `XLSX.readFile` handle it. v2's parser only accepts `Buffer | ArrayBuffer`,
  * so when the dispatcher receives a string path we must read it into memory
- * ourselves before handing it off. Keeping both branches in sync means
- * neither silently drops the input.
+ * ourselves before handing it off.
+ *
+ * The string-path branch only fires in Node tests/CLI — React Native always
+ * hands an ArrayBuffer (from storage download or document picker). We hide
+ * the `fs` require from Metro's static analyzer so the RN bundle stays
+ * resolvable; the require never executes at runtime in RN because the
+ * typeof check short-circuits first.
  */
 async function resolveFileInput(
   fileInput: ArrayBuffer | string,
 ): Promise<ArrayBuffer> {
   if (typeof fileInput !== 'string') return fileInput;
+  // eslint-disable-next-line no-eval
+  const nodeRequire: NodeRequire = eval('require');
+  const fs = nodeRequire('fs') as typeof import('fs');
   const buf = await fs.promises.readFile(fileInput);
-  // Copy into a fresh ArrayBuffer so we don't share memory with the
-  // Node Buffer pool (which can be reused and corrupt the parser input).
   const ab = new ArrayBuffer(buf.byteLength);
   new Uint8Array(ab).set(buf);
   return ab;
@@ -439,11 +444,15 @@ export async function parseAndStageWorkbook(
           parentUpdates.push({ id: childUuid, parent_uuid: parentUuid });
         }
       }
-      for (const u of parentUpdates) {
-        await supabase
-          .from('import_staging_rows')
-          .update({ parent_ahs_staging_id: u.parent_uuid })
-          .eq('id', u.id);
+      if (parentUpdates.length > 0) {
+        await Promise.all(
+          parentUpdates.map(u =>
+            supabase
+              .from('import_staging_rows')
+              .update({ parent_ahs_staging_id: u.parent_uuid })
+              .eq('id', u.id),
+          ),
+        );
       }
 
       // Persist the v2-only validation_report column with a raw update —

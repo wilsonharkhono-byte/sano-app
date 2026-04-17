@@ -1,6 +1,6 @@
 import { parseFormulaRef, isCatalogSheet, classifyComponent } from '../classifyComponent';
 import { harvestWorkbook } from '../harvest';
-import { buildFixtureWorkbook } from './fixtures';
+import { buildFixtureBuffer } from './fixtures';
 import type { HarvestedCell, HarvestLookup } from '../types';
 
 function mockCell(
@@ -68,7 +68,7 @@ describe('parseFormulaRef', () => {
   });
 
   it('parses harvested cross-sheet formulas end-to-end', async () => {
-    const wb = await buildFixtureWorkbook([
+    const wb = await buildFixtureBuffer([
       {
         name: 'Analisa',
         cells: [
