@@ -144,7 +144,7 @@ describe('opname contract rates', () => {
 });
 
 describe('opname progress import', () => {
-  it('parses progress workbook rows and matches by code first', () => {
+  it('parses progress workbook rows and matches by code first', async () => {
     const worksheet = XLSX.utils.aoa_to_sheet([
       ['TEMPLATE IMPORT PROGRESS OPNAME'],
       ['Isi kolom Progress (%) lalu upload kembali'],
@@ -158,7 +158,7 @@ describe('opname progress import', () => {
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Progress');
     const buffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
 
-    const importedRows = parseOpnameProgressWorkbook(buffer, 'Progress');
+    const importedRows = await parseOpnameProgressWorkbook(buffer, 'Progress');
     expect(importedRows).toEqual([
       expect.objectContaining({
         boq_code: 'I-01',

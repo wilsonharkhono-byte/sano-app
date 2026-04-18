@@ -9,7 +9,6 @@
  *  - Excel opname sheet export (matching mandor's expected format)
  */
 
-import * as XLSX from 'xlsx';
 import { supabase } from './supabase';
 import type { TradeCategory } from './laborTrade';
 import type { ParsedBoqItem, ParsedWorkbook } from './excelParser';
@@ -768,10 +767,11 @@ export async function applyContractRateImport(
   return { importedCount: matches.length, error: error?.message };
 }
 
-export function parseOpnameProgressWorkbook(
+export async function parseOpnameProgressWorkbook(
   input: ArrayBuffer,
   fallbackSheetName?: string,
-): ImportedOpnameProgressRow[] {
+): Promise<ImportedOpnameProgressRow[]> {
+  const XLSX = await import('xlsx');
   const workbook = XLSX.read(input, { type: 'array' });
   const sheetNames = workbook.SheetNames.length > 0
     ? workbook.SheetNames
@@ -1469,6 +1469,7 @@ export async function exportOpnameToExcel(
 
   const header = headerRes.data as unknown as OpnameHeaderRow;
   const mandorName = header?.mandor_contracts?.mandor_name ?? '';
+  const XLSX = await import('xlsx');
   const wb = XLSX.utils.book_new();
   const sheetName = `OPM${header.week_number}`;
 
@@ -1745,6 +1746,7 @@ export async function exportOpnameProgressTemplate(
     ]);
   }
 
+  const XLSX = await import('xlsx');
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [
     { wch: 14 },

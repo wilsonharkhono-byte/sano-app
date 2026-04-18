@@ -661,7 +661,7 @@ export function useOpname(params: UseOpnameParams): UseOpnameReturn {
       const asset = picked.assets[0];
       setImportingProgress(true);
       const { arrayBuffer } = await readPickedWorkbook(asset);
-      const importedRows = parseOpnameProgressWorkbook(arrayBuffer.slice(0), asset.name);
+      const importedRows = await parseOpnameProgressWorkbook(arrayBuffer.slice(0), asset.name);
       const plan = buildOpnameProgressImportPlan(lines, importedRows);
       setImportingProgress(false);
 
