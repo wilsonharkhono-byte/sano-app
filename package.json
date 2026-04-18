@@ -69,7 +69,12 @@
     },
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1"
-    }
+    },
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "__tests__/fixtures\\.ts$",
+      "tmp/"
+    ]
   },
   "private": true
 }

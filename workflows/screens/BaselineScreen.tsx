@@ -153,6 +153,8 @@ export default function BaselineScreen({
   const [lastPreview, setLastPreview] = useState<ParsePreview | null>(null);
   const [lastImportIssue, setLastImportIssue] = useState<string | null>(null);
   const [showAuditModal, setShowAuditModal] = useState(false);
+  const [parserVersion, setParserVersion] = useState<'v1' | 'v2'>('v1');
+  const canSeeParserToggle = profile?.role === 'principal' || profile?.role === 'admin' || profile?.role === 'estimator';
 
   const loadSessions = useCallback(async () => {
     if (!project) return;
@@ -163,6 +165,34 @@ export default function BaselineScreen({
   }, [project]);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
+
+  const handleDryRunV2 = async () => {
+    if (!__DEV__) return;
+    try {
+      const picked = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ],
+      });
+      if (picked.canceled || !picked.assets?.[0]) return;
+      const { arrayBuffer } = await readPickedWorkbook(picked.assets[0]);
+      const { parseBoqV2 } = await import('../../tools/boqParserV2');
+      const result = await parseBoqV2(arrayBuffer);
+      console.log('[parseBoqV2 dry-run]', {
+        materials: result.materialRows.length,
+        blocks: result.ahsBlocks.length,
+        boqRows: result.boqRows.length,
+        validation: result.validationReport,
+        staging: result.stagingRows.slice(0, 5),
+      });
+      Alert.alert(
+        'Dry run complete',
+        `Materials: ${result.materialRows.length}\nBlocks: ${result.ahsBlocks.length}\nBoQ rows: ${result.boqRows.length}`,
+      );
+    } catch (e) {
+      Alert.alert('Dry run failed', e instanceof Error ? e.message : String(e));
+    }
+  };
 
   const handleUpload = async () => {
     if (!project || !profile) return;
@@ -218,7 +248,7 @@ export default function BaselineScreen({
       }
 
       // Create import session record
-      const sessionResult = await createImportSession(project.id, profile.id, persistedFilePath, fileName);
+      const sessionResult = await createImportSession(project.id, profile.id, persistedFilePath, fileName, parserVersion);
       if (!sessionResult.session) {
         setLastImportIssue(`Gagal membuat sesi import: ${sessionResult.error ?? 'Unknown error'}`);
         toast(`Gagal membuat sesi import: ${sessionResult.error ?? 'Unknown error'}`, 'critical');
@@ -541,6 +571,38 @@ export default function BaselineScreen({
               </Card>
             )}
 
+            {canSeeParserToggle && (
+              <View style={styles.parserToggleRow}>
+                <Text style={styles.parserToggleLabel}>Parser:</Text>
+                <TouchableOpacity
+                  onPress={() => setParserVersion('v1')}
+                  style={[
+                    styles.parserToggleBtn,
+                    parserVersion === 'v1' && styles.parserToggleBtnActive,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Gunakan parser v1 stable"
+                >
+                  <Text style={parserVersion === 'v1' ? styles.parserToggleTextActive : styles.parserToggleText}>
+                    v1 (stable)
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setParserVersion('v2')}
+                  style={[
+                    styles.parserToggleBtn,
+                    parserVersion === 'v2' && styles.parserToggleBtnActive,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel="Gunakan parser v2 beta"
+                >
+                  <Text style={parserVersion === 'v2' ? styles.parserToggleTextActive : styles.parserToggleText}>
+                    v2 (beta)
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             <TouchableOpacity style={[styles.uploadBtn, parsing && { opacity: 0.6 }]} onPress={handleUpload} disabled={parsing}>
               {parsing ? (
                 <>
@@ -554,6 +616,12 @@ export default function BaselineScreen({
                 </>
               )}
             </TouchableOpacity>
+
+            {__DEV__ && (
+              <TouchableOpacity onPress={handleDryRunV2} style={{ padding: 12, backgroundColor: '#333' }}>
+                <Text style={{ color: '#fff' }}>DEV: Dry-run parseBoqV2</Text>
+              </TouchableOpacity>
+            )}
 
             <Card borderColor={COLORS.border}>
               <Text style={styles.previewTitle}>Panduan Penggunaan</Text>
@@ -881,6 +949,7 @@ export default function BaselineScreen({
             sessionName={activeSession.original_file_name}
             stagingRows={stagingRows}
             onRowsChange={setStagingRows}
+            userId={profile?.id ?? null}
           />
         )}
 
@@ -1047,4 +1116,19 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS, padding: 14, marginBottom: SPACE.md,
   },
   auditBtnTitle: { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.primary },
+  parserToggleRow: {
+    flexDirection: 'row', alignItems: 'center', gap: SPACE.sm,
+    marginBottom: SPACE.sm,
+  },
+  parserToggleLabel: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textSec },
+  parserToggleBtn: {
+    paddingHorizontal: SPACE.md, paddingVertical: 8,
+    borderRadius: RADIUS, borderWidth: 1, borderColor: COLORS.border,
+    backgroundColor: COLORS.surface,
+  },
+  parserToggleBtnActive: {
+    backgroundColor: COLORS.primary, borderColor: COLORS.primary,
+  },
+  parserToggleText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.text },
+  parserToggleTextActive: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textInverse },
 });

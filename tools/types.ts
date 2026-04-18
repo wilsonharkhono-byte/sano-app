@@ -176,7 +176,7 @@ export interface ImportStagingRow {
   id: string;
   session_id: string;
   row_number: number;
-  row_type: 'boq' | 'ahs' | 'material' | 'spec' | 'price';
+  row_type: 'boq' | 'ahs' | 'ahs_block' | 'material' | 'spec' | 'price';
   raw_data: object;
   parsed_data: object | null;
   confidence: number;
@@ -836,3 +836,14 @@ export interface OpnameProgressFlag {
   variance_pct: number;
   variance_flag: 'OK' | 'WARNING' | 'HIGH';
 }
+
+export type {
+  CostBasis,
+  CellRef,
+  RefCells,
+  CostSplit,
+  HarvestedCell,
+  HarvestLookup,
+  ValidationReport,
+  StagingRowV2,
+} from './boqParserV2/types';

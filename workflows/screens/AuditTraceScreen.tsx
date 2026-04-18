@@ -6,7 +6,7 @@
 // to the same staging rows the rest of BaselineScreen sees, so the
 // review queue summary updates instantly when audit edits land.
 
-import React, { useMemo, useState, useCallback } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import {
   Modal,
   View,
@@ -18,6 +18,8 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
+  LayoutAnimation,
+  UIManager,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Card from '../components/Card';
@@ -27,6 +29,7 @@ import {
   updateStagingRowAudit,
   insertAuditAhsRow,
   deleteStagingRow,
+  getStagingRows,
   type ParsedAhsRow,
 } from '../../tools/baseline';
 import {
@@ -48,9 +51,99 @@ import {
   type AhsLineTypeStr,
 } from '../../tools/auditPivot';
 import type { ImportStagingRow } from '../../tools/types';
+import type { CostBasis, ValidationReport } from '../../tools/boqParserV2/types';
+import { supabase } from '../../tools/supabase';
+import { fuzzyMatchMaterial, type FuzzyMatchCandidate, type CatalogMatchRow } from '../../tools/materialMatch';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 type AuditTab = 'material' | 'boq' | 'ahs';
+
+// ─── Trace chip (v2 rows only) ─────────────────────────────────────────
+
+const CHIP_STYLES: Record<
+  CostBasis,
+  { bg: string; fg: string; label: (row: AuditAhsRow) => string }
+> = {
+  catalog: {
+    bg: '#e6f4ff',
+    fg: '#0958d9',
+    label: row => `Katalog: ${row.refCells?.unit_price?.sheet ?? '?'}!${row.refCells?.unit_price?.cell ?? '?'}`,
+  },
+  nested_ahs: {
+    bg: '#e0f2e9',
+    fg: '#237804',
+    label: row => `Turunan: ${row.refCells?.unit_price?.sheet ?? '?'}!${row.refCells?.unit_price?.cell ?? '?'}`,
+  },
+  literal: {
+    bg: '#fff7e6',
+    fg: '#d48806',
+    label: () => 'Literal (hardcoded)',
+  },
+  takeoff_ref: {
+    bg: '#e6f4ff',
+    fg: '#0958d9',
+    label: row => {
+      const q = row.refCells?.quantity?.[0];
+      return `Takeoff: ${q?.sheet ?? '?'}!${q?.cell ?? '?'}`;
+    },
+  },
+  cross_ref: {
+    bg: '#fff1f0',
+    fg: '#cf1322',
+    label: () => 'Split F/G/H',
+  },
+  inline_split: {
+    bg: '#f0f5ff',
+    fg: '#2f54eb',
+    label: () => 'Split inline (BoQ)',
+  },
+};
+
+function ValidationBadge({
+  title,
+  report,
+}: {
+  title: string;
+  report: ValidationReport | null;
+}) {
+  const entry = report?.blocks.find(b => b.block_title === title);
+  if (!entry) return null;
+  if (entry.status === 'ok') {
+    return (
+      <Text style={{ color: '#237804', fontSize: 12, marginTop: 2 }}>
+        ✓ balanced
+      </Text>
+    );
+  }
+  return (
+    <Text style={{ color: '#d48806', fontSize: 12, marginTop: 2 }}>
+      ⚠ Tidak balans: Rp {entry.delta.toLocaleString('id-ID')}
+    </Text>
+  );
+}
+
+function TraceChip({ row }: { row: AuditAhsRow }) {
+  if (row.parserVersion !== 'v2' || !row.costBasis) return null;
+  const cfg = CHIP_STYLES[row.costBasis];
+  const handlePress = () => {
+    Alert.alert(cfg.label(row), 'Sumber formula v2 parser');
+  };
+  return (
+    <TouchableOpacity
+      onPress={handlePress}
+      style={{
+        backgroundColor: cfg.bg,
+        paddingHorizontal: 6,
+        paddingVertical: 2,
+        borderRadius: 4,
+        marginLeft: 8,
+        alignSelf: 'flex-start',
+      }}
+    >
+      <Text style={{ color: cfg.fg, fontSize: 11 }}>{cfg.label(row)}</Text>
+    </TouchableOpacity>
+  );
+}
 
 interface Props {
   visible: boolean;
@@ -59,6 +152,43 @@ interface Props {
   sessionName: string;
   stagingRows: ImportStagingRow[];
   onRowsChange: (next: ImportStagingRow[]) => void;
+  userId: string | null;
+}
+
+// ─── Edit history helpers ──────────────────────────────────────────────
+
+function diffParsed(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Array<{ field: string; oldValue: unknown; newValue: unknown }> {
+  const changes: Array<{ field: string; oldValue: unknown; newValue: unknown }> = [];
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of keys) {
+    const prev = before[key];
+    const next = after[key];
+    if (JSON.stringify(prev) !== JSON.stringify(next)) {
+      changes.push({ field: key, oldValue: prev ?? null, newValue: next ?? null });
+    }
+  }
+  return changes;
+}
+
+async function logStagingEdits(
+  sessionId: string,
+  stagingRowId: string,
+  userId: string,
+  changes: Array<{ field: string; oldValue: unknown; newValue: unknown }>,
+): Promise<void> {
+  if (changes.length === 0) return;
+  const inserts = changes.map(c => ({
+    staging_row_id: stagingRowId,
+    import_session_id: sessionId,
+    edited_by: userId,
+    field_path: `parsed_data.${c.field}`,
+    old_value: c.oldValue,
+    new_value: c.newValue,
+  }));
+  await supabase.from('import_staging_edits').insert(inserts);
 }
 
 // ─── Field edit helper ─────────────────────────────────────────────────
@@ -174,6 +304,144 @@ function EditableCell({ value, onCommit, numeric, placeholder, width, align = 'l
   );
 }
 
+// ─── Inline edit panel for AHS component rows ──────────────────────────
+//
+// The panel renders as a sibling inside the same scrollable list, right
+// after the tapped card — never as a modal or separate surface.
+
+if (
+  Platform.OS === 'android'
+  && UIManager.setLayoutAnimationEnabledExperimental
+) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+function makeEditKey(rowType: 'ahs' | 'boq' | 'mat', stagingId: string): string {
+  return `${rowType}:${stagingId}`;
+}
+
+interface EditAhsComponentFormProps {
+  row: AuditAhsRow;
+  onSave: (values: {
+    materialName: string;
+    coefficient: string;
+    unit: string;
+    wasteFactor: string;
+    unitPrice: string;
+  }) => Promise<void>;
+  onCancel: () => void;
+}
+
+function EditAhsComponentForm({ row, onSave, onCancel }: EditAhsComponentFormProps) {
+  const [materialName, setMaterialName] = useState(row.materialName ?? '');
+  const [coefficient, setCoefficient] = useState(String(row.coefficient ?? ''));
+  const [unit, setUnit] = useState(row.unit ?? '');
+  const [wasteFactor, setWasteFactor] = useState(String(row.wasteFactor ?? ''));
+  const [unitPrice, setUnitPrice] = useState(String(row.unitPrice ?? ''));
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await onSave({ materialName, coefficient, unit, wasteFactor, unitPrice });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <View style={styles.editPanel} accessibilityLabel={`Edit ${row.materialName}`}>
+      <Text style={styles.editPanelTitle}>Edit Komponen</Text>
+
+      <Text style={styles.formLabel} accessibilityLabel="Nama Material">Nama Material</Text>
+      <TextInput
+        style={styles.cellInput}
+        value={materialName}
+        onChangeText={setMaterialName}
+        accessible
+        accessibilityLabel="Input nama material"
+        editable={!saving}
+      />
+
+      <View style={styles.formRow}>
+        <View style={styles.formCol}>
+          <Text style={styles.formLabel}>Koefisien</Text>
+          <TextInput
+            style={[styles.cellInput, { textAlign: 'right' }]}
+            value={coefficient}
+            onChangeText={setCoefficient}
+            keyboardType="decimal-pad"
+            accessible
+            accessibilityLabel="Input koefisien"
+            editable={!saving}
+          />
+        </View>
+        <View style={styles.formCol}>
+          <Text style={styles.formLabel}>Satuan</Text>
+          <TextInput
+            style={styles.cellInput}
+            value={unit}
+            onChangeText={setUnit}
+            accessible
+            accessibilityLabel="Input satuan"
+            editable={!saving}
+          />
+        </View>
+      </View>
+
+      <View style={styles.formRow}>
+        <View style={styles.formCol}>
+          <Text style={styles.formLabel}>Waste</Text>
+          <TextInput
+            style={[styles.cellInput, { textAlign: 'right' }]}
+            value={wasteFactor}
+            onChangeText={setWasteFactor}
+            keyboardType="decimal-pad"
+            accessible
+            accessibilityLabel="Input waste factor"
+            editable={!saving}
+          />
+        </View>
+        <View style={styles.formCol}>
+          <Text style={styles.formLabel}>Harga Satuan</Text>
+          <TextInput
+            style={[styles.cellInput, { textAlign: 'right' }]}
+            value={unitPrice}
+            onChangeText={setUnitPrice}
+            keyboardType="decimal-pad"
+            accessible
+            accessibilityLabel="Input harga satuan"
+            editable={!saving}
+          />
+        </View>
+      </View>
+
+      <View style={styles.editPanelActions}>
+        <TouchableOpacity
+          onPress={onCancel}
+          style={styles.editCancelBtn}
+          disabled={saving}
+          accessibilityRole="button"
+          accessibilityLabel="Batal edit"
+        >
+          <Text style={styles.editCancelText}>Batal</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={handleSave}
+          style={styles.editSaveBtn}
+          disabled={saving}
+          accessibilityRole="button"
+          accessibilityLabel="Simpan edit"
+        >
+          {saving
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <Text style={styles.editSaveText}>Simpan</Text>}
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
 // ─── Main screen ───────────────────────────────────────────────────────
 
 export default function AuditTraceScreen({
@@ -183,12 +451,51 @@ export default function AuditTraceScreen({
   sessionName,
   stagingRows,
   onRowsChange,
+  userId,
 }: Props) {
   const { show: toast } = useToast();
 
   const [tab, setTab] = useState<AuditTab>('material');
   const [search, setSearch] = useState('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [validationReport, setValidationReport] = useState<ValidationReport | null>(null);
+  const [expandedEditKey, setExpandedEditKey] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<CatalogMatchRow[]>([]);
+
+  const toggleEditKey = useCallback((key: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpandedEditKey(prev => (prev === key ? null : key));
+  }, []);
+
+  const closeEditPanel = useCallback(() => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpandedEditKey(null);
+  }, []);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('import_sessions')
+        .select('validation_report')
+        .eq('id', sessionId)
+        .single();
+      if (cancelled) return;
+      setValidationReport((data?.validation_report as ValidationReport | null) ?? null);
+    })();
+    return () => { cancelled = true; };
+  }, [sessionId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from('material_catalog').select('id, name');
+      if (cancelled) return;
+      setCatalog((data ?? []) as CatalogMatchRow[]);
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Pivot views — memoized so edits recompute automatically
   const boqRows = useMemo(() => extractBoqRows(stagingRows), [stagingRows]);
@@ -228,7 +535,12 @@ export default function AuditTraceScreen({
     async (rowId: string, field: EditableField, value: string) => {
       const target = stagingRows.find(r => r.id === rowId);
       if (!target) return;
+      const before = (target.parsed_data ?? {}) as Record<string, unknown>;
       const { parsed, raw } = applyAuditEdit(target, field, value);
+      const changes = diffParsed(before, parsed);
+      if (userId) {
+        await logStagingEdits(sessionId, rowId, userId, changes);
+      }
       const result = await updateStagingRowAudit(rowId, parsed, raw);
       if (!result.success) {
         toast(`Gagal simpan: ${result.error ?? 'unknown'}`, 'critical');
@@ -240,8 +552,137 @@ export default function AuditTraceScreen({
         review_status: 'MODIFIED',
       });
     },
-    [stagingRows, toast, updateOneRow],
+    [stagingRows, toast, updateOneRow, sessionId, userId],
   );
+
+  const saveAhsEdit = useCallback(
+    async (
+      rowId: string,
+      values: {
+        materialName: string;
+        coefficient: string;
+        unit: string;
+        wasteFactor: string;
+        unitPrice: string;
+      },
+    ) => {
+      const target = stagingRows.find(r => r.id === rowId);
+      if (!target) return;
+      const before = (target.parsed_data ?? {}) as Record<string, unknown>;
+      let parsed: Record<string, unknown> = before;
+      let raw: Record<string, unknown> = (target.raw_data ?? {}) as Record<string, unknown>;
+      const edits: Array<[EditableField, string]> = [
+        ['ahs.material_name', values.materialName],
+        ['ahs.coefficient', values.coefficient],
+        ['ahs.unit', values.unit],
+        ['ahs.waste_factor', values.wasteFactor],
+        ['ahs.unit_price', values.unitPrice],
+      ];
+      for (const [field, value] of edits) {
+        const next = applyAuditEdit({ ...target, parsed_data: parsed, raw_data: raw }, field, value);
+        parsed = next.parsed;
+        raw = next.raw;
+      }
+      const changes = diffParsed(before, parsed);
+      if (userId) {
+        await logStagingEdits(sessionId, rowId, userId, changes);
+      }
+      const result = await updateStagingRowAudit(rowId, parsed, raw);
+      if (!result.success) {
+        toast(`Gagal simpan: ${result.error ?? 'unknown'}`, 'critical');
+        return;
+      }
+      updateOneRow(rowId, {
+        parsed_data: parsed,
+        raw_data: raw,
+        review_status: 'MODIFIED',
+      });
+      closeEditPanel();
+      toast('Perubahan tersimpan', 'ok');
+    },
+    [stagingRows, toast, updateOneRow, closeEditPanel, sessionId, userId],
+  );
+
+  const materialBadges = useMemo(() => {
+    const map = new Map<string, { badge: 'check' | 'ambigu' | 'none'; candidates: FuzzyMatchCandidate[] }>();
+    for (const usage of materialPivot) {
+      if (usage.material) {
+        map.set(usage.materialKey, { badge: 'check', candidates: [] });
+        continue;
+      }
+      const candidates = fuzzyMatchMaterial(usage.displayName, catalog);
+      const topScore = candidates[0]?.score ?? 0;
+      const badge = topScore >= 0.9 ? 'check' : candidates.length > 0 ? 'ambigu' : 'none';
+      map.set(usage.materialKey, { badge, candidates });
+    }
+    return map;
+  }, [materialPivot, catalog]);
+
+  const pickMaterialForUsage = useCallback(
+    async (usage: MaterialUsage, candidate: FuzzyMatchCandidate) => {
+      for (const line of usage.lines) {
+        const target = stagingRows.find(r => r.id === line.ahs.stagingId);
+        if (!target) continue;
+        const before = (target.parsed_data ?? {}) as Record<string, unknown>;
+        const parsed: Record<string, unknown> = {
+          ...before,
+          material_code: candidate.id,
+          material_name: candidate.name,
+        };
+        const raw = (target.raw_data ?? {}) as Record<string, unknown>;
+        const changes = diffParsed(before, parsed);
+        if (userId) {
+          await logStagingEdits(sessionId, line.ahs.stagingId, userId, changes);
+        }
+        const result = await updateStagingRowAudit(line.ahs.stagingId, parsed, raw);
+        if (!result.success) {
+          toast(`Gagal simpan: ${result.error ?? 'unknown'}`, 'critical');
+          return;
+        }
+        updateOneRow(line.ahs.stagingId, {
+          parsed_data: parsed,
+          raw_data: raw,
+          review_status: 'MODIFIED',
+        });
+      }
+      closeEditPanel();
+      toast('Material dipilih', 'ok');
+    },
+    [stagingRows, userId, sessionId, updateOneRow, toast, closeEditPanel],
+  );
+
+  const handleUndo = useCallback(async () => {
+    const { data: lastEdit } = await supabase
+      .from('import_staging_edits')
+      .select('*')
+      .eq('import_session_id', sessionId)
+      .order('edited_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!lastEdit) {
+      toast('Tidak ada riwayat edit', 'warning');
+      return;
+    }
+    const stagingRowId = lastEdit.staging_row_id as string;
+    const target = stagingRows.find(r => r.id === stagingRowId);
+    if (!target) {
+      toast('Baris staging tidak ditemukan', 'warning');
+      return;
+    }
+    const field = (lastEdit.field_path as string).replace(/^parsed_data\./, '');
+    const parsed = { ...((target.parsed_data ?? {}) as Record<string, unknown>) };
+    parsed[field] = lastEdit.old_value;
+    const raw = (target.raw_data ?? {}) as Record<string, unknown>;
+    const result = await updateStagingRowAudit(stagingRowId, parsed, raw);
+    if (!result.success) {
+      toast(`Gagal undo: ${result.error ?? 'unknown'}`, 'critical');
+      return;
+    }
+    await supabase.from('import_staging_edits').delete().eq('id', lastEdit.id);
+    const refreshed = await getStagingRows(sessionId);
+    onRowsChange(refreshed);
+    toast('Perubahan di-undo', 'ok');
+  }, [sessionId, stagingRows, toast, onRowsChange]);
 
   const handleDeleteAhs = useCallback(
     (ahs: AuditAhsRow) => {
@@ -386,6 +827,15 @@ export default function AuditTraceScreen({
             <Text style={styles.title}>Audit & Edit Parser</Text>
             <Text style={styles.subtitle} numberOfLines={1}>{sessionName}</Text>
           </View>
+          <TouchableOpacity
+            onPress={handleUndo}
+            style={styles.undoBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Undo edit terakhir"
+          >
+            <Ionicons name="arrow-undo" size={16} color={COLORS.primary} />
+            <Text style={styles.undoText}>Undo</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Tab bar */}
@@ -432,6 +882,11 @@ export default function AuditTraceScreen({
             <MaterialList
               items={filteredMaterialPivot}
               onSelect={k => setSelectedKey(k)}
+              badges={materialBadges}
+              expandedPickerKey={expandedEditKey}
+              onTogglePicker={toggleEditKey}
+              onPickCandidate={pickMaterialForUsage}
+              onCancelPicker={closeEditPanel}
             />
           )}
           {tab === 'material' && selectedMaterial && (
@@ -440,6 +895,10 @@ export default function AuditTraceScreen({
               onBack={() => setSelectedKey(null)}
               onEdit={commitEdit}
               onDeleteAhs={handleDeleteAhs}
+              expandedEditKey={expandedEditKey}
+              onToggleEdit={toggleEditKey}
+              onSaveAhs={saveAhsEdit}
+              onCancelEdit={closeEditPanel}
             />
           )}
 
@@ -454,12 +913,20 @@ export default function AuditTraceScreen({
               onEdit={commitEdit}
               onDeleteAhs={handleDeleteAhs}
               onAddAhs={handleAddAhs}
+              expandedEditKey={expandedEditKey}
+              onToggleEdit={toggleEditKey}
+              onSaveAhs={saveAhsEdit}
+              onCancelEdit={closeEditPanel}
             />
           )}
 
           {/* AHS block tab */}
           {tab === 'ahs' && !selectedBlock && (
-            <AhsBlockList items={filteredAhsPivot} onSelect={k => setSelectedKey(k)} />
+            <AhsBlockList
+              items={filteredAhsPivot}
+              onSelect={k => setSelectedKey(k)}
+              validationReport={validationReport}
+            />
           )}
           {tab === 'ahs' && selectedBlock && (
             <AhsBlockDetail
@@ -467,6 +934,11 @@ export default function AuditTraceScreen({
               onBack={() => setSelectedKey(null)}
               onEdit={commitEdit}
               onDeleteAhs={handleDeleteAhs}
+              validationReport={validationReport}
+              expandedEditKey={expandedEditKey}
+              onToggleEdit={toggleEditKey}
+              onSaveAhs={saveAhsEdit}
+              onCancelEdit={closeEditPanel}
             />
           )}
         </ScrollView>
@@ -494,8 +966,16 @@ function StatusBadge({ status, needsReview }: { status: string; needsReview: boo
 // ─── Material tab views ────────────────────────────────────────────────
 
 function MaterialList({
-  items, onSelect,
-}: { items: MaterialUsage[]; onSelect: (key: string) => void }) {
+  items, onSelect, badges, expandedPickerKey, onTogglePicker, onPickCandidate, onCancelPicker,
+}: {
+  items: MaterialUsage[];
+  onSelect: (key: string) => void;
+  badges: Map<string, { badge: 'check' | 'ambigu' | 'none'; candidates: FuzzyMatchCandidate[] }>;
+  expandedPickerKey: string | null;
+  onTogglePicker: (key: string) => void;
+  onPickCandidate: (usage: MaterialUsage, candidate: FuzzyMatchCandidate) => Promise<void>;
+  onCancelPicker: () => void;
+}) {
   if (items.length === 0) {
     return (
       <Card>
@@ -506,41 +986,99 @@ function MaterialList({
   return (
     <>
       <Text style={styles.sectionHead}>Daftar Material ({items.length})</Text>
-      {items.map(m => (
-        <TouchableOpacity key={m.materialKey} onPress={() => onSelect(m.materialKey)} activeOpacity={0.7}>
-          <Card borderColor={m.hasOrphan ? COLORS.warning : COLORS.border}>
-            <View style={styles.listRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.listTitle}>{m.displayName}</Text>
-                <Text style={styles.hint}>
-                  {m.lines.length} AHS line · {m.material?.code ?? 'no-code'} · satuan {m.displayUnit}
-                </Text>
-                {m.hasOrphan && (
-                  <Text style={[styles.hint, { color: COLORS.warning }]}>
-                    Ada baris AHS yang belum ter-link ke BoQ item.
-                  </Text>
-                )}
+      {items.map(m => {
+        const info = badges.get(m.materialKey) ?? { badge: 'none', candidates: [] };
+        const pickerKey = `matpick:${m.materialKey}`;
+        const pickerOpen = expandedPickerKey === pickerKey;
+        return (
+          <View key={m.materialKey}>
+            <TouchableOpacity onPress={() => onSelect(m.materialKey)} activeOpacity={0.7}>
+              <Card borderColor={m.hasOrphan ? COLORS.warning : COLORS.border}>
+                <View style={styles.listRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.listTitle}>{m.displayName}</Text>
+                    <Text style={styles.hint}>
+                      {m.lines.length} AHS line · {m.material?.code ?? 'no-code'} · satuan {m.displayUnit}
+                    </Text>
+                    {m.hasOrphan && (
+                      <Text style={[styles.hint, { color: COLORS.warning }]}>
+                        Ada baris AHS yang belum ter-link ke BoQ item.
+                      </Text>
+                    )}
+                    {info.badge === 'ambigu' && (
+                      <TouchableOpacity
+                        onPress={(e) => { e.stopPropagation?.(); onTogglePicker(pickerKey); }}
+                        accessibilityRole="button"
+                        accessibilityLabel="Pilih kandidat material"
+                      >
+                        <Text style={styles.ambiguBadge}>Ambigu — pilih</Text>
+                      </TouchableOpacity>
+                    )}
+                    {info.badge === 'check' && !m.material && (
+                      <Text style={styles.checkBadge}>Cocok katalog</Text>
+                    )}
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={styles.listTotal}>{formatRupiah(m.grandCost)}</Text>
+                    <Text style={styles.hint}>{formatQuantity(m.grandQty)} {m.displayUnit}</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={COLORS.textSec} />
+                </View>
+              </Card>
+            </TouchableOpacity>
+            {pickerOpen && (
+              <View style={styles.pickerPanel} accessibilityLabel={`Picker material ${m.displayName}`}>
+                <Text style={styles.editPanelTitle}>Pilih Kandidat Material</Text>
+                {info.candidates.slice(0, 5).map(c => (
+                  <TouchableOpacity
+                    key={c.id}
+                    style={styles.pickerOption}
+                    onPress={() => { void onPickCandidate(m, c); }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Pilih ${c.name}`}
+                  >
+                    <Text style={styles.pickerOptionName}>{c.name}</Text>
+                    <Text style={styles.pickerOptionScore}>{(c.score * 100).toFixed(0)}%</Text>
+                  </TouchableOpacity>
+                ))}
+                <TouchableOpacity
+                  style={styles.pickerCancel}
+                  onPress={onCancelPicker}
+                  accessibilityRole="button"
+                  accessibilityLabel="Batal pilih material"
+                >
+                  <Text style={styles.editCancelText}>Batal</Text>
+                </TouchableOpacity>
               </View>
-              <View style={{ alignItems: 'flex-end' }}>
-                <Text style={styles.listTotal}>{formatRupiah(m.grandCost)}</Text>
-                <Text style={styles.hint}>{formatQuantity(m.grandQty)} {m.displayUnit}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={16} color={COLORS.textSec} />
-            </View>
-          </Card>
-        </TouchableOpacity>
-      ))}
+            )}
+          </View>
+        );
+      })}
     </>
   );
 }
 
 function MaterialDetail({
   usage, onBack, onEdit, onDeleteAhs,
+  expandedEditKey, onToggleEdit, onSaveAhs, onCancelEdit,
 }: {
   usage: MaterialUsage;
   onBack: () => void;
   onEdit: (rowId: string, field: EditableField, value: string) => Promise<void>;
   onDeleteAhs: (ahs: AuditAhsRow) => void;
+  expandedEditKey: string | null;
+  onToggleEdit: (key: string) => void;
+  onSaveAhs: (
+    rowId: string,
+    values: {
+      materialName: string;
+      coefficient: string;
+      unit: string;
+      wasteFactor: string;
+      unitPrice: string;
+    },
+  ) => Promise<void>;
+  onCancelEdit: () => void;
 }) {
   return (
     <>
@@ -597,64 +1135,80 @@ function MaterialDetail({
       </Card>
 
       <Text style={styles.sectionHead}>AHS Line yang memakai material ini</Text>
-      {usage.lines.map(line => (
-        <Card key={line.ahs.stagingId} borderColor={line.ahs.reviewStatus === 'MODIFIED' ? COLORS.info : COLORS.border}>
-          <View style={styles.lineHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.lineBoq}>
-                {line.boq?.code ?? '???'} · {line.boq?.label ?? 'BoQ tidak ditemukan'}
-              </Text>
-              <Text style={styles.hint}>
-                Block: {line.ahs.blockTitle ?? '—'}
-                {line.ahs.sourceRow != null ? ` · row Analisa ${line.ahs.sourceRow}` : ''}
-              </Text>
+      {usage.lines.map(line => {
+        const key = makeEditKey('ahs', line.ahs.stagingId);
+        const expanded = expandedEditKey === key;
+        return (
+          <Card key={line.ahs.stagingId} borderColor={line.ahs.reviewStatus === 'MODIFIED' ? COLORS.info : COLORS.border}>
+            <View style={styles.lineHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.lineBoq}>
+                  {line.boq?.code ?? '???'} · {line.boq?.label ?? 'BoQ tidak ditemukan'}
+                </Text>
+                <Text style={styles.hint}>
+                  Block: {line.ahs.blockTitle ?? '—'}
+                  {line.ahs.sourceRow != null ? ` · row Analisa ${line.ahs.sourceRow}` : ''}
+                </Text>
+              </View>
+              <StatusBadge status={line.ahs.reviewStatus} needsReview={line.ahs.needsReview} />
             </View>
-            <StatusBadge status={line.ahs.reviewStatus} needsReview={line.ahs.needsReview} />
-          </View>
 
-          <View style={styles.formRow}>
-            <View style={styles.formCol}>
-              <Text style={styles.formLabel}>Koefisien</Text>
-              <EditableCell
-                value={line.ahs.coefficient}
-                numeric align="right"
-                onCommit={v => onEdit(line.ahs.stagingId, 'ahs.coefficient', v)}
-              />
+            <View style={styles.readRow}>
+              <View style={styles.readCell}>
+                <Text style={styles.formLabel}>Koefisien</Text>
+                <Text style={styles.readValue}>{formatQuantity(line.ahs.coefficient)}</Text>
+              </View>
+              <View style={styles.readCell}>
+                <Text style={styles.formLabel}>Waste</Text>
+                <Text style={styles.readValue}>{formatQuantity(line.ahs.wasteFactor)}</Text>
+              </View>
+              <View style={styles.readCell}>
+                <Text style={styles.formLabel}>Harga Satuan</Text>
+                <Text style={styles.readValue}>{formatRupiah(line.ahs.unitPrice)}</Text>
+                <TraceChip row={line.ahs} />
+              </View>
             </View>
-            <View style={styles.formCol}>
-              <Text style={styles.formLabel}>Waste</Text>
-              <EditableCell
-                value={line.ahs.wasteFactor}
-                numeric align="right"
-                onCommit={v => onEdit(line.ahs.stagingId, 'ahs.waste_factor', v)}
-              />
-            </View>
-            <View style={styles.formCol}>
-              <Text style={styles.formLabel}>Harga Satuan</Text>
-              <EditableCell
-                value={line.ahs.unitPrice}
-                numeric align="right"
-                onCommit={v => onEdit(line.ahs.stagingId, 'ahs.unit_price', v)}
-              />
-            </View>
-          </View>
 
-          <View style={styles.lineFooter}>
-            <View>
-              <Text style={styles.hint}>Qty × {formatQuantity(line.boq?.planned ?? 0)} {line.boq?.unit ?? ''}</Text>
-              <Text style={styles.lineMath}>
-                {formatQuantity(line.perUnitQty)} {line.ahs.unit} × {formatQuantity(line.boq?.planned ?? 0)} = {formatQuantity(line.totalQty)}
-              </Text>
+            <View style={styles.lineFooter}>
+              <View>
+                <Text style={styles.hint}>Qty × {formatQuantity(line.boq?.planned ?? 0)} {line.boq?.unit ?? ''}</Text>
+                <Text style={styles.lineMath}>
+                  {formatQuantity(line.perUnitQty)} {line.ahs.unit} × {formatQuantity(line.boq?.planned ?? 0)} = {formatQuantity(line.totalQty)}
+                </Text>
+              </View>
+              <Text style={styles.lineTotal}>{formatRupiah(line.totalCost)}</Text>
             </View>
-            <Text style={styles.lineTotal}>{formatRupiah(line.totalCost)}</Text>
-          </View>
 
-          <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(line.ahs)}>
-            <Ionicons name="trash-outline" size={14} color={COLORS.critical} />
-            <Text style={styles.deleteText}>Hapus baris</Text>
-          </TouchableOpacity>
-        </Card>
-      ))}
+            <View style={styles.cardActionsRow}>
+              <TouchableOpacity
+                style={styles.editBtn}
+                onPress={() => onToggleEdit(key)}
+                accessibilityRole="button"
+                accessibilityLabel={expanded ? 'Tutup editor' : 'Edit komponen'}
+              >
+                <Ionicons
+                  name={expanded ? 'chevron-up' : 'create-outline'}
+                  size={14}
+                  color={COLORS.primary}
+                />
+                <Text style={styles.editBtnText}>{expanded ? 'Tutup' : 'Edit'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(line.ahs)}>
+                <Ionicons name="trash-outline" size={14} color={COLORS.critical} />
+                <Text style={styles.deleteText}>Hapus baris</Text>
+              </TouchableOpacity>
+            </View>
+
+            {expanded && (
+              <EditAhsComponentForm
+                row={line.ahs}
+                onSave={values => onSaveAhs(line.ahs.stagingId, values)}
+                onCancel={onCancelEdit}
+              />
+            )}
+          </Card>
+        );
+      })}
     </>
   );
 }
@@ -695,12 +1249,26 @@ function BoqList({
 
 function BoqDetail({
   breakdown, onBack, onEdit, onDeleteAhs, onAddAhs,
+  expandedEditKey, onToggleEdit, onSaveAhs, onCancelEdit,
 }: {
   breakdown: BoqBreakdown;
   onBack: () => void;
   onEdit: (rowId: string, field: EditableField, value: string) => Promise<void>;
   onDeleteAhs: (ahs: AuditAhsRow) => void;
   onAddAhs: (boqCode: string, lineType: AhsLineTypeStr, title: string | null) => Promise<void>;
+  expandedEditKey: string | null;
+  onToggleEdit: (key: string) => void;
+  onSaveAhs: (
+    rowId: string,
+    values: {
+      materialName: string;
+      coefficient: string;
+      unit: string;
+      wasteFactor: string;
+      unitPrice: string;
+    },
+  ) => Promise<void>;
+  onCancelEdit: () => void;
 }) {
   const [addingType, setAddingType] = useState<AhsLineTypeStr | null>(null);
   const [adding, setAdding] = useState(false);
@@ -813,70 +1381,80 @@ function BoqDetail({
               <Card><Text style={styles.hint}>Belum ada baris.</Text></Card>
             )}
 
-            {lines.map(line => (
-              <Card
-                key={line.ahs.stagingId}
-                borderColor={line.ahs.reviewStatus === 'MODIFIED' ? COLORS.info : COLORS.border}
-              >
-                <View style={styles.lineHeader}>
-                  <View style={{ flex: 1 }}>
-                    <EditableCell
-                      value={line.ahs.materialName}
-                      onCommit={v => onEdit(line.ahs.stagingId, 'ahs.material_name', v)}
-                    />
-                    <Text style={styles.hint}>
-                      {line.ahs.blockTitle ?? '—'}
-                      {line.ahs.sourceRow != null ? ` · row ${line.ahs.sourceRow}` : ''}
-                    </Text>
+            {lines.map(line => {
+              const key = makeEditKey('ahs', line.ahs.stagingId);
+              const expanded = expandedEditKey === key;
+              return (
+                <Card
+                  key={line.ahs.stagingId}
+                  borderColor={line.ahs.reviewStatus === 'MODIFIED' ? COLORS.info : COLORS.border}
+                >
+                  <View style={styles.lineHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.lineBoq}>{line.ahs.materialName}</Text>
+                      <Text style={styles.hint}>
+                        {line.ahs.blockTitle ?? '—'}
+                        {line.ahs.sourceRow != null ? ` · row ${line.ahs.sourceRow}` : ''}
+                      </Text>
+                    </View>
+                    <StatusBadge status={line.ahs.reviewStatus} needsReview={line.ahs.needsReview} />
                   </View>
-                  <StatusBadge status={line.ahs.reviewStatus} needsReview={line.ahs.needsReview} />
-                </View>
 
-                <View style={styles.formRow}>
-                  <View style={styles.formCol}>
-                    <Text style={styles.formLabel}>Koefisien</Text>
-                    <EditableCell
-                      value={line.ahs.coefficient}
-                      numeric align="right"
-                      onCommit={v => onEdit(line.ahs.stagingId, 'ahs.coefficient', v)}
-                    />
+                  <View style={styles.readRow}>
+                    <View style={styles.readCell}>
+                      <Text style={styles.formLabel}>Koefisien</Text>
+                      <Text style={styles.readValue}>{formatQuantity(line.ahs.coefficient)}</Text>
+                    </View>
+                    <View style={styles.readCell}>
+                      <Text style={styles.formLabel}>Satuan</Text>
+                      <Text style={styles.readValue}>{line.ahs.unit}</Text>
+                    </View>
+                    <View style={styles.readCell}>
+                      <Text style={styles.formLabel}>Waste</Text>
+                      <Text style={styles.readValue}>{formatQuantity(line.ahs.wasteFactor)}</Text>
+                    </View>
+                    <View style={styles.readCell}>
+                      <Text style={styles.formLabel}>Harga</Text>
+                      <Text style={styles.readValue}>{formatRupiah(line.ahs.unitPrice)}</Text>
+                      <TraceChip row={line.ahs} />
+                    </View>
                   </View>
-                  <View style={styles.formCol}>
-                    <Text style={styles.formLabel}>Satuan</Text>
-                    <EditableCell
-                      value={line.ahs.unit}
-                      onCommit={v => onEdit(line.ahs.stagingId, 'ahs.unit', v)}
-                    />
-                  </View>
-                  <View style={styles.formCol}>
-                    <Text style={styles.formLabel}>Waste</Text>
-                    <EditableCell
-                      value={line.ahs.wasteFactor}
-                      numeric align="right"
-                      onCommit={v => onEdit(line.ahs.stagingId, 'ahs.waste_factor', v)}
-                    />
-                  </View>
-                  <View style={styles.formCol}>
-                    <Text style={styles.formLabel}>Harga</Text>
-                    <EditableCell
-                      value={line.ahs.unitPrice}
-                      numeric align="right"
-                      onCommit={v => onEdit(line.ahs.stagingId, 'ahs.unit_price', v)}
-                    />
-                  </View>
-                </View>
 
-                <View style={styles.lineFooter}>
-                  <Text style={styles.hint}>per {breakdown.boq.unit}</Text>
-                  <Text style={styles.lineTotal}>{formatRupiah(line.perUnitCost)}</Text>
-                </View>
+                  <View style={styles.lineFooter}>
+                    <Text style={styles.hint}>per {breakdown.boq.unit}</Text>
+                    <Text style={styles.lineTotal}>{formatRupiah(line.perUnitCost)}</Text>
+                  </View>
 
-                <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(line.ahs)}>
-                  <Ionicons name="trash-outline" size={14} color={COLORS.critical} />
-                  <Text style={styles.deleteText}>Hapus baris</Text>
-                </TouchableOpacity>
-              </Card>
-            ))}
+                  <View style={styles.cardActionsRow}>
+                    <TouchableOpacity
+                      style={styles.editBtn}
+                      onPress={() => onToggleEdit(key)}
+                      accessibilityRole="button"
+                      accessibilityLabel={expanded ? 'Tutup editor' : 'Edit komponen'}
+                    >
+                      <Ionicons
+                        name={expanded ? 'chevron-up' : 'create-outline'}
+                        size={14}
+                        color={COLORS.primary}
+                      />
+                      <Text style={styles.editBtnText}>{expanded ? 'Tutup' : 'Edit'}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(line.ahs)}>
+                      <Ionicons name="trash-outline" size={14} color={COLORS.critical} />
+                      <Text style={styles.deleteText}>Hapus baris</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {expanded && (
+                    <EditAhsComponentForm
+                      row={line.ahs}
+                      onSave={values => onSaveAhs(line.ahs.stagingId, values)}
+                      onCancel={onCancelEdit}
+                    />
+                  )}
+                </Card>
+              );
+            })}
           </View>
         );
       })}
@@ -887,8 +1465,12 @@ function BoqDetail({
 // ─── AHS Block tab views ───────────────────────────────────────────────
 
 function AhsBlockList({
-  items, onSelect,
-}: { items: AhsBlockView[]; onSelect: (key: string) => void }) {
+  items, onSelect, validationReport,
+}: {
+  items: AhsBlockView[];
+  onSelect: (key: string) => void;
+  validationReport: ValidationReport | null;
+}) {
   if (items.length === 0) {
     return <Card><Text style={styles.hint}>Tidak ada AHS block yang cocok.</Text></Card>;
   }
@@ -901,6 +1483,7 @@ function AhsBlockList({
             <View style={styles.listRow}>
               <View style={{ flex: 1 }}>
                 <Text style={styles.listTitle}>{b.title}</Text>
+                <ValidationBadge title={b.title} report={validationReport} />
                 <Text style={styles.hint}>
                   {b.components.length} komponen
                   {b.linkedBoqCodes.length > 0 ? ` · BoQ: ${b.linkedBoqCodes.slice(0, 3).join(', ')}${b.linkedBoqCodes.length > 3 ? ` +${b.linkedBoqCodes.length - 3}` : ''}` : ' · Belum ter-link'}
@@ -920,12 +1503,27 @@ function AhsBlockList({
 }
 
 function AhsBlockDetail({
-  block, onBack, onEdit, onDeleteAhs,
+  block, onBack, onEdit, onDeleteAhs, validationReport,
+  expandedEditKey, onToggleEdit, onSaveAhs, onCancelEdit,
 }: {
   block: AhsBlockView;
   onBack: () => void;
   onEdit: (rowId: string, field: EditableField, value: string) => Promise<void>;
   onDeleteAhs: (ahs: AuditAhsRow) => void;
+  validationReport: ValidationReport | null;
+  expandedEditKey: string | null;
+  onToggleEdit: (key: string) => void;
+  onSaveAhs: (
+    rowId: string,
+    values: {
+      materialName: string;
+      coefficient: string;
+      unit: string;
+      wasteFactor: string;
+      unitPrice: string;
+    },
+  ) => Promise<void>;
+  onCancelEdit: () => void;
 }) {
   return (
     <>
@@ -936,6 +1534,7 @@ function AhsBlockDetail({
 
       <Card borderColor={COLORS.primary}>
         <Text style={styles.detailTitle}>{block.title}</Text>
+        <ValidationBadge title={block.title} report={validationReport} />
         <Text style={styles.hint}>
           {block.titleRow != null ? `Baris judul: row ${block.titleRow} · ` : ''}
           BoQ linked: {block.linkedBoqCodes.length > 0 ? block.linkedBoqCodes.join(', ') : '—'}
@@ -958,67 +1557,76 @@ function AhsBlockDetail({
       </Card>
 
       <Text style={styles.sectionHead}>Komponen</Text>
-      {block.components.map(c => (
-        <Card
-          key={c.ahs.stagingId}
-          borderColor={c.ahs.reviewStatus === 'MODIFIED' ? COLORS.info : COLORS.border}
-        >
-          <View style={styles.lineHeader}>
-            <View style={{ flex: 1 }}>
-              <EditableCell
-                value={c.ahs.materialName}
-                onCommit={v => onEdit(c.ahs.stagingId, 'ahs.material_name', v)}
-              />
-              <Text style={styles.hint}>
-                {c.ahs.lineType.toUpperCase()}
-                {c.ahs.sourceRow != null ? ` · row ${c.ahs.sourceRow}` : ''}
-              </Text>
+      {block.components.map(c => {
+        const key = makeEditKey('ahs', c.ahs.stagingId);
+        const expanded = expandedEditKey === key;
+        return (
+          <Card
+            key={c.ahs.stagingId}
+            borderColor={c.ahs.reviewStatus === 'MODIFIED' ? COLORS.info : COLORS.border}
+          >
+            <View style={styles.lineHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.lineBoq}>{c.ahs.materialName}</Text>
+                <Text style={styles.hint}>
+                  {c.ahs.lineType.toUpperCase()}
+                  {c.ahs.sourceRow != null ? ` · row ${c.ahs.sourceRow}` : ''}
+                </Text>
+              </View>
+              <StatusBadge status={c.ahs.reviewStatus} needsReview={c.ahs.needsReview} />
             </View>
-            <StatusBadge status={c.ahs.reviewStatus} needsReview={c.ahs.needsReview} />
-          </View>
-          <View style={styles.formRow}>
-            <View style={styles.formCol}>
-              <Text style={styles.formLabel}>Koefisien</Text>
-              <EditableCell
-                value={c.ahs.coefficient}
-                numeric align="right"
-                onCommit={v => onEdit(c.ahs.stagingId, 'ahs.coefficient', v)}
-              />
+            <View style={styles.readRow}>
+              <View style={styles.readCell}>
+                <Text style={styles.formLabel}>Koefisien</Text>
+                <Text style={styles.readValue}>{formatQuantity(c.ahs.coefficient)}</Text>
+              </View>
+              <View style={styles.readCell}>
+                <Text style={styles.formLabel}>Satuan</Text>
+                <Text style={styles.readValue}>{c.ahs.unit}</Text>
+              </View>
+              <View style={styles.readCell}>
+                <Text style={styles.formLabel}>Waste</Text>
+                <Text style={styles.readValue}>{formatQuantity(c.ahs.wasteFactor)}</Text>
+              </View>
+              <View style={styles.readCell}>
+                <Text style={styles.formLabel}>Harga</Text>
+                <Text style={styles.readValue}>{formatRupiah(c.ahs.unitPrice)}</Text>
+                <TraceChip row={c.ahs} />
+              </View>
             </View>
-            <View style={styles.formCol}>
-              <Text style={styles.formLabel}>Satuan</Text>
-              <EditableCell
-                value={c.ahs.unit}
-                onCommit={v => onEdit(c.ahs.stagingId, 'ahs.unit', v)}
-              />
+            <View style={styles.lineFooter}>
+              <Text style={styles.hint}>per unit BoQ</Text>
+              <Text style={styles.lineTotal}>{formatRupiah(c.perUnitCost)}</Text>
             </View>
-            <View style={styles.formCol}>
-              <Text style={styles.formLabel}>Waste</Text>
-              <EditableCell
-                value={c.ahs.wasteFactor}
-                numeric align="right"
-                onCommit={v => onEdit(c.ahs.stagingId, 'ahs.waste_factor', v)}
-              />
+            <View style={styles.cardActionsRow}>
+              <TouchableOpacity
+                style={styles.editBtn}
+                onPress={() => onToggleEdit(key)}
+                accessibilityRole="button"
+                accessibilityLabel={expanded ? 'Tutup editor' : 'Edit komponen'}
+              >
+                <Ionicons
+                  name={expanded ? 'chevron-up' : 'create-outline'}
+                  size={14}
+                  color={COLORS.primary}
+                />
+                <Text style={styles.editBtnText}>{expanded ? 'Tutup' : 'Edit'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(c.ahs)}>
+                <Ionicons name="trash-outline" size={14} color={COLORS.critical} />
+                <Text style={styles.deleteText}>Hapus baris</Text>
+              </TouchableOpacity>
             </View>
-            <View style={styles.formCol}>
-              <Text style={styles.formLabel}>Harga</Text>
-              <EditableCell
-                value={c.ahs.unitPrice}
-                numeric align="right"
-                onCommit={v => onEdit(c.ahs.stagingId, 'ahs.unit_price', v)}
+            {expanded && (
+              <EditAhsComponentForm
+                row={c.ahs}
+                onSave={values => onSaveAhs(c.ahs.stagingId, values)}
+                onCancel={onCancelEdit}
               />
-            </View>
-          </View>
-          <View style={styles.lineFooter}>
-            <Text style={styles.hint}>per unit BoQ</Text>
-            <Text style={styles.lineTotal}>{formatRupiah(c.perUnitCost)}</Text>
-          </View>
-          <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(c.ahs)}>
-            <Ionicons name="trash-outline" size={14} color={COLORS.critical} />
-            <Text style={styles.deleteText}>Hapus baris</Text>
-          </TouchableOpacity>
-        </Card>
-      ))}
+            )}
+          </Card>
+        );
+      })}
     </>
   );
 }
@@ -1035,6 +1643,13 @@ const styles = StyleSheet.create({
   },
   closeBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 6, paddingRight: 8 },
   closeText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.primary },
+  undoBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderWidth: 1, borderColor: COLORS.primary, borderRadius: 6,
+    backgroundColor: 'rgba(22,119,255,0.04)',
+  },
+  undoText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.primary },
   title: { fontSize: TYPE.base, fontFamily: FONTS.bold, color: COLORS.text },
   subtitle: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 1 },
 
@@ -1134,10 +1749,89 @@ const styles = StyleSheet.create({
   lineTotal: { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.primary },
 
   deleteBtn: {
+    flex: 1,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
-    marginTop: 8, paddingVertical: 6,
+    paddingVertical: 6,
     borderWidth: 1, borderColor: 'rgba(198,40,40,0.3)', borderRadius: 6,
     backgroundColor: 'rgba(198,40,40,0.04)',
   },
   deleteText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.critical },
+
+  readRow: { flexDirection: 'row', gap: 8, marginTop: 8, flexWrap: 'wrap' },
+  readCell: { flex: 1, minWidth: 70 },
+  readValue: {
+    fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text,
+    marginTop: 2,
+  },
+
+  cardActionsRow: {
+    flexDirection: 'row', gap: 8,
+    marginTop: 8,
+  },
+  editBtn: {
+    flex: 1,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+    paddingVertical: 6,
+    borderWidth: 1, borderColor: COLORS.primary, borderRadius: 6,
+    backgroundColor: 'rgba(22,119,255,0.04)',
+  },
+  editBtnText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.primary },
+
+  editPanel: {
+    marginTop: SPACE.sm,
+    padding: SPACE.sm + 2,
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
+    backgroundColor: 'rgba(0,0,0,0.02)',
+  },
+  editPanelTitle: {
+    fontSize: TYPE.xs, fontFamily: FONTS.bold,
+    letterSpacing: 0.5, textTransform: 'uppercase',
+    color: COLORS.textSec, marginBottom: 8,
+  },
+  editPanelActions: {
+    flexDirection: 'row', gap: 8, marginTop: SPACE.sm,
+  },
+  editCancelBtn: {
+    flex: 1,
+    alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 8,
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: 6,
+    backgroundColor: COLORS.surface,
+  },
+  editCancelText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
+  editSaveBtn: {
+    flex: 1,
+    alignItems: 'center', justifyContent: 'center',
+    paddingVertical: 8,
+    borderRadius: 6,
+    backgroundColor: COLORS.primary,
+  },
+  editSaveText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textInverse },
+
+  ambiguBadge: {
+    marginTop: 4, fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.critical,
+  },
+  checkBadge: {
+    marginTop: 4, fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.ok,
+  },
+  pickerPanel: {
+    marginTop: -SPACE.sm, marginBottom: SPACE.sm,
+    marginHorizontal: SPACE.sm,
+    padding: SPACE.sm + 2,
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
+    backgroundColor: 'rgba(0,0,0,0.02)',
+  },
+  pickerOption: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 8, paddingHorizontal: 10,
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: 6,
+    backgroundColor: COLORS.surface, marginBottom: 6,
+  },
+  pickerOptionName: { flex: 1, fontSize: TYPE.sm, color: COLORS.text, fontFamily: FONTS.semibold },
+  pickerOptionScore: { fontSize: TYPE.xs, color: COLORS.textSec, marginLeft: 8 },
+  pickerCancel: {
+    alignItems: 'center', justifyContent: 'center', paddingVertical: 8,
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: 6,
+    backgroundColor: COLORS.surface, marginTop: 2,
+  },
 });

@@ -11,6 +11,11 @@
 //   per-material   = Σ (per-BoQ total) across every AHS line that uses it
 
 import type { ImportStagingRow } from './types';
+import type {
+  CostBasis,
+  RefCells,
+  CostSplit,
+} from './boqParserV2/types';
 
 export type AhsLineTypeStr = 'material' | 'labor' | 'equipment' | 'subkon';
 
@@ -27,6 +32,13 @@ export interface AuditBoqRow {
   reviewStatus: string;
   needsReview: boolean;
   confidence: number;
+  // v2-only — populated when the workbook stores a per-unit cost split
+  // directly on the BoQ row (e.g. AAL-5 Material/Upah/Peralatan columns).
+  // Null for v1 rows or when no such columns exist.
+  costBasis: CostBasis | null;
+  costSplit: CostSplit | null;
+  subkonCostPerUnit: number | null;
+  totalCost: number | null;
 }
 
 export interface AuditAhsRow {
@@ -50,6 +62,12 @@ export interface AuditAhsRow {
   reviewStatus: string;
   needsReview: boolean;
   confidence: number;
+  // v2-only — present on rows parsed by boqParserV2, null for v1 rows
+  costBasis: CostBasis | null;
+  parentAhsStagingId: string | null;
+  refCells: RefCells | null;
+  costSplit: CostSplit | null;
+  parserVersion: 'v1' | 'v2';
 }
 
 export interface AuditMaterialRow {
@@ -95,6 +113,12 @@ export function extractBoqRows(rows: ImportStagingRow[]): AuditBoqRow[] {
     .map(r => {
       const p = (r.parsed_data ?? {}) as Record<string, unknown>;
       const raw = (r.raw_data ?? {}) as Record<string, unknown>;
+      const ext = r as unknown as {
+        cost_basis: CostBasis | null;
+        cost_split: CostSplit | null;
+      };
+      const subkon = p.subkon_cost_per_unit;
+      const total = p.total_cost;
       return {
         stagingId: r.id,
         rowNumber: r.row_number,
@@ -108,38 +132,102 @@ export function extractBoqRows(rows: ImportStagingRow[]): AuditBoqRow[] {
         reviewStatus: r.review_status,
         needsReview: r.needs_review,
         confidence: r.confidence,
+        costBasis: ext.cost_basis ?? null,
+        costSplit: ext.cost_split ?? null,
+        subkonCostPerUnit: subkon != null ? num(subkon) : null,
+        totalCost: total != null ? num(total) : null,
       };
     });
 }
 
 export function extractAhsRows(rows: ImportStagingRow[]): AuditAhsRow[] {
+  // Build lookups from ahs_block rows for v2:
+  //   block staging_id → linked_boq_code
+  //   block title → linked_boq_code (fallback when parent_ahs_staging_id is missing)
+  //   block title → { titleRow, jumlahRow }
+  const blockBoqCode = new Map<string, string>();
+  const blockBoqCodeByTitle = new Map<string, string>();
+  const blockMeta = new Map<string, { titleRow: number; jumlahRow: number }>();
+  for (const r of rows) {
+    if (r.row_type !== 'ahs_block') continue;
+    const p = (r.parsed_data ?? {}) as Record<string, unknown>;
+    const raw = (r.raw_data ?? {}) as Record<string, unknown>;
+    const title = str(p.title);
+    if (p.linked_boq_code) {
+      blockBoqCode.set(r.id, str(p.linked_boq_code));
+      if (title) blockBoqCodeByTitle.set(title, str(p.linked_boq_code));
+    }
+    if (title) {
+      blockMeta.set(title, {
+        titleRow: num(raw.titleRow),
+        jumlahRow: num(raw.jumlahRow),
+      });
+    }
+  }
+
   return rows
     .filter(r => r.row_type === 'ahs' && r.review_status !== 'REJECTED')
     .map(r => {
       const p = (r.parsed_data ?? {}) as Record<string, unknown>;
       const raw = (r.raw_data ?? {}) as Record<string, unknown>;
+      const ext = r as unknown as {
+        cost_basis: CostBasis | null;
+        parent_ahs_staging_id: string | null;
+        ref_cells: RefCells | null;
+        cost_split: CostSplit | null;
+      };
       const lineType = (str(raw.lineType, 'material') as AhsLineTypeStr);
+
+      // v2 stores blockTitle in raw.blockTitle; v1 in raw.ahsBlockTitle
+      const blockTitle = strOrNull(raw.ahsBlockTitle) ?? strOrNull(raw.blockTitle);
+
+      // v2 stores unit_price in parsed_data; v1 in raw.unitPrice
+      const unitPrice = num(raw.unitPrice) || num(p.unit_price);
+
+      // v2 stores coefficient in parsed_data; v1 in raw.coefficient / p.usage_rate
+      const coefficient = num(raw.coefficient) || num(p.coefficient) || num(p.usage_rate);
+
+      // Resolve boqCode: v1 embeds in parsed_data.boq_code; v2 links
+      // through parent ahs_block (by id or by title match)
+      let boqCode = str(p.boq_code);
+      if (!boqCode && ext.parent_ahs_staging_id) {
+        boqCode = blockBoqCode.get(ext.parent_ahs_staging_id) ?? '';
+      }
+      if (!boqCode && blockTitle) {
+        boqCode = blockBoqCodeByTitle.get(blockTitle) ?? '';
+      }
+
+      // v2 stores titleRow/jumlahRow on the ahs_block, not on individual rows
+      const meta = blockTitle ? blockMeta.get(blockTitle) : null;
+      const titleRow = raw.ahsTitleRow != null ? num(raw.ahsTitleRow) : (meta?.titleRow ?? null);
+      const jumlahRow = raw.ahsJumlahRow != null ? num(raw.ahsJumlahRow) : (meta?.jumlahRow ?? null);
+
       return {
         stagingId: r.id,
         rowNumber: r.row_number,
-        boqCode: str(p.boq_code),
-        blockTitle: strOrNull(raw.ahsBlockTitle),
-        titleRow: raw.ahsTitleRow != null ? num(raw.ahsTitleRow) : null,
-        jumlahRow: raw.ahsJumlahRow != null ? num(raw.ahsJumlahRow) : null,
+        boqCode,
+        blockTitle,
+        titleRow,
+        jumlahRow,
         lineType,
         materialCode: strOrNull(p.material_code),
         materialName: str(p.material_name),
         materialSpec: strOrNull(p.material_spec),
         tier: (num(p.tier, 2) as 1 | 2 | 3),
-        coefficient: num(raw.coefficient, num(p.usage_rate)),
+        coefficient,
         unit: str(p.unit),
-        unitPrice: num(raw.unitPrice),
+        unitPrice,
         wasteFactor: num(p.waste_factor, num(raw.wasteFactor)),
         sourceRow: raw.sourceRow != null ? num(raw.sourceRow) : null,
         linkMethod: strOrNull(raw.linkMethod),
         reviewStatus: r.review_status,
         needsReview: r.needs_review,
         confidence: r.confidence,
+        costBasis: ext.cost_basis ?? null,
+        parentAhsStagingId: ext.parent_ahs_staging_id ?? null,
+        refCells: ext.ref_cells ?? null,
+        costSplit: ext.cost_split ?? null,
+        parserVersion: ((r as unknown as { parser_version?: string }).parser_version ?? 'v1') as 'v1' | 'v2',
       };
     });
 }
@@ -325,6 +413,24 @@ export function pivotByBoq(
       totals[line.ahs.lineType].total += line.totalCost;
     }
 
+    // Fallback: when the parser could not link any AHS components to this
+    // BoQ row (common for AAL-5-style workbooks that chain through REKAP
+    // sheets before hitting Analisa), use the cached per-unit split the
+    // workbook already resolved on the BoQ row itself. Without this the
+    // audit screen renders Rp 0 across all four buckets.
+    if (lines.length === 0 && boq.costSplit) {
+      totals.material.perUnit = boq.costSplit.material;
+      totals.material.total = boq.costSplit.material * boq.planned;
+      totals.labor.perUnit = boq.costSplit.labor;
+      totals.labor.total = boq.costSplit.labor * boq.planned;
+      totals.equipment.perUnit = boq.costSplit.equipment;
+      totals.equipment.total = boq.costSplit.equipment * boq.planned;
+      if (boq.subkonCostPerUnit && boq.subkonCostPerUnit > 0) {
+        totals.subkon.perUnit = boq.subkonCostPerUnit;
+        totals.subkon.total = boq.subkonCostPerUnit * boq.planned;
+      }
+    }
+
     const perUnitTotal =
       totals.material.perUnit + totals.labor.perUnit + totals.equipment.perUnit + totals.subkon.perUnit;
     const grandTotal =
@@ -363,6 +469,8 @@ export interface AhsBlockView {
     subkon: number;
     grand: number;
   };
+  validationStatus: 'ok' | 'imbalanced' | 'has_nested' | null;
+  validationDelta: number;
 }
 
 export function pivotByAhsBlock(ahsRows: AuditAhsRow[]): AhsBlockView[] {
@@ -381,6 +489,8 @@ export function pivotByAhsBlock(ahsRows: AuditAhsRow[]): AhsBlockView[] {
         linkedBoqCodes: [],
         components: [],
         totals: { material: 0, labor: 0, equipment: 0, subkon: 0, grand: 0 },
+        validationStatus: null,
+        validationDelta: 0,
       };
       buckets.set(key, bucket);
     }
@@ -405,6 +515,16 @@ export function pivotByAhsBlock(ahsRows: AuditAhsRow[]): AhsBlockView[] {
       bucket.totals[ahs.lineType] += pUnit;
       bucket.totals.grand += pUnit;
     }
+  }
+
+  for (const bucket of buckets.values()) {
+    const hasNested = bucket.components.some(c => c.ahs.costBasis === 'nested_ahs');
+    // jumlahCachedValue is not available on AuditAhsRow, so we can't compute
+    // expected/delta here. Validation badges rely on import_sessions.validation_report
+    // fetched directly in the UI (see AuditTraceScreen). When a block has nested
+    // components we still surface that here; otherwise status stays null.
+    bucket.validationStatus = hasNested ? 'has_nested' : null;
+    bucket.validationDelta = 0;
   }
 
   return Array.from(buckets.values()).sort((a, b) => b.totals.grand - a.totals.grand);

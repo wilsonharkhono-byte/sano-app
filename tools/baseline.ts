@@ -3,6 +3,33 @@
 
 import { supabase } from './supabase';
 import { BaselineReviewStatus, AnomalyResolution } from './constants';
+
+/**
+ * Resolve a file input to an ArrayBuffer for parsers that can't read paths.
+ *
+ * v1's parser (`parseBoqWorkbook`) accepts a string path directly and lets
+ * `XLSX.readFile` handle it. v2's parser only accepts `Buffer | ArrayBuffer`,
+ * so when the dispatcher receives a string path we must read it into memory
+ * ourselves before handing it off.
+ *
+ * The string-path branch only fires in Node tests/CLI — React Native always
+ * hands an ArrayBuffer (from storage download or document picker). We hide
+ * the `fs` require from Metro's static analyzer so the RN bundle stays
+ * resolvable; the require never executes at runtime in RN because the
+ * typeof check short-circuits first.
+ */
+async function resolveFileInput(
+  fileInput: ArrayBuffer | string,
+): Promise<ArrayBuffer> {
+  if (typeof fileInput !== 'string') return fileInput;
+  // eslint-disable-next-line no-eval
+  const nodeRequire: NodeRequire = eval('require');
+  const fs = nodeRequire('fs') as typeof import('fs');
+  const buf = await fs.promises.readFile(fileInput);
+  const ab = new ArrayBuffer(buf.byteLength);
+  new Uint8Array(ab).set(buf);
+  return ab;
+}
 import type {
   ImportSession,
   ImportStagingRow,
@@ -21,6 +48,7 @@ export async function createImportSession(
   userId: string,
   filePath: string,
   fileName: string,
+  parserVersion: 'v1' | 'v2' = 'v1',
 ): Promise<{ session: ImportSession | null; error: string | null }> {
   const { data, error } = await supabase
     .from('import_sessions')
@@ -29,6 +57,7 @@ export async function createImportSession(
       uploaded_by: userId,
       original_file_path: filePath,
       original_file_name: fileName,
+      parser_version: parserVersion,
       status: 'UPLOADED',
     })
     .select()
@@ -361,6 +390,84 @@ export async function parseAndStageWorkbook(
     // Mark session as parsing
     await updateImportStatus(sessionId, 'PARSING');
 
+    // v2 dispatch — if the session is tagged parser_version='v2', use the
+    // new parser. v1 path is untouched.
+    const { data: sessionRow } = await supabase
+      .from('import_sessions')
+      .select('parser_version')
+      .eq('id', sessionId)
+      .single();
+    if (sessionRow?.parser_version === 'v2') {
+      const { parseBoqV2 } = await import('./boqParserV2');
+      // Task 22 bug fix: previously a string fileInput was coerced to an
+      // empty ArrayBuffer, which made v2 silently parse nothing. Resolve
+      // the path the same way v1 would (read local file into memory).
+      const v2Buffer = await resolveFileInput(fileInput);
+      const v2Result = await parseBoqV2(v2Buffer);
+      // Insert v2 staging rows with the new fields populated.
+      const inserts = v2Result.stagingRows.map(r => ({
+        session_id: sessionId,
+        row_number: r.row_number,
+        row_type: r.row_type,
+        raw_data: r.raw_data,
+        parsed_data: r.parsed_data,
+        needs_review: r.needs_review,
+        confidence: r.confidence,
+        review_status: r.review_status,
+        cost_basis: r.cost_basis,
+        parent_ahs_staging_id: null, // post-fixed below after rows have UUIDs
+        ref_cells: r.ref_cells,
+        cost_split: r.cost_split,
+      }));
+      const { data: inserted, error: insErr } = await supabase
+        .from('import_staging_rows')
+        .insert(inserts)
+        .select('id, row_number');
+      if (insErr) return { success: false, error: insErr.message };
+
+      // Post-fix: translate `block:<row_number>` synthetic parent keys to
+      // real UUIDs now that rows have IDs.
+      const uuidByRowNumber = new Map<number, string>();
+      for (const ins of inserted ?? []) {
+        uuidByRowNumber.set(ins.row_number as number, ins.id as string);
+      }
+      const parentUpdates: Array<{ id: string; parent_uuid: string }> = [];
+      for (let i = 0; i < v2Result.stagingRows.length; i++) {
+        const sr = v2Result.stagingRows[i];
+        if (sr.cost_basis !== 'nested_ahs' || !sr.parent_ahs_staging_id) continue;
+        const m = /^block:(\d+)$/.exec(sr.parent_ahs_staging_id);
+        if (!m) continue;
+        const parentRow = Number(m[1]);
+        const parentUuid = uuidByRowNumber.get(parentRow);
+        const childUuid = uuidByRowNumber.get(sr.row_number);
+        if (parentUuid && childUuid) {
+          parentUpdates.push({ id: childUuid, parent_uuid: parentUuid });
+        }
+      }
+      if (parentUpdates.length > 0) {
+        await Promise.all(
+          parentUpdates.map(u =>
+            supabase
+              .from('import_staging_rows')
+              .update({ parent_ahs_staging_id: u.parent_uuid })
+              .eq('id', u.id),
+          ),
+        );
+      }
+
+      // Persist the v2-only validation_report column with a raw update —
+      // updateImportStatus doesn't know about this field, but we still run
+      // the status transition through the helper so any side effects
+      // (published_at stamping, future notifications) stay consistent.
+      await supabase
+        .from('import_sessions')
+        .update({ validation_report: v2Result.validationReport })
+        .eq('id', sessionId);
+      await updateImportStatus(sessionId, 'REVIEW');
+
+      return { success: true };
+    }
+
     // 1. Parse the workbook
     const parsed = parseBoqWorkbook(fileInput, fileName);
 
@@ -533,6 +640,16 @@ export async function publishBaseline(
   projectId: string,
 ): Promise<{ success: boolean; error?: string; boqCount?: number; ahsCount?: number; materialCount?: number }> {
   try {
+    const { data: session } = await supabase
+      .from('import_sessions')
+      .select('parser_version')
+      .eq('id', sessionId)
+      .single();
+    if (session?.parser_version === 'v2') {
+      const { publishBaselineV2 } = await import('./publishBaselineV2');
+      return publishBaselineV2(sessionId, projectId);
+    }
+
     // 1. Get all approved staging rows
     const rows = await getStagingRows(sessionId);
     const approved = rows.filter(r =>
