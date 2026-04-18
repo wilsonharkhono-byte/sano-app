@@ -8,6 +8,7 @@ export interface AhsBlock {
   grandTotalAddress: string | null;  // e.g. "I150"
   components: HarvestedCell[];        // the E-column cells of component rows
   componentRows: number[];            // row numbers
+  componentSubtotals: number[];       // the F-column cached values (B×E subtotal) per component, same index as components
 }
 
 // AHS title conventions in Indonesian BoQ workbooks:
@@ -96,9 +97,13 @@ export function detectAhsBlocks(cells: HarvestedCell[], sheetName: string): AhsB
     }
     if (jumlahRow === -1) continue;
 
-    // Collect components between title and jumlah, skipping header rows
+    // Collect components between title and jumlah, skipping header rows.
+    // `components` holds E (unit price), `componentSubtotals` holds F (B×E
+    // cached subtotal) so validateBlocks can compare sum(F) against jumlahF
+    // instead of wrongly summing unit prices.
     const components: HarvestedCell[] = [];
     const componentRows: number[] = [];
+    const componentSubtotals: number[] = [];
     for (const r of sortedRows) {
       if (r <= row || r >= jumlahRow) continue;
       const bText = cellText(cellAt(r, 'B'));
@@ -106,8 +111,10 @@ export function detectAhsBlocks(cells: HarvestedCell[], sheetName: string): AhsB
       if (isHeaderRow(bText) || isHeaderRow(cText)) continue;
       const eCell = cellAt(r, 'E');
       if (!eCell) continue;
+      const fCell = cellAt(r, 'F');
       components.push(eCell);
       componentRows.push(r);
+      componentSubtotals.push(toNumber(fCell?.value));
     }
 
     const jumlahF = cellAt(jumlahRow, 'F');
@@ -120,6 +127,7 @@ export function detectAhsBlocks(cells: HarvestedCell[], sheetName: string): AhsB
       grandTotalAddress: jumlahI?.address ?? null,
       components,
       componentRows,
+      componentSubtotals,
     });
   }
 

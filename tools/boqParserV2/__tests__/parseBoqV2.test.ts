@@ -156,6 +156,8 @@ describe('parseBoqV2 nested AHS resolution', () => {
     ]);
     const result = await parseBoqV2(buffer);
     const block = result.stagingRows.find(r => r.row_type === 'ahs_block');
-    expect((block?.parsed_data as { linked_boq_code: string }).linked_boq_code).toBe('A.1');
+    // No chapter row in this minimal fixture, so the parser seeds the
+    // default chapter 'I' and assigns the first item counter → "I.1".
+    expect((block?.parsed_data as { linked_boq_code: string }).linked_boq_code).toBe('I.1');
   });
 });

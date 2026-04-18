@@ -92,6 +92,11 @@ const CHIP_STYLES: Record<
     fg: '#cf1322',
     label: () => 'Split F/G/H',
   },
+  inline_split: {
+    bg: '#f0f5ff',
+    fg: '#2f54eb',
+    label: () => 'Split inline (BoQ)',
+  },
 };
 
 function ValidationBadge({

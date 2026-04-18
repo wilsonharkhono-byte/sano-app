@@ -12,15 +12,16 @@ function mockBlock(
     jumlahRow: 10,
     jumlahCachedValue: jumlah,
     grandTotalAddress: null,
-    components: componentFValues.map((v, i) => ({
+    components: componentFValues.map((_v, i) => ({
       sheet: 'Analisa',
-      address: `F${i + 2}`,
+      address: `E${i + 2}`,
       row: i + 2,
-      col: 6,
-      value: v,
+      col: 5,
+      value: 0,              // unit prices don't influence validator anymore
       formula: null,
     })),
     componentRows: componentFValues.map((_, i) => i + 2),
+    componentSubtotals: componentFValues,
   };
 }
 

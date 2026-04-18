@@ -6,7 +6,12 @@ export type CostBasis =
   | 'nested_ahs'
   | 'literal'
   | 'takeoff_ref'
-  | 'cross_ref';
+  | 'cross_ref'
+  // BoQ-row only: the workbook already carries a cached per-unit cost
+  // split (Material / Upah / Peralatan / Subkon columns) on the BoQ row
+  // itself. No AHS-component traversal needed to compute the cost — the
+  // row is self-contained for display purposes.
+  | 'inline_split';
 
 export interface CellRef {
   sheet: string;
