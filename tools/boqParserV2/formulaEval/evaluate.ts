@@ -21,6 +21,7 @@ export interface EvalResult {
   components: EvalComponent[];
   markup: EvalMarkup | null;
   confidence: number;
+  unknownFunctions?: string[];   // list of fn names encountered that the evaluator couldn't decompose
 }
 
 export interface EvalOptions {
@@ -57,10 +58,14 @@ function toNumber(v: unknown): number {
   return 0;
 }
 
+// Module-level set to dedupe console.warn calls per process
+const WARNED_FN_NAMES = new Set<string>();
+
 interface Branch {
   value: number;
   components: EvalComponent[];
   confidence: number;
+  unknownFunctions?: string[];
 }
 
 function walk(node: AstNode, ctx: Ctx): Branch {
@@ -108,6 +113,7 @@ function walk(node: AstNode, ctx: Ctx): Branch {
           costContribution: -c.costContribution,
         })),
         confidence: sub.confidence,
+        ...(sub.unknownFunctions?.length ? { unknownFunctions: sub.unknownFunctions } : {}),
       };
     }
 
@@ -115,8 +121,10 @@ function walk(node: AstNode, ctx: Ctx): Branch {
       const l = walk(node.left, ctx);
       const r = walk(node.right, ctx);
       const conf = Math.min(l.confidence, r.confidence);
+      const mergedUnknown = [...(l.unknownFunctions ?? []), ...(r.unknownFunctions ?? [])];
+      const unkSpread = mergedUnknown.length ? { unknownFunctions: mergedUnknown } : {};
       if (node.op === '+') {
-        return { value: l.value + r.value, components: [...l.components, ...r.components], confidence: conf };
+        return { value: l.value + r.value, components: [...l.components, ...r.components], confidence: conf, ...unkSpread };
       }
       if (node.op === '-') {
         return {
@@ -126,6 +134,7 @@ function walk(node: AstNode, ctx: Ctx): Branch {
             ...r.components.map(c => ({ ...c, coefficient: -c.coefficient, costContribution: -c.costContribution })),
           ],
           confidence: conf,
+          ...unkSpread,
         };
       }
       if (node.op === '*') {
@@ -139,6 +148,7 @@ function walk(node: AstNode, ctx: Ctx): Branch {
               costContribution: c.costContribution * scale,
             })),
             confidence: conf,
+            ...unkSpread,
           };
         }
         if (r.components.length > 0 && l.components.length === 0) {
@@ -151,14 +161,15 @@ function walk(node: AstNode, ctx: Ctx): Branch {
               costContribution: c.costContribution * scale,
             })),
             confidence: conf,
+            ...unkSpread,
           };
         }
         if (l.components.length > 0 && r.components.length > 0) {
-          return { value: l.value * r.value, components: [], confidence: 0.5 };
+          return { value: l.value * r.value, components: [], confidence: 0.5, ...unkSpread };
         }
-        return { value: l.value * r.value, components: [], confidence: conf };
+        return { value: l.value * r.value, components: [], confidence: conf, ...unkSpread };
       }
-      if (r.value === 0) return { value: 0, components: [], confidence: 0.5 };
+      if (r.value === 0) return { value: 0, components: [], confidence: 0.5, ...unkSpread };
       if (l.components.length > 0 && r.components.length === 0) {
         const scale = 1 / r.value;
         return {
@@ -169,12 +180,20 @@ function walk(node: AstNode, ctx: Ctx): Branch {
             costContribution: c.costContribution * scale,
           })),
           confidence: conf,
+          ...unkSpread,
         };
       }
-      return { value: l.value / r.value, components: [], confidence: conf };
+      return { value: l.value / r.value, components: [], confidence: conf, ...unkSpread };
     }
 
     case 'fn': {
+      if (node.name !== 'SUM') {
+        if (!WARNED_FN_NAMES.has(node.name)) {
+          WARNED_FN_NAMES.add(node.name);
+          console.warn(`[boqParserV2/evaluate] Unknown Excel function: ${node.name}`);
+        }
+        return { value: 0, components: [], confidence: 0.5, unknownFunctions: [node.name] };
+      }
       return { value: 0, components: [], confidence: 0.5 };
     }
   }
@@ -190,7 +209,12 @@ function peelMarkupAtRoot(ast: AstNode, ctx: Ctx): { inner: AstNode; markup: Eva
     const ref = parseRef(side.value);
     if (!ref.sheet) continue;
     if (ref.sheet === ctx.targetSheet) continue;
-    if (!/rekap/i.test(ref.sheet)) continue;
+    // I5: accept as markup only when the sheet is specifically "REKAP RAB" (case-insensitive),
+    // OR when it starts with REKAP and the referenced cell is in column N or O (canonical markup columns).
+    const colIdx = ref.address.replace(/\d+$/, '').toUpperCase();
+    const isRekapRab = /^REKAP\s+RAB$/i.test(ref.sheet);
+    const isRekapWithMarkupCol = /^REKAP/i.test(ref.sheet) && (colIdx === 'N' || colIdx === 'O');
+    if (!isRekapRab && !isRekapWithMarkupCol) continue;
     const cached = ctx.lookup.get(`${ref.sheet}!${ref.address}`);
     if (!cached) continue;
     const factor = toNumber(cached.value);
@@ -232,10 +256,12 @@ export function evaluateFormula(
   if (Math.abs(cached - evaluated) > Math.max(1, Math.abs(cached) * 1e-4)) {
     conf = Math.min(conf, 0.7);
   }
+  const unknownFunctions = branch.unknownFunctions?.length ? branch.unknownFunctions : undefined;
   return {
     evaluatedValue: cached || evaluated,
     components: branch.components,
     markup: peeled ? peeled.markup : null,
     confidence: conf,
+    ...(unknownFunctions ? { unknownFunctions } : {}),
   };
 }

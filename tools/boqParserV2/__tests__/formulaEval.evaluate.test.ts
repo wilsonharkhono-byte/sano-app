@@ -100,4 +100,31 @@ describe('evaluateFormula — markup', () => {
     expect(result.components).toHaveLength(1);
     expect(result.components[0].costContribution).toBeCloseTo(3303241, 0);
   });
+
+  it('does NOT peel a REKAP-PC reference as markup', () => {
+    const lookup = mkLookup([
+      { sheet: 'RAB (A)', address: 'N59', row: 59, col: 14, value: 100, formula: null },
+      { sheet: 'REKAP-PC', address: 'B8', row: 8, col: 2, value: 1.5, formula: null },
+      { sheet: 'Analisa', address: 'F82', row: 82, col: 6, value: 100, formula: null },
+    ]);
+    const e59: HarvestedCell = {
+      sheet: 'RAB (A)', address: 'E59', row: 59, col: 5, value: 150,
+      formula: "=N59*'REKAP-PC'!B8",
+    };
+    const result = evaluateFormula(e59, lookup, { targetSheet: 'Analisa' });
+    expect(result.markup).toBeNull();
+  });
+});
+
+describe('evaluateFormula — unknown functions (I4)', () => {
+  it('surfaces unknown function names in result', () => {
+    const lookup = mkLookup([]);
+    const result = evaluateFormula(
+      { sheet: 'RAB (A)', address: 'X1', row: 1, col: 24, value: 0, formula: '=IFERROR(A1,0)' },
+      lookup,
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.unknownFunctions).toContain('IFERROR');
+    expect(result.confidence).toBeLessThanOrEqual(0.5);
+  });
 });
