@@ -419,10 +419,6 @@ export default function BaselineScreen({
     toast('Koreksi disimpan', 'ok');
   };
 
-  const editingRow = editingRowId
-    ? stagingRows.find(r => r.id === editingRowId) ?? null
-    : null;
-
   const pendingAnomalies = anomalies.filter(a => a.resolution === 'PENDING');
   const anomalySeverityColor = (s: string) => {
     switch (s) {
@@ -779,72 +775,10 @@ export default function BaselineScreen({
               <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
             </TouchableOpacity>
 
-            {editingRow && (
-              <Card borderColor={COLORS.info}>
-                <Text style={styles.previewTitle}>
-                  Editor Koreksi — {editingRow.row_type.toUpperCase()} Baris {editingRow.row_number}
-                </Text>
-                <Text style={styles.hint}>
-                  {editingAnomalyId
-                    ? 'Koreksi ini berasal dari review anomali. Saat disimpan, anomali akan ditandai CORRECTED.'
-                    : 'Ubah hasil parse sebelum baseline dipublish.'}
-                </Text>
-
-                {Object.entries((editingRow.parsed_data ?? {}) as Record<string, unknown>).map(([key]) => {
-                  const dropdownOptions = editingRow.row_type === 'material' ? MATERIAL_DROPDOWNS[key] : null;
-                  return (
-                    <View key={key} style={styles.editorField}>
-                      <Text style={styles.editorLabel}>{key}</Text>
-                      {dropdownOptions ? (
-                        <View style={styles.pickerWrap}>
-                          <Picker
-                            selectedValue={editDraft[key] ?? ''}
-                            onValueChange={(val) => setEditDraft(prev => ({ ...prev, [key]: String(val) }))}
-                            style={styles.picker}
-                          >
-                            <Picker.Item label={`Pilih ${key}...`} value="" color={COLORS.textSec} />
-                            {key === 'tier'
-                              ? MATERIAL_TIER_OPTIONS.map(opt => (
-                                  <Picker.Item key={opt.value} label={opt.label} value={opt.value} />
-                                ))
-                              : dropdownOptions.map(opt => (
-                                  <Picker.Item key={opt} label={opt} value={opt} />
-                                ))}
-                          </Picker>
-                        </View>
-                      ) : (
-                        <TextInput
-                          style={styles.editorInput}
-                          value={editDraft[key] ?? ''}
-                          onChangeText={(text) => setEditDraft(prev => ({ ...prev, [key]: text }))}
-                          placeholder={`Isi ${key}`}
-                          placeholderTextColor={COLORS.textSec}
-                        />
-                      )}
-                    </View>
-                  );
-                })}
-
-                <View style={styles.reviewActions}>
-                  <TouchableOpacity
-                    style={[styles.reviewBtn, { backgroundColor: COLORS.ok }]}
-                    onPress={handleSaveCorrection}
-                  >
-                    <Text style={styles.reviewBtnText}>Simpan Koreksi</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.reviewBtn, { backgroundColor: COLORS.textSec }]}
-                    onPress={() => {
-                      setEditingRowId(null);
-                      setEditingAnomalyId(null);
-                      setEditDraft({});
-                    }}
-                  >
-                    <Text style={styles.reviewBtnText}>Batal</Text>
-                  </TouchableOpacity>
-                </View>
-              </Card>
-            )}
+            {/* Editor Koreksi is rendered inline inside the tapped staging
+                row card (see the stagingRows.map below). Keeping it there
+                anchors the form directly under whatever card the user tapped
+                instead of jumping the whole viewport to the top of the list. */}
 
             {/* ── Anomaly section ── */}
             {anomalies.length > 0 && (
@@ -926,6 +860,75 @@ export default function BaselineScreen({
                     >
                       <Text style={styles.reviewBtnText}>Koreksi</Text>
                     </TouchableOpacity>
+                  </View>
+                )}
+
+                {/* Inline koreksi editor — expands directly under the tapped
+                    card, never jumps to the top of the list. */}
+                {editingRowId === row.id && (
+                  <View style={styles.inlineEditor}>
+                    <Text style={styles.inlineEditorTitle}>
+                      Editor Koreksi — {row.row_type.toUpperCase()} Baris {row.row_number}
+                    </Text>
+                    <Text style={styles.hint}>
+                      {editingAnomalyId
+                        ? 'Koreksi ini berasal dari review anomali. Saat disimpan, anomali akan ditandai CORRECTED.'
+                        : 'Ubah hasil parse sebelum baseline dipublish.'}
+                    </Text>
+
+                    {Object.entries((row.parsed_data ?? {}) as Record<string, unknown>).map(([key]) => {
+                      const dropdownOptions = row.row_type === 'material' ? MATERIAL_DROPDOWNS[key] : null;
+                      return (
+                        <View key={key} style={styles.editorField}>
+                          <Text style={styles.editorLabel}>{key}</Text>
+                          {dropdownOptions ? (
+                            <View style={styles.pickerWrap}>
+                              <Picker
+                                selectedValue={editDraft[key] ?? ''}
+                                onValueChange={(val) => setEditDraft(prev => ({ ...prev, [key]: String(val) }))}
+                                style={styles.picker}
+                              >
+                                <Picker.Item label={`Pilih ${key}...`} value="" color={COLORS.textSec} />
+                                {key === 'tier'
+                                  ? MATERIAL_TIER_OPTIONS.map(opt => (
+                                      <Picker.Item key={opt.value} label={opt.label} value={opt.value} />
+                                    ))
+                                  : dropdownOptions.map(opt => (
+                                      <Picker.Item key={opt} label={opt} value={opt} />
+                                    ))}
+                              </Picker>
+                            </View>
+                          ) : (
+                            <TextInput
+                              style={styles.editorInput}
+                              value={editDraft[key] ?? ''}
+                              onChangeText={(text) => setEditDraft(prev => ({ ...prev, [key]: text }))}
+                              placeholder={`Isi ${key}`}
+                              placeholderTextColor={COLORS.textSec}
+                            />
+                          )}
+                        </View>
+                      );
+                    })}
+
+                    <View style={styles.reviewActions}>
+                      <TouchableOpacity
+                        style={[styles.reviewBtn, { backgroundColor: COLORS.ok }]}
+                        onPress={handleSaveCorrection}
+                      >
+                        <Text style={styles.reviewBtnText}>Simpan Koreksi</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.reviewBtn, { backgroundColor: COLORS.textSec }]}
+                        onPress={() => {
+                          setEditingRowId(null);
+                          setEditingAnomalyId(null);
+                          setEditDraft({});
+                        }}
+                      >
+                        <Text style={styles.reviewBtnText}>Batal</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 )}
               </Card>
@@ -1074,6 +1077,22 @@ const styles = StyleSheet.create({
   confRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
   confValue: { fontSize: TYPE.xs, fontFamily: FONTS.bold },
   dataPreview: { backgroundColor: 'rgba(0,0,0,0.03)', borderRadius: 4, padding: 8, marginTop: 8 },
+  inlineEditor: {
+    marginTop: SPACE.md,
+    paddingTop: SPACE.md,
+    paddingHorizontal: SPACE.sm,
+    paddingBottom: SPACE.sm,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    backgroundColor: 'rgba(59, 130, 246, 0.04)',
+    borderRadius: RADIUS,
+  },
+  inlineEditorTitle: {
+    fontSize: TYPE.sm,
+    fontFamily: FONTS.bold,
+    color: COLORS.text,
+    marginBottom: 4,
+  },
   editorField: { marginTop: 10 },
   editorLabel: { fontSize: TYPE.xs, fontFamily: FONTS.bold, color: COLORS.text, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.4 },
   editorInput: {
