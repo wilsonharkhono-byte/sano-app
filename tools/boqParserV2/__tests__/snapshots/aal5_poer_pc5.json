@@ -1,0 +1,122 @@
+{
+  "perUnit": {
+    "material": 2428240.77,
+    "labor": 800000,
+    "equipment": 75000,
+    "prelim": 0
+  },
+  "subkonPerUnit": 0,
+  "components": [
+    {
+      "sourceCell": {
+        "sheet": "RAB (A)",
+        "address": "R59"
+      },
+      "referencedCell": {
+        "sheet": "Analisa",
+        "address": "F82"
+      },
+      "referencedBlockTitle": "Pengecoran Beton Readymix (KHUSUS POER)",
+      "referencedBlockRow": 77,
+      "quantityPerUnit": 1,
+      "unitPrice": 1232100,
+      "costContribution": 1232100,
+      "lineType": "material",
+      "confidence": 0.5
+    },
+    {
+      "sourceCell": {
+        "sheet": "RAB (A)",
+        "address": "W59"
+      },
+      "referencedCell": {
+        "sheet": "Analisa",
+        "address": "F35"
+      },
+      "referencedBlockTitle": "1 m2 Bekisting Batako POSISI TIDUR untuk Poer dan Sloof",
+      "referencedBlockRow": 29,
+      "quantityPerUnit": 2.13,
+      "unitPrice": 166705.67,
+      "costContribution": 355638.76,
+      "lineType": "material",
+      "confidence": 0.5
+    },
+    {
+      "sourceCell": {
+        "sheet": "RAB (A)",
+        "address": "AA59"
+      },
+      "referencedCell": {
+        "sheet": "Analisa",
+        "address": "F132"
+      },
+      "referencedBlockTitle": "Pembesian U24 & U40",
+      "referencedBlockRow": 127,
+      "quantityPerUnit": 84.75,
+      "unitPrice": 9917.5,
+      "costContribution": 840502.01,
+      "lineType": "material",
+      "confidence": 0.5
+    },
+    {
+      "sourceCell": {
+        "sheet": "RAB (A)",
+        "address": "S59"
+      },
+      "referencedCell": {
+        "sheet": "Analisa",
+        "address": "G82"
+      },
+      "referencedBlockTitle": "Pengecoran Beton Readymix (KHUSUS POER)",
+      "referencedBlockRow": 77,
+      "quantityPerUnit": 1,
+      "unitPrice": 800000,
+      "costContribution": 800000,
+      "lineType": "labor",
+      "confidence": 1
+    },
+    {
+      "sourceCell": {
+        "sheet": "RAB (A)",
+        "address": "T59"
+      },
+      "referencedCell": {
+        "sheet": "Analisa",
+        "address": "H82"
+      },
+      "referencedBlockTitle": "Pengecoran Beton Readymix (KHUSUS POER)",
+      "referencedBlockRow": 77,
+      "quantityPerUnit": 1,
+      "unitPrice": 75000,
+      "costContribution": 75000,
+      "lineType": "equipment",
+      "confidence": 0.5
+    },
+    {
+      "sourceCell": {
+        "sheet": "RAB (A)",
+        "address": "X59"
+      },
+      "referencedCell": {
+        "sheet": "Analisa",
+        "address": "H35"
+      },
+      "referencedBlockTitle": "1 m2 Bekisting Batako POSISI TIDUR untuk Poer dan Sloof",
+      "referencedBlockRow": 29,
+      "quantityPerUnit": 2.13,
+      "unitPrice": 0,
+      "costContribution": 0,
+      "lineType": "equipment",
+      "confidence": 0.5
+    }
+  ],
+  "markup": {
+    "factor": 1.2,
+    "sourceCell": {
+      "sheet": "REKAP RAB",
+      "address": "O4"
+    },
+    "sourceLabel": null
+  },
+  "totalCached": 6967773.5
+}
