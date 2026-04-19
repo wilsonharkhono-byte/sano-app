@@ -15,9 +15,10 @@ import type {
   CostBasis,
   RefCells,
   CostSplit,
+  BoqRowRecipe,
 } from './boqParserV2/types';
 
-export type AhsLineTypeStr = 'material' | 'labor' | 'equipment' | 'subkon';
+export type AhsLineTypeStr = 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
 
 export interface AuditBoqRow {
   stagingId: string;
@@ -39,6 +40,9 @@ export interface AuditBoqRow {
   costSplit: CostSplit | null;
   subkonCostPerUnit: number | null;
   totalCost: number | null;
+  // v2-only — composite recipe (which AHS blocks each rupiah comes from +
+  // markup factor). Null for v1 rows or rows without split columns.
+  recipe: BoqRowRecipe | null;
 }
 
 export interface AuditAhsRow {
@@ -136,6 +140,7 @@ export function extractBoqRows(rows: ImportStagingRow[]): AuditBoqRow[] {
         costSplit: ext.cost_split ?? null,
         subkonCostPerUnit: subkon != null ? num(subkon) : null,
         totalCost: total != null ? num(total) : null,
+        recipe: (p.recipe as BoqRowRecipe | null | undefined) ?? null,
       };
     });
 }
@@ -375,6 +380,7 @@ export interface BoqBreakdown {
   labor: { perUnit: number; total: number };
   equipment: { perUnit: number; total: number };
   subkon: { perUnit: number; total: number };
+  prelim: { perUnit: number; total: number };
   perUnitTotal: number;
   grandTotal: number;
 }
@@ -406,6 +412,7 @@ export function pivotByBoq(
       labor: { perUnit: 0, total: 0 },
       equipment: { perUnit: 0, total: 0 },
       subkon: { perUnit: 0, total: 0 },
+      prelim: { perUnit: 0, total: 0 },
     };
 
     for (const line of lines) {
@@ -425,6 +432,8 @@ export function pivotByBoq(
       totals.labor.total = boq.costSplit.labor * boq.planned;
       totals.equipment.perUnit = boq.costSplit.equipment;
       totals.equipment.total = boq.costSplit.equipment * boq.planned;
+      totals.prelim.perUnit = boq.costSplit.prelim;
+      totals.prelim.total = boq.costSplit.prelim * boq.planned;
       if (boq.subkonCostPerUnit && boq.subkonCostPerUnit > 0) {
         totals.subkon.perUnit = boq.subkonCostPerUnit;
         totals.subkon.total = boq.subkonCostPerUnit * boq.planned;
@@ -432,9 +441,9 @@ export function pivotByBoq(
     }
 
     const perUnitTotal =
-      totals.material.perUnit + totals.labor.perUnit + totals.equipment.perUnit + totals.subkon.perUnit;
+      totals.material.perUnit + totals.labor.perUnit + totals.equipment.perUnit + totals.subkon.perUnit + totals.prelim.perUnit;
     const grandTotal =
-      totals.material.total + totals.labor.total + totals.equipment.total + totals.subkon.total;
+      totals.material.total + totals.labor.total + totals.equipment.total + totals.subkon.total + totals.prelim.total;
 
     return {
       boq,
@@ -443,6 +452,7 @@ export function pivotByBoq(
       labor: totals.labor,
       equipment: totals.equipment,
       subkon: totals.subkon,
+      prelim: totals.prelim,
       perUnitTotal,
       grandTotal,
     };
@@ -467,6 +477,7 @@ export interface AhsBlockView {
     labor: number;
     equipment: number;
     subkon: number;
+    prelim: number;
     grand: number;
   };
   validationStatus: 'ok' | 'imbalanced' | 'has_nested' | null;
@@ -488,7 +499,7 @@ export function pivotByAhsBlock(ahsRows: AuditAhsRow[]): AhsBlockView[] {
         titleRow: ahs.titleRow,
         linkedBoqCodes: [],
         components: [],
-        totals: { material: 0, labor: 0, equipment: 0, subkon: 0, grand: 0 },
+        totals: { material: 0, labor: 0, equipment: 0, subkon: 0, prelim: 0, grand: 0 },
         validationStatus: null,
         validationDelta: 0,
       };

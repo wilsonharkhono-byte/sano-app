@@ -87,6 +87,7 @@ export function classifyComponent(
         material: toNumber(fCell?.value),
         labor: toNumber(gCell?.value),
         equipment: toNumber(hCell?.value),
+        prelim: 0,
       },
     };
   }

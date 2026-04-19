@@ -65,7 +65,7 @@ describe('flattenBlock', () => {
         parsed_data: { material_name: 'Rebar' },
         cost_basis: 'cross_ref' as const,
         ref_cells: null,
-        cost_split: { material: 1000, labor: 500, equipment: 200 },
+        cost_split: { material: 1000, labor: 500, equipment: 200, prelim: 0 },
         parent_ahs_staging_id: null,
         raw_data: {},
         needs_review: false,

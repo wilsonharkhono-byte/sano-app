@@ -75,7 +75,7 @@ export function topoSortBlocks(stagingRows: StagingRowV2[]): StagingRowV2[] {
 }
 
 export interface FlattenedLine {
-  line_type: 'material' | 'labor' | 'equipment' | 'subkon';
+  line_type: 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
   material_name: string;
   unit_price: number;
   coefficient: number;
@@ -120,6 +120,7 @@ export function flattenBlock(
           material: 0,
           labor: 0,
           equipment: 0,
+          prelim: 0,
         };
         out.push({
           line_type: 'material',
@@ -142,6 +143,15 @@ export function flattenBlock(
           coefficient,
           origin_parent_ahs_id: null,
         });
+        if (split.prelim > 0) {
+          out.push({
+            line_type: 'prelim',
+            material_name: materialName,
+            unit_price: split.prelim,
+            coefficient,
+            origin_parent_ahs_id: null,
+          });
+        }
         break;
       }
       case 'nested_ahs': {

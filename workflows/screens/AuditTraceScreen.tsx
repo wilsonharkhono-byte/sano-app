@@ -24,6 +24,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import Card from '../components/Card';
 import Badge from '../components/Badge';
+import RecipeView from './components/RecipeView';
 import { useToast } from '../components/Toast';
 import {
   updateStagingRowAudit,
@@ -1357,6 +1358,8 @@ function BoqDetail({
           <Text style={styles.breakdownCell}>A: {formatRupiah(breakdown.equipment.total)}</Text>
           <Text style={styles.breakdownCell}>S: {formatRupiah(breakdown.subkon.total)}</Text>
         </View>
+
+        <RecipeView recipe={breakdown.boq.recipe} />
       </Card>
 
       {sections.map(section => {

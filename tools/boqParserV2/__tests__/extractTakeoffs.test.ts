@@ -111,7 +111,7 @@ describe('extractBoqRows', () => {
     const rows = extractBoqRows(cells, lookup, 'RAB (A)');
     expect(rows.length).toBe(1);
     expect(rows[0].cost_basis).toBe('inline_split');
-    expect(rows[0].cost_split).toEqual({ material: 3500000, labor: 1200000, equipment: 300000 });
+    expect(rows[0].cost_split).toEqual({ material: 3500000, labor: 1200000, equipment: 300000, prelim: 0 });
     expect(rows[0].total_cost).toBe(50000000);
     // ref_cells should pin the source cells so the audit UI can show provenance
     expect(rows[0].ref_cells?.material_cost?.cell).toBe('I11');

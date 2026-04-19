@@ -1,4 +1,4 @@
-import type { HarvestedCell, HarvestLookup, CostBasis, RefCells, CostSplit } from './types';
+import type { HarvestedCell, HarvestLookup, CostBasis, RefCells, CostSplit, BoqRowRecipe } from './types';
 import { parseFormulaRef, toNumber } from './classifyComponent';
 
 export interface BoqRowV2 {
@@ -7,6 +7,7 @@ export interface BoqRowV2 {
   unit: string;
   planned: number;
   sourceRow: number;
+  source_sheet: string;
   cost_basis: CostBasis | null;
   ref_cells: RefCells | null;
   // Cached per-unit cost split pulled directly from the BoQ row when the
@@ -22,6 +23,7 @@ export interface BoqRowV2 {
   sub_chapter: string | null;      // e.g. "Poer (Readymix fc' 30 MPa) :"
   sub_chapter_letter: string | null; // e.g. "A"
   is_sub_item: boolean;            // true when B starts with "-" under a sub-chapter
+  recipe: BoqRowRecipe | null;
 }
 
 function cellText(c: HarvestedCell | undefined): string {
@@ -48,15 +50,24 @@ function extractSumIfsRefs(formula: string | null): RefCells['quantity'] {
   return out.length > 0 ? out : undefined;
 }
 
+export function findHeaderRow(byRow: Map<number, Map<string, HarvestedCell>>): number {
+  const sorted = Array.from(byRow.keys()).sort((a, b) => a - b);
+  for (const row of sorted) {
+    const b = byRow.get(row)?.get('B');
+    if (b && /uraian/i.test(String(b.value ?? ''))) return row;
+  }
+  return -1;
+}
+
 // Detect which columns on the BoQ sheet hold the pre-computed cost split.
 // AAL-5 uses I=Material, J=Upah, K=Peralatan (labels are in the header row).
 // We scan the header row for these labels and fall back to the canonical
 // AAL-5 positions when no labels are present. Returns null when the sheet
 // has no split columns at all.
-function detectCostSplitColumns(
+export function detectCostSplitColumns(
   byRow: Map<number, Map<string, HarvestedCell>>,
   headerRow: number,
-): { material: string; labor: string; equipment: string; subkon: string | null } | null {
+): { material: string; labor: string; equipment: string; subkon: string | null; prelim: string | null } | null {
   if (headerRow === -1) return null;
   const hdr = byRow.get(headerRow);
   if (!hdr) return null;
@@ -66,7 +77,9 @@ function detectCostSplitColumns(
   // intermediate aggregations for rebar/bekisting/readymix). The primary
   // per-unit split always sits in the leftmost occurrence, so we sort
   // columns and pick the first match per label type.
-  let material = '', labor = '', equipment = '', subkon: string | null = null;
+  let material = '', labor = '', equipment = '';
+  let subkon: string | null = null;
+  let prelim: string | null = null;
   const sortedCols = Array.from(hdr.entries()).sort((a, b) => {
     const toIdx = (s: string) => s.split('').reduce((n, ch) => n * 26 + (ch.charCodeAt(0) - 64), 0);
     return toIdx(a[0]) - toIdx(b[0]);
@@ -78,6 +91,7 @@ function detectCostSplitColumns(
     else if (!labor && /^upah$|^labor$|^tukang$/.test(txt)) labor = col;
     else if (!equipment && /^peralatan$|^alat$|^equipment$/.test(txt)) equipment = col;
     else if (!subkon && /^sub[- ]?kon/.test(txt)) subkon = col;
+    else if (!prelim && /^prelim|^persiapan/.test(txt)) prelim = col;
   }
   // Fall back to AAL-5 canonical layout if we found at least one label but
   // not all of them — workbooks often leave peralatan/subkon unlabeled.
@@ -87,6 +101,7 @@ function detectCostSplitColumns(
       labor: labor || 'J',
       equipment: equipment || 'K',
       subkon,
+      prelim,
     };
   }
   return null;
@@ -112,12 +127,7 @@ export function extractBoqRows(
   // Must search in ascending row order so we find the actual header, not
   // a section heading like "PEKERJAAN PERSIAPAN" that also matches.
   const sortedRowNums = Array.from(byRow.keys()).sort((a, b) => a - b);
-  let headerRow = -1;
-  for (const row of sortedRowNums) {
-    const map = byRow.get(row)!;
-    const b = cellText(map.get('B')).toLowerCase();
-    if (/uraian/.test(b)) { headerRow = row; break; }
-  }
+  const headerRow = findHeaderRow(byRow);
 
   const splitCols = detectCostSplitColumns(byRow, headerRow);
 
@@ -257,29 +267,15 @@ export function extractBoqRows(
       const l = cellNumber(map.get(splitCols.labor));
       const e = cellNumber(map.get(splitCols.equipment));
       const s = splitCols.subkon ? cellNumber(map.get(splitCols.subkon)) : 0;
-      if (m > 0 || l > 0 || e > 0 || s > 0) {
-        cost_split = { material: m, labor: l, equipment: e };
+      const p = splitCols.prelim ? cellNumber(map.get(splitCols.prelim)) : 0;
+      if (m > 0 || l > 0 || e > 0 || s > 0 || p > 0) {
+        cost_split = { material: m, labor: l, equipment: e, prelim: p };
         if (s > 0) subkon_cost_per_unit = s;
-        // Mark the basis so downstream views know the row has its own
-        // resolved cost and does not require AHS-component pivoting.
         if (cost_basis === null) cost_basis = 'inline_split';
-        // Record the source cells so the audit UI can show provenance.
         ref_cells = ref_cells ?? {};
-        ref_cells.material_cost = {
-          sheet: boqSheetName,
-          cell: `${splitCols.material}${row}`,
-          cached_value: m,
-        };
-        ref_cells.labor_cost = {
-          sheet: boqSheetName,
-          cell: `${splitCols.labor}${row}`,
-          cached_value: l,
-        };
-        ref_cells.equipment_cost = {
-          sheet: boqSheetName,
-          cell: `${splitCols.equipment}${row}`,
-          cached_value: e,
-        };
+        ref_cells.material_cost = { sheet: boqSheetName, cell: `${splitCols.material}${row}`, cached_value: m };
+        ref_cells.labor_cost = { sheet: boqSheetName, cell: `${splitCols.labor}${row}`, cached_value: l };
+        ref_cells.equipment_cost = { sheet: boqSheetName, cell: `${splitCols.equipment}${row}`, cached_value: e };
       }
     }
 
@@ -291,6 +287,7 @@ export function extractBoqRows(
       unit,
       planned,
       sourceRow: row,
+      source_sheet: boqSheetName,
       cost_basis,
       ref_cells,
       cost_split,
@@ -301,6 +298,7 @@ export function extractBoqRows(
       sub_chapter: subChapterLabel,
       sub_chapter_letter: subChapterLetter,
       is_sub_item: isSubItem,
+      recipe: null,
     });
   }
   // sortedRowNums iteration is already in row order, but keep the sort as

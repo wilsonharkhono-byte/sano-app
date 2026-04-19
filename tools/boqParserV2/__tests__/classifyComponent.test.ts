@@ -140,6 +140,7 @@ describe('classifyComponent', () => {
       material: 1662746,
       labor: 0,
       equipment: 73744,
+      prelim: 0,
     });
   });
 
@@ -155,6 +156,7 @@ describe('classifyComponent', () => {
       material: 1662746,
       labor: 0,
       equipment: 73744,
+      prelim: 0,
     });
   });
 
