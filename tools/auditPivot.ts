@@ -15,6 +15,7 @@ import type {
   CostBasis,
   RefCells,
   CostSplit,
+  BoqRowRecipe,
 } from './boqParserV2/types';
 
 export type AhsLineTypeStr = 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
@@ -39,6 +40,9 @@ export interface AuditBoqRow {
   costSplit: CostSplit | null;
   subkonCostPerUnit: number | null;
   totalCost: number | null;
+  // v2-only — composite recipe (which AHS blocks each rupiah comes from +
+  // markup factor). Null for v1 rows or rows without split columns.
+  recipe: BoqRowRecipe | null;
 }
 
 export interface AuditAhsRow {
@@ -136,6 +140,7 @@ export function extractBoqRows(rows: ImportStagingRow[]): AuditBoqRow[] {
         costSplit: ext.cost_split ?? null,
         subkonCostPerUnit: subkon != null ? num(subkon) : null,
         totalCost: total != null ? num(total) : null,
+        recipe: (p.recipe as BoqRowRecipe | null | undefined) ?? null,
       };
     });
 }
