@@ -56,6 +56,11 @@ import type { CostBasis, ValidationReport } from '../../tools/boqParserV2/types'
 import { supabase } from '../../tools/supabase';
 import { fuzzyMatchMaterial, type FuzzyMatchCandidate, type CatalogMatchRow } from '../../tools/materialMatch';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
+// Audit screen opens as a <Modal>, which renders in a separate overlay
+// layer above the app root. That hides the app-level floating AI chat
+// launcher, so mount a second copy here so the AI assistant is still
+// reachable while reviewing parser output.
+const GlobalAIChatLauncher = React.lazy(() => import('../components/GlobalAIChatLauncher'));
 
 type AuditTab = 'material' | 'boq' | 'ahs';
 
@@ -944,6 +949,9 @@ export default function AuditTraceScreen({
           )}
         </ScrollView>
       </View>
+      <React.Suspense fallback={null}>
+        <GlobalAIChatLauncher />
+      </React.Suspense>
     </Modal>
   );
 }
