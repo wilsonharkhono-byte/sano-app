@@ -56,7 +56,7 @@ function extractSumIfsRefs(formula: string | null): RefCells['quantity'] {
 function detectCostSplitColumns(
   byRow: Map<number, Map<string, HarvestedCell>>,
   headerRow: number,
-): { material: string; labor: string; equipment: string; subkon: string | null } | null {
+): { material: string; labor: string; equipment: string; subkon: string | null; prelim: string | null } | null {
   if (headerRow === -1) return null;
   const hdr = byRow.get(headerRow);
   if (!hdr) return null;
@@ -66,7 +66,9 @@ function detectCostSplitColumns(
   // intermediate aggregations for rebar/bekisting/readymix). The primary
   // per-unit split always sits in the leftmost occurrence, so we sort
   // columns and pick the first match per label type.
-  let material = '', labor = '', equipment = '', subkon: string | null = null;
+  let material = '', labor = '', equipment = '';
+  let subkon: string | null = null;
+  let prelim: string | null = null;
   const sortedCols = Array.from(hdr.entries()).sort((a, b) => {
     const toIdx = (s: string) => s.split('').reduce((n, ch) => n * 26 + (ch.charCodeAt(0) - 64), 0);
     return toIdx(a[0]) - toIdx(b[0]);
@@ -78,6 +80,7 @@ function detectCostSplitColumns(
     else if (!labor && /^upah$|^labor$|^tukang$/.test(txt)) labor = col;
     else if (!equipment && /^peralatan$|^alat$|^equipment$/.test(txt)) equipment = col;
     else if (!subkon && /^sub[- ]?kon/.test(txt)) subkon = col;
+    else if (!prelim && /^prelim|^persiapan/.test(txt)) prelim = col;
   }
   // Fall back to AAL-5 canonical layout if we found at least one label but
   // not all of them — workbooks often leave peralatan/subkon unlabeled.
@@ -87,6 +90,7 @@ function detectCostSplitColumns(
       labor: labor || 'J',
       equipment: equipment || 'K',
       subkon,
+      prelim,
     };
   }
   return null;
@@ -257,29 +261,15 @@ export function extractBoqRows(
       const l = cellNumber(map.get(splitCols.labor));
       const e = cellNumber(map.get(splitCols.equipment));
       const s = splitCols.subkon ? cellNumber(map.get(splitCols.subkon)) : 0;
-      if (m > 0 || l > 0 || e > 0 || s > 0) {
-        cost_split = { material: m, labor: l, equipment: e };
+      const p = splitCols.prelim ? cellNumber(map.get(splitCols.prelim)) : 0;
+      if (m > 0 || l > 0 || e > 0 || s > 0 || p > 0) {
+        cost_split = { material: m, labor: l, equipment: e, prelim: p };
         if (s > 0) subkon_cost_per_unit = s;
-        // Mark the basis so downstream views know the row has its own
-        // resolved cost and does not require AHS-component pivoting.
         if (cost_basis === null) cost_basis = 'inline_split';
-        // Record the source cells so the audit UI can show provenance.
         ref_cells = ref_cells ?? {};
-        ref_cells.material_cost = {
-          sheet: boqSheetName,
-          cell: `${splitCols.material}${row}`,
-          cached_value: m,
-        };
-        ref_cells.labor_cost = {
-          sheet: boqSheetName,
-          cell: `${splitCols.labor}${row}`,
-          cached_value: l,
-        };
-        ref_cells.equipment_cost = {
-          sheet: boqSheetName,
-          cell: `${splitCols.equipment}${row}`,
-          cached_value: e,
-        };
+        ref_cells.material_cost = { sheet: boqSheetName, cell: `${splitCols.material}${row}`, cached_value: m };
+        ref_cells.labor_cost = { sheet: boqSheetName, cell: `${splitCols.labor}${row}`, cached_value: l };
+        ref_cells.equipment_cost = { sheet: boqSheetName, cell: `${splitCols.equipment}${row}`, cached_value: e };
       }
     }
 

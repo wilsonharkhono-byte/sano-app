@@ -375,6 +375,7 @@ export interface BoqBreakdown {
   labor: { perUnit: number; total: number };
   equipment: { perUnit: number; total: number };
   subkon: { perUnit: number; total: number };
+  prelim: { perUnit: number; total: number };
   perUnitTotal: number;
   grandTotal: number;
 }
@@ -406,6 +407,7 @@ export function pivotByBoq(
       labor: { perUnit: 0, total: 0 },
       equipment: { perUnit: 0, total: 0 },
       subkon: { perUnit: 0, total: 0 },
+      prelim: { perUnit: 0, total: 0 },
     };
 
     for (const line of lines) {
@@ -425,6 +427,8 @@ export function pivotByBoq(
       totals.labor.total = boq.costSplit.labor * boq.planned;
       totals.equipment.perUnit = boq.costSplit.equipment;
       totals.equipment.total = boq.costSplit.equipment * boq.planned;
+      totals.prelim.perUnit = boq.costSplit.prelim;
+      totals.prelim.total = boq.costSplit.prelim * boq.planned;
       if (boq.subkonCostPerUnit && boq.subkonCostPerUnit > 0) {
         totals.subkon.perUnit = boq.subkonCostPerUnit;
         totals.subkon.total = boq.subkonCostPerUnit * boq.planned;
@@ -432,9 +436,9 @@ export function pivotByBoq(
     }
 
     const perUnitTotal =
-      totals.material.perUnit + totals.labor.perUnit + totals.equipment.perUnit + totals.subkon.perUnit;
+      totals.material.perUnit + totals.labor.perUnit + totals.equipment.perUnit + totals.subkon.perUnit + totals.prelim.perUnit;
     const grandTotal =
-      totals.material.total + totals.labor.total + totals.equipment.total + totals.subkon.total;
+      totals.material.total + totals.labor.total + totals.equipment.total + totals.subkon.total + totals.prelim.total;
 
     return {
       boq,
@@ -443,6 +447,7 @@ export function pivotByBoq(
       labor: totals.labor,
       equipment: totals.equipment,
       subkon: totals.subkon,
+      prelim: totals.prelim,
       perUnitTotal,
       grandTotal,
     };

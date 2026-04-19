@@ -31,6 +31,7 @@ export interface CostSplit {
   material: number;
   labor: number;
   equipment: number;
+  prelim: number;
 }
 
 export interface HarvestedCell {
@@ -68,4 +69,30 @@ export interface StagingRowV2 {
   parent_ahs_staging_id: string | null;
   ref_cells: RefCells | null;
   cost_split: CostSplit | null;
+}
+
+export interface RecipeComponent {
+  sourceCell: { sheet: string; address: string };
+  referencedCell: { sheet: string; address: string };
+  referencedBlockTitle: string | null;
+  referencedBlockRow: number | null;
+  quantityPerUnit: number;
+  unitPrice: number;
+  costContribution: number;
+  lineType: 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
+  confidence: number;
+}
+
+export interface Markup {
+  factor: number;
+  sourceCell: { sheet: string; address: string };
+  sourceLabel: string | null;
+}
+
+export interface BoqRowRecipe {
+  perUnit: CostSplit;
+  subkonPerUnit: number;
+  components: RecipeComponent[];
+  markup: Markup | null;
+  totalCached: number;
 }
