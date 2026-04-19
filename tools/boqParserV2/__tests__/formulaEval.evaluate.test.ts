@@ -76,3 +76,28 @@ describe('evaluateFormula — composite AF pattern', () => {
     expect(result.confidence).toBeGreaterThan(0.9);
   });
 });
+
+describe('evaluateFormula — markup', () => {
+  it('peels off *REKAP_RAB!$O$4 as markup, leaves components pre-markup', () => {
+    const lookup = mkLookup([
+      { sheet: 'RAB (A)', address: 'N59', row: 59, col: 14, value: 3303241, formula: null },
+      { sheet: 'REKAP RAB', address: 'O4', row: 4, col: 15, value: 1.2, formula: null },
+      { sheet: 'Analisa', address: 'F82', row: 82, col: 6, value: 3303241, formula: null },
+      { sheet: 'RAB (A)', address: 'R59', row: 59, col: 18, value: 3303241, formula: '=Analisa!$F$82' },
+    ]);
+    lookup.set('RAB (A)!N59', { sheet: 'RAB (A)', address: 'N59', row: 59, col: 14, value: 3303241, formula: '=R59' });
+
+    const e59: HarvestedCell = {
+      sheet: 'RAB (A)', address: 'E59', row: 59, col: 5, value: 3963889,
+      formula: "=N59*'REKAP RAB'!$O$4",
+    };
+    const result = evaluateFormula(e59, lookup, { targetSheet: 'Analisa' });
+
+    expect(result.markup).toEqual({
+      factor: 1.2,
+      sourceCell: { sheet: 'REKAP RAB', address: 'O4' },
+    });
+    expect(result.components).toHaveLength(1);
+    expect(result.components[0].costContribution).toBeCloseTo(3303241, 0);
+  });
+});

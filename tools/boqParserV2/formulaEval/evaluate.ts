@@ -180,6 +180,29 @@ function walk(node: AstNode, ctx: Ctx): Branch {
   }
 }
 
+// Detects the "= X * 'REKAP RAB'!$O$Y" (or Y*X) markup wrap at the AST root.
+// Returns the peeled-off markup + the remainder branch that should walk
+// without the markup factor applied.
+function peelMarkupAtRoot(ast: AstNode, ctx: Ctx): { inner: AstNode; markup: EvalMarkup } | null {
+  if (ast.kind !== 'binop' || ast.op !== '*') return null;
+  for (const [side, other] of [[ast.right, ast.left], [ast.left, ast.right]] as const) {
+    if (side.kind !== 'ref') continue;
+    const ref = parseRef(side.value);
+    if (!ref.sheet) continue;
+    if (ref.sheet === ctx.targetSheet) continue;
+    if (!/rekap/i.test(ref.sheet)) continue;
+    const cached = ctx.lookup.get(`${ref.sheet}!${ref.address}`);
+    if (!cached) continue;
+    const factor = toNumber(cached.value);
+    if (!Number.isFinite(factor) || factor <= 0 || factor > 10) continue;
+    return {
+      inner: other,
+      markup: { factor, sourceCell: { sheet: ref.sheet, address: ref.address } },
+    };
+  }
+  return null;
+}
+
 export function evaluateFormula(
   cell: HarvestedCell,
   lookup: HarvestLookup,
@@ -201,9 +224,10 @@ export function evaluateFormula(
     depth: 0,
     maxDepth: opts.maxDepth ?? 10,
   };
-  const branch = walk(ast, ctx);
+  const peeled = peelMarkupAtRoot(ast, ctx);
+  const branch = peeled ? walk(peeled.inner, ctx) : walk(ast, ctx);
   const cached = toNumber(cell.value);
-  const evaluated = branch.value;
+  const evaluated = peeled ? branch.value * peeled.markup.factor : branch.value;
   let conf = branch.confidence;
   if (Math.abs(cached - evaluated) > Math.max(1, Math.abs(cached) * 1e-4)) {
     conf = Math.min(conf, 0.7);
@@ -211,7 +235,7 @@ export function evaluateFormula(
   return {
     evaluatedValue: cached || evaluated,
     components: branch.components,
-    markup: null,
+    markup: peeled ? peeled.markup : null,
     confidence: conf,
   };
 }
