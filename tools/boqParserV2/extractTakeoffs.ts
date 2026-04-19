@@ -7,6 +7,7 @@ export interface BoqRowV2 {
   unit: string;
   planned: number;
   sourceRow: number;
+  source_sheet: string;
   cost_basis: CostBasis | null;
   ref_cells: RefCells | null;
   // Cached per-unit cost split pulled directly from the BoQ row when the
@@ -286,6 +287,7 @@ export function extractBoqRows(
       unit,
       planned,
       sourceRow: row,
+      source_sheet: boqSheetName,
       cost_basis,
       ref_cells,
       cost_split,
