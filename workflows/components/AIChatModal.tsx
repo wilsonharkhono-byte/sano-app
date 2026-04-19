@@ -208,6 +208,13 @@ export default function AIChatModal({
     setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 80);
   }, []);
 
+  // Clear any residual error whenever the modal opens. Without this, a red
+  // "non-2xx" banner from a prior failed call would linger on reopen and
+  // make the chat look broken even when the server is healthy.
+  useEffect(() => {
+    if (visible) setError(null);
+  }, [visible]);
+
   const handleSend = useCallback(async (text?: string) => {
     const question = (text ?? input).trim();
     if (!question || loading) return;
