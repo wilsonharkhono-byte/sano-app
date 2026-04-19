@@ -120,6 +120,7 @@ export function flattenBlock(
           material: 0,
           labor: 0,
           equipment: 0,
+          prelim: 0,
         };
         out.push({
           line_type: 'material',
