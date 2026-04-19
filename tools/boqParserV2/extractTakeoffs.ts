@@ -1,4 +1,4 @@
-import type { HarvestedCell, HarvestLookup, CostBasis, RefCells, CostSplit } from './types';
+import type { HarvestedCell, HarvestLookup, CostBasis, RefCells, CostSplit, BoqRowRecipe } from './types';
 import { parseFormulaRef, toNumber } from './classifyComponent';
 
 export interface BoqRowV2 {
@@ -22,6 +22,7 @@ export interface BoqRowV2 {
   sub_chapter: string | null;      // e.g. "Poer (Readymix fc' 30 MPa) :"
   sub_chapter_letter: string | null; // e.g. "A"
   is_sub_item: boolean;            // true when B starts with "-" under a sub-chapter
+  recipe: BoqRowRecipe | null;
 }
 
 function cellText(c: HarvestedCell | undefined): string {
@@ -48,12 +49,21 @@ function extractSumIfsRefs(formula: string | null): RefCells['quantity'] {
   return out.length > 0 ? out : undefined;
 }
 
+export function findHeaderRow(byRow: Map<number, Map<string, HarvestedCell>>): number {
+  const sorted = Array.from(byRow.keys()).sort((a, b) => a - b);
+  for (const row of sorted) {
+    const b = byRow.get(row)?.get('B');
+    if (b && /uraian/i.test(String(b.value ?? ''))) return row;
+  }
+  return -1;
+}
+
 // Detect which columns on the BoQ sheet hold the pre-computed cost split.
 // AAL-5 uses I=Material, J=Upah, K=Peralatan (labels are in the header row).
 // We scan the header row for these labels and fall back to the canonical
 // AAL-5 positions when no labels are present. Returns null when the sheet
 // has no split columns at all.
-function detectCostSplitColumns(
+export function detectCostSplitColumns(
   byRow: Map<number, Map<string, HarvestedCell>>,
   headerRow: number,
 ): { material: string; labor: string; equipment: string; subkon: string | null; prelim: string | null } | null {
@@ -116,12 +126,7 @@ export function extractBoqRows(
   // Must search in ascending row order so we find the actual header, not
   // a section heading like "PEKERJAAN PERSIAPAN" that also matches.
   const sortedRowNums = Array.from(byRow.keys()).sort((a, b) => a - b);
-  let headerRow = -1;
-  for (const row of sortedRowNums) {
-    const map = byRow.get(row)!;
-    const b = cellText(map.get('B')).toLowerCase();
-    if (/uraian/.test(b)) { headerRow = row; break; }
-  }
+  const headerRow = findHeaderRow(byRow);
 
   const splitCols = detectCostSplitColumns(byRow, headerRow);
 
@@ -291,6 +296,7 @@ export function extractBoqRows(
       sub_chapter: subChapterLabel,
       sub_chapter_letter: subChapterLetter,
       is_sub_item: isSubItem,
+      recipe: null,
     });
   }
   // sortedRowNums iteration is already in row order, but keep the sort as

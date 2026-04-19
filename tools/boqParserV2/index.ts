@@ -2,7 +2,8 @@ import { harvestWorkbook } from './harvest';
 import { detectAhsBlocks } from './detectBlocks';
 import { classifyComponent, toNumber } from './classifyComponent';
 import { extractCatalogRows, type CatalogRow } from './extractCatalog';
-import { extractBoqRows, type BoqRowV2 } from './extractTakeoffs';
+import { extractBoqRows, type BoqRowV2, detectCostSplitColumns, findHeaderRow } from './extractTakeoffs';
+import { buildRecipe } from './recipeBuilder';
 import { validateBlocks } from './validate';
 import type {
   HarvestedCell,
@@ -40,6 +41,42 @@ export async function parseBoqV2(
   const materialRows = extractCatalogRows(cells, catalogSheets);
   const ahsBlocks = detectAhsBlocks(cells, analisaSheet);
   const boqRows = extractBoqRows(cells, lookup, boqSheet);
+
+  // Recipe assembly: for every BoQ row that already has a cost_split, run
+  // the formula interpreter across I/J/K/L/M columns to produce a composite
+  // recipe. When the column detector returns null (no split columns in
+  // this workbook), skip — each row's recipe stays null.
+  {
+    const byRow = new Map<number, Map<string, HarvestedCell>>();
+    for (const c of cells) {
+      if (c.sheet !== boqSheet) continue;
+      const colLetter = c.address.replace(/\d+/g, '');
+      const map = byRow.get(c.row) ?? new Map();
+      map.set(colLetter, c);
+      byRow.set(c.row, map);
+    }
+    const headerRow = findHeaderRow(byRow);
+    const splitCols = detectCostSplitColumns(byRow, headerRow);
+
+    if (splitCols) {
+      for (const b of boqRows) {
+        if (!b.cost_split) continue;
+        b.recipe = buildRecipe({
+          sourceRow: b.sourceRow,
+          sourceSheet: boqSheet,
+          costSplit: b.cost_split,
+          subkonPerUnit: b.subkon_cost_per_unit ?? 0,
+          splitColumns: splitCols,
+          markupCell: 'E',
+          totalCell: 'F',
+          lookup,
+          blocks: ahsBlocks,
+          analisaSheet,
+        });
+      }
+    }
+  }
+
   const validationReport = validateBlocks(ahsBlocks);
 
   const stagingRows: StagingRowV2[] = [];
@@ -261,10 +298,11 @@ export async function parseBoqV2(
         // Expose cached totals so the audit UI can render numbers even
         // when AHS-component pivoting hasn't wired up.
         unit_price: b.cost_split
-          ? b.cost_split.material + b.cost_split.labor + b.cost_split.equipment + (b.subkon_cost_per_unit ?? 0)
+          ? b.cost_split.material + b.cost_split.labor + b.cost_split.equipment + b.cost_split.prelim + (b.subkon_cost_per_unit ?? 0)
           : null,
         subkon_cost_per_unit: b.subkon_cost_per_unit,
         total_cost: b.total_cost,
+        recipe: b.recipe,
       },
       needs_review: false,
       confidence: 1,
