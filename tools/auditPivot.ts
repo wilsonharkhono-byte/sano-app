@@ -17,7 +17,7 @@ import type {
   CostSplit,
 } from './boqParserV2/types';
 
-export type AhsLineTypeStr = 'material' | 'labor' | 'equipment' | 'subkon';
+export type AhsLineTypeStr = 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
 
 export interface AuditBoqRow {
   stagingId: string;
@@ -472,6 +472,7 @@ export interface AhsBlockView {
     labor: number;
     equipment: number;
     subkon: number;
+    prelim: number;
     grand: number;
   };
   validationStatus: 'ok' | 'imbalanced' | 'has_nested' | null;
@@ -493,7 +494,7 @@ export function pivotByAhsBlock(ahsRows: AuditAhsRow[]): AhsBlockView[] {
         titleRow: ahs.titleRow,
         linkedBoqCodes: [],
         components: [],
-        totals: { material: 0, labor: 0, equipment: 0, subkon: 0, grand: 0 },
+        totals: { material: 0, labor: 0, equipment: 0, subkon: 0, prelim: 0, grand: 0 },
         validationStatus: null,
         validationDelta: 0,
       };
