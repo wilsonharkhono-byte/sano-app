@@ -102,3 +102,18 @@ test('AAL-5 workbook → parseBoqV2 smoke', async () => {
   console.log('  reconciled       :', reconciled, '/', withRecipe);
   expect(reconciled / Math.max(1, withRecipe)).toBeGreaterThan(0.7);
 }, 120000);
+
+test('Nusa Golf workbook → parseBoqV2 with auto multi-sheet', async () => {
+  const buf = fs.readFileSync('assets/BOQ/RAB Nusa Golf I4 no. 29_R3.xlsx');
+  const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  const result = await parseBoqV2(ab as ArrayBuffer, { boqSheet: 'auto' });
+  console.log('\n==== parseBoqV2 smoke: Nusa Golf ====');
+  const bySheet = new Map<string, number>();
+  for (const r of result.boqRows) bySheet.set(r.source_sheet, (bySheet.get(r.source_sheet) ?? 0) + 1);
+  for (const [sn, n] of bySheet) console.log(`  ${sn}: ${n} rows`);
+  const blockRows = result.stagingRows.filter(r => r.row_type === 'ahs_block');
+  const linked = blockRows.filter(r => (r.parsed_data as { linked_boq_code?: string }).linked_boq_code).length;
+  console.log(`  BoQ total: ${result.boqRows.length}, blocks linked: ${linked}/${blockRows.length}`);
+  expect(result.boqRows.length).toBeGreaterThan(50);
+  expect(linked / Math.max(1, blockRows.length)).toBeGreaterThan(0.3);
+}, 120000);
