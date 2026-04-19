@@ -13,6 +13,8 @@ import type { HarvestedCell, HarvestLookup } from './types';
 export interface HarvestResult {
   cells: HarvestedCell[];
   lookup: HarvestLookup;
+  sheetNames: string[];
+  workbook: XLSX.WorkBook;
 }
 
 export async function harvestWorkbook(
@@ -57,5 +59,5 @@ export async function harvestWorkbook(
     }
   }
 
-  return { cells, lookup };
+  return { cells, lookup, sheetNames: workbook.SheetNames, workbook };
 }
