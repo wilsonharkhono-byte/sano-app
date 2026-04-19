@@ -120,9 +120,13 @@ export async function parseBoqV2(
     const refs: Array<{ sheet: string; addr: string }> = [];
     ANALISA_REF_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = ANALISA_REF_RE.exec(formula)) !== null) {
-      const sheet = m[1] ?? m[2];
-      if (sheet === target) refs.push({ sheet, addr: `${m[3]}${m[4]}` });
+    try {
+      while ((m = ANALISA_REF_RE.exec(formula)) !== null) {
+        const sheet = m[1] ?? m[2];
+        if (sheet === target) refs.push({ sheet, addr: `${m[3]}${m[4]}` });
+      }
+    } finally {
+      ANALISA_REF_RE.lastIndex = 0;
     }
     return refs;
   }
@@ -131,8 +135,12 @@ export async function parseBoqV2(
     const out: string[] = [];
     SAME_SHEET_REF_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = SAME_SHEET_REF_RE.exec(formula)) !== null) {
-      out.push(`${m[1]}${m[2]}`);
+    try {
+      while ((m = SAME_SHEET_REF_RE.exec(formula)) !== null) {
+        out.push(`${m[1]}${m[2]}`);
+      }
+    } finally {
+      SAME_SHEET_REF_RE.lastIndex = 0;
     }
     return out;
   }
@@ -199,6 +207,7 @@ export async function parseBoqV2(
   }
 
   for (const block of ahsBlocks) {
+    const linkedBoqCode = resolveLinkedBoqCode(block);
     const blockRowNumber = ++rowNumber;
     stagingRows.push({
       row_type: 'ahs_block',
@@ -211,13 +220,13 @@ export async function parseBoqV2(
       parsed_data: {
         title: block.title,
         jumlah_cached_value: block.jumlahCachedValue,
-        linked_boq_code: resolveLinkedBoqCode(block),
+        linked_boq_code: linkedBoqCode,
         // True when no BoQ row in the workbook references any cell within
         // the block's row range. These are leftover templates from the
         // master Analisa sheet that aren't used by this project. The UI
         // can surface them so estimators can decide to keep or prune.
         is_orphan: (() => {
-          if (resolveLinkedBoqCode(block) != null) return false;
+          if (linkedBoqCode != null) return false;
           for (const key of boqCodeByAnalisaAddress.keys()) {
             if (!key.startsWith(`${analisaSheet}!`)) continue;
             const addr = key.slice(analisaSheet.length + 1);
@@ -229,8 +238,8 @@ export async function parseBoqV2(
           return true;
         })(),
       },
-      needs_review: resolveLinkedBoqCode(block) == null,
-      confidence: resolveLinkedBoqCode(block) == null ? 0.5 : 1,
+      needs_review: linkedBoqCode == null,
+      confidence: linkedBoqCode == null ? 0.5 : 1,
       review_status: 'PENDING',
       cost_basis: null,
       parent_ahs_staging_id: null,

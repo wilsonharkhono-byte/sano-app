@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { parseBoqV2 } from '../tools/boqParserV2';
+import { parseBoqV2 } from '..';
 
 test('AAL-5 workbook → parseBoqV2 smoke', async () => {
   const buf = fs.readFileSync('assets/BOQ/RAB R1 Pakuwon Indah AAL-5.xlsx');
