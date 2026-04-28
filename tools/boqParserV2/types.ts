@@ -11,7 +11,11 @@ export type CostBasis =
   // split (Material / Upah / Peralatan / Subkon columns) on the BoQ row
   // itself. No AHS-component traversal needed to compute the cost — the
   // row is self-contained for display purposes.
-  | 'inline_split';
+  | 'inline_split'
+  // BoQ-row only: parent label-only row in RAB (A) followed by 2+
+  // material-typed child rows. The children carry the per-material
+  // quantities and unit prices verbatim.
+  | 'inline_recipe';
 
 export interface CellRef {
   sheet: string;
@@ -25,6 +29,9 @@ export interface RefCells {
   labor_cost?: CellRef;
   equipment_cost?: CellRef;
   quantity?: CellRef[];
+  // For inline_recipe parent BoQ rows: lists each child source row so
+  // the audit can render provenance without walking children.
+  source_rows?: Array<{ sheet: string; row: number; label: string }>;
 }
 
 export interface CostSplit {
