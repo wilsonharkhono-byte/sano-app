@@ -4,7 +4,7 @@ import { classifyComponent, toNumber } from './classifyComponent';
 import { extractCatalogRows, type CatalogRow } from './extractCatalog';
 import { extractBoqRows, type BoqRowV2 } from './extractTakeoffs';
 import { detectInlineRecipes } from './detectInlineRecipe';
-import { validateBlocks } from './validate';
+import { validateBlocks, collectUnresolvedReferences, type AnalisaRefEncounter } from './validate';
 import type {
   HarvestedCell,
   HarvestLookup,
@@ -42,7 +42,6 @@ export async function parseBoqV2(
   const ahsBlocks = detectAhsBlocks(cells, analisaSheet);
   const inlineRecipeGroups = detectInlineRecipes(cells, boqSheet);
   const boqRows = extractBoqRows(cells, lookup, boqSheet, inlineRecipeGroups);
-  const validationReport = validateBlocks(ahsBlocks);
 
   const stagingRows: StagingRowV2[] = [];
   let rowNumber = 0;
@@ -76,6 +75,8 @@ export async function parseBoqV2(
   // column of the row, and for each same-sheet reference we inspect its
   // formula too (one hop). That is enough to catch R51/W51/AA51-style
   // references that sit one indirection removed from the BoQ row.
+  const analisaRefEncounters: AnalisaRefEncounter[] = [];
+
   const ANALISA_REF_RE = /(?:'([^']+)'|([A-Za-z0-9_\- ]+))!\$?([A-Z]+)\$?(\d+)/g;
   const SAME_SHEET_REF_RE = /(?<![!:'"A-Za-z0-9_])\$?([A-Z]+)\$?(\d+)/g;
 
@@ -114,6 +115,13 @@ export async function parseBoqV2(
       const direct = collectAnalisaRefs(c.formula!, analisaSheet);
       for (const r of direct) {
         boqCodeByAnalisaAddress.set(`${r.sheet}!${r.addr}`, b.code);
+        analisaRefEncounters.push({
+          boqCode: b.code,
+          sourceAddress: `${c.sheet}!${c.address}`,
+          formula: c.formula!,
+          targetSheet: r.sheet,
+          targetCell: r.addr,
+        });
       }
       // Follow same-sheet references for a single hop so chains like
       // I=AF, AF=R+... resolve to the Analisa address R points at.
@@ -130,6 +138,13 @@ export async function parseBoqV2(
       const direct = collectAnalisaRefs(hopCell.formula, analisaSheet);
       for (const r of direct) {
         boqCodeByAnalisaAddress.set(`${r.sheet}!${r.addr}`, b.code);
+        analisaRefEncounters.push({
+          boqCode: b.code,
+          sourceAddress: `${hopCell.sheet}!${hopCell.address}`,
+          formula: hopCell.formula!,
+          targetSheet: r.sheet,
+          targetCell: r.addr,
+        });
       }
       // Second level of hop — catches intermediate aggregator columns like
       // N=SUM(I:M) → I=AF → AF=R+V*W. Bounded by `hops < 100`.
@@ -138,6 +153,12 @@ export async function parseBoqV2(
       }
     }
   }
+
+  const validationReport = validateBlocks(ahsBlocks);
+  validationReport.unresolved_references = collectUnresolvedReferences(
+    analisaRefEncounters,
+    ahsBlocks,
+  );
 
   // Resolve the linked BoQ code for a block. Primary: exact match on the
   // block's grand-total or jumlah cells. Fallback: any Analisa reference

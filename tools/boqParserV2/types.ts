@@ -52,6 +52,14 @@ export interface HarvestedCell {
 export type HarvestLookup = Map<string, HarvestedCell>;
 // key format: `${sheet}!${address}` e.g. "Analisa!I199"
 
+export interface UnresolvedReference {
+  boq_row_code: string;
+  source_address: string;     // e.g. "RAB (A)!E51"
+  formula: string;
+  target: { sheet: string; cell: string };
+  message: string;
+}
+
 export interface ValidationReport {
   blocks: Array<{
     block_title: string;
@@ -60,6 +68,7 @@ export interface ValidationReport {
     actual: number;
     delta: number;
   }>;
+  unresolved_references: UnresolvedReference[];
   generated_at: string;
 }
 
