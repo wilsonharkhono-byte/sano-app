@@ -1,5 +1,6 @@
 import type { HarvestedCell, HarvestLookup, CostBasis, RefCells, CostSplit } from './types';
 import { parseFormulaRef, toNumber } from './classifyComponent';
+import type { InlineRecipeGroup } from './detectInlineRecipe';
 
 export interface BoqRowV2 {
   code: string;
@@ -96,6 +97,7 @@ export function extractBoqRows(
   cells: HarvestedCell[],
   lookup: HarvestLookup,
   boqSheetName: string,
+  inlineRecipeGroups: InlineRecipeGroup[] = [],
 ): BoqRowV2[] {
   const byRow = new Map<number, Map<string, HarvestedCell>>();
   for (const c of cells) {
@@ -104,6 +106,14 @@ export function extractBoqRows(
     const map = byRow.get(c.row) ?? new Map();
     map.set(colLetter, c);
     byRow.set(c.row, map);
+  }
+
+  // Lookup table for the inline-recipe-aware paths inside the row loop.
+  const recipeParentByRow = new Map<number, InlineRecipeGroup>();
+  const recipeChildRows = new Set<number>();
+  for (const g of inlineRecipeGroups) {
+    recipeParentByRow.set(g.parentRow, g);
+    for (const c of g.childRows) recipeChildRows.add(c.sourceRow);
   }
 
   // Detect header row to skip it and all rows before it. RAB (A) typically
@@ -147,6 +157,10 @@ export function extractBoqRows(
   const out: BoqRowV2[] = [];
   for (const row of sortedRowNums) {
     if (row <= headerRow) continue;
+    // Children of an inline-recipe group must not surface as standalone
+    // BoQ items — the recipe's synthesized AHS components subsume them.
+    if (recipeChildRows.has(row)) continue;
+
     const map = byRow.get(row)!;
     const label = cellText(map.get('B'));   // description
     const unit = cellText(map.get('C'));    // satuan
@@ -155,6 +169,56 @@ export function extractBoqRows(
     const aNorm = aText.trim().replace(/\.$/, '');
 
     const planned = cellNumber(map.get('D'));
+
+    // Inline-recipe parent: emit ONE BoqRowV2 with chapter-derived code
+    // and inline_recipe cost basis. Bypass the label-only sub-sub-chapter
+    // path (which would otherwise increment subSubChapterCounter).
+    const recipeGroup = recipeParentByRow.get(row);
+    if (recipeGroup) {
+      const isSubItem = /^\s*[-–—]\s/.test(label);
+      let code: string;
+      if (isSubItem) {
+        subItemCounter++;
+        const parts = [chapterIndex ?? 'I'];
+        if (subChapterLetter) parts.push(subChapterLetter);
+        if (subSubChapterCounter > 0) parts.push(String(subSubChapterCounter));
+        if (itemCounter > 0) parts.push(String(itemCounter));
+        parts.push(`${subItemCounter}`);
+        code = parts.join('.');
+      } else {
+        itemCounter++;
+        subItemCounter = 0;
+        const parts = [chapterIndex ?? 'I'];
+        if (subChapterLetter) parts.push(subChapterLetter);
+        if (subSubChapterCounter > 0) parts.push(String(subSubChapterCounter));
+        parts.push(String(itemCounter));
+        code = parts.join('.');
+      }
+      out.push({
+        code,
+        label: recipeGroup.parentLabel,
+        unit: 'lot',
+        planned: 1,
+        sourceRow: row,
+        cost_basis: 'inline_recipe',
+        ref_cells: {
+          source_rows: recipeGroup.childRows.map((c) => ({
+            sheet: boqSheetName,
+            row: c.sourceRow,
+            label: c.materialName,
+          })),
+        },
+        cost_split: null,
+        subkon_cost_per_unit: null,
+        total_cost: recipeGroup.parentTotalCost,
+        chapter: chapterLabel,
+        chapter_index: chapterIndex,
+        sub_chapter: subChapterLabel,
+        sub_chapter_letter: subChapterLetter,
+        is_sub_item: isSubItem,
+      });
+      continue;
+    }
 
     // Chapter header: A has Roman numeral, B has a title, no unit, no volume.
     if (aNorm.length > 0 && ROMAN_RE.test(aNorm) && !unit && planned <= 0) {

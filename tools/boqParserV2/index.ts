@@ -3,6 +3,7 @@ import { detectAhsBlocks } from './detectBlocks';
 import { classifyComponent, toNumber } from './classifyComponent';
 import { extractCatalogRows, type CatalogRow } from './extractCatalog';
 import { extractBoqRows, type BoqRowV2 } from './extractTakeoffs';
+import { detectInlineRecipes, type InlineRecipeGroup } from './detectInlineRecipe';
 import { validateBlocks } from './validate';
 import type {
   HarvestedCell,
@@ -39,7 +40,8 @@ export async function parseBoqV2(
   const { cells, lookup } = await harvestWorkbook(fileBuffer);
   const materialRows = extractCatalogRows(cells, catalogSheets);
   const ahsBlocks = detectAhsBlocks(cells, analisaSheet);
-  const boqRows = extractBoqRows(cells, lookup, boqSheet);
+  const inlineRecipeGroups = detectInlineRecipes(cells, boqSheet);
+  const boqRows = extractBoqRows(cells, lookup, boqSheet, inlineRecipeGroups);
   const validationReport = validateBlocks(ahsBlocks);
 
   const stagingRows: StagingRowV2[] = [];
@@ -237,6 +239,54 @@ export async function parseBoqV2(
         parent_ahs_staging_id: null,
         ref_cells: classification.ref_cells,
         cost_split: classification.cost_split,
+      });
+    }
+  }
+
+  // Inline-recipe groups: synthesize one ahs_block + N components per
+  // group, linked to the recipe parent's BoQ code (already assigned by
+  // extractBoqRows). The parent itself is already in boqRows and gets
+  // pushed by the loop below this block.
+  for (const g of inlineRecipeGroups) {
+    const parentBoq = boqRows.find((b) => b.sourceRow === g.parentRow);
+    if (!parentBoq) continue;     // defensive: detector and extractor disagreed
+    const blockRowNumber = ++rowNumber;
+    stagingRows.push({
+      row_type: 'ahs_block',
+      row_number: blockRowNumber,
+      raw_data: { sourceRow: g.parentRow, kind: 'inline_recipe' },
+      parsed_data: {
+        title: `${g.parentLabel} (inline recipe)`,
+        jumlah_cached_value: g.parentTotalCost,
+        linked_boq_code: parentBoq.code,
+      },
+      needs_review: false,
+      confidence: 1,
+      review_status: 'PENDING',
+      cost_basis: 'inline_recipe',
+      parent_ahs_staging_id: null,
+      ref_cells: null,
+      cost_split: null,
+    });
+
+    for (const child of g.childRows) {
+      stagingRows.push({
+        row_type: 'ahs',
+        row_number: ++rowNumber,
+        raw_data: { sourceRow: child.sourceRow, kind: 'inline_recipe' },
+        parsed_data: {
+          material_name: child.materialName,
+          unit: child.unit,
+          coefficient: child.coefficient,
+          unit_price: child.unitPrice,
+        },
+        needs_review: false,
+        confidence: 1,
+        review_status: 'PENDING',
+        cost_basis: null,
+        parent_ahs_staging_id: `block:${blockRowNumber}`,
+        ref_cells: null,
+        cost_split: null,
       });
     }
   }
