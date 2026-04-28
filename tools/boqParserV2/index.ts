@@ -327,6 +327,67 @@ export async function parseBoqV2(
     });
   }
 
+  // Synthesize ahs_block + components for hand-priced BoQ rows.
+  // The parser already classifies these as cost_basis='inline_split' and
+  // populates cost_split, but emits no AHS components — so the audit
+  // shows "0 AHS line". We synthesize one component per non-zero bucket
+  // so the audit renders the actual numbers and flags the row for review.
+  const inlineSplitBoqRows = boqRows.filter(
+    (b) => b.cost_basis === 'inline_split' && b.cost_split,
+  );
+  for (const b of inlineSplitBoqRows) {
+    const blockRowNumber = ++rowNumber;
+    stagingRows.push({
+      row_type: 'ahs_block',
+      row_number: blockRowNumber,
+      raw_data: { sourceRow: b.sourceRow, kind: 'inline_split' },
+      parsed_data: {
+        title: `${b.label} (hand-priced)`,
+        jumlah_cached_value:
+          (b.cost_split?.material ?? 0) +
+          (b.cost_split?.labor ?? 0) +
+          (b.cost_split?.equipment ?? 0) +
+          (b.subkon_cost_per_unit ?? 0),
+        linked_boq_code: b.code,
+      },
+      needs_review: true,
+      confidence: 0.5,
+      review_status: 'PENDING',
+      cost_basis: 'inline_split',
+      parent_ahs_staging_id: null,
+      ref_cells: b.ref_cells,
+      cost_split: b.cost_split,
+    });
+
+    const buckets: Array<{ name: string; value: number }> = [
+      { name: 'Material', value: b.cost_split?.material ?? 0 },
+      { name: 'Upah', value: b.cost_split?.labor ?? 0 },
+      { name: 'Peralatan', value: b.cost_split?.equipment ?? 0 },
+      { name: 'Subkon', value: b.subkon_cost_per_unit ?? 0 },
+    ];
+    for (const bucket of buckets) {
+      if (bucket.value <= 0) continue;
+      stagingRows.push({
+        row_type: 'ahs',
+        row_number: ++rowNumber,
+        raw_data: { sourceRow: b.sourceRow, kind: 'inline_split', bucket: bucket.name },
+        parsed_data: {
+          material_name: bucket.name,
+          unit: b.unit,
+          coefficient: 1,
+          unit_price: bucket.value,
+        },
+        needs_review: true,
+        confidence: 0.5,
+        review_status: 'PENDING',
+        cost_basis: null,
+        parent_ahs_staging_id: `block:${blockRowNumber}`,
+        ref_cells: null,
+        cost_split: null,
+      });
+    }
+  }
+
   // parent key format: "block:<blockRowNumber>" — the DB insert phase
   // translates these to real UUIDs after inserts complete.
   const blockByGrandTotalAddress = new Map<string, number>();
