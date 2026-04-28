@@ -35,6 +35,17 @@ function cellNumber(c: HarvestedCell | undefined): number {
   return toNumber(c.value);
 }
 
+// Returns true when the formula string contains a cell reference
+// (cross-sheet like `Analisa!$F$150` or same-sheet like `AF51`).
+// Pure arithmetic formulas like `=2*(15+30)*50000` return false.
+// A cell reference is identified by a column-letter string immediately
+// followed by a row-number digit — e.g. `F150`, `AF51`, `$AF$51`.
+const CELL_REF_RE = /\$?[A-Z]+\$?\d+/;
+function formulaHasCellRef(formula: string | null): boolean {
+  if (!formula) return false;
+  return CELL_REF_RE.test(formula);
+}
+
 interface ChapterState {
   chapterIndex: string | null;
   subChapterLetter: string | null;
@@ -333,16 +344,30 @@ export function extractBoqRows(
     let cost_split: CostSplit | null = null;
     let subkon_cost_per_unit: number | null = null;
     if (splitCols) {
-      const m = cellNumber(map.get(splitCols.material));
-      const l = cellNumber(map.get(splitCols.labor));
-      const e = cellNumber(map.get(splitCols.equipment));
-      const s = splitCols.subkon ? cellNumber(map.get(splitCols.subkon)) : 0;
+      const mCell = map.get(splitCols.material);
+      const lCell = map.get(splitCols.labor);
+      const eCell = map.get(splitCols.equipment);
+      const sCell = splitCols.subkon ? map.get(splitCols.subkon) : undefined;
+      const m = cellNumber(mCell);
+      const l = cellNumber(lCell);
+      const e = cellNumber(eCell);
+      const s = sCell ? cellNumber(sCell) : 0;
       if (m > 0 || l > 0 || e > 0 || s > 0) {
         cost_split = { material: m, labor: l, equipment: e };
         if (s > 0) subkon_cost_per_unit = s;
+        // Only mark as inline_split when the split values are hand-entered
+        // (no cell references in the formulas). Rows where I/J/K formulas
+        // reference Analisa or chain through local columns (=AF51) are
+        // linked to AHS blocks via the existing cross-ref resolution and
+        // must not be tagged as hand-priced.
+        const splitIsLiteral =
+          !formulaHasCellRef(mCell?.formula ?? null) &&
+          !formulaHasCellRef(lCell?.formula ?? null) &&
+          !formulaHasCellRef(eCell?.formula ?? null) &&
+          !formulaHasCellRef(sCell?.formula ?? null);
         // Mark the basis so downstream views know the row has its own
         // resolved cost and does not require AHS-component pivoting.
-        if (cost_basis === null) cost_basis = 'inline_split';
+        if (cost_basis === null && splitIsLiteral) cost_basis = 'inline_split';
         // Record the source cells so the audit UI can show provenance.
         ref_cells = ref_cells ?? {};
         ref_cells.material_cost = {
