@@ -35,6 +35,48 @@ function cellNumber(c: HarvestedCell | undefined): number {
   return toNumber(c.value);
 }
 
+interface ChapterState {
+  chapterIndex: string | null;
+  subChapterLetter: string | null;
+  subSubChapterCounter: number;
+  itemCounter: number;
+  subItemCounter: number;
+}
+
+function deriveLineItemCode(
+  isSubItem: boolean,
+  aText: string,
+  state: ChapterState,
+): { code: string; nextItemCounter: number; nextSubItemCounter: number } {
+  if (isSubItem) {
+    const nextSubItemCounter = state.subItemCounter + 1;
+    const parts = [state.chapterIndex ?? 'I'];
+    if (state.subChapterLetter) parts.push(state.subChapterLetter);
+    if (state.subSubChapterCounter > 0) parts.push(String(state.subSubChapterCounter));
+    if (state.itemCounter > 0) parts.push(String(state.itemCounter));
+    parts.push(String(nextSubItemCounter));
+    return {
+      code: parts.join('.'),
+      nextItemCounter: state.itemCounter,
+      nextSubItemCounter,
+    };
+  }
+  const nextItemCounter = state.itemCounter + 1;
+  const parts = [state.chapterIndex ?? 'I'];
+  if (state.subChapterLetter) parts.push(state.subChapterLetter);
+  if (state.subSubChapterCounter > 0) parts.push(String(state.subSubChapterCounter));
+  if (/^\d+$/.test(aText)) {
+    parts.push(aText);
+  } else {
+    parts.push(String(nextItemCounter));
+  }
+  return {
+    code: parts.join('.'),
+    nextItemCounter,
+    nextSubItemCounter: 0,
+  };
+}
+
 const SUM_ARG_RE = /'([^']+)'!(\$?[A-Z]+\$?\d+)/g;
 
 function extractSumIfsRefs(formula: string | null): RefCells['quantity'] {
@@ -176,24 +218,13 @@ export function extractBoqRows(
     const recipeGroup = recipeParentByRow.get(row);
     if (recipeGroup) {
       const isSubItem = /^\s*[-–—]\s/.test(label);
-      let code: string;
-      if (isSubItem) {
-        subItemCounter++;
-        const parts = [chapterIndex ?? 'I'];
-        if (subChapterLetter) parts.push(subChapterLetter);
-        if (subSubChapterCounter > 0) parts.push(String(subSubChapterCounter));
-        if (itemCounter > 0) parts.push(String(itemCounter));
-        parts.push(`${subItemCounter}`);
-        code = parts.join('.');
-      } else {
-        itemCounter++;
-        subItemCounter = 0;
-        const parts = [chapterIndex ?? 'I'];
-        if (subChapterLetter) parts.push(subChapterLetter);
-        if (subSubChapterCounter > 0) parts.push(String(subSubChapterCounter));
-        parts.push(String(itemCounter));
-        code = parts.join('.');
-      }
+      const { code, nextItemCounter, nextSubItemCounter } = deriveLineItemCode(
+        isSubItem,
+        aText,
+        { chapterIndex, subChapterLetter, subSubChapterCounter, itemCounter, subItemCounter },
+      );
+      itemCounter = nextItemCounter;
+      subItemCounter = nextSubItemCounter;
       out.push({
         code,
         label: recipeGroup.parentLabel,
@@ -276,28 +307,13 @@ export function extractBoqRows(
     // Sub-items: description starts with "-" and appears under a
     // sub-chapter parent. Assign sequential sub-item numbers.
     const isSubItem = /^\s*[-–—]\s/.test(label);
-    let code: string;
-    if (isSubItem) {
-      subItemCounter++;
-      const parts = [chapterIndex ?? 'I'];
-      if (subChapterLetter) parts.push(subChapterLetter);
-      if (subSubChapterCounter > 0) parts.push(String(subSubChapterCounter));
-      if (itemCounter > 0) parts.push(String(itemCounter));
-      parts.push(`${subItemCounter}`);
-      code = parts.join('.');
-    } else {
-      itemCounter++;
-      subItemCounter = 0;
-      const parts = [chapterIndex ?? 'I'];
-      if (subChapterLetter) parts.push(subChapterLetter);
-      if (subSubChapterCounter > 0) parts.push(String(subSubChapterCounter));
-      if (/^\d+$/.test(aText)) {
-        parts.push(aText);
-      } else {
-        parts.push(String(itemCounter));
-      }
-      code = parts.join('.');
-    }
+    const { code, nextItemCounter, nextSubItemCounter } = deriveLineItemCode(
+      isSubItem,
+      aText,
+      { chapterIndex, subChapterLetter, subSubChapterCounter, itemCounter, subItemCounter },
+    );
+    itemCounter = nextItemCounter;
+    subItemCounter = nextSubItemCounter;
 
     const dCell = map.get('D');
     const ref = parseFormulaRef(dCell?.formula ?? null, boqSheetName);

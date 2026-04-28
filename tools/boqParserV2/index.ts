@@ -3,7 +3,7 @@ import { detectAhsBlocks } from './detectBlocks';
 import { classifyComponent, toNumber } from './classifyComponent';
 import { extractCatalogRows, type CatalogRow } from './extractCatalog';
 import { extractBoqRows, type BoqRowV2 } from './extractTakeoffs';
-import { detectInlineRecipes, type InlineRecipeGroup } from './detectInlineRecipe';
+import { detectInlineRecipes } from './detectInlineRecipe';
 import { validateBlocks } from './validate';
 import type {
   HarvestedCell,
@@ -247,8 +247,9 @@ export async function parseBoqV2(
   // group, linked to the recipe parent's BoQ code (already assigned by
   // extractBoqRows). The parent itself is already in boqRows and gets
   // pushed by the loop below this block.
+  const boqByRow = new Map(boqRows.map((b) => [b.sourceRow, b]));
   for (const g of inlineRecipeGroups) {
-    const parentBoq = boqRows.find((b) => b.sourceRow === g.parentRow);
+    const parentBoq = boqByRow.get(g.parentRow);
     if (!parentBoq) continue;     // defensive: detector and extractor disagreed
     const blockRowNumber = ++rowNumber;
     stagingRows.push({
