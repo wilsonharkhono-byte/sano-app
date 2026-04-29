@@ -158,6 +158,8 @@ export async function parseBoqV2(
   validationReport.unresolved_references = collectUnresolvedReferences(
     analisaRefEncounters,
     ahsBlocks,
+    lookup,
+    catalogSheets,
   );
 
   // Resolve the linked BoQ code for a block. Primary: exact match on the

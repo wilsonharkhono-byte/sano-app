@@ -97,6 +97,11 @@ const CHIP_STYLES: Record<
     fg: '#2f54eb',
     label: () => 'Split inline (BoQ)',
   },
+  inline_recipe: {
+    bg: '#f9f0ff',
+    fg: '#531dab',
+    label: () => 'Inline recipe (RAB sheet)',
+  },
 };
 
 function ValidationBadge({

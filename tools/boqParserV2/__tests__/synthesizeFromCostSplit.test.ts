@@ -90,6 +90,49 @@ describe('parseBoqV2 cost_split synthesis', () => {
     expect((components[0].parsed_data as { material_name?: string }).material_name).toBe('Material');
   });
 
+  it('does not classify rows with formula-driven cost_split as inline_split', async () => {
+    const buf = await buildFixtureBuffer([
+      {
+        name: 'RAB (A)',
+        cells: [
+          { address: 'B7', value: 'URAIAN PEKERJAAN' },
+          { address: 'C7', value: 'SAT' },
+          { address: 'I7', value: 'Material' },
+          { address: 'J7', value: 'Upah' },
+          { address: 'K7', value: 'Peralatan' },
+          // Cost split values come from a formula — this is a recipe-linked
+          // row, not a hand-priced one.
+          { address: 'B10', value: 'Beton K-225' },
+          { address: 'C10', value: 'm3' },
+          { address: 'D10', value: 10 },
+          { address: 'I10', value: 850000, formula: 'Analisa!$F$82', result: 850000 },
+          { address: 'J10', value: 200000, formula: 'Analisa!$G$82', result: 200000 },
+          { address: 'K10', value: 50000, formula: 'Analisa!$H$82', result: 50000 },
+        ],
+      },
+      { name: 'Analisa', cells: [] },
+    ]);
+
+    const result = await parseBoqV2(buf);
+    const boqRow = result.stagingRows.find(
+      (r) =>
+        r.row_type === 'boq' &&
+        (r.parsed_data as { label?: string }).label === 'Beton K-225',
+    );
+    expect(boqRow).toBeDefined();
+    // The row has a cost_split (cached values populate it) but is NOT
+    // classified as inline_split because the values come from formulas.
+    expect(boqRow!.cost_basis).not.toBe('inline_split');
+
+    // No synthetic hand-priced block emitted for this row
+    const handPricedBlock = result.stagingRows.find(
+      (r) =>
+        r.row_type === 'ahs_block' &&
+        ((r.parsed_data as { title?: string }).title ?? '').includes('Beton K-225 (hand-priced)'),
+    );
+    expect(handPricedBlock).toBeUndefined();
+  });
+
   it('does not synthesize when cost_split is null', async () => {
     const buf = await buildFixtureBuffer([
       {

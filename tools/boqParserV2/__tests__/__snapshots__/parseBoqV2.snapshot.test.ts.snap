@@ -11568,7 +11568,7 @@ exports[`parseBoqV2 real-workbook snapshots matches snapshot for RAB R1 Pakuwon 
       "row_type": "ahs",
     },
   ],
-  "unresolvedRefCount": 914,
+  "unresolvedRefCount": 0,
 }
 `;
 
@@ -20793,6 +20793,6 @@ exports[`parseBoqV2 real-workbook snapshots matches snapshot for RAB R2 Pakuwon 
       "row_type": "ahs",
     },
   ],
-  "unresolvedRefCount": 1351,
+  "unresolvedRefCount": 0,
 }
 `;
