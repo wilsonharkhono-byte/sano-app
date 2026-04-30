@@ -5,6 +5,7 @@ import { extractCatalogRows, type CatalogRow } from './extractCatalog';
 import { extractBoqRows, type BoqRowV2, detectCostSplitColumns, findHeaderRow } from './extractTakeoffs';
 import { buildRecipe } from './recipeBuilder';
 import { validateBlocks } from './validate';
+import { disaggregateRebar } from './rebarDisaggregator';
 import { resolveBoqSheets, type BoqSheetOption } from './multiSheetScanner';
 import type {
   HarvestedCell,
@@ -96,6 +97,16 @@ export async function parseBoqV2(
       }
     }
   }
+
+  // Existing per-sheet recipeBuilder loop ends here.
+  // Now disaggregate rebar components for any BoQ row whose label matches
+  // an element prefix (Sloof|Balok|Kolom|Poer|Plat) and whose recipe has
+  // a Pembesian aggregate. Non-rebar rows pass through unchanged.
+  const disaggregated = disaggregateRebar(boqRows, cells);
+  // Replace boqRows in place — disaggregateRebar returns a new array of
+  // (possibly modified) BoqRowV2 objects; downstream code reads from boqRows.
+  boqRows.length = 0;
+  boqRows.push(...disaggregated);
 
   const validationReport = validateBlocks(ahsBlocks);
 

@@ -54,9 +54,15 @@ export function transformRecipe(
         }
       : null;
 
+  // Distribute original.costContribution proportionally by weight so that
+  // the sum of new components always equals the original aggregate cost.
+  // This preserves reconciliation in the smoke tests — REKAP weights are
+  // used only to set the proportions, not to recompute costs from scratch.
+  const totalKg = breakdown.reduce((s, b) => s + b.weightKg, 0);
   const newComponents: RecipeComponent[] = breakdown.map((b) => {
     const refCell = parseSourceCellAddress(b.sourceCell);
     const quantityPerUnit = boqVolume > 0 ? b.weightKg / boqVolume : 0;
+    const fraction = totalKg > 0 ? b.weightKg / totalKg : breakdown.length > 0 ? 1 / breakdown.length : 0;
     return {
       sourceCell: refCell,
       referencedCell: refCell,
@@ -64,7 +70,7 @@ export function transformRecipe(
       referencedBlockRow: original.referencedBlockRow,
       quantityPerUnit,
       unitPrice: original.unitPrice,
-      costContribution: quantityPerUnit * original.unitPrice,
+      costContribution: fraction * original.costContribution,
       lineType: 'material',
       confidence: 1,
       materialName: `Besi ${b.diameter}`,
