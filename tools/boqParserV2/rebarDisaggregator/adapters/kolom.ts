@@ -55,7 +55,7 @@ export const kolomAdapter: RebarAdapter = {
     for (const { diameter, stirrupCol, mainCol } of COMBINED_DIAMETERS) {
       const stirrupKg = readWeight(cells, stirrupCol, row);
       const mainKg = readWeight(cells, mainCol, row);
-      const total = Math.round((stirrupKg + mainKg) * 100) / 100;
+      const total = stirrupKg + mainKg;
       if (total <= 0) continue;
       let sourceCell: string;
       if (stirrupKg > 0 && mainKg > 0) {

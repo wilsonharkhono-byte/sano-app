@@ -35,7 +35,7 @@ describe('kolomAdapter.lookupBreakdown', () => {
     expect(result).toEqual([
       {
         diameter: 'D10',
-        weightKg: 255.53,
+        weightKg: expect.closeTo(255.53, 2),
         sourceCell: 'Hasil-Kolom!I152+L152',
       },
     ]);
