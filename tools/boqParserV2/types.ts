@@ -81,6 +81,11 @@ export interface RecipeComponent {
   costContribution: number;
   lineType: 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
   confidence: number;
+  // Optional: populated by rebar disaggregator post-pass for components
+  // produced from REKAP Balok / REKAP-PC / REKAP Plat / Hasil-Kolom.
+  materialName?: string;          // e.g. "Besi D8"
+  disaggregatedFrom?: string;     // e.g. "Pembesian U24 & U40"
+  role?: 'stirrup' | 'main';      // Kolom-only; null for other adapters
 }
 
 export interface Markup {

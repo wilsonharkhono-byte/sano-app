@@ -43,20 +43,60 @@
     },
     {
       "sourceCell": {
-        "sheet": "RAB (A)",
-        "address": "AA59"
+        "sheet": "REKAP-PC",
+        "address": "I16"
       },
       "referencedCell": {
-        "sheet": "Analisa",
-        "address": "F132"
+        "sheet": "REKAP-PC",
+        "address": "I16"
       },
       "referencedBlockTitle": "Pembesian U24 & U40",
       "referencedBlockRow": 127,
-      "quantityPerUnit": 84.75,
+      "quantityPerUnit": 0.28,
       "unitPrice": 9917.5,
-      "costContribution": 840502.01,
+      "costContribution": 2826.02,
       "lineType": "material",
-      "confidence": 0.5
+      "confidence": 1,
+      "materialName": "Besi D8",
+      "disaggregatedFrom": "Pembesian U24 & U40"
+    },
+    {
+      "sourceCell": {
+        "sheet": "REKAP-PC",
+        "address": "L16"
+      },
+      "referencedCell": {
+        "sheet": "REKAP-PC",
+        "address": "L16"
+      },
+      "referencedBlockTitle": "Pembesian U24 & U40",
+      "referencedBlockRow": 127,
+      "quantityPerUnit": 2.6,
+      "unitPrice": 9917.5,
+      "costContribution": 25773.95,
+      "lineType": "material",
+      "confidence": 1,
+      "materialName": "Besi D16",
+      "disaggregatedFrom": "Pembesian U24 & U40"
+    },
+    {
+      "sourceCell": {
+        "sheet": "REKAP-PC",
+        "address": "M16"
+      },
+      "referencedCell": {
+        "sheet": "REKAP-PC",
+        "address": "M16"
+      },
+      "referencedBlockTitle": "Pembesian U24 & U40",
+      "referencedBlockRow": 127,
+      "quantityPerUnit": 82.15,
+      "unitPrice": 9917.5,
+      "costContribution": 814728.06,
+      "lineType": "material",
+      "confidence": 1,
+      "materialName": "Besi D19",
+      "disaggregatedFrom": "Pembesian U24 & U40"
     },
     {
       "sourceCell": {
