@@ -212,6 +212,15 @@ export async function checkMaterialRequest(
   materialTier: 1 | 2 | 3,
   boqItemId: string,
   requestedQty: number,
+  /**
+   * Per-unit BASE price (pre-markup, before profit margin). MUST NOT be
+   * the post-markup display price. Recommended sources:
+   *   - `ahs_lines.unit_price` (already pre-markup post Phase 0)
+   *   - `material_catalog.reference_price` (catalog base price)
+   * Markup factor (1.15, etc.) is tracked separately in
+   * `import_sessions.parser_metadata` and applied at quote/billing time,
+   * not at envelope/spend-cap evaluation.
+   */
   unitPrice?: number,
 ): Promise<GateResult> {
   switch (materialTier) {
@@ -304,6 +313,11 @@ async function checkTier1Direct(
 
 /**
  * Tier 3: simple spend cap check.
+ *
+ * IMPORTANT: `unitPrice` must be the pre-markup base price (raw material
+ * cost). The cap measures actual material spend; markup/profit margin
+ * is tracked separately and added at quote/billing time, not here. See
+ * `checkMaterialRequest` JSDoc for valid pre-markup sources.
  */
 async function checkTier3SpendCap(
   projectId: string,
