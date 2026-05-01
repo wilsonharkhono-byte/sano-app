@@ -60,7 +60,12 @@ const LINE_TYPE_COLORS: Record<string, string> = {
 // ─── Component row ────────────────────────────────────────────────────────
 
 function ComponentRow({ comp }: { comp: RecipeComponent }) {
-  const label = comp.referencedBlockTitle
+  // Prefer the disaggregator's materialName ("Besi D13", "Besi D16", ...)
+  // over the parent AHS block title ("Pembesian U24 & U40", which is a
+  // steel-grade label, not a diameter). Fall back to the block title for
+  // non-disaggregated components, then to the raw cell address.
+  const label = comp.materialName
+    ?? comp.referencedBlockTitle
     ?? `${comp.referencedCell.sheet}!${comp.referencedCell.address}`;
 
   const coeffFormatted = formatQuantity(comp.quantityPerUnit, 4);
