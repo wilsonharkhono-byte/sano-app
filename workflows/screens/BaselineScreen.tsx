@@ -70,6 +70,56 @@ const MATERIAL_DROPDOWNS: Record<string, string[]> = {
   category: MATERIAL_CATEGORY_OPTIONS,
 };
 
+/**
+ * Human-friendly Indonesian labels for the parsed_data fields the
+ * correction editor renders. Keys here are the database field names;
+ * values are what the estimator sees on the form. Fields not listed
+ * fall back to the key with underscores replaced by spaces.
+ */
+const FIELD_LABELS: Record<string, string> = {
+  // Material rows
+  code: 'Kode',
+  name: 'Nama Material',
+  unit: 'Satuan',
+  reference_unit_price: 'Harga Acuan',
+  category: 'Kategori',
+  tier: 'Tingkatan',
+  // AHS component rows
+  material_name: 'Nama Material',
+  coefficient: 'Koefisien',
+  unit_price: 'Harga Satuan',
+  disaggregated_from: 'Dipecah Dari',
+  role: 'Peran',
+  // AHS block rows
+  title: 'Judul Resep',
+  is_orphan: 'Tidak Dipakai BoQ?',
+  linked_boq_code: 'Kode BoQ Terkait',
+  jumlah_cached_value: 'Total Harga (per satuan)',
+  // BoQ rows
+  label: 'Uraian',
+  planned: 'Volume',
+  total_cost: 'Total Harga',
+};
+
+/**
+ * One-line guidance shown under the field label for cryptic fields.
+ * Skip the obvious ones (Nama, Satuan, Volume, etc.).
+ */
+const FIELD_HINTS: Record<string, string> = {
+  is_orphan: 'true = resep ada di Analisa tapi tidak ada BoQ yang pakai. false = ada baris BoQ yang pakai.',
+  linked_boq_code: 'Contoh: "III.A.5". Kosongkan jika resep memang tidak terpakai.',
+  jumlah_cached_value: 'Total harga per 1 satuan resep. Biasanya tidak perlu diubah.',
+  reference_unit_price: 'Harga per satuan dari katalog material proyek.',
+  tier: '1 = Precise (besi, dll). 2 = Bulk (semen, pasir). 3 = Consumables (paku, dll).',
+  coefficient: 'Berapa banyak material ini per 1 satuan resep. Contoh: 0.22 sak Semen per m².',
+  disaggregated_from: 'Resep induk asal komponen ini (misal "Pembesian U24 & U40").',
+  role: 'sengkang = besi tulangan kolom melingkar. utama = besi tulangan kolom vertikal.',
+};
+
+function fieldLabel(key: string): string {
+  return FIELD_LABELS[key] ?? key.replace(/_/g, ' ');
+}
+
 interface ParsePreview {
   fileName: string;
   rabSheets: string[];
@@ -878,9 +928,14 @@ export default function BaselineScreen({
 
                     {Object.entries((row.parsed_data ?? {}) as Record<string, unknown>).map(([key]) => {
                       const dropdownOptions = row.row_type === 'material' ? MATERIAL_DROPDOWNS[key] : null;
+                      const label = fieldLabel(key);
+                      const helperText = FIELD_HINTS[key];
                       return (
                         <View key={key} style={styles.editorField}>
-                          <Text style={styles.editorLabel}>{key}</Text>
+                          <Text style={styles.editorLabel}>{label}</Text>
+                          {helperText && (
+                            <Text style={styles.editorHint}>{helperText}</Text>
+                          )}
                           {dropdownOptions ? (
                             <View style={styles.pickerWrap}>
                               <Picker
@@ -888,7 +943,7 @@ export default function BaselineScreen({
                                 onValueChange={(val) => setEditDraft(prev => ({ ...prev, [key]: String(val) }))}
                                 style={styles.picker}
                               >
-                                <Picker.Item label={`Pilih ${key}...`} value="" color={COLORS.textSec} />
+                                <Picker.Item label={`Pilih ${label}...`} value="" color={COLORS.textSec} />
                                 {key === 'tier'
                                   ? MATERIAL_TIER_OPTIONS.map(opt => (
                                       <Picker.Item key={opt.value} label={opt.label} value={opt.value} />
@@ -903,7 +958,7 @@ export default function BaselineScreen({
                               style={styles.editorInput}
                               value={editDraft[key] ?? ''}
                               onChangeText={(text) => setEditDraft(prev => ({ ...prev, [key]: text }))}
-                              placeholder={`Isi ${key}`}
+                              placeholder={`Isi ${label}`}
                               placeholderTextColor={COLORS.textSec}
                             />
                           )}
@@ -1094,7 +1149,8 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   editorField: { marginTop: 10 },
-  editorLabel: { fontSize: TYPE.xs, fontFamily: FONTS.bold, color: COLORS.text, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 0.4 },
+  editorLabel: { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.text, marginBottom: 4 },
+  editorHint: { fontSize: TYPE.xs, color: COLORS.textSec, marginBottom: 6, lineHeight: TYPE.xs * 1.4 },
   editorInput: {
     borderWidth: 1,
     borderColor: COLORS.border,
