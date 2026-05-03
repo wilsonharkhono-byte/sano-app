@@ -34,7 +34,6 @@ function fmtRp(n: number): string {
 }
 
 function burnColor(burnPct: number): string {
-  if (burnPct > 100) return COLORS.critical;
   if (burnPct > 80) return COLORS.critical;
   if (burnPct > 50) return COLORS.warning;
   return COLORS.text;
