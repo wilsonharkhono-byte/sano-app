@@ -50,6 +50,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@testing-library/react-native": "^13.3.3",
     "@types/jest": "^30.0.0",
     "@types/react": "~19.1.10",
     "jest": "^30.3.0",
@@ -65,11 +66,19 @@
         {
           "tsconfig": "tsconfig.jest.json"
         }
-      ]
+      ],
+      "^.+\\.(js|jsx)$": "babel-jest"
     },
+    "transformIgnorePatterns": [
+      "node_modules/(?!(react-native|@react-native|@testing-library/react-native|react-native-reanimated|react-native-gesture-handler|react-native-screens|react-native-safe-area-context|react-native-svg|@expo|expo|expo-modules-core)/)"
+    ],
     "moduleNameMapper": {
       "^@/(.*)$": "<rootDir>/$1"
     },
+    "setupFiles": [
+      "./jest.setup.js",
+      "react-native/jest/setup"
+    ],
     "testPathIgnorePatterns": [
       "/node_modules/",
       "__tests__/fixtures\\.ts$",

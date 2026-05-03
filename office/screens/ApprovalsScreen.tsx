@@ -12,6 +12,8 @@ import {
   CHANGE_TYPE_LABELS, IMPACT_LABELS, DECISION_LABELS,
   type SiteChange, type Decision,
 } from '../../tools/siteChanges';
+import { getEnvelopesByMaterialIds, type EnvelopeWithPrice } from '../../tools/envelopes';
+import { MaterialUsagePanel } from './components/MaterialUsagePanel';
 
 type Tab = 'mtn' | 'perubahan' | 'requests';
 type MTNFilter = 'ALL' | 'AWAITING' | 'APPROVED' | 'REJECTED' | 'RECEIVED';
@@ -132,6 +134,8 @@ export default function ApprovalsScreen() {
   const [profileNames, setProfileNames] = useState<Record<string, string>>({});
   const [boqLabels, setBoqLabels] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
+  const [envelopeMap, setEnvelopeMap] = useState<Map<string, EnvelopeWithPrice>>(new Map());
+  const [boqItemMap, setBoqItemMap] = useState<Map<string, { planned: number; installed: number; code: string; label: string }>>(new Map());
 
   const loadData = useCallback(async () => {
     if (!project) return;
@@ -201,6 +205,37 @@ export default function ApprovalsScreen() {
         setProfileNames(Object.fromEntries((profileRows ?? []).map((row: any) => [row.id, row.full_name])));
       } else {
         setProfileNames({});
+      }
+
+      // Collect material_ids and boq_item_ids referenced by request lines
+      const materialIds = new Set<string>();
+      const boqItemIds = new Set<string>();
+      for (const req of nextRequests) {
+        for (const line of req.material_request_lines ?? []) {
+          if (line.material_id) materialIds.add(line.material_id);
+          for (const alloc of line.material_request_line_allocations ?? []) {
+            if (alloc.boq_item_id) boqItemIds.add(alloc.boq_item_id);
+          }
+        }
+      }
+
+      // Batch fetch envelopes
+      const envelopes = await getEnvelopesByMaterialIds(project.id, Array.from(materialIds));
+      setEnvelopeMap(envelopes);
+
+      // Batch fetch BoQ items (planned + installed for Tier 1)
+      if (boqItemIds.size > 0) {
+        const { data: boqRows } = await supabase
+          .from('boq_items')
+          .select('id, planned, installed, code, label')
+          .in('id', Array.from(boqItemIds));
+        const map = new Map<string, { planned: number; installed: number; code: string; label: string }>();
+        for (const row of (boqRows ?? []) as Array<{ id: string; planned: number; installed: number; code: string; label: string }>) {
+          map.set(row.id, { planned: row.planned, installed: row.installed, code: row.code, label: row.label });
+        }
+        setBoqItemMap(map);
+      } else {
+        setBoqItemMap(new Map());
       }
     } finally {
       setLoading(false);
@@ -498,17 +533,31 @@ export default function ApprovalsScreen() {
                   <Text style={styles.meta}>{formatDate(request.created_at)}</Text>
                 </View>
                 <Text style={styles.itemSub}>Target: {request.target_date} · Urgensi: {request.urgency}</Text>
-                {(request.material_request_lines ?? []).slice(0, 3).map(line => {
-                  const allocationCount = line.material_request_line_allocations?.filter(allocation => allocation.boq_item_id).length ?? 0;
+                {(request.material_request_lines ?? []).map(line => {
+                  const envelope = line.material_id ? envelopeMap.get(line.material_id) ?? null : null;
+                  const firstAllocation = line.material_request_line_allocations?.find(
+                    (a) => a.boq_item_id && a.allocation_basis === 'DIRECT',
+                  );
+                  const boqItem = firstAllocation?.boq_item_id ? boqItemMap.get(firstAllocation.boq_item_id) ?? null : null;
                   return (
-                    <Text key={line.id} style={styles.meta}>
-                      {getLineMaterialName(line)} · {line.quantity} {line.unit} · {line.tier === 2 ? `${allocationCount} item bulk` : line.tier === 3 ? 'stok umum' : 'BoQ spesifik'}
-                    </Text>
+                    <View key={line.id} style={{ marginTop: SPACE.sm }}>
+                      <Text style={styles.itemSub}>
+                        {getLineMaterialName(line)} — {line.quantity} {line.unit}{' '}
+                        <Text style={styles.meta}>(Tier {line.tier})</Text>
+                      </Text>
+                      <MaterialUsagePanel
+                        materialId={line.material_id}
+                        customMaterialName={line.custom_material_name}
+                        tier={line.tier}
+                        requestedQuantity={line.quantity}
+                        requestedUnit={line.unit}
+                        boqItemId={firstAllocation?.boq_item_id ?? null}
+                        envelope={envelope}
+                        boqItem={boqItem}
+                      />
+                    </View>
                   );
                 })}
-                {(request.material_request_lines?.length ?? 0) > 3 && (
-                  <Text style={styles.meta}>+{(request.material_request_lines?.length ?? 0) - 3} line material lainnya</Text>
-                )}
                 {request.common_note ? <Text style={styles.itemNote}>{request.common_note}</Text> : null}
                 <Text style={styles.meta}>Pengaju: {actorName(request.requested_by)}</Text>
                 {request.reviewed_by ? <Text style={styles.meta}>Diproses oleh: {actorName(request.reviewed_by)} · {formatDate(request.reviewed_at)}</Text> : null}
