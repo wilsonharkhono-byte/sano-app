@@ -15,7 +15,10 @@ import type {
   EnvelopeBoqBreakdown,
   FlagLevel,
   GateResult,
+  AhsLine,
 } from './types';
+import { summarizeAhsBaselinePrices } from '../workflows/gates/gate2';
+import type { MaterialBaselinePriceSummary } from '../workflows/gates/gate2';
 
 // ─── Envelope Queries ────────────────────────────────────────────────
 
@@ -345,4 +348,90 @@ async function checkTier3SpendCap(
     check: 'tier3_ok',
     msg: `Tier 3 spend Rp ${totalSpend.toLocaleString('id-ID')} within cap`,
   };
+}
+
+// ─── Batch Envelope + Baseline Price ────────────────────────────────
+
+export interface EnvelopeWithPrice extends MaterialEnvelopeStatus {
+  baseline_unit_price: number | null;       // null = no AHS lines for this material
+  envelope_total_rupiah: number | null;     // total_planned × baseline_unit_price
+  envelope_used_rupiah: number | null;      // total_ordered × baseline_unit_price
+  envelope_remaining_rupiah: number | null; // total - used
+}
+
+export function mergeEnvelopeWithBaselinePrice(
+  envelope: MaterialEnvelopeStatus,
+  price: MaterialBaselinePriceSummary | null,
+): EnvelopeWithPrice {
+  const unitPrice = price?.baseline_unit_price && price.baseline_unit_price > 0
+    ? price.baseline_unit_price
+    : null;
+
+  if (unitPrice === null) {
+    return {
+      ...envelope,
+      baseline_unit_price: null,
+      envelope_total_rupiah: null,
+      envelope_used_rupiah: null,
+      envelope_remaining_rupiah: null,
+    };
+  }
+
+  const total = envelope.total_planned * unitPrice;
+  const used = envelope.total_ordered * unitPrice;
+  return {
+    ...envelope,
+    baseline_unit_price: unitPrice,
+    envelope_total_rupiah: total,
+    envelope_used_rupiah: used,
+    envelope_remaining_rupiah: total - used,
+  };
+}
+
+/**
+ * Batch fetch envelope rows + AHS-line baseline prices for a set of
+ * materials in a single round trip. Returns a Map keyed by material_id
+ * for O(1) lookup at render time.
+ *
+ * Used by ApprovalsScreen to populate `<MaterialUsagePanel>` per
+ * request line without per-component fetches.
+ */
+export async function getEnvelopesByMaterialIds(
+  projectId: string,
+  materialIds: string[],
+): Promise<Map<string, EnvelopeWithPrice>> {
+  const out = new Map<string, EnvelopeWithPrice>();
+  if (materialIds.length === 0) return out;
+
+  // Fetch envelopes
+  const { data: envRows } = await supabase
+    .from('v_material_envelope_status')
+    .select('*')
+    .eq('project_id', projectId)
+    .in('material_id', materialIds);
+
+  // Fetch ahs_lines for current ahs_version of this project, filtered to materials we care about
+  const { data: versionRow } = await supabase
+    .from('ahs_versions')
+    .select('id')
+    .eq('project_id', projectId)
+    .eq('is_current', true)
+    .maybeSingle();
+
+  const ahsLines: Array<Pick<AhsLine, 'material_id' | 'unit_price' | 'line_type'>> = [];
+  if (versionRow?.id) {
+    const { data: lineRows } = await supabase
+      .from('ahs_lines')
+      .select('material_id, unit_price, line_type')
+      .eq('ahs_version_id', versionRow.id)
+      .in('material_id', materialIds);
+    if (lineRows) ahsLines.push(...lineRows as typeof ahsLines);
+  }
+
+  const priceMap = summarizeAhsBaselinePrices(ahsLines);
+
+  for (const row of (envRows ?? []) as MaterialEnvelopeStatus[]) {
+    out.set(row.material_id, mergeEnvelopeWithBaselinePrice(row, priceMap.get(row.material_id) ?? null));
+  }
+  return out;
 }
