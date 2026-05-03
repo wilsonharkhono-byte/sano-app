@@ -133,10 +133,37 @@ export function MaterialUsagePanel(props: MaterialUsagePanelProps): React.ReactE
     );
   }
 
-  // Tier 3 placeholder — implemented in Task 5
+  if (props.tier === 3) {
+    const TIER3_CAP = 5_000_000;
+    if (env.baseline_unit_price == null) {
+      return (
+        <View style={styles.panel}>
+          <Text style={[styles.lineSub, styles.muted]}>Estimasi biaya tidak tersedia (harga acuan kosong di AHS).</Text>
+        </View>
+      );
+    }
+    const estimatedCost = props.requestedQuantity * env.baseline_unit_price;
+    const capPct = (estimatedCost / TIER3_CAP) * 100;
+    const overCap = estimatedCost > TIER3_CAP;
+    return (
+      <View style={[styles.panel, overCap && styles.panelCritical]}>
+        <Text style={styles.lineMain}>
+          Estimasi biaya: {fmtRp(estimatedCost)}
+        </Text>
+        <Text style={styles.lineSub}>
+          Spend cap per request: {fmtRp(TIER3_CAP)} ({capPct.toFixed(1)}% terpakai)
+        </Text>
+        {overCap && (
+          <Text style={styles.criticalText}>⚠ Melampaui cap per request</Text>
+        )}
+      </View>
+    );
+  }
+
+  // Defensive fallback: unknown tier
   return (
-    <View style={styles.panel}>
-      <Text>Tier {props.tier} placeholder</Text>
+    <View style={[styles.panel, styles.panelWarning]}>
+      <Text style={styles.warningText}>Material tier tidak terdefinisi.</Text>
     </View>
   );
 }

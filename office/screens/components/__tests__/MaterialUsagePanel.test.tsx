@@ -182,3 +182,33 @@ describe('MaterialUsagePanel — Tier 1', () => {
     expect(getByText(/Envelope kuantitas/i)).toBeTruthy();
   });
 });
+
+describe('MaterialUsagePanel — Tier 3', () => {
+  it('renders spend cap with estimated cost', () => {
+    const { getByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-paku"
+        tier={3}
+        requestedQuantity={5}
+        requestedUnit="kg"
+        envelope={tier2Envelope({ tier: 3, material_name: 'Paku 7 cm', unit: 'kg', baseline_unit_price: 15_000, envelope_total_rupiah: null, envelope_used_rupiah: null, envelope_remaining_rupiah: null })}
+      />,
+    );
+    expect(getByText(/Estimasi biaya:\s+Rp 75rb/i)).toBeTruthy();
+    expect(getByText(/Spend cap per request:\s+Rp 5 jt/i)).toBeTruthy();
+    expect(getByText(/1\.5%/)).toBeTruthy();   // 75k / 5jt = 1.5%
+  });
+
+  it('renders fallback when baseline_unit_price is missing', () => {
+    const { getByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-paku"
+        tier={3}
+        requestedQuantity={5}
+        requestedUnit="kg"
+        envelope={tier2Envelope({ tier: 3, material_name: 'Paku 7 cm', unit: 'kg', baseline_unit_price: null, envelope_total_rupiah: null, envelope_used_rupiah: null, envelope_remaining_rupiah: null })}
+      />,
+    );
+    expect(getByText(/Estimasi biaya tidak tersedia/i)).toBeTruthy();
+  });
+});
