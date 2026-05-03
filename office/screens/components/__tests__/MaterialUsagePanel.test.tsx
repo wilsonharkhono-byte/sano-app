@@ -50,9 +50,9 @@ describe('MaterialUsagePanel — Tier 2', () => {
         envelope={tier2Envelope()}
       />,
     );
-    expect(getByText(/200 \/ 5,000 pcs/)).toBeTruthy();
+    expect(getByText(/200 \/ 5\.000 pcs/)).toBeTruthy();
     expect(getByText(/4%/)).toBeTruthy();
-    expect(getByText(/Sisa: 4,800 pcs/)).toBeTruthy();
+    expect(getByText(/Sisa: 4\.800 pcs/)).toBeTruthy();
   });
 
   it('renders Rupiah envelope when baseline_unit_price is present', () => {

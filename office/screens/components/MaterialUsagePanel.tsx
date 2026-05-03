@@ -15,7 +15,7 @@ export interface MaterialUsagePanelProps {
 }
 
 function fmtNum(n: number): string {
-  return n.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  return n.toLocaleString('id-ID', { maximumFractionDigits: 2 });
 }
 
 function fmtRp(n: number): string {
