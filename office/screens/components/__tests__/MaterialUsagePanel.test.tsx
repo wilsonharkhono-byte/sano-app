@@ -122,3 +122,63 @@ describe('MaterialUsagePanel — Tier 2', () => {
     expect(getByText(/Melayani 8 item BoQ/i)).toBeTruthy();
   });
 });
+
+const tier1BoqItem = (m: Partial<{ planned: number; installed: number; code: string; label: string }> = {}) => ({
+  planned: 10.2,
+  installed: 3.2,
+  code: 'III.A.1',
+  label: 'Sloof S24-1',
+  ...m,
+});
+
+describe('MaterialUsagePanel — Tier 1', () => {
+  it('renders BoQ planned/installed/remaining', () => {
+    const { getByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-beton"
+        tier={1}
+        requestedQuantity={2.5}
+        requestedUnit="m3"
+        boqItemId="boq-1"
+        envelope={tier2Envelope({ tier: 1, material_name: 'Beton K-225', unit: 'm3', total_planned: 10.2, total_ordered: 3.2, remaining_to_order: 7.0, burn_pct: 31.4 })}
+        boqItem={tier1BoqItem()}
+      />,
+    );
+    expect(getByText(/III\.A\.1 — Sloof S24-1/)).toBeTruthy();
+    expect(getByText(/Volume rencana:\s+10[,.]2 m3/)).toBeTruthy();
+    expect(getByText(/Sudah dipasang:\s+3[,.]2 m3/)).toBeTruthy();
+    expect(getByText(/Sisa BoQ:\s+7 m3/)).toBeTruthy();
+    expect(getByText(/Setelah request:\s+4[,.]5 m3 tersisa/)).toBeTruthy();
+  });
+
+  it('renders red warning when request exceeds remaining', () => {
+    const { getByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-beton"
+        tier={1}
+        requestedQuantity={10}
+        requestedUnit="m3"
+        boqItemId="boq-1"
+        envelope={tier2Envelope({ tier: 1, material_name: 'Beton K-225', unit: 'm3' })}
+        boqItem={tier1BoqItem()}
+      />,
+    );
+    expect(getByText(/⚠ Akan melampaui BoQ rencana/i)).toBeTruthy();
+  });
+
+  it('falls back to envelope view when boqItem is null', () => {
+    const { getByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-beton"
+        tier={1}
+        requestedQuantity={2.5}
+        requestedUnit="m3"
+        boqItemId="boq-orphan"
+        envelope={tier2Envelope({ tier: 1, material_name: 'Beton K-225', unit: 'm3' })}
+        boqItem={null}
+      />,
+    );
+    // Falls back to envelope-style display; should not crash, should show envelope numbers
+    expect(getByText(/Envelope kuantitas/i)).toBeTruthy();
+  });
+});
