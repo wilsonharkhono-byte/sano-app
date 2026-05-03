@@ -535,7 +535,9 @@ export default function ApprovalsScreen() {
                 <Text style={styles.itemSub}>Target: {request.target_date} · Urgensi: {request.urgency}</Text>
                 {(request.material_request_lines ?? []).map(line => {
                   const envelope = line.material_id ? envelopeMap.get(line.material_id) ?? null : null;
-                  const firstAllocation = line.material_request_line_allocations?.find(a => a.boq_item_id);
+                  const firstAllocation = line.material_request_line_allocations?.find(
+                    (a) => a.boq_item_id && a.allocation_basis === 'DIRECT',
+                  );
                   const boqItem = firstAllocation?.boq_item_id ? boqItemMap.get(firstAllocation.boq_item_id) ?? null : null;
                   return (
                     <View key={line.id} style={{ marginTop: SPACE.sm }}>
