@@ -10,7 +10,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 function loadEnvFile(filePath: string): void {
   if (!fs.existsSync(filePath)) return;
-  const raw = fs.readFileSync(filePath, 'utf8').replace(/^﻿/, '');
+  const raw = fs.readFileSync(filePath, 'utf8').replace(/^\uFEFF/, '');
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
@@ -57,7 +57,7 @@ export interface TestProject {
  */
 export async function createTestProject(): Promise<TestProject> {
   // Auth user → profile (via handle_new_user trigger in migration 027).
-  const email = `${testName('user').toLowerCase()}@example.test`;
+  const email = `${testName('user').toLowerCase()}@example.com`;
   const { data: authResult, error: authErr } = await adminClient.auth.admin.createUser({
     email,
     password: `Test_${Math.random().toString(36).slice(2)}_!1`,
@@ -314,7 +314,7 @@ export async function readState(headerId: string, lineId?: string): Promise<{
       .eq('id', lineId)
       .single();
     if (lErr || !l) throw lErr ?? new Error('line read failed');
-    lineFlag = l.line_flag as string;
+    lineFlag = (l.line_flag ?? null) as string | null;
   }
 
   return { overallFlag: h.overall_flag as string, overallStatus: h.overall_status as string, lineFlag };
@@ -328,13 +328,46 @@ export async function readState(headerId: string, lineId?: string): Promise<{
  * profiles via the FK on profiles.id.
  */
 export async function cleanupTestData(): Promise<void> {
-  await adminClient.from('projects').delete().like('name', `${TEST_PREFIX}%`);
-  await adminClient.from('material_catalog').delete().like('name', `${TEST_PREFIX}%`);
+  const errors: Error[] = [];
 
-  const { data: users } = await adminClient.auth.admin.listUsers({ perPage: 200 });
-  for (const u of users?.users ?? []) {
-    if (u.email?.startsWith(TEST_PREFIX.toLowerCase()) || u.user_metadata?.full_name?.startsWith?.(TEST_PREFIX)) {
-      await adminClient.auth.admin.deleteUser(u.id);
+  const { error: projErr } = await adminClient
+    .from('projects')
+    .delete()
+    .like('name', `${TEST_PREFIX}%`);
+  if (projErr) errors.push(new Error(`projects delete failed: ${projErr.message}`));
+
+  const { error: matErr } = await adminClient
+    .from('material_catalog')
+    .delete()
+    .like('name', `${TEST_PREFIX}%`);
+  if (matErr) errors.push(new Error(`material_catalog delete failed: ${matErr.message}`));
+
+  const perPage = 200;
+  const emailPrefix = TEST_PREFIX.toLowerCase();
+  let page = 1;
+  while (true) {
+    const { data, error: listErr } = await adminClient.auth.admin.listUsers({ page, perPage });
+    if (listErr) {
+      errors.push(new Error(`listUsers page ${page} failed: ${listErr.message}`));
+      break;
     }
+    const batch = data?.users ?? [];
+    for (const u of batch) {
+      if (u.email?.startsWith(emailPrefix)) {
+        const { error: delErr } = await adminClient.auth.admin.deleteUser(u.id);
+        if (delErr) {
+          errors.push(new Error(`deleteUser ${u.id} failed: ${delErr.message}`));
+        }
+      }
+    }
+    if (batch.length < perPage) break;
+    page += 1;
+  }
+
+  if (errors.length > 0) {
+    throw new Error(
+      `cleanupTestData encountered ${errors.length} error(s):\n` +
+        errors.map(e => `  - ${e.message}`).join('\n'),
+    );
   }
 }
