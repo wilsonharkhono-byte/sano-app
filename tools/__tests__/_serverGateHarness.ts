@@ -330,12 +330,53 @@ export async function readState(headerId: string, lineId?: string): Promise<{
 export async function cleanupTestData(): Promise<void> {
   const errors: Error[] = [];
 
+  // Find test projects so we can clean their dependent rows that don't have
+  // ON DELETE CASCADE pointing at projects.
+  const { data: testProjects, error: listProjErr } = await adminClient
+    .from('projects')
+    .select('id')
+    .like('name', `${TEST_PREFIX}%`);
+  if (listProjErr) {
+    errors.push(new Error(`list test projects failed: ${listProjErr.message}`));
+  }
+  const testProjectIds = (testProjects ?? []).map(p => p.id as string);
+
+  if (testProjectIds.length > 0) {
+    // project_material_master_lines.boq_item_id references boq_items but does
+    // NOT cascade on boq_items delete — so deleting projects (which cascades
+    // boq_items) fails unless we drop the master lines first.
+    const { data: masters, error: listMasterErr } = await adminClient
+      .from('project_material_master')
+      .select('id')
+      .in('project_id', testProjectIds);
+    if (listMasterErr) {
+      errors.push(new Error(`list project_material_master failed: ${listMasterErr.message}`));
+    }
+    const masterIds = (masters ?? []).map(m => m.id as string);
+    if (masterIds.length > 0) {
+      const { error: pmmlErr } = await adminClient
+        .from('project_material_master_lines')
+        .delete()
+        .in('master_id', masterIds);
+      if (pmmlErr) errors.push(new Error(`project_material_master_lines delete failed: ${pmmlErr.message}`));
+
+      const { error: pmmErr } = await adminClient
+        .from('project_material_master')
+        .delete()
+        .in('id', masterIds);
+      if (pmmErr) errors.push(new Error(`project_material_master delete failed: ${pmmErr.message}`));
+    }
+  }
+
   const { error: projErr } = await adminClient
     .from('projects')
     .delete()
     .like('name', `${TEST_PREFIX}%`);
   if (projErr) errors.push(new Error(`projects delete failed: ${projErr.message}`));
 
+  // material_catalog must be deleted after projects: ahs_lines.material_id
+  // references material_catalog without CASCADE, but ahs_lines cascades from
+  // ahs_versions which cascades from projects.
   const { error: matErr } = await adminClient
     .from('material_catalog')
     .delete()
