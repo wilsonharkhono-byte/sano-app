@@ -67,11 +67,42 @@ CREATE OR REPLACE FUNCTION compute_tier3_flag(
   p_project_id UUID,
   p_requested_qty NUMERIC
 ) RETURNS TEXT
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_unit_price NUMERIC;
+  v_estimated_spend NUMERIC;
+  TIER3_CAP CONSTANT NUMERIC := 5000000;  -- Rp 5 juta
 BEGIN
-  -- Stub: real implementation in Task 3.
+  IF p_material_id IS NULL OR p_project_id IS NULL THEN
+    RETURN 'OK';
+  END IF;
+
+  -- Median unit_price across ahs_lines for this material in the current
+  -- AHS version. Mirrors summarizeAhsBaselinePrices in tools/gate2.ts.
+  -- ahs_lines links directly to ahs_versions (no ahs / ahs_blocks tables).
+  SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY al.unit_price)
+    INTO v_unit_price
+  FROM ahs_lines al
+  JOIN ahs_versions av ON av.id = al.ahs_version_id
+  WHERE al.material_id = p_material_id
+    AND av.project_id = p_project_id
+    AND av.is_current = true
+    AND al.unit_price IS NOT NULL
+    AND al.unit_price > 0;
+
+  IF v_unit_price IS NULL THEN
+    RETURN 'OK';  -- no price reference → can't enforce cap
+  END IF;
+
+  v_estimated_spend := p_requested_qty * v_unit_price;
+  IF v_estimated_spend > TIER3_CAP THEN
+    RETURN 'WARNING';
+  END IF;
   RETURN 'OK';
-END $$;
+END;
+$$;
 
 -- =========================================================================
 -- Dispatcher: routes a line to the correct tier function.
