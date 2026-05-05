@@ -51,16 +51,59 @@ BEGIN
 END;
 $$;
 
--- Tier 1 / Tier 3 stubs — filled in by later tasks in this plan.
+-- Tier 1: BoQ direct check. Mirrors gate1.ts:128-138.
 CREATE OR REPLACE FUNCTION compute_tier1_flag(
   p_boq_item_id UUID,
   p_requested_qty NUMERIC
 ) RETURNS TEXT
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_planned NUMERIC;
+  v_installed NUMERIC;
+  v_already_ordered NUMERIC;
+  v_remaining NUMERIC;
+  v_ratio NUMERIC;
 BEGIN
-  -- Stub: real implementation in Task 4.
+  IF p_boq_item_id IS NULL THEN
+    RETURN 'WARNING';
+  END IF;
+
+  SELECT planned, installed INTO v_planned, v_installed
+  FROM boq_items
+  WHERE id = p_boq_item_id;
+
+  IF v_planned IS NULL THEN
+    RETURN 'WARNING';
+  END IF;
+
+  -- Already-ordered = approved/pending DIRECT allocations against this BoQ.
+  SELECT COALESCE(SUM(a.allocated_quantity), 0)
+    INTO v_already_ordered
+  FROM material_request_line_allocations a
+  JOIN material_request_lines l    ON l.id = a.request_line_id
+  JOIN material_request_headers h  ON h.id = l.request_header_id
+  WHERE a.boq_item_id = p_boq_item_id
+    AND a.allocation_basis = 'DIRECT'
+    AND h.overall_status NOT IN ('REJECTED');
+
+  v_remaining := v_planned - COALESCE(v_installed, 0) - v_already_ordered;
+
+  -- Guard against div-by-zero / negative remaining.
+  IF v_remaining <= 0 THEN
+    -- All remaining used up; any new request is over-budget.
+    RETURN 'CRITICAL';
+  END IF;
+
+  v_ratio := p_requested_qty / v_remaining;
+  IF v_ratio > 1.3  THEN RETURN 'CRITICAL'; END IF;
+  IF v_ratio > 1.15 THEN RETURN 'HIGH';     END IF;
+  IF v_ratio > 1.05 THEN RETURN 'WARNING';  END IF;
+  IF v_ratio > 0.5  THEN RETURN 'INFO';     END IF;
   RETURN 'OK';
-END $$;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION compute_tier3_flag(
   p_material_id UUID,
@@ -126,8 +169,24 @@ BEGIN
   ELSIF line_row.tier = 3 THEN
     RETURN compute_tier3_flag(line_row.material_id, v_project_id, line_row.quantity);
   ELSIF line_row.tier = 1 THEN
-    -- Tier 1 dispatch filled in in Task 4.
-    RETURN 'WARNING';
+    DECLARE
+      v_alloc_boq UUID;
+      v_alloc_qty NUMERIC;
+    BEGIN
+      SELECT boq_item_id, allocated_quantity
+        INTO v_alloc_boq, v_alloc_qty
+      FROM material_request_line_allocations
+      WHERE request_line_id = line_row.id
+        AND allocation_basis = 'DIRECT'
+      ORDER BY id
+      LIMIT 1;
+
+      IF v_alloc_boq IS NULL THEN
+        RETURN 'WARNING';  -- placeholder until allocation arrives
+      END IF;
+
+      RETURN compute_tier1_flag(v_alloc_boq, v_alloc_qty);
+    END;
   END IF;
   RETURN 'OK';
 END;
@@ -216,4 +275,56 @@ CREATE TRIGGER material_request_lines_aggregate_header_trg
   FOR EACH ROW
   EXECUTE FUNCTION recompute_header_flag();
 
--- Trigger 3 added in Task 4.
+-- =========================================================================
+-- Trigger 3: AFTER INSERT/UPDATE/DELETE on material_request_line_allocations
+-- Recomputes parent line's flag (Tier 1 needs the allocation to know
+-- which BoQ to check against). UPDATE on line then fires Trigger 2.
+-- =========================================================================
+CREATE OR REPLACE FUNCTION recompute_line_flag_from_allocation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_line_id UUID;
+  v_line material_request_lines%ROWTYPE;
+  v_new_flag TEXT;
+BEGIN
+  v_line_id := COALESCE(NEW.request_line_id, OLD.request_line_id);
+
+  SELECT * INTO v_line FROM material_request_lines WHERE id = v_line_id;
+  IF v_line.id IS NULL THEN
+    -- Line already deleted (cascade) — nothing to do.
+    RETURN COALESCE(NEW, OLD);
+  END IF;
+
+  -- Only Tier 1 lines need recomputation when allocations change — Tier 1's
+  -- flag depends on the DIRECT allocation's boq_item_id and allocated_quantity.
+  -- Tier 2 / Tier 3 flags depend only on line columns, were already correctly
+  -- set by Trigger 1 (BEFORE INSERT), and re-running compute_tier2_flag here
+  -- would double-count the line itself (the line is now visible in
+  -- v_material_envelope_status.total_ordered, plus we'd add its quantity again).
+  IF v_line.tier <> 1 THEN
+    RETURN COALESCE(NEW, OLD);
+  END IF;
+
+  v_new_flag := dispatch_line_flag(v_line);
+  IF v_line.line_flag IS DISTINCT FROM v_new_flag THEN
+    UPDATE material_request_lines
+    SET line_flag = v_new_flag
+    WHERE id = v_line.id;
+    -- That UPDATE fires Trigger 2 (header re-aggregate). It does NOT fire
+    -- Trigger 1 because line_flag is excluded from Trigger 1's column filter.
+  END IF;
+
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+
+DROP TRIGGER IF EXISTS material_request_line_allocations_recompute_line_trg
+  ON material_request_line_allocations;
+CREATE TRIGGER material_request_line_allocations_recompute_line_trg
+  AFTER INSERT OR UPDATE OR DELETE
+  ON material_request_line_allocations
+  FOR EACH ROW
+  EXECUTE FUNCTION recompute_line_flag_from_allocation();
