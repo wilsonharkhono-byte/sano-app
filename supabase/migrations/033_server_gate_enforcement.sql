@@ -1,13 +1,31 @@
 -- 033_server_gate_enforcement.sql
 --
--- Server-side Gate 1 enforcement. Three triggers ensure
+-- Server-side Gate 1 enforcement. Three triggers guarantee that
 -- material_request_lines.line_flag and material_request_headers.overall_flag
--- are always server-computed, regardless of what the client sends.
+-- are always server-truth, regardless of what clients send. Bypasses
+-- closed: direct REST inserts, old-app versions, logic divergence between
+-- builds.
 --
--- See: docs/superpowers/specs/2026-05-04-server-gate-enforcement-design.md
+-- Hybrid promotion: CRITICAL/HIGH flag auto-promotes overall_status to
+-- AUTO_HOLD ONLY when status ∈ {PENDING, AUTO_HOLD}. Reviewer decisions
+-- (APPROVED, REJECTED, UNDER_REVIEW) are sticky.
 --
--- Tier 1 / Tier 3 dispatch branches are stubbed in this migration; later
--- migrations or edits to this file fill them in.
+-- Deployment:
+--   1. Apply this migration to production via Supabase SQL editor (matches
+--      the PR #5 deployment pattern). Migration is idempotent — safe to
+--      re-apply.
+--   2. No app rebuild required. App writes/reads continue unchanged; the
+--      stored values are now server-computed.
+--   3. Verification post-apply: the integration test suite at
+--      tools/__tests__/serverGateEnforcement.test.ts must pass against
+--      the deployment target (run with `--runInBand` for stable network
+--      timing). A manual curl-based smoke is also recommended.
+--
+-- Spec: docs/superpowers/specs/2026-05-04-server-gate-enforcement-design.md
+-- Plan: docs/superpowers/plans/2026-05-04-server-gate-enforcement.md
+--
+-- Stay in sync with workflows/gates/gate1.ts (Tier 1/2 thresholds) and
+-- tools/envelopes.ts (Tier 3 cap). Future rule changes update both.
 
 -- =========================================================================
 -- Helper functions: tier-specific flag computers
