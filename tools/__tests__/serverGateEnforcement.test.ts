@@ -270,3 +270,190 @@ describe('server gate enforcement — Tier 1', () => {
     expect(afterAlloc.overallStatus).toBe('AUTO_HOLD');
   });
 });
+
+describe('server gate enforcement — reviewer status preservation', () => {
+  it('header in APPROVED status survives line UPDATE (flag updates, status stays)', async () => {
+    const project = await createTestProject();
+    const material = await createTestMaterial({ tier: 2, unit: 'kg' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 100, installed: 0 });
+    await buildTier2Envelope({ projectId: project.id, materialId: material.id, boqItemId: boqItem.id, totalPlanned: 100 });
+
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 2,
+        materialId: material.id,
+        quantity: 30, // OK initially
+        unit: 'kg',
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 30, basis: 'TIER2_ENVELOPE' }],
+      }],
+    });
+
+    // Reviewer manually approves.
+    await adminClient
+      .from('material_request_headers')
+      .update({ overall_status: 'APPROVED' })
+      .eq('id', headerId);
+
+    // Estimator updates the line quantity to over-envelope.
+    await adminClient
+      .from('material_request_lines')
+      .update({ quantity: 200 })
+      .eq('id', lineIds[0]);
+
+    const state = await readState(headerId, lineIds[0]);
+    expect(state.lineFlag).toBe('CRITICAL'); // flag updates to current truth
+    expect(state.overallFlag).toBe('CRITICAL');
+    expect(state.overallStatus).toBe('APPROVED'); // reviewer decision preserved
+  });
+
+  it('header in REJECTED status survives line UPDATE', async () => {
+    const project = await createTestProject();
+    const material = await createTestMaterial({ tier: 2, unit: 'kg' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 100, installed: 0 });
+    await buildTier2Envelope({ projectId: project.id, materialId: material.id, boqItemId: boqItem.id, totalPlanned: 100 });
+
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 2,
+        materialId: material.id,
+        quantity: 30,
+        unit: 'kg',
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 30, basis: 'TIER2_ENVELOPE' }],
+      }],
+    });
+
+    await adminClient
+      .from('material_request_headers')
+      .update({ overall_status: 'REJECTED' })
+      .eq('id', headerId);
+
+    await adminClient
+      .from('material_request_lines')
+      .update({ quantity: 200 })
+      .eq('id', lineIds[0]);
+
+    const state = await readState(headerId, lineIds[0]);
+    expect(state.lineFlag).toBe('CRITICAL');
+    expect(state.overallStatus).toBe('REJECTED');
+  });
+});
+
+describe('server gate enforcement — edge cases', () => {
+  it('UPDATE line quantity recomputes flag and re-aggregates header', async () => {
+    const project = await createTestProject();
+    const material = await createTestMaterial({ tier: 2, unit: 'kg' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 100, installed: 0 });
+    await buildTier2Envelope({ projectId: project.id, materialId: material.id, boqItemId: boqItem.id, totalPlanned: 100 });
+
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 2,
+        materialId: material.id,
+        quantity: 30, // OK
+        unit: 'kg',
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 30, basis: 'TIER2_ENVELOPE' }],
+      }],
+    });
+
+    expect((await readState(headerId, lineIds[0])).lineFlag).toBe('OK');
+
+    // Estimator edits line up to over-envelope.
+    await adminClient.from('material_request_lines').update({ quantity: 200 }).eq('id', lineIds[0]);
+
+    const after = await readState(headerId, lineIds[0]);
+    expect(after.lineFlag).toBe('CRITICAL');
+    expect(after.overallStatus).toBe('AUTO_HOLD');
+  });
+
+  it('DELETE allocation regresses Tier 1 line to WARNING placeholder', async () => {
+    const project = await createTestProject();
+    const material = await createTestMaterial({ tier: 1, unit: 'kg' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 1000, installed: 100 });
+
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 1,
+        materialId: material.id,
+        quantity: 200,
+        unit: 'kg',
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 200, basis: 'DIRECT' }],
+      }],
+    });
+
+    expect((await readState(headerId, lineIds[0])).lineFlag).toBe('OK');
+
+    // Delete the only allocation.
+    const { error } = await adminClient
+      .from('material_request_line_allocations')
+      .delete()
+      .eq('request_line_id', lineIds[0]);
+    expect(error).toBeNull();
+
+    const after = await readState(headerId, lineIds[0]);
+    expect(after.lineFlag).toBe('WARNING');
+    expect(after.overallFlag).toBe('WARNING');
+  });
+
+  it('DELETE last line aggregates header flag to OK', async () => {
+    const project = await createTestProject();
+    const material = await createTestMaterial({ tier: 2, unit: 'kg' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 100, installed: 0 });
+    await buildTier2Envelope({ projectId: project.id, materialId: material.id, boqItemId: boqItem.id, totalPlanned: 100 });
+
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 2,
+        materialId: material.id,
+        quantity: 200, // CRITICAL
+        unit: 'kg',
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 200, basis: 'TIER2_ENVELOPE' }],
+      }],
+    });
+    expect((await readState(headerId)).overallFlag).toBe('CRITICAL');
+
+    await adminClient.from('material_request_lines').delete().eq('id', lineIds[0]);
+
+    const after = await readState(headerId);
+    expect(after.overallFlag).toBe('OK'); // no lines = no risk
+    // Note: status was AUTO_HOLD, stays AUTO_HOLD per "preserve previous state" rule.
+    expect(after.overallStatus).toBe('AUTO_HOLD');
+  });
+
+  it('Tier 2 with material_id=null → flag = OK (graceful degradation)', async () => {
+    const project = await createTestProject();
+    const boqItem = await createTestBoqItem(project.id, { planned: 100, installed: 0 });
+
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 2,
+        materialId: null,
+        customName: 'custom-tier2',
+        quantity: 9999, // would be CRITICAL if we had material context
+        unit: 'kg',
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 9999, basis: 'TIER2_ENVELOPE' }],
+      }],
+    });
+
+    const state = await readState(headerId, lineIds[0]);
+    expect(state.lineFlag).toBe('OK');
+    expect(state.overallStatus).toBe('PENDING');
+  });
+});
