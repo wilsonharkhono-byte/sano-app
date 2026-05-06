@@ -39,6 +39,7 @@ CREATE OR REPLACE FUNCTION compute_tier2_flag(
 ) RETURNS TEXT
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   v_total_planned NUMERIC;
@@ -70,12 +71,26 @@ END;
 $$;
 
 -- Tier 1: BoQ direct check. Mirrors gate1.ts:128-138.
+--
+-- p_excluded_allocation_id: when called from Trigger 3 (AFTER allocation
+-- insert/update/delete), the current allocation is already visible in
+-- material_request_line_allocations. Pass its id so we don't double-count
+-- the line's own request when computing 'already_ordered'. Pass NULL when
+-- called from a context where the allocation doesn't yet exist (e.g.,
+-- BEFORE INSERT on lines, where the line is being inserted before its
+-- allocations land).
+--
+-- Drop the old 2-parameter signature first; CREATE OR REPLACE alone cannot
+-- add a new parameter to an existing function, even with a default.
+DROP FUNCTION IF EXISTS compute_tier1_flag(UUID, NUMERIC);
 CREATE OR REPLACE FUNCTION compute_tier1_flag(
   p_boq_item_id UUID,
-  p_requested_qty NUMERIC
+  p_requested_qty NUMERIC,
+  p_excluded_allocation_id UUID DEFAULT NULL
 ) RETURNS TEXT
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   v_planned NUMERIC;
@@ -96,7 +111,8 @@ BEGIN
     RETURN 'WARNING';
   END IF;
 
-  -- Already-ordered = approved/pending DIRECT allocations against this BoQ.
+  -- Already-ordered = approved/pending DIRECT allocations against this BoQ,
+  -- EXCLUDING the current allocation (if it's already in the table).
   SELECT COALESCE(SUM(a.allocated_quantity), 0)
     INTO v_already_ordered
   FROM material_request_line_allocations a
@@ -104,7 +120,8 @@ BEGIN
   JOIN material_request_headers h  ON h.id = l.request_header_id
   WHERE a.boq_item_id = p_boq_item_id
     AND a.allocation_basis = 'DIRECT'
-    AND h.overall_status NOT IN ('REJECTED');
+    AND h.overall_status NOT IN ('REJECTED')
+    AND (p_excluded_allocation_id IS NULL OR a.id <> p_excluded_allocation_id);
 
   v_remaining := v_planned - COALESCE(v_installed, 0) - v_already_ordered;
 
@@ -130,6 +147,7 @@ CREATE OR REPLACE FUNCTION compute_tier3_flag(
 ) RETURNS TEXT
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   v_unit_price NUMERIC;
@@ -173,6 +191,7 @@ CREATE OR REPLACE FUNCTION dispatch_line_flag(
 ) RETURNS TEXT
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   v_project_id UUID;
@@ -188,11 +207,12 @@ BEGIN
     RETURN compute_tier3_flag(line_row.material_id, v_project_id, line_row.quantity);
   ELSIF line_row.tier = 1 THEN
     DECLARE
+      v_alloc_id UUID;
       v_alloc_boq UUID;
       v_alloc_qty NUMERIC;
     BEGIN
-      SELECT boq_item_id, allocated_quantity
-        INTO v_alloc_boq, v_alloc_qty
+      SELECT id, boq_item_id, allocated_quantity
+        INTO v_alloc_id, v_alloc_boq, v_alloc_qty
       FROM material_request_line_allocations
       WHERE request_line_id = line_row.id
         AND allocation_basis = 'DIRECT'
@@ -203,7 +223,9 @@ BEGIN
         RETURN 'WARNING';  -- placeholder until allocation arrives
       END IF;
 
-      RETURN compute_tier1_flag(v_alloc_boq, v_alloc_qty);
+      -- Pass v_alloc_id so compute_tier1_flag excludes the current row from
+      -- 'already_ordered' (otherwise we'd double-count the line's own request).
+      RETURN compute_tier1_flag(v_alloc_boq, v_alloc_qty, v_alloc_id);
     END;
   END IF;
   RETURN 'OK';
@@ -218,6 +240,7 @@ CREATE OR REPLACE FUNCTION recompute_line_flag()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 BEGIN
   NEW.line_flag := dispatch_line_flag(NEW);
@@ -240,6 +263,7 @@ CREATE OR REPLACE FUNCTION recompute_header_flag()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   v_header_id UUID;
@@ -302,6 +326,7 @@ CREATE OR REPLACE FUNCTION recompute_line_flag_from_allocation()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
+SET search_path = public
 AS $$
 DECLARE
   v_line_id UUID;

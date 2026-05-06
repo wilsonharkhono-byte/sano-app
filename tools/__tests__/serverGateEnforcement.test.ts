@@ -14,11 +14,14 @@ import {
 // jest timeout isn't enough for integration tests that exercise triggers.
 jest.setTimeout(30_000);
 
-describe('server gate enforcement — harness smoke', () => {
-  afterAll(async () => {
-    await cleanupTestData();
-  });
+// File-level afterAll ensures cleanup runs after every describe block, not
+// just the first one — otherwise test rows from later describes persist
+// between runs.
+afterAll(async () => {
+  await cleanupTestData();
+});
 
+describe('server gate enforcement — harness smoke', () => {
   it('connects to Supabase with service role and creates a project', async () => {
     const project = await createTestProject();
     expect(project.id).toMatch(/^[0-9a-f-]{36}$/);
@@ -229,6 +232,34 @@ describe('server gate enforcement — Tier 1', () => {
     expect(state.lineFlag).toBe('WARNING');
     expect(state.overallFlag).toBe('WARNING');
     expect(state.overallStatus).toBe('PENDING'); // WARNING does NOT auto-hold
+  });
+
+  // Regression test: catches a previous bug where compute_tier1_flag included
+  // the current allocation in 'already_ordered', causing self-counting.
+  // Pre-fix: 540/360 ratio = 1.5 → CRITICAL. Post-fix: 540/900 = 0.6 → INFO.
+  it('Tier 1 borderline 540/900 → INFO (does not double-count current request)', async () => {
+    const project = await createTestProject();
+    const material = await createTestMaterial({ tier: 1, unit: 'kg' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 1000, installed: 100 });
+    // remaining = 900. Request 540 → 540/900 = 0.6 → > 0.5 → INFO.
+
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 1,
+        materialId: material.id,
+        quantity: 540,
+        unit: 'kg',
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 540, basis: 'DIRECT' }],
+      }],
+    });
+
+    const state = await readState(headerId, lineIds[0]);
+    expect(state.lineFlag).toBe('INFO');
+    expect(state.overallFlag).toBe('INFO');
+    expect(state.overallStatus).toBe('PENDING'); // INFO does not auto-hold
   });
 
   it('Tier 1 placeholder→real flag transition: insert line then over-budget allocation', async () => {
