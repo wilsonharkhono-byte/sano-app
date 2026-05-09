@@ -1,14 +1,40 @@
 -- 034_notifications.sql
 --
--- Notifications system: device_tokens + notifications tables plus the
--- enqueue_notification helper. Triggers per event type (AUTO_HOLD,
--- APPROVED, REJECTED, PO_READY, RECEIPT_MISMATCH) are added in tasks
--- 2-3 of this plan, layered into the same migration.
---
--- See: docs/superpowers/specs/2026-05-07-notifications-design.md
+-- Notifications system: device_tokens + notifications tables, the
+-- enqueue_notification helper, and 5 PG triggers per event type
+-- (AUTO_HOLD, APPROVED, REJECTED, PO_READY, RECEIPT_MISMATCH).
 --
 -- Server-truth philosophy mirrors migration 033 (Claim 1): triggers fire
--- regardless of which client caused the source row to change.
+-- regardless of which client caused the source row to change. Hybrid
+-- delivery: native push via Supabase Database Webhook → Edge Function →
+-- Expo Push API; in-app via Realtime subscription on notifications.
+--
+-- Deployment:
+--   1. Apply this migration via Supabase dashboard SQL editor. Idempotent.
+--   2. Deploy Edge Functions:
+--        supabase functions deploy send-push-notification
+--        supabase functions deploy retry-push-notifications
+--   3. Configure Database Webhook (dashboard → Database → Webhooks):
+--        Source:  public.notifications, INSERT event
+--        Target:  POST → <send-push-notification function URL>
+--        Auth:    Authorization: Bearer <secret>; set the same value as
+--                 supabase secret WEBHOOK_AUTH_SECRET.
+--   4. Configure cron (dashboard → Database → Cron):
+--        Job:     retry-push-notifications, daily at 02:00 UTC
+--        Command: net.http_post('<retry-push-notifications URL>')
+--   5. Build mobile app with Task 6's new dependencies (expo-notifications,
+--      expo-device — native modules require fresh build, not OTA). Roll
+--      out via TestFlight / Play Internal first.
+--   6. Smoke test on physical device per the plan's Task 9 checklist.
+--
+-- Spec: docs/superpowers/specs/2026-05-07-notifications-design.md
+-- Plan: docs/superpowers/plans/2026-05-07-notifications.md
+--
+-- GATE2_OVER_BUDGET and GATE4_INVOICE_MISMATCH are in the type CHECK
+-- constraint for forward compatibility but no triggers exist for them
+-- in v1 — the underlying gate2_outcomes / gate4_outcomes tables are
+-- not yet defined in the schema. Add triggers in follow-up specs once
+-- those tables exist.
 
 -- =========================================================================
 -- Tables
