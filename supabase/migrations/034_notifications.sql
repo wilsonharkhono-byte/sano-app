@@ -179,3 +179,73 @@ CREATE TRIGGER material_request_headers_notify_status_trg
   ON material_request_headers
   FOR EACH ROW
   EXECUTE FUNCTION notify_header_status_change();
+
+-- =========================================================================
+-- Trigger: purchase_orders → PO_READY on insert
+-- =========================================================================
+
+CREATE OR REPLACE FUNCTION notify_po_ready()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  PERFORM enqueue_notification(
+    NEW.project_id,
+    'PO_READY',
+    'PO siap dikirim',
+    'PO ' || COALESCE(NEW.po_number, 'baru') ||
+      ' siap, supplier ' || NEW.supplier || '.',
+    'POScreen',
+    jsonb_build_object('poId', NEW.id),
+    NEW.id,
+    NULL  -- no actor recorded on purchase_orders; notify everyone
+  );
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS purchase_orders_notify_ready_trg ON purchase_orders;
+CREATE TRIGGER purchase_orders_notify_ready_trg
+  AFTER INSERT
+  ON purchase_orders
+  FOR EACH ROW
+  EXECUTE FUNCTION notify_po_ready();
+
+-- =========================================================================
+-- Trigger: receipts → RECEIPT_MISMATCH when gate3_flag is WARNING/CRITICAL
+-- =========================================================================
+
+CREATE OR REPLACE FUNCTION notify_receipt_mismatch()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.gate3_flag NOT IN ('WARNING', 'CRITICAL') THEN
+    RETURN NULL;
+  END IF;
+
+  PERFORM enqueue_notification(
+    NEW.project_id,
+    'RECEIPT_MISMATCH',
+    'Penerimaan mismatch',
+    'Receipt ' || COALESCE(NEW.vehicle_ref, 'tanpa nopol') ||
+      ' di-flag ' || NEW.gate3_flag || '.',
+    'ReceiptScreen',
+    jsonb_build_object('receiptId', NEW.id),
+    NEW.id,
+    NEW.received_by
+  );
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS receipts_notify_mismatch_trg ON receipts;
+CREATE TRIGGER receipts_notify_mismatch_trg
+  AFTER INSERT
+  ON receipts
+  FOR EACH ROW
+  EXECUTE FUNCTION notify_receipt_mismatch();

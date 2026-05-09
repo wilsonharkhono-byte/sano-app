@@ -203,3 +203,73 @@ describe('notification dispatch — header status', () => {
     expect(await countNotifications({ projectId: project.id, type: 'APPROVED' })).toBe(1);
   });
 });
+
+describe('notification dispatch — PO and receipt events', () => {
+  it('PO_READY enqueues for all project members on purchase_orders insert', async () => {
+    const project = await createTestProject();
+    await assignToProject(project.id, project.ownerProfileId);
+    const second = await createTestProject();
+    await assignToProject(project.id, second.ownerProfileId);
+
+    const { error } = await adminClient.from('purchase_orders').insert({
+      project_id: project.id,
+      po_number: 'PO-TEST-001',
+      boq_ref: 'BOQ-1',
+      supplier: 'Test Supplier',
+      material_name: 'Test Material',
+      quantity: 100,
+      unit: 'kg',
+      ordered_date: new Date().toISOString().slice(0, 10),
+    });
+    expect(error).toBeNull();
+
+    const count = await countNotifications({
+      projectId: project.id,
+      type: 'PO_READY',
+    });
+    expect(count).toBe(2);
+  });
+
+  it('RECEIPT_MISMATCH enqueues only when gate3_flag is WARNING or CRITICAL', async () => {
+    const project = await createTestProject();
+    const second = await createTestProject(); // additional project member, will receive the notification
+    await assignToProject(project.id, project.ownerProfileId);
+    await assignToProject(project.id, second.ownerProfileId);
+
+    // First insert a PO so receipts can reference it.
+    const { data: po, error: poErr } = await adminClient
+      .from('purchase_orders')
+      .insert({
+        project_id: project.id,
+        po_number: 'PO-RM-001',
+        boq_ref: 'BOQ-1',
+        supplier: 'Sup',
+        material_name: 'Mat',
+        quantity: 100,
+        unit: 'kg',
+        ordered_date: new Date().toISOString().slice(0, 10),
+      })
+      .select('id')
+      .single();
+    expect(poErr).toBeNull();
+
+    // Insert receipt with gate3_flag='OK' → no notification.
+    await adminClient.from('receipts').insert({
+      po_id: po!.id,
+      project_id: project.id,
+      received_by: project.ownerProfileId,
+      gate3_flag: 'OK',
+    });
+    expect(await countNotifications({ projectId: project.id, type: 'RECEIPT_MISMATCH' })).toBe(0);
+
+    // Insert receipt with gate3_flag='WARNING' → 1 notification (the second
+    // member; the receiver is excluded as the actor).
+    await adminClient.from('receipts').insert({
+      po_id: po!.id,
+      project_id: project.id,
+      received_by: project.ownerProfileId,
+      gate3_flag: 'WARNING',
+    });
+    expect(await countNotifications({ projectId: project.id, type: 'RECEIPT_MISMATCH' })).toBe(1);
+  });
+});

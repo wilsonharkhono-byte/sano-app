@@ -390,6 +390,15 @@ export async function cleanupTestData(): Promise<void> {
   const testProjectIds = (testProjects ?? []).map(p => p.id as string);
 
   if (testProjectIds.length > 0) {
+    // receipts.project_id and receipts.po_id reference parents without CASCADE,
+    // so they block both projects delete (directly) and purchase_orders delete
+    // (via project cascade). Drop receipts first.
+    const { error: receiptsErr } = await adminClient
+      .from('receipts')
+      .delete()
+      .in('project_id', testProjectIds);
+    if (receiptsErr) errors.push(new Error(`receipts delete failed: ${receiptsErr.message}`));
+
     // project_material_master_lines.boq_item_id references boq_items but does
     // NOT cascade on boq_items delete — so deleting projects (which cascades
     // boq_items) fails unless we drop the master lines first.
