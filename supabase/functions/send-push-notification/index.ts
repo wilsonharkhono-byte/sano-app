@@ -66,7 +66,10 @@ export async function handleNotification(
 // Real Deno.serve entry — wires Deps to the Supabase client + Expo fetch.
 // Validates a shared-secret bearer if WEBHOOK_AUTH_SECRET env var is set
 // (configured during Task 9 dashboard setup).
-Deno.serve(async (req) => {
+// Guarded by import.meta.main so transitive imports (e.g. retry-push-notifications
+// reusing handleNotification) don't double-bind the port during tests.
+if (import.meta.main) {
+  Deno.serve(async (req) => {
   const expected = Deno.env.get('WEBHOOK_AUTH_SECRET');
   if (expected) {
     const auth = req.headers.get('authorization');
@@ -108,4 +111,5 @@ Deno.serve(async (req) => {
 
   const result = await handleNotification(record, deps);
   return new Response(result, { status: 200 });
-});
+  });
+}
