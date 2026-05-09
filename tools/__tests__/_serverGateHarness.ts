@@ -320,6 +320,30 @@ export async function readState(headerId: string, lineId?: string): Promise<{
   return { overallFlag: h.overall_flag as string, overallStatus: h.overall_status as string, lineFlag };
 }
 
+/** Assigns the given user to the project. Used by notification tests. */
+export async function assignToProject(projectId: string, userId: string): Promise<void> {
+  const { error } = await adminClient.from('project_assignments').insert({
+    project_id: projectId,
+    user_id: userId,
+  });
+  if (error) throw error;
+}
+
+/** Counts notification rows matching the filter. */
+export async function countNotifications(filter: {
+  projectId?: string;
+  recipientUserId?: string;
+  type?: string;
+}): Promise<number> {
+  let query = adminClient.from('notifications').select('id', { count: 'exact', head: true });
+  if (filter.projectId) query = query.eq('project_id', filter.projectId);
+  if (filter.recipientUserId) query = query.eq('recipient_user_id', filter.recipientUserId);
+  if (filter.type) query = query.eq('type', filter.type);
+  const { count, error } = await query;
+  if (error) throw error;
+  return count ?? 0;
+}
+
 /**
  * Deletes every row created with TEST_PREFIX. Call from afterAll.
  * CASCADE on FKs handles allocations + lines + headers via project CASCADE.
@@ -329,6 +353,30 @@ export async function readState(headerId: string, lineId?: string): Promise<{
  */
 export async function cleanupTestData(): Promise<void> {
   const errors: Error[] = [];
+
+  // Delete notifications + device_tokens for users we created (matched by
+  // the auth-user prefix). Cascade from auth.users handles profiles, but
+  // notifications and device_tokens reference profiles directly.
+  const emailPrefix = TEST_PREFIX.toLowerCase();
+  const { data: testUsers, error: listUsersErr } =
+    await adminClient.auth.admin.listUsers({ page: 1, perPage: 200 });
+  if (listUsersErr) errors.push(new Error(`listUsers (cleanup deps) failed: ${listUsersErr.message}`));
+  const testUserIds = (testUsers?.users ?? [])
+    .filter(u => u.email?.startsWith(emailPrefix))
+    .map(u => u.id);
+  if (testUserIds.length > 0) {
+    const { error: notifErr } = await adminClient
+      .from('notifications')
+      .delete()
+      .in('recipient_user_id', testUserIds);
+    if (notifErr) errors.push(new Error(`notifications delete failed: ${notifErr.message}`));
+
+    const { error: tokErr } = await adminClient
+      .from('device_tokens')
+      .delete()
+      .in('user_id', testUserIds);
+    if (tokErr) errors.push(new Error(`device_tokens delete failed: ${tokErr.message}`));
+  }
 
   // Find test projects so we can clean their dependent rows that don't have
   // ON DELETE CASCADE pointing at projects.
@@ -384,7 +432,6 @@ export async function cleanupTestData(): Promise<void> {
   if (matErr) errors.push(new Error(`material_catalog delete failed: ${matErr.message}`));
 
   const perPage = 200;
-  const emailPrefix = TEST_PREFIX.toLowerCase();
   let page = 1;
   while (true) {
     const { data, error: listErr } = await adminClient.auth.admin.listUsers({ page, perPage });
