@@ -43,7 +43,9 @@ if (import.meta.main) {
         .from('notifications')
         .select('id, recipient_user_id, title, body, deeplink_screen, deeplink_params')
         .is('push_sent_at', null)
-        .gt('created_at', sinceIso);
+        .gt('created_at', sinceIso)
+        .order('created_at', { ascending: true })
+        .limit(1000);
       return (data as NotificationRecord[] | null) ?? [];
     },
     dispatch: async (record) => {

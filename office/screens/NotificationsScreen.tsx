@@ -4,6 +4,12 @@ import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../../tools/supabase';
 import { NotificationList, type NotificationItem } from '../../workflows/screens/components/NotificationList';
 
+const NOTIFICATION_ROUTE_MAP: Record<string, string> = {
+  ApprovalsScreen: 'Approvals',
+  POScreen: 'Procurement',
+  ReceiptScreen: 'Terima',
+};
+
 interface Props {
   profileId: string;
 }
@@ -75,7 +81,12 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
       await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', item.id);
       setItems(prev => prev.map(i => i.id === item.id ? { ...i, readAt: new Date().toISOString() } : i));
     }
-    navigation.navigate(item.deeplinkScreen, item.deeplinkParams ?? {});
+    const target = NOTIFICATION_ROUTE_MAP[item.deeplinkScreen] ?? item.deeplinkScreen;
+    try {
+      navigation.navigate(target, item.deeplinkParams ?? {});
+    } catch {
+      // Route not in current role's nav — stay on Notifikasi (no-op).
+    }
   }, [navigation]);
 
   if (loading) {

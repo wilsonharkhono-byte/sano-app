@@ -14,6 +14,15 @@ import { registerForPushNotifications, attachNotificationTapListener } from '../
 // The push-notification tap listener navigates through this ref from outside the React tree.
 export const navigationRef = createNavigationContainerRef<Record<string, object | undefined>>();
 
+// Notification deeplink screen names may not match the role's nav routes.
+// Map to actual route names; fall back to the Notifikasi tab if the role's
+// stack doesn't have that route (e.g., supervisor has no Approvals tab).
+const NOTIFICATION_ROUTE_MAP: Record<string, string> = {
+  ApprovalsScreen: 'Approvals',
+  POScreen: 'Procurement',
+  ReceiptScreen: 'Terima',
+};
+
 const AppNavigation = lazyScreen(() => import('./navigation'));
 const LoginScreen = lazyScreen(() => import('./screens/LoginScreen'));
 const OfficeNavigation = lazyScreen(() => import('../office/navigation'));
@@ -36,14 +45,14 @@ function RoleRouter() {
   // happens through the module-scoped navigationRef shared by all three navigators.
   useEffect(() => {
     const cleanup = attachNotificationTapListener((screen, params) => {
-      if (navigationRef.current?.isReady()) {
-        // Dynamic deeplink screen names — bypass typed-overload checking.
-        // The runtime navigator validates the screen exists.
-        const navigate = navigationRef.current.navigate as unknown as (
-          s: string,
-          p?: unknown,
-        ) => void;
-        navigate(screen, params ?? undefined);
+      const ref = navigationRef.current;
+      if (!ref?.isReady()) return;
+      const target = NOTIFICATION_ROUTE_MAP[screen] ?? screen;
+      try {
+        ref.navigate(target as never, (params ?? {}) as never);
+      } catch {
+        // Route not in current role's nav — fall back to Notifikasi tab.
+        try { ref.navigate('Notifikasi' as never); } catch {}
       }
     });
     return cleanup;

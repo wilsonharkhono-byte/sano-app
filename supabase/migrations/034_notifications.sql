@@ -183,16 +183,21 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  PERFORM enqueue_notification(
-    NEW.project_id,
-    v_type,
-    v_title,
-    v_body,
-    'ApprovalsScreen',
-    jsonb_build_object('headerId', NEW.id),
-    NEW.id,
-    v_actor
-  );
+  BEGIN
+    PERFORM enqueue_notification(
+      NEW.project_id,
+      v_type,
+      v_title,
+      v_body,
+      'ApprovalsScreen',
+      jsonb_build_object('headerId', NEW.id),
+      NEW.id,
+      v_actor
+    );
+  EXCEPTION WHEN OTHERS THEN
+    -- Notifications must not block business writes. Log and continue.
+    RAISE WARNING 'enqueue_notification (header status) failed: %', SQLERRM;
+  END;
 
   RETURN NULL;
 END;
@@ -217,17 +222,21 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 BEGIN
-  PERFORM enqueue_notification(
-    NEW.project_id,
-    'PO_READY',
-    'PO siap dikirim',
-    'PO ' || COALESCE(NEW.po_number, 'baru') ||
-      ' siap, supplier ' || NEW.supplier || '.',
-    'POScreen',
-    jsonb_build_object('poId', NEW.id),
-    NEW.id,
-    NULL  -- no actor recorded on purchase_orders; notify everyone
-  );
+  BEGIN
+    PERFORM enqueue_notification(
+      NEW.project_id,
+      'PO_READY',
+      'PO siap dikirim',
+      'PO ' || COALESCE(NEW.po_number, 'baru') ||
+        ' siap, supplier ' || NEW.supplier || '.',
+      'POScreen',
+      jsonb_build_object('poId', NEW.id),
+      NEW.id,
+      NULL  -- no actor recorded on purchase_orders; notify everyone
+    );
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'enqueue_notification (PO_READY) failed: %', SQLERRM;
+  END;
   RETURN NULL;
 END;
 $$;
@@ -254,17 +263,21 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  PERFORM enqueue_notification(
-    NEW.project_id,
-    'RECEIPT_MISMATCH',
-    'Penerimaan mismatch',
-    'Receipt ' || COALESCE(NEW.vehicle_ref, 'tanpa nopol') ||
-      ' di-flag ' || NEW.gate3_flag || '.',
-    'ReceiptScreen',
-    jsonb_build_object('receiptId', NEW.id),
-    NEW.id,
-    NEW.received_by
-  );
+  BEGIN
+    PERFORM enqueue_notification(
+      NEW.project_id,
+      'RECEIPT_MISMATCH',
+      'Penerimaan mismatch',
+      'Receipt ' || COALESCE(NEW.vehicle_ref, 'tanpa nopol') ||
+        ' di-flag ' || NEW.gate3_flag || '.',
+      'ReceiptScreen',
+      jsonb_build_object('receiptId', NEW.id),
+      NEW.id,
+      NEW.received_by
+    );
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'enqueue_notification (RECEIPT_MISMATCH) failed: %', SQLERRM;
+  END;
   RETURN NULL;
 END;
 $$;
