@@ -2,11 +2,17 @@ import React, { Suspense, useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, Platform, View } from 'react-native';
 import * as Font from 'expo-font';
+import { createNavigationContainerRef } from '@react-navigation/native';
 import { supabase } from '../tools/supabase';
 import { Session } from '@supabase/supabase-js';
 import { ProjectProvider, useProject } from './hooks/useProject';
 import { COLORS } from './theme';
 import { lazyScreen } from './components/LazyScreen';
+import { registerForPushNotifications, attachNotificationTapListener } from '../tools/notifications';
+
+// Module-scoped so all three role-based NavigationContainers share the same ref.
+// The push-notification tap listener navigates through this ref from outside the React tree.
+export const navigationRef = createNavigationContainerRef<Record<string, object | undefined>>();
 
 const AppNavigation = lazyScreen(() => import('./navigation'));
 const LoginScreen = lazyScreen(() => import('./screens/LoginScreen'));
@@ -18,6 +24,31 @@ const GlobalAIChatLauncher = React.lazy(() => import('./components/GlobalAIChatL
 // Must be rendered inside ProjectProvider so useProject() works.
 function RoleRouter() {
   const { profile, loading } = useProject();
+
+  // Register the Expo push token once the profile is known.
+  useEffect(() => {
+    if (profile?.id) {
+      void registerForPushNotifications(profile.id);
+    }
+  }, [profile?.id]);
+
+  // Wire the global tap listener exactly once. Cross-stack deeplink navigation
+  // happens through the module-scoped navigationRef shared by all three navigators.
+  useEffect(() => {
+    const cleanup = attachNotificationTapListener((screen, params) => {
+      if (navigationRef.current?.isReady()) {
+        // Dynamic deeplink screen names — bypass typed-overload checking.
+        // The runtime navigator validates the screen exists.
+        const navigate = navigationRef.current.navigate as unknown as (
+          s: string,
+          p?: unknown,
+        ) => void;
+        navigate(screen, params ?? undefined);
+      }
+    });
+    return cleanup;
+  }, []);
+
   if (loading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.bg }}>
