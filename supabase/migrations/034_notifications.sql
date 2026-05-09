@@ -114,3 +114,68 @@ CREATE POLICY notifications_update_own ON notifications
   WITH CHECK (auth.uid() = recipient_user_id);
 
 -- (No INSERT or DELETE policy → blocked for non-service-role.)
+
+-- =========================================================================
+-- Trigger: material_request_headers status transitions
+-- =========================================================================
+
+CREATE OR REPLACE FUNCTION notify_header_status_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_type    TEXT;
+  v_title   TEXT;
+  v_body    TEXT;
+  v_actor   UUID;
+BEGIN
+  -- Transition guard: only fire when status changed to one of the three.
+  IF OLD.overall_status IS NOT DISTINCT FROM NEW.overall_status THEN
+    RETURN NULL;
+  END IF;
+
+  IF NEW.overall_status = 'AUTO_HOLD' THEN
+    v_type  := 'AUTO_HOLD';
+    v_title := 'Permintaan butuh review';
+    v_body  := 'Request di-flag ' || COALESCE(NEW.overall_flag, 'CRITICAL') ||
+               '. Tap untuk review.';
+    v_actor := NULL; -- system-driven (Claim 1 trigger), no actor to exclude
+  ELSIF NEW.overall_status = 'APPROVED' THEN
+    v_type  := 'APPROVED';
+    v_title := 'Permintaan disetujui';
+    v_body  := 'Request material disetujui.';
+    v_actor := NEW.reviewed_by;
+  ELSIF NEW.overall_status = 'REJECTED' THEN
+    v_type  := 'REJECTED';
+    v_title := 'Permintaan ditolak';
+    v_body  := 'Request material ditolak.';
+    v_actor := NEW.reviewed_by;
+  ELSE
+    -- PENDING / UNDER_REVIEW transitions don't notify.
+    RETURN NULL;
+  END IF;
+
+  PERFORM enqueue_notification(
+    NEW.project_id,
+    v_type,
+    v_title,
+    v_body,
+    'ApprovalsScreen',
+    jsonb_build_object('headerId', NEW.id),
+    NEW.id,
+    v_actor
+  );
+
+  RETURN NULL;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS material_request_headers_notify_status_trg
+  ON material_request_headers;
+CREATE TRIGGER material_request_headers_notify_status_trg
+  AFTER UPDATE OF overall_status
+  ON material_request_headers
+  FOR EACH ROW
+  EXECUTE FUNCTION notify_header_status_change();
