@@ -6,6 +6,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StyleSheet, Text, useWindowDimensions } from 'react-native';
 import { COLORS, FONTS, TYPE, SPACE, BREAKPOINTS } from './theme';
 import { lazyScreen } from './components/LazyScreen';
+import { useProject } from './hooks/useProject';
+import { useUnreadCount } from './screens/hooks/useUnreadCount';
+import { navigationRef } from './App';
+import NotificationsScreen from './screens/NotificationsScreen';
 
 const BerandaScreen = lazyScreen(() => import('./screens/BerandaScreen'));
 const PermintaanScreen = lazyScreen(() => import('./screens/PermintaanScreen'));
@@ -19,6 +23,7 @@ export type TabParamList = {
   Terima:     undefined;
   Progres:    undefined;
   Laporan:    { initialSection?: 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' } | undefined;
+  Notifikasi: undefined;
 };
 
 const Tab = createBottomTabNavigator<TabParamList>();
@@ -30,6 +35,7 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Terima:     'download-outline',     // was arrow-down (generic)
   Progres:    'trending-up-outline',
   Laporan:    'bar-chart-outline',    // was document-text
+  Notifikasi: 'notifications-outline',
 };
 
 const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -38,11 +44,14 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Terima:     'download',
   Progres:    'trending-up',
   Laporan:    'bar-chart',
+  Notifikasi: 'notifications',
 };
 
 export default function AppNavigation() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
+  const { profile } = useProject();
+  const unread = useUnreadCount(profile?.id);
 
   // Tablet/desktop: taller bar, more icon padding, always-visible labels
   const isWide     = width >= BREAKPOINTS.tablet;
@@ -53,7 +62,7 @@ export default function AppNavigation() {
   const labelStyle = isWide ? styles.labelWide : styles.label;
 
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       <Tab.Navigator
         screenOptions={({ route }) => ({
           tabBarIcon: ({ color, focused }) => (
@@ -107,6 +116,15 @@ export default function AppNavigation() {
           component={LaporanScreen}
           options={{ tabBarAccessibilityLabel: 'Laporan dan ekspor' }}
         />
+        <Tab.Screen
+          name="Notifikasi"
+          options={{
+            tabBarAccessibilityLabel: 'Notifikasi',
+            tabBarBadge: unread > 0 ? unread : undefined,
+          }}
+        >
+          {() => <NotificationsScreen profileId={profile!.id} />}
+        </Tab.Screen>
       </Tab.Navigator>
     </NavigationContainer>
   );
