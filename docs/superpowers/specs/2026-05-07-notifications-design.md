@@ -112,11 +112,11 @@ BEGIN
   INSERT INTO notifications
     (project_id, recipient_user_id, type, title, body,
      deeplink_screen, deeplink_params, related_entity_id)
-  SELECT p_project_id, pa.profile_id, p_type, p_title, p_body,
+  SELECT p_project_id, pa.user_id, p_type, p_title, p_body,
          p_deeplink_screen, p_deeplink_params, p_related_entity_id
   FROM project_assignments pa
   WHERE pa.project_id = p_project_id
-    AND (p_exclude_user_id IS NULL OR pa.profile_id <> p_exclude_user_id);
+    AND (p_exclude_user_id IS NULL OR pa.user_id <> p_exclude_user_id);
 END;
 $$;
 ```
