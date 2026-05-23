@@ -96,7 +96,13 @@ describe('readBreakdownComponents', () => {
     expect(components[3]).toMatchObject({ group: 'equipment', materialName: 'Sewa peralatan (vibrator, concrete pump)' });
   });
 
-  it('emits COST_MISMATCH warning when costPerBoqUnit != qtyPerBoqUnit × unitPrice', () => {
+  // NOTE: The plan originally checked `totalCost vs totalQty × unitPrice` but
+  // that comparison is rounding-unstable because the workbook author rounds
+  // totalQty to 4 decimals. The implementation checks the rounding-stable
+  // alternative `costPerBoqUnit vs qtyPerBoqUnit × unitPrice`. The fixture
+  // below places the wrong number in column J (costPerBoqUnit) to exercise
+  // that check.
+  it('emits COST_MISMATCH warning when costPerBoqUnit ≠ qtyPerBoqUnit × unitPrice', () => {
     const sheet = makeSheet([
       [], [], [], [], [], [], [], [], [],
       ['No', 'Component group', 'Material / Item', 'Spec / Note', 'Qty per native unit', 'Native unit', 'Native basis', 'Unit price (Rp)', 'Qty per m³ beton', 'Cost per m³ beton (Rp)', 'Total qty (× vol)', 'Total cost (Rp)'],
@@ -105,5 +111,18 @@ describe('readBreakdownComponents', () => {
     ]);
     const { warnings } = readBreakdownComponents(sheet, 'Breakdown IV.A.2.7');
     expect(warnings.some((w) => w.code === 'COST_MISMATCH')).toBe(true);
+  });
+
+  it('emits MALFORMED_COMPONENT_ROW warning when qty or price cell is missing/non-numeric', () => {
+    const sheet = makeSheet([
+      [], [], [], [], [], [], [], [], [],
+      ['No', 'Component group', 'Material / Item', 'Spec / Note', 'Qty per native unit', 'Native unit', 'Native basis', 'Unit price (Rp)', 'Qty per m³ beton', 'Cost per m³ beton (Rp)', 'Total qty (× vol)', 'Total cost (Rp)'],
+      [1, 'BETON READYMIX (Material)'],
+      ['', '', 'Beton readymix K-350', '', '', 'm3', '', 1043400, 1.05, 1095570, 0.2778, 289888], // qty cell empty
+      ['', '', 'Multipleks 15 mm',     '', 5.0, 'lbr', '', '',     5.0,  1000000, 1.3230, 264600], // price cell empty
+    ]);
+    const { components, warnings } = readBreakdownComponents(sheet, 'Breakdown TEST');
+    expect(warnings.filter((w) => w.code === 'MALFORMED_COMPONENT_ROW')).toHaveLength(2);
+    expect(components).toHaveLength(0);
   });
 });

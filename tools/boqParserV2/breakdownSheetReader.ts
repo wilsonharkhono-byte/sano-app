@@ -15,6 +15,14 @@ function getRows(sheet: XLSX.WorkSheet): unknown[][] {
   return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' }) as unknown[][];
 }
 
+function isNumericLikeCell(v: unknown): boolean {
+  if (typeof v === 'number') return Number.isFinite(v);
+  if (typeof v !== 'string') return false;
+  const trimmed = v.trim();
+  if (trimmed === '') return false;
+  return /\d/.test(trimmed);
+}
+
 function findLabelledRow(rows: unknown[][], label: string): unknown[] | undefined {
   return rows.find((r) => typeof r[0] === 'string' && r[0].trim().toLowerCase() === label.toLowerCase());
 }
@@ -97,7 +105,7 @@ export function readBreakdownComponents(sheet: XLSX.WorkSheet, sheetName: string
       continue;
     }
     if (colC == null || (typeof colC === 'string' && colC.trim() === '')) continue;
-    if (typeof colC === 'string' && /^SUBTOTAL|^RECONCILIATION/i.test(colC)) break;
+    if (typeof colC === 'string' && /^(SUBTOTAL|RECONCILIATION)/i.test(colC)) break;
 
     const qtyPerNative = toNumber(r[4]);
     const unitPrice = toNumber(r[7]);
@@ -106,8 +114,12 @@ export function readBreakdownComponents(sheet: XLSX.WorkSheet, sheetName: string
     const totalQty = toNumber(r[10]);
     const totalCost = toNumber(r[11]);
 
-    if (!Number.isFinite(qtyPerNative) || !Number.isFinite(unitPrice)) {
-      warnings.push({ sheet: sheetName, code: 'MALFORMED_COMPONENT_ROW', message: `Row ${i + 1}: non-numeric qty/price` });
+    if (!isNumericLikeCell(r[4]) || !isNumericLikeCell(r[7])) {
+      warnings.push({
+        sheet: sheetName,
+        code: 'MALFORMED_COMPONENT_ROW',
+        message: `Row ${i + 1} (${String(colC).trim()}): non-numeric qty or unit price`,
+      });
       continue;
     }
 
