@@ -1,9 +1,12 @@
 import { harvestWorkbook } from './harvest';
 import { detectAhsBlocks } from './detectBlocks';
+import { readBreakdownSheets } from './breakdownSheetReader';
+import type { RowBreakdown } from './breakdownSheetReader.types';
 import { classifyComponent, toNumber } from './classifyComponent';
 import { extractCatalogRows, type CatalogRow } from './extractCatalog';
 import { extractBoqRows, type BoqRowV2, detectCostSplitColumns, findHeaderRow } from './extractTakeoffs';
 import { buildRecipe } from './recipeBuilder';
+import { buildRecipeFromBreakdown } from './recipeFromBreakdown';
 import { validateBlocks } from './validate';
 import { disaggregateRebar } from './rebarDisaggregator';
 import { resolveBoqSheets, type BoqSheetOption } from './multiSheetScanner';
@@ -99,15 +102,29 @@ export async function parseBoqV2(
   }
 
   // Existing per-sheet recipeBuilder loop ends here.
-  // Now disaggregate rebar components for any BoQ row whose label matches
-  // an element prefix (Sloof|Balok|Kolom|Poer|Plat) and whose recipe has
-  // a Pembesian aggregate. Non-rebar rows pass through unchanged.
-  const disaggregateResult = disaggregateRebar(boqRows, cells);
+
+  // Recipe-detail expansion: if the workbook has "Breakdown {code}" sheets
+  // AND the flag is on, replace those rows' recipes with breakdown-derived
+  // components. Rows without a matching breakdown fall through to disaggregateRebar.
+  const breakdownsResult =
+    process.env.SANO_BOQ_RECIPE_DETAIL === 'on'
+      ? readBreakdownSheets(workbook)
+      : { breakdowns: new Map<string, RowBreakdown>(), warnings: [] };
+
+  for (const b of boqRows) {
+    const bd = breakdownsResult.breakdowns.get(b.code);
+    if (!bd) continue;
+    b.recipe = buildRecipeFromBreakdown(b, bd);
+  }
+
+  // Run disaggregateRebar only on rows without a Breakdown sheet override.
+  const rowsForDisaggregator = boqRows.filter((r) => !breakdownsResult.breakdowns.has(r.code));
+  const disaggregateResult = disaggregateRebar(rowsForDisaggregator, cells);
+  const overriddenRows = boqRows.filter((r) => breakdownsResult.breakdowns.has(r.code));
   boqRows.length = 0;
-  boqRows.push(...disaggregateResult.boqRows);
-  // Note: disaggregateResult.warnings is collected here for future surfacing
-  // in validationReport. For now we keep it scoped — Task 9+ may include
-  // them in the parsed result.
+  boqRows.push(...disaggregateResult.boqRows, ...overriddenRows);
+  // Note: disaggregateResult.warnings + breakdownsResult.warnings collected
+  // here for future surfacing in validationReport. Task 8 wires them through.
 
   const validationReport = validateBlocks(ahsBlocks);
 
