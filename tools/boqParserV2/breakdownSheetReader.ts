@@ -104,6 +104,10 @@ export function readBreakdownComponents(sheet: XLSX.WorkSheet, sheetName: string
       currentGroupLabel = (r[1] as string).trim();
       continue;
     }
+    // Stop when column A or column B carries a SUBTOTAL/RECONCILIATION sentinel
+    // (the real workbook puts "SUBTOTAL" in col B and "RECONCILIATION" in col A).
+    if (typeof colA === 'string' && /^RECONCILIATION/i.test((colA as string).trim())) break;
+    if (typeof r[1] === 'string' && /^SUBTOTAL/i.test((r[1] as string).trim())) break;
     if (colC == null || (typeof colC === 'string' && colC.trim() === '')) continue;
     if (typeof colC === 'string' && /^(SUBTOTAL|RECONCILIATION)/i.test(colC)) break;
 

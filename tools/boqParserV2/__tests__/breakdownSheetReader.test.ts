@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import * as XLSX from 'xlsx';
 import { readBreakdownHeader, readBreakdownComponents, readBreakdownSheets } from '../breakdownSheetReader';
 
@@ -205,5 +207,38 @@ describe('readBreakdownSheets (workbook)', () => {
     const bd = breakdowns.get('BAD')!;
     expect(bd.reconciliation.reconciles).toBe(false);
     expect(Math.abs(bd.reconciliation.lineTotalVariance)).toBeGreaterThan(1000);
+  });
+});
+
+describe('readBreakdownSheets — real AAL-5 workbook', () => {
+  const WORKBOOK = path.join(__dirname, '..', '..', '..', 'assets', 'BOQ', 'RAB R1 Pakuwon Indah AAL-5_Claude Override.xlsx');
+  const skip = !fs.existsSync(WORKBOOK);
+  const itx = skip ? it.skip : it;
+
+  itx('reads Breakdown IV.A.2.7 with 13 components and reconciles', () => {
+    const buf = fs.readFileSync(WORKBOOK);
+    const wb = XLSX.read(buf);
+    const { breakdowns, warnings } = readBreakdownSheets(wb);
+    const bd = breakdowns.get('IV.A.2.7');
+    expect(bd).toBeDefined();
+    expect(bd!.volume).toBeCloseTo(0.2646, 4);
+    expect(bd!.components.length).toBeGreaterThanOrEqual(13);
+
+    // Spot-check 4 canonical materials from spec Appendix A.
+    const byName = (name: string) => bd!.components.find((c) => c.materialName.startsWith(name));
+    expect(byName('Beton readymix K-350')?.qtyPerBoqUnit).toBeCloseTo(1.05, 4);
+    expect(byName('Multipleks 15 mm')?.qtyPerBoqUnit).toBeCloseTo(5.0, 4);
+    expect(byName('Besi beton D8')?.qtyPerBoqUnit).toBeCloseTo(75.2587, 3);
+    expect(byName('Bendrat')?.qtyPerBoqUnit).toBeCloseTo(3.5107, 3);
+
+    expect(bd!.reconciliation.reconciles).toBe(true);
+    // Allow up to a few COST_MISMATCH warnings for rows that use formulas in the
+    // workbook where xlsx may return computed values that round differently.
+    // Any warnings for this sheet must be COST_MISMATCH only.
+    for (const w of warnings) {
+      if (w.sheet === 'Breakdown IV.A.2.7') {
+        expect(w.code).toBe('COST_MISMATCH');
+      }
+    }
   });
 });
