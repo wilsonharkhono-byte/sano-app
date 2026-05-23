@@ -159,4 +159,51 @@ describe('readBreakdownSheets (workbook)', () => {
     expect(bd!.components[0].materialName).toBe('Beton readymix K-350');
     expect(bd!.sourceSheet).toBe('Breakdown IV.A.2.7');
   });
+
+  it('reconciles=true when the computed line total matches source within tolerance', () => {
+    const wb = XLSX.utils.book_new();
+    // Component cost-per-unit 1095570 × volume 0.2 = 219114 — exactly equal to declared line total
+    const sheet = makeSheet([
+      ['BREAKDOWN — TEST'],
+      [],
+      [],
+      ['Description', 'test'],
+      ['Unit', 'm3'],
+      ['Volume', 0.2],
+      ['Unit cost (Rp/m³)', 1095570],
+      ['Line total at-cost (Rp)', 219114],
+      [],
+      ['No', 'Component group', 'Material / Item', 'Spec / Note', 'Qty per native unit', 'Native unit', 'Native basis', 'Unit price (Rp)', 'Qty per m³ beton', 'Cost per m³ beton (Rp)', 'Total qty (× vol)', 'Total cost (Rp)'],
+      [1, 'BETON READYMIX (Material)'],
+      ['', '', 'Beton readymix K-350', '', 1.05, 'm3', '', 1043400, 1.05, 1095570, 0.21, 219114],
+    ]);
+    XLSX.utils.book_append_sheet(wb, sheet, 'Breakdown TEST');
+    const { breakdowns } = readBreakdownSheets(wb);
+    const bd = breakdowns.get('TEST')!;
+    expect(bd.reconciliation.reconciles).toBe(true);
+    expect(bd.reconciliation.lineTotalVariance).toBeLessThanOrEqual(1);
+  });
+
+  it('reconciles=false when computed line total drifts beyond tolerance', () => {
+    const wb = XLSX.utils.book_new();
+    const sheet = makeSheet([
+      ['BREAKDOWN — BAD'],
+      [],
+      [],
+      ['Description', 'test'],
+      ['Unit', 'm3'],
+      ['Volume', 0.2],
+      ['Unit cost (Rp/m³)', 1095570],
+      ['Line total at-cost (Rp)', 500000], // deliberately wrong
+      [],
+      ['No', 'Component group', 'Material / Item', 'Spec / Note', 'Qty per native unit', 'Native unit', 'Native basis', 'Unit price (Rp)', 'Qty per m³ beton', 'Cost per m³ beton (Rp)', 'Total qty (× vol)', 'Total cost (Rp)'],
+      [1, 'BETON READYMIX (Material)'],
+      ['', '', 'Beton readymix K-350', '', 1.05, 'm3', '', 1043400, 1.05, 1095570, 0.21, 219114],
+    ]);
+    XLSX.utils.book_append_sheet(wb, sheet, 'Breakdown BAD');
+    const { breakdowns } = readBreakdownSheets(wb);
+    const bd = breakdowns.get('BAD')!;
+    expect(bd.reconciliation.reconciles).toBe(false);
+    expect(Math.abs(bd.reconciliation.lineTotalVariance)).toBeGreaterThan(1000);
+  });
 });

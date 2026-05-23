@@ -174,6 +174,13 @@ export function readBreakdownSheets(workbook: XLSX.WorkBook): ReadBreakdownsResu
 
       const computedUnitCost = components.reduce((s, c) => s + c.costPerBoqUnit, 0);
       const computedLineTotal = computedUnitCost * header.volume;
+      // Tolerance scales with component count because each costPerBoqUnit is
+      // rounded to the nearest Rp; summing N rounded values + multiplying by
+      // volume drifts by up to ~N/2 Rp. max(1, N) keeps tight single-component
+      // sheets honest while allowing realistic 13-30 component breakdowns to
+      // reconcile without false negatives.
+      const tolerance = Math.max(1, components.length);
+      const reconciles = Math.abs(computedLineTotal - header.lineTotal) <= tolerance;
       const breakdown: RowBreakdown = {
         boqCode: header.boqCode,
         description: header.description,
@@ -189,7 +196,7 @@ export function readBreakdownSheets(workbook: XLSX.WorkBook): ReadBreakdownsResu
           computedLineTotal,
           sourceLineTotal: header.lineTotal,
           lineTotalVariance: computedLineTotal - header.lineTotal,
-          reconciles: Math.abs(computedLineTotal - header.lineTotal) <= 1,
+          reconciles,
         },
         sourceSheet: sheetName,
       };
