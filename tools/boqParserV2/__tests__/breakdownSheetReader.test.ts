@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { readBreakdownHeader } from '../breakdownSheetReader';
+import { readBreakdownHeader, readBreakdownComponents } from '../breakdownSheetReader';
 
 function makeSheet(rows: unknown[][]): XLSX.WorkSheet {
   return XLSX.utils.aoa_to_sheet(rows);
@@ -64,5 +64,46 @@ describe('readBreakdownHeader', () => {
       // Line total row absent
     ]);
     expect(() => readBreakdownHeader(sheet, 'Breakdown IV.A.2.7')).toThrow(/missing.*line total/i);
+  });
+});
+
+describe('readBreakdownComponents', () => {
+  it('parses material/labor/equipment rows and infers group from header rows', () => {
+    const sheet = makeSheet([
+      [], [], [], [], [], [], [], [], [], // 9 padding rows (header lives in row 10)
+      ['No', 'Component group', 'Material / Item', 'Spec / Note', 'Qty per native unit', 'Native unit', 'Native basis', 'Unit price (Rp)', 'Qty per m³ beton', 'Cost per m³ beton (Rp)', 'Total qty (× vol)', 'Total cost (Rp)'],
+      [1, 'BETON READYMIX (Material)'],
+      ['', '', 'Beton readymix K-350', 'slump 18 ± 2 cm', 1.05, 'm3', 'per m3 beton (waste 5%)', 1043400, 1.0500, 1095570, 0.2778, 289888],
+      [2, 'BEKISTING BALOK (Material) — ratio 10 m²'],
+      ['', '', 'Multipleks 15 mm', '30x50 panjang 4 m', 2.00, 'lbr', 'per balok (4 m² form)', 200000, 5.0000, 1000000, 1.3230, 264600],
+      [3, 'UPAH (Labor) — borongan'],
+      ['', '', 'Upah cor + besi + bekisting (borongan)', 'all-in labor', 1.0, 'm3', 'per m3 beton', 1500000, 1.0, 1500000, 0.2646, 396900],
+      [4, 'PERALATAN (Equipment)'],
+      ['', '', 'Sewa peralatan (vibrator, concrete pump)', '', 1.0, 'm3', 'per m3 beton', 75000, 1.0, 75000, 0.2646, 19845],
+    ]);
+
+    const { components, warnings } = readBreakdownComponents(sheet, 'Breakdown IV.A.2.7');
+
+    expect(warnings).toEqual([]);
+    expect(components).toHaveLength(4);
+    expect(components[0]).toMatchObject({
+      group: 'material', materialName: 'Beton readymix K-350',
+      qtyPerNativeUnit: 1.05, nativeUnit: 'm3', unitPrice: 1043400,
+      qtyPerBoqUnit: 1.0500, costPerBoqUnit: 1095570, totalQty: 0.2778, totalCost: 289888,
+    });
+    expect(components[1]).toMatchObject({ group: 'material', materialName: 'Multipleks 15 mm' });
+    expect(components[2]).toMatchObject({ group: 'labor', materialName: 'Upah cor + besi + bekisting (borongan)' });
+    expect(components[3]).toMatchObject({ group: 'equipment', materialName: 'Sewa peralatan (vibrator, concrete pump)' });
+  });
+
+  it('emits COST_MISMATCH warning when totalCost != totalQty × unitPrice', () => {
+    const sheet = makeSheet([
+      [], [], [], [], [], [], [], [], [],
+      ['No', 'Component group', 'Material / Item', 'Spec / Note', 'Qty per native unit', 'Native unit', 'Native basis', 'Unit price (Rp)', 'Qty per m³ beton', 'Cost per m³ beton (Rp)', 'Total qty (× vol)', 'Total cost (Rp)'],
+      [1, 'BETON READYMIX (Material)'],
+      ['', '', 'Beton readymix K-350', '', 1.05, 'm3', '', 1043400, 1.05, 1095570, 0.2778, 999999], // wrong total
+    ]);
+    const { warnings } = readBreakdownComponents(sheet, 'Breakdown IV.A.2.7');
+    expect(warnings.some((w) => w.code === 'COST_MISMATCH')).toBe(true);
   });
 });

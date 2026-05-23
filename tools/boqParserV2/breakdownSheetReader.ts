@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import { toNumber } from './classifyComponent';
+import type { BreakdownGroup, BreakdownRow, ReaderWarning } from './breakdownSheetReader.types';
 
 export interface BreakdownHeader {
   boqCode: string;
@@ -45,4 +46,100 @@ export function readBreakdownHeader(sheet: XLSX.WorkSheet, sheetName: string): B
     unitCost: toNumber(unitCostRow[1]),
     lineTotal: toNumber(lineTotalRow[1]),
   };
+}
+
+const GROUP_FROM_LABEL: Array<[RegExp, BreakdownGroup]> = [
+  [/\(Material\)/i, 'material'],
+  [/\(Labor\)/i, 'labor'],
+  [/\(Equipment\)/i, 'equipment'],
+];
+
+function inferGroup(componentGroupLabel: string): BreakdownGroup {
+  for (const [re, g] of GROUP_FROM_LABEL) if (re.test(componentGroupLabel)) return g;
+  return 'material';
+}
+
+function findHeaderRowIndex(rows: unknown[][]): number {
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (r[0] === 'No' && typeof r[2] === 'string' && /Material/i.test(r[2] as string)) return i;
+  }
+  return -1;
+}
+
+export interface ComponentParseResult {
+  components: BreakdownRow[];
+  warnings: ReaderWarning[];
+}
+
+export function readBreakdownComponents(sheet: XLSX.WorkSheet, sheetName: string): ComponentParseResult {
+  const rows = getRows(sheet);
+  const headerIdx = findHeaderRowIndex(rows);
+  const warnings: ReaderWarning[] = [];
+  if (headerIdx < 0) {
+    warnings.push({ sheet: sheetName, code: 'MALFORMED_HEADER', message: 'Component header row not found' });
+    return { components: [], warnings };
+  }
+
+  const components: BreakdownRow[] = [];
+  let currentGroupLabel = '';
+  for (let i = headerIdx + 1; i < rows.length; i++) {
+    const r = rows[i];
+    const colA = r[0];
+    const colC = r[2];
+    // A row with column A non-empty AND column B non-empty AND column C empty is a group-header row.
+    const isGroupHeader =
+      colA !== '' && colA != null &&
+      typeof r[1] === 'string' && (r[1] as string).trim() !== '' &&
+      (colC == null || colC === '');
+    if (isGroupHeader) {
+      currentGroupLabel = (r[1] as string).trim();
+      continue;
+    }
+    if (colC == null || (typeof colC === 'string' && colC.trim() === '')) continue;
+    if (typeof colC === 'string' && /^SUBTOTAL|^RECONCILIATION/i.test(colC)) break;
+
+    const qtyPerNative = toNumber(r[4]);
+    const unitPrice = toNumber(r[7]);
+    const qtyPerBoq = toNumber(r[8]);
+    const costPerBoq = toNumber(r[9]);
+    const totalQty = toNumber(r[10]);
+    const totalCost = toNumber(r[11]);
+
+    if (!Number.isFinite(qtyPerNative) || !Number.isFinite(unitPrice)) {
+      warnings.push({ sheet: sheetName, code: 'MALFORMED_COMPONENT_ROW', message: `Row ${i + 1}: non-numeric qty/price` });
+      continue;
+    }
+
+    const component: BreakdownRow = {
+      group: inferGroup(currentGroupLabel),
+      componentGroup: currentGroupLabel,
+      materialName: String(colC).trim(),
+      specNote: r[3] != null && String(r[3]).trim() !== '' ? String(r[3]).trim() : null,
+      qtyPerNativeUnit: qtyPerNative,
+      nativeUnit: String(r[5] ?? '').trim(),
+      nativeBasis: r[6] != null && String(r[6]).trim() !== '' ? String(r[6]).trim() : null,
+      unitPrice,
+      qtyPerBoqUnit: qtyPerBoq,
+      costPerBoqUnit: costPerBoq,
+      totalQty,
+      totalCost,
+    };
+
+    // Conservation: totalCost should be close to totalQty × unitPrice.
+    // totalQty is stored rounded in the sheet so allow a wider tolerance (±500 Rp)
+    // to avoid false positives while still catching gross entry errors.
+    const recomputedTotal = totalQty * unitPrice;
+    if (Math.abs(recomputedTotal - totalCost) > 500) {
+      warnings.push({
+        sheet: sheetName,
+        code: 'COST_MISMATCH',
+        message: `${component.materialName}: declared ${totalCost} vs recomputed ${recomputedTotal.toFixed(0)}`,
+      });
+    }
+
+    components.push(component);
+  }
+
+  return { components, warnings };
 }
