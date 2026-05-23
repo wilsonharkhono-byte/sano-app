@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { readBreakdownHeader, readBreakdownComponents } from '../breakdownSheetReader';
+import { readBreakdownHeader, readBreakdownComponents, readBreakdownSheets } from '../breakdownSheetReader';
 
 function makeSheet(rows: unknown[][]): XLSX.WorkSheet {
   return XLSX.utils.aoa_to_sheet(rows);
@@ -124,5 +124,39 @@ describe('readBreakdownComponents', () => {
     const { components, warnings } = readBreakdownComponents(sheet, 'Breakdown TEST');
     expect(warnings.filter((w) => w.code === 'MALFORMED_COMPONENT_ROW')).toHaveLength(2);
     expect(components).toHaveLength(0);
+  });
+});
+
+describe('readBreakdownSheets (workbook)', () => {
+  it('returns a Map keyed by boqCode for every "Breakdown {code}" sheet', () => {
+    const wb = XLSX.utils.book_new();
+    const sheet1 = makeSheet([
+      ['BREAKDOWN — IV.A.2.7'],
+      [],
+      [],
+      ['Description', '- Balok B24-1'],
+      ['Unit', 'm3'],
+      ['Volume', 0.2646],
+      ['Unit cost (Rp/m³)', 6839679],
+      ['Line total at-cost (Rp)', 1809779],
+      [],
+      ['No', 'Component group', 'Material / Item', 'Spec / Note', 'Qty per native unit', 'Native unit', 'Native basis', 'Unit price (Rp)', 'Qty per m³ beton', 'Cost per m³ beton (Rp)', 'Total qty (× vol)', 'Total cost (Rp)'],
+      [1, 'BETON READYMIX (Material)'],
+      ['', '', 'Beton readymix K-350', '', 1.05, 'm3', '', 1043400, 1.05, 1095570, 0.2778, 289888],
+    ]);
+    XLSX.utils.book_append_sheet(wb, sheet1, 'Breakdown IV.A.2.7');
+    const unrelated = makeSheet([['ignore me']]);
+    XLSX.utils.book_append_sheet(wb, unrelated, 'Random');
+
+    const { breakdowns, warnings } = readBreakdownSheets(wb);
+
+    expect(warnings).toEqual([]);
+    expect(breakdowns.size).toBe(1);
+    const bd = breakdowns.get('IV.A.2.7');
+    expect(bd).toBeDefined();
+    expect(bd!.volume).toBe(0.2646);
+    expect(bd!.components).toHaveLength(1);
+    expect(bd!.components[0].materialName).toBe('Beton readymix K-350');
+    expect(bd!.sourceSheet).toBe('Breakdown IV.A.2.7');
   });
 });

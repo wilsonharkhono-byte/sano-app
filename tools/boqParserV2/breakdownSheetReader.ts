@@ -1,6 +1,6 @@
 import * as XLSX from 'xlsx';
 import { toNumber } from './classifyComponent';
-import type { BreakdownGroup, BreakdownRow, ReaderWarning } from './breakdownSheetReader.types';
+import type { BreakdownGroup, BreakdownRow, ReaderWarning, RowBreakdown } from './breakdownSheetReader.types';
 
 export interface BreakdownHeader {
   boqCode: string;
@@ -154,4 +154,53 @@ export function readBreakdownComponents(sheet: XLSX.WorkSheet, sheetName: string
   }
 
   return { components, warnings };
+}
+
+export interface ReadBreakdownsResult {
+  breakdowns: Map<string, RowBreakdown>;
+  warnings: ReaderWarning[];
+}
+
+export function readBreakdownSheets(workbook: XLSX.WorkBook): ReadBreakdownsResult {
+  const out = new Map<string, RowBreakdown>();
+  const warnings: ReaderWarning[] = [];
+  for (const sheetName of workbook.SheetNames) {
+    if (!SHEET_NAME_TO_CODE.test(sheetName)) continue;
+    const sheet = workbook.Sheets[sheetName];
+    try {
+      const header = readBreakdownHeader(sheet, sheetName);
+      const { components, warnings: compWarnings } = readBreakdownComponents(sheet, sheetName);
+      warnings.push(...compWarnings);
+
+      const computedUnitCost = components.reduce((s, c) => s + c.costPerBoqUnit, 0);
+      const computedLineTotal = computedUnitCost * header.volume;
+      const breakdown: RowBreakdown = {
+        boqCode: header.boqCode,
+        description: header.description,
+        unit: header.unit,
+        volume: header.volume,
+        unitCost: header.unitCost,
+        lineTotal: header.lineTotal,
+        components,
+        reconciliation: {
+          computedUnitCost,
+          sourceUnitCost: header.unitCost,
+          unitCostVariance: computedUnitCost - header.unitCost,
+          computedLineTotal,
+          sourceLineTotal: header.lineTotal,
+          lineTotalVariance: computedLineTotal - header.lineTotal,
+          reconciles: Math.abs(computedLineTotal - header.lineTotal) <= 1,
+        },
+        sourceSheet: sheetName,
+      };
+      out.set(header.boqCode, breakdown);
+    } catch (err) {
+      warnings.push({
+        sheet: sheetName,
+        code: 'MALFORMED_HEADER',
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return { breakdowns: out, warnings };
 }
