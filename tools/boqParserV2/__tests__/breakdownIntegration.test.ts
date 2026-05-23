@@ -39,6 +39,13 @@ describe('parseBoqV2 with Breakdown sheets', () => {
     expect(row!.recipe!.components.length).toBeLessThan(13);
   });
 
+  itx('with flag off but Breakdown sheets present, emits BREAKDOWN_SHEETS_PRESENT_BUT_FLAG_OFF warning', async () => {
+    delete process.env.SANO_BOQ_RECIPE_DETAIL;
+    const buf = fs.readFileSync(WORKBOOK);
+    const result = await parseBoqV2(buf);
+    expect(result.breakdownWarnings.some((w) => w.code === 'BREAKDOWN_SHEETS_PRESENT_BUT_FLAG_OFF')).toBe(true);
+  });
+
   itx('preserves document order — IV.A.2.7 stays before V.A.2.6 with flag on', async () => {
     process.env.SANO_BOQ_RECIPE_DETAIL = 'on';
     const buf = fs.readFileSync(WORKBOOK);

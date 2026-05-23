@@ -109,10 +109,17 @@ export async function parseBoqV2(
   // ones. We still run disaggregateRebar across all rows (cheap, idempotent)
   // and then apply breakdown overrides in-place so original document order
   // is preserved for downstream staging-row numbering and audit UI display.
-  const breakdownsResult =
-    process.env.SANO_BOQ_RECIPE_DETAIL === 'on'
-      ? readBreakdownSheets(workbook)
-      : { breakdowns: new Map<string, RowBreakdown>(), warnings: [] };
+  const flagEnabled = process.env.SANO_BOQ_RECIPE_DETAIL === 'on';
+  const breakdownsResult = flagEnabled
+    ? readBreakdownSheets(workbook)
+    : { breakdowns: new Map<string, RowBreakdown>(), warnings: [] };
+
+  // Count "Breakdown {code}" sheets regardless of flag so the validator can
+  // warn operators who have authored Breakdown sheets but forgot the flag.
+  // Cheap sheet-name scan — no parsing.
+  const breakdownSheetCount = flagEnabled
+    ? breakdownsResult.breakdowns.size
+    : workbook.SheetNames.filter((n) => /^Breakdown\s+/.test(n)).length;
 
   const disaggregateResult = disaggregateRebar(boqRows, cells);
   boqRows.length = 0;
@@ -129,8 +136,8 @@ export async function parseBoqV2(
 
   const validationReport = validateBlocks(ahsBlocks);
   const breakdownWarnings = validateBreakdowns({
-    breakdownsFound: breakdownsResult.breakdowns.size,
-    flagEnabled: process.env.SANO_BOQ_RECIPE_DETAIL === 'on',
+    breakdownsFound: breakdownSheetCount,
+    flagEnabled,
     readerWarnings: breakdownsResult.warnings,
   });
 
