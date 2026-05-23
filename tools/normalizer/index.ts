@@ -36,8 +36,11 @@ export interface NormalizeResult {
  * Three resolution strategies:
  * - Concrete: recipe component whose referencedBlockTitle matches /^Pengecoran Beton/i,
  *   pointing directly at an Analisa F-column cell.
- * - Bekisting: recipe component on the Analisa sheet with a null referencedBlockTitle
- *   (see bekisting branch comment below for why the title is null).
+ * - Bekisting: recipe component whose referencedBlockTitle starts with "Bekisting"
+ *   (e.g. "Bekisting Balok", "Bekisting Plat", "1 m2 Bekisting Batako ...").
+ *   `detectAhsBlocks`'s TITLE_WORK_RE now matches `bekisting` so verb-style headers
+ *   are captured. A defensive null-title fallback remains for legacy workbooks
+ *   where the AHS header doesn't match either regex.
  * - Pembesian: recipe component whose referencedBlockTitle matches /^Pembesian/i;
  *   prefers a direct Analisa cell reference, falls back to ahsBlocks title lookup.
  */
@@ -59,12 +62,12 @@ function findBlockIdsFor(
       out.concrete = `${cellSheet}!${cellAddr}`;
     }
 
-    // Bekisting: the recipe component's referencedBlockTitle is null because
-    // `detectAhsBlocks`'s TITLE_WORK_RE pattern (pekerjaan|pasangan|pengecoran|
-    // pembetonan|pembesian) does not match "Bekisting Balok" / "Bekisting Plat".
-    // We identify the bekisting component by its position: the first Analisa-
-    // sheet recipe component with a null block title.
-    if (!title && cellSheet === analisaSheet && !out.bekisting) {
+    // Bekisting (primary): identify by title prefix now that detectAhsBlocks
+    // recognises "Bekisting Balok" / "Bekisting Plat" / "1 m2 Bekisting ..." as
+    // block headers. The TITLE_UNIT_RE pattern captures unit-prefixed titles
+    // (e.g. "1 m2 Bekisting Batako ...") and TITLE_WORK_RE now captures verb-
+    // style headers (e.g. "Bekisting Balok").
+    if (title && /^(?:\d+\s+m[123²³]\s+)?Bekisting/i.test(title) && cellSheet === analisaSheet && !out.bekisting) {
       out.bekisting = `${cellSheet}!${cellAddr}`;
     }
 
@@ -85,6 +88,23 @@ function findBlockIdsFor(
       }
     }
   }
+
+  // Fallback: defensive lookup for legacy workbooks where the bekisting AHS
+  // header doesn't match either title regex and the component lands with a
+  // null `referencedBlockTitle`. If no titled "Bekisting" block was found via
+  // the primary path above, pick the first null-title Analisa recipe component.
+  // This is intentionally secondary — the primary title match is preferred so
+  // unrelated null-title references (e.g. Plat/Sloof/Kolom raw F-row picks)
+  // can't be misclassified as bekisting.
+  if (!out.bekisting) {
+    for (const c of row.recipe.components) {
+      if (!c.referencedBlockTitle && c.referencedCell.sheet === analisaSheet) {
+        out.bekisting = `${c.referencedCell.sheet}!${c.referencedCell.address}`;
+        break;
+      }
+    }
+  }
+
   return out;
 }
 
@@ -141,12 +161,15 @@ export async function normalizeWorkbook(
     }
 
     // Pull the bekisting ratio-per-m³ from the recipe.
-    // Primary: component whose title explicitly mentions "Bekisting".
-    // Fallback: the null-title Analisa component (workbook stores the per-cycle
-    // cost at a raw F-row without a labelled title; its quantityPerUnit IS the
-    // bekisting ratio in m²/m³).
+    // Primary: component whose title explicitly mentions "Bekisting" (matches
+    // both "Bekisting Balok"-style verb headers and "1 m2 Bekisting ..."-style
+    // unit-prefixed headers — both are now detected by detectAhsBlocks).
+    // Fallback: the null-title Analisa component (legacy workbooks where the
+    // AHS header doesn't match either title regex; the workbook stores the
+    // per-cycle cost at a raw F-row without a labelled title and its
+    // quantityPerUnit IS the bekisting ratio in m²/m³).
     const bekistingComponent =
-      row.recipe.components.find((c) => c.referencedBlockTitle && /^Bekisting/i.test(c.referencedBlockTitle)) ??
+      row.recipe.components.find((c) => c.referencedBlockTitle && /^(?:\d+\s+m[123²³]\s+)?Bekisting/i.test(c.referencedBlockTitle)) ??
       row.recipe.components.find((c) => !c.referencedBlockTitle && c.referencedCell.sheet === analisaSheet);
     const ratioPerM3 = bekistingComponent?.quantityPerUnit ?? null;
 

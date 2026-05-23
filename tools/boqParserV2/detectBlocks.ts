@@ -19,7 +19,7 @@ export interface AhsBlock {
 //      "Pekerjaan Persiapan" or "Pasangan Bata". Match the common leading
 //      verbs so those blocks aren't silently dropped.
 const TITLE_UNIT_RE = /^\s*\d+\s+(m[123²³]|kg|ls|bh|pcs|titik|set|unit)\s+\S/i;
-const TITLE_WORK_RE = /^(pekerjaan|pasangan|pemasangan|pengecoran|pembetonan|pembesian)\b/i;
+const TITLE_WORK_RE = /^(pekerjaan|pasangan|pemasangan|pengecoran|pembetonan|pembesian|bekisting)\b/i;
 const HEADER_LABELS = new Set([
   'uraian', 'satuan', 'koefisien', 'harga', 'jumlah harga', 'no', 'kode', 'bahan',
 ]);
