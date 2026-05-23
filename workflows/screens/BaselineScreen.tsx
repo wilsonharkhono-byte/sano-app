@@ -3,6 +3,8 @@ import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIn
 import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
+import Constants from 'expo-constants';
+import { probeBoq, normalizeBoq } from '../api/normalize';
 import Header from '../components/Header';
 import Card from '../components/Card';
 import Badge from '../components/Badge';
@@ -205,6 +207,10 @@ export default function BaselineScreen({
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [parserVersion, setParserVersion] = useState<'v1' | 'v2'>('v1');
   const canSeeParserToggle = profile?.role === 'principal' || profile?.role === 'admin' || profile?.role === 'estimator';
+  const [probe, setProbe] = useState<import('../api/normalize').ProbeResult | null>(null);
+  const [normalizing, setNormalizing] = useState(false);
+  const [normalized, setNormalized] = useState<import('../api/normalize').NormalizeResult | null>(null);
+  const [currentStoragePath, setCurrentStoragePath] = useState<string | null>(null);
 
   const loadSessions = useCallback(async () => {
     if (!project) return;
@@ -296,6 +302,23 @@ export default function BaselineScreen({
         setLastImportIssue('Bucket arsip baseline belum tersedia. Parsing tetap dilanjutkan tanpa menyimpan file sumber.');
         toast('Bucket arsip baseline belum tersedia. Parsing tetap dilanjutkan tanpa menyimpan file sumber.', 'warning');
       }
+
+      // Probe for expansion-needed rows before offering parse.
+      const flagEnabled = Boolean((Constants.expoConfig?.extra as any)?.sanoBoqRecipeDetail);
+      let probeResult: import('../api/normalize').ProbeResult | null = null;
+      if (flagEnabled && !uploadError) {
+        try {
+          const url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+          const anon = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+          if (url && anon) {
+            probeResult = await probeBoq({ storagePath, supabaseUrl: url, anonKey: anon });
+          }
+        } catch (err) {
+          console.warn('probeBoq failed (continuing with rolled-up parse):', err);
+        }
+      }
+      setProbe(probeResult);
+      setCurrentStoragePath(storagePath);
 
       // Create import session record
       const sessionResult = await createImportSession(project.id, profile.id, persistedFilePath, fileName, parserVersion);
@@ -662,6 +685,52 @@ export default function BaselineScreen({
                 </>
               )}
             </TouchableOpacity>
+
+            {probe && probe.rows_needing_expansion > 0 && !normalized && (
+              <View style={styles.normalizeBanner}>
+                <Text style={styles.normalizeBannerText}>
+                  Detected: {probe.rows_needing_expansion} rows need detail expansion.
+                </Text>
+                <View style={styles.normalizeBannerActions}>
+                  <TouchableOpacity
+                    style={[styles.uploadBtn, { backgroundColor: COLORS.primary, flex: 1 }]}
+                    onPress={async () => {
+                      if (!currentStoragePath) return;
+                      setNormalizing(true);
+                      try {
+                        const url = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+                        const anon = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+                        const r = await normalizeBoq({ storagePath: currentStoragePath, supabaseUrl: url, anonKey: anon });
+                        setCurrentStoragePath(r.normalized_path);
+                        setNormalized(r);
+                      } catch (err) {
+                        console.warn('normalizeBoq failed:', err);
+                      } finally {
+                        setNormalizing(false);
+                      }
+                    }}
+                    disabled={normalizing}
+                  >
+                    <Text style={styles.uploadText}>{normalizing ? 'Normalizing…' : 'Normalize with AI'}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.uploadBtn, { backgroundColor: COLORS.textMuted, flex: 1 }]}
+                    onPress={() => setProbe(null)}
+                  >
+                    <Text style={styles.uploadText}>Skip</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {normalized && (
+              <View style={styles.normalizeBanner}>
+                <Text style={styles.normalizeBannerText}>
+                  Normalized: {normalized.summary.rows_normalized} rows
+                  {normalized.summary.rows_with_mismatch > 0 ? `  (⚠ ${normalized.summary.rows_with_mismatch} flagged)` : ''}
+                </Text>
+              </View>
+            )}
 
             {__DEV__ && (
               <TouchableOpacity onPress={handleDryRunV2} style={{ padding: 12, backgroundColor: '#333' }}>
@@ -1206,4 +1275,7 @@ const styles = StyleSheet.create({
   },
   parserToggleText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.text },
   parserToggleTextActive: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textInverse },
+  normalizeBanner: { backgroundColor: COLORS.surface, borderRadius: RADIUS, padding: SPACE.base, marginBottom: SPACE.base, borderWidth: 1, borderColor: COLORS.border },
+  normalizeBannerText: { fontSize: TYPE.sm, fontFamily: FONTS.regular, color: COLORS.text, marginBottom: SPACE.sm },
+  normalizeBannerActions: { flexDirection: 'row', gap: SPACE.sm },
 });
