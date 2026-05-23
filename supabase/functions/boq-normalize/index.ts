@@ -25,11 +25,25 @@ Deno.serve(async (req) => {
   const startedAt = Date.now();
   const inBuf = new Uint8Array(await data.arrayBuffer());
 
-  // STUB: For phase-6 ship-readiness, the Edge Function returns a stub response.
-  // The full Node→Deno port of `tools/normalizer/index.ts` and its dependencies
-  // lands in Task 28 (`feat(edge): finish boq-normalize port — shared core runs on Node + Deno`).
-  // The current stub preserves the API contract (returns a normalized_path even
-  // though the actual normalization is not yet performed in this environment).
+  // STUB. The full Node→Deno port of `tools/normalizer/index.ts` is deferred —
+  // the Node implementation depends on `process.env`, `Buffer`, and several
+  // transitive imports that need a Deno-compatible runtime shim or a bundling
+  // step (esbuild → single-file ES module) before this Edge Function can run
+  // the real orchestration.
+  //
+  // Path forward (follow-up work, tracked in docs/boq-normalizer-rollout-checklist.md):
+  //   1. Extract the orchestration body of `tools/normalizer/index.ts` into a
+  //      runtime-neutral `core.ts` that accepts the flag and any I/O via
+  //      injected dependencies (no direct process.env / Buffer references).
+  //   2. Update parseBoqV2 to accept an explicit `recipeDetailEnabled` option
+  //      instead of reading `process.env`.
+  //   3. Configure esbuild to bundle the Node implementation into a single ES
+  //      module the Deno function can `import` via a relative path.
+  //   4. Replace this stub body with a `normalizeWorkbookCore(...)` call.
+  //
+  // Until then, the stub preserves the API contract: returns a `normalized_path`
+  // and `EDGE_PORT_IN_PROGRESS` warning. Callers must use the in-process
+  // Node normalizer (e.g., a server-side script) during the rollout window.
   const wb = XLSX.read(inBuf, { cellFormula: true });
   XLSX.utils.book_append_sheet(
     wb,
@@ -59,7 +73,7 @@ Deno.serve(async (req) => {
       },
       warnings: [{
         code: 'EDGE_PORT_IN_PROGRESS',
-        message: 'Edge Function shipping with stub orchestration; full port in Task 28.',
+        message: 'Edge Function shipping with stub orchestration. Use the Node normalizer during rollout; see docs/boq-normalizer-rollout-checklist.md.',
       }],
     }),
     { headers: { 'content-type': 'application/json' } },

@@ -24,3 +24,7 @@ For each of the three reference workbooks listed below, run the full upload → 
 ## Sign-off
 - [ ] One team member (non-programmer) opens a normalized workbook in Excel and confirms readability
 - [ ] After all three pass, flip `SANO_BOQ_RECIPE_DETAIL=on` in production env and `sanoBoqRecipeDetail: true` in `app.json`
+
+## Follow-up (Task 28) — Deno port of the normalizer
+
+The Supabase Edge Function `boq-normalize` currently returns a stub response with the `EDGE_PORT_IN_PROGRESS` warning. The Node normalizer (`tools/normalizer/index.ts`) is fully functional and verified end-to-end by the Jest test `tools/boqParserV2/__tests__/normalizer.integration.test.ts`. During the rollout window above, run normalization via a server-side Node script rather than the Edge Function. After rollout, follow the four-step plan in the Edge Function's stub comment to port the orchestration to Deno (extract runtime-neutral core, remove `process.env` reads, bundle with esbuild, replace the stub body).
