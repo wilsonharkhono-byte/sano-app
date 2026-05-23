@@ -7,7 +7,7 @@ import { extractCatalogRows, type CatalogRow } from './extractCatalog';
 import { extractBoqRows, type BoqRowV2, detectCostSplitColumns, findHeaderRow } from './extractTakeoffs';
 import { buildRecipe } from './recipeBuilder';
 import { buildRecipeFromBreakdown } from './recipeFromBreakdown';
-import { validateBlocks } from './validate';
+import { validateBlocks, validateBreakdowns, type BreakdownWarning } from './validate';
 import { disaggregateRebar } from './rebarDisaggregator';
 import { resolveBoqSheets, type BoqSheetOption } from './multiSheetScanner';
 import type {
@@ -32,6 +32,7 @@ export interface ParseBoqV2Result {
   boqRows: BoqRowV2[];
   validationReport: ValidationReport;
   stagingRows: StagingRowV2[];
+  breakdownWarnings: BreakdownWarning[];
 }
 
 export async function parseBoqV2(
@@ -127,6 +128,11 @@ export async function parseBoqV2(
   // here for future surfacing in validationReport. Task 8 wires them through.
 
   const validationReport = validateBlocks(ahsBlocks);
+  const breakdownWarnings = validateBreakdowns({
+    breakdownsFound: breakdownsResult.breakdowns.size,
+    flagEnabled: process.env.SANO_BOQ_RECIPE_DETAIL === 'on',
+    readerWarnings: breakdownsResult.warnings,
+  });
 
   const stagingRows: StagingRowV2[] = [];
   let rowNumber = 0;
@@ -393,5 +399,5 @@ export async function parseBoqV2(
     }
   }
 
-  return { cells, lookup, materialRows, ahsBlocks, boqRows, validationReport, stagingRows };
+  return { cells, lookup, materialRows, ahsBlocks, boqRows, validationReport, stagingRows, breakdownWarnings };
 }
