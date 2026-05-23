@@ -1,5 +1,5 @@
-import type { BlockSchema, RebarDiameterWeight } from './types';
-import type { BreakdownRow, BreakdownGroup } from '../boqParserV2/breakdownSheetReader.types';
+import type { BlockSchema, RebarDiameterWeight, RowExpansionInput } from './types';
+import type { BreakdownRow, BreakdownGroup, RowBreakdown } from '../boqParserV2/breakdownSheetReader.types';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -199,4 +199,56 @@ export function expandConcrete(input: ExpandConcreteInput): BreakdownRow[] {
         totalCost: Math.round(totalQty * s.unitPrice),
       };
     });
+}
+
+// ---------------------------------------------------------------------------
+// Task 14: buildRowBreakdown
+// ---------------------------------------------------------------------------
+
+export function buildRowBreakdown(input: RowExpansionInput): RowBreakdown {
+  const components: BreakdownRow[] = [];
+
+  if (input.concreteSchema) {
+    components.push(...expandConcrete({ schema: input.concreteSchema, volume: input.volume }));
+  }
+  if (input.bekistingSchema && input.bekistingRatioPerM3 != null) {
+    components.push(...expandBekisting({
+      schema: input.bekistingSchema,
+      ratioPerM3: input.bekistingRatioPerM3,
+      volume: input.volume,
+    }));
+  }
+  if (input.pembesianSchema && input.pembesianDiameters.length > 0) {
+    components.push(...expandPembesian({
+      schema: input.pembesianSchema,
+      diameters: input.pembesianDiameters,
+      volume: input.volume,
+    }));
+  }
+
+  const computedUnitCost = components.reduce((s, c) => s + c.costPerBoqUnit, 0);
+  const computedLineTotal = Math.round(computedUnitCost * input.volume);
+  // Tolerance scales with component count — rounding accumulates across N components.
+  const tolerance = Math.max(1, components.length);
+  const reconciles = Math.abs(computedLineTotal - input.sourceLineTotal) <= tolerance;
+
+  return {
+    boqCode: input.boqCode,
+    description: input.description,
+    unit: input.unit,
+    volume: input.volume,
+    unitCost: computedUnitCost,
+    lineTotal: computedLineTotal,
+    components,
+    reconciliation: {
+      computedUnitCost,
+      sourceUnitCost: input.sourceUnitCost,
+      unitCostVariance: computedUnitCost - input.sourceUnitCost,
+      computedLineTotal,
+      sourceLineTotal: input.sourceLineTotal,
+      lineTotalVariance: computedLineTotal - input.sourceLineTotal,
+      reconciles,
+    },
+    sourceSheet: `Breakdown ${input.boqCode}`,
+  };
 }
