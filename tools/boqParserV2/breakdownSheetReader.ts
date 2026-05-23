@@ -126,15 +126,15 @@ export function readBreakdownComponents(sheet: XLSX.WorkSheet, sheetName: string
       totalCost,
     };
 
-    // Conservation: totalCost should be close to totalQty × unitPrice.
-    // totalQty is stored rounded in the sheet so allow a wider tolerance (±500 Rp)
-    // to avoid false positives while still catching gross entry errors.
-    const recomputedTotal = totalQty * unitPrice;
-    if (Math.abs(recomputedTotal - totalCost) > 500) {
+    // Conservation: costPerBoqUnit should equal qtyPerBoqUnit × unitPrice within ±1 Rp.
+    // This check is rounding-stable because it does not depend on volume (which the
+    // workbook author rounds to 4 decimals on the totalQty column).
+    const recomputedCostPerBoqUnit = qtyPerBoq * unitPrice;
+    if (Math.abs(recomputedCostPerBoqUnit - costPerBoq) > 1) {
       warnings.push({
         sheet: sheetName,
         code: 'COST_MISMATCH',
-        message: `${component.materialName}: declared ${totalCost} vs recomputed ${recomputedTotal.toFixed(0)}`,
+        message: `${component.materialName}: declared cost/unit ${costPerBoq} vs recomputed ${recomputedCostPerBoqUnit.toFixed(0)}`,
       });
     }
 

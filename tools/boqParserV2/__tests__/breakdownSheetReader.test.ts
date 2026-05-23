@@ -96,12 +96,12 @@ describe('readBreakdownComponents', () => {
     expect(components[3]).toMatchObject({ group: 'equipment', materialName: 'Sewa peralatan (vibrator, concrete pump)' });
   });
 
-  it('emits COST_MISMATCH warning when totalCost != totalQty × unitPrice', () => {
+  it('emits COST_MISMATCH warning when costPerBoqUnit != qtyPerBoqUnit × unitPrice', () => {
     const sheet = makeSheet([
       [], [], [], [], [], [], [], [], [],
       ['No', 'Component group', 'Material / Item', 'Spec / Note', 'Qty per native unit', 'Native unit', 'Native basis', 'Unit price (Rp)', 'Qty per m³ beton', 'Cost per m³ beton (Rp)', 'Total qty (× vol)', 'Total cost (Rp)'],
       [1, 'BETON READYMIX (Material)'],
-      ['', '', 'Beton readymix K-350', '', 1.05, 'm3', '', 1043400, 1.05, 1095570, 0.2778, 999999], // wrong total
+      ['', '', 'Beton readymix K-350', '', 1.05, 'm3', '', 1043400, 1.05, 999999, 0.2778, 289888], // wrong cost/unit
     ]);
     const { warnings } = readBreakdownComponents(sheet, 'Breakdown IV.A.2.7');
     expect(warnings.some((w) => w.code === 'COST_MISMATCH')).toBe(true);
