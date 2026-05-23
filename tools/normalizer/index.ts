@@ -34,11 +34,9 @@ export interface NormalizeResult {
  * - Concrete: recipe component whose referencedBlockTitle matches /^Pengecoran Beton/i,
  *   pointing directly at an Analisa F-column cell.
  * - Bekisting: recipe component on the Analisa sheet with a null referencedBlockTitle
- *   (the workbook stores the per-cycle cost at a raw F-row without a labelled jumlah row).
- * - Pembesian: recipe component whose referencedBlockTitle matches /^Pembesian/i but lives
- *   on a REKAP aggregator sheet; we map it to the Analisa block via ahsBlocks title lookup
- *   and return Analisa!F{firstComponentRow} — the address that Opus will use as the
- *   canonical pembesian block key.
+ *   (see bekisting branch comment below for why the title is null).
+ * - Pembesian: recipe component whose referencedBlockTitle matches /^Pembesian/i;
+ *   prefers a direct Analisa cell reference, falls back to ahsBlocks title lookup.
  */
 function findBlockIdsFor(
   row: BoqRowV2,
@@ -58,20 +56,25 @@ function findBlockIdsFor(
       out.concrete = `${cellSheet}!${cellAddr}`;
     }
 
-    // Bekisting: Analisa reference with no title — the workbook uses a raw cell reference
-    // to the per-cycle jumlah row rather than a labelled aggregate.
+    // Bekisting: the recipe component's referencedBlockTitle is null because
+    // `detectAhsBlocks`'s TITLE_WORK_RE pattern (pekerjaan|pasangan|pengecoran|
+    // pembetonan|pembesian) does not match "Bekisting Balok" / "Bekisting Plat".
+    // We identify the bekisting component by its position: the first Analisa-
+    // sheet recipe component with a null block title.
     if (!title && cellSheet === analisaSheet && !out.bekisting) {
       out.bekisting = `${cellSheet}!${cellAddr}`;
     }
 
-    // Pembesian: title matches but the cell is on a REKAP aggregator sheet.
-    // Map to Analisa via ahsBlocks title lookup and return the first component row address.
+    // Pembesian: title matches /^Pembesian/i.
     if (title && /^Pembesian/i.test(title) && !out.pembesian) {
       if (cellSheet === analisaSheet) {
         // Direct Analisa reference — use as-is.
         out.pembesian = `${cellSheet}!${cellAddr}`;
       } else {
-        // REKAP-sheet aggregator — find the matching Analisa block by title.
+        // Fallback: when a workbook uses a REKAP cell as the unit-cost reference
+        // instead of an Analisa cell. NOT exercised by AAL-5; kept for forward-
+        // compatibility with workbooks that have different formula patterns.
+        // TODO: add a test fixture if a workbook of this shape is observed.
         const match = ahsBlocks.find((b) => b.title === title);
         if (match && match.componentRows.length > 0) {
           out.pembesian = `${analisaSheet}!F${match.componentRows[0]}`;
@@ -114,6 +117,7 @@ export async function normalizeWorkbook(
   }
 
   const breakdowns: RowBreakdown[] = [];
+  const warnings: Array<{ code: string; message: string }> = [];
   let skipped = 0;
   let mismatched = 0;
 
@@ -124,7 +128,14 @@ export async function normalizeWorkbook(
     const pem = ids.pembesian ? schemas.get(ids.pembesian) ?? null : null;
     const con = ids.concrete ? schemas.get(ids.concrete) ?? null : null;
 
-    if (!bek && !pem && !con) { skipped++; continue; }
+    if (!bek && !pem && !con) {
+      skipped++;
+      warnings.push({
+        code: 'NO_SCHEMA_RESOLVED',
+        message: `${row.code}: needsExpansion but no block schemas resolved — skipped`,
+      });
+      continue;
+    }
 
     // Pull the bekisting ratio-per-m³ from the recipe.
     // Primary: component whose title explicitly mentions "Bekisting".
@@ -154,7 +165,13 @@ export async function normalizeWorkbook(
     };
 
     const bd = buildRowBreakdown(input);
-    if (!bd.reconciliation.reconciles) mismatched++;
+    if (!bd.reconciliation.reconciles) {
+      mismatched++;
+      warnings.push({
+        code: 'RECONCILIATION_MISMATCH',
+        message: `${row.code}: reconciles=false, lineTotalVariance=${bd.reconciliation.lineTotalVariance}`,
+      });
+    }
     breakdowns.push(bd);
   }
 
@@ -172,6 +189,6 @@ export async function normalizeWorkbook(
       rows_with_mismatch: mismatched,
       blocks_analyzed: schemas.size,
     },
-    warnings: [],
+    warnings,
   };
 }
