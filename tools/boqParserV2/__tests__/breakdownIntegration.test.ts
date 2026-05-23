@@ -38,4 +38,15 @@ describe('parseBoqV2 with Breakdown sheets', () => {
     expect(row!.recipe).toBeTruthy();
     expect(row!.recipe!.components.length).toBeLessThan(13);
   });
+
+  itx('preserves document order — IV.A.2.7 stays before V.A.2.6 with flag on', async () => {
+    process.env.SANO_BOQ_RECIPE_DETAIL = 'on';
+    const buf = fs.readFileSync(WORKBOOK);
+    const result = await parseBoqV2(buf);
+    const codes = result.boqRows.map((r) => r.code);
+    const ivIdx = codes.indexOf('IV.A.2.7');
+    const vIdx = codes.indexOf('V.A.2.6');
+    expect(ivIdx).toBeGreaterThanOrEqual(0);
+    expect(vIdx).toBeGreaterThan(ivIdx);
+  });
 });

@@ -104,25 +104,25 @@ export async function parseBoqV2(
   // Existing per-sheet recipeBuilder loop ends here.
 
   // Recipe-detail expansion: if the workbook has "Breakdown {code}" sheets
-  // AND the flag is on, replace those rows' recipes with breakdown-derived
-  // components. Rows without a matching breakdown fall through to disaggregateRebar.
+  // AND the flag is on, prefer breakdown-derived recipes over the rolled-up
+  // ones. We still run disaggregateRebar across all rows (cheap, idempotent)
+  // and then apply breakdown overrides in-place so original document order
+  // is preserved for downstream staging-row numbering and audit UI display.
   const breakdownsResult =
     process.env.SANO_BOQ_RECIPE_DETAIL === 'on'
       ? readBreakdownSheets(workbook)
       : { breakdowns: new Map<string, RowBreakdown>(), warnings: [] };
 
-  for (const b of boqRows) {
-    const bd = breakdownsResult.breakdowns.get(b.code);
-    if (!bd) continue;
-    b.recipe = buildRecipeFromBreakdown(b, bd);
-  }
-
-  // Run disaggregateRebar only on rows without a Breakdown sheet override.
-  const rowsForDisaggregator = boqRows.filter((r) => !breakdownsResult.breakdowns.has(r.code));
-  const disaggregateResult = disaggregateRebar(rowsForDisaggregator, cells);
-  const overriddenRows = boqRows.filter((r) => breakdownsResult.breakdowns.has(r.code));
+  const disaggregateResult = disaggregateRebar(boqRows, cells);
   boqRows.length = 0;
-  boqRows.push(...disaggregateResult.boqRows, ...overriddenRows);
+  boqRows.push(...disaggregateResult.boqRows);
+
+  // Apply breakdown overrides in-place, preserving order.
+  for (let i = 0; i < boqRows.length; i++) {
+    const bd = breakdownsResult.breakdowns.get(boqRows[i].code);
+    if (!bd) continue;
+    boqRows[i] = { ...boqRows[i], recipe: buildRecipeFromBreakdown(boqRows[i], bd) };
+  }
   // Note: disaggregateResult.warnings + breakdownsResult.warnings collected
   // here for future surfacing in validationReport. Task 8 wires them through.
 
