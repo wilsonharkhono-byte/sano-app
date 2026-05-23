@@ -39,4 +39,30 @@ describe('readBreakdownHeader', () => {
     ]);
     expect(() => readBreakdownHeader(sheet, 'Breakdown IV.A.2.7')).toThrow(/missing.*volume/i);
   });
+
+  it('throws on missing Unit cost row', () => {
+    const sheet = makeSheet([
+      ['BREAKDOWN'],
+      [],
+      ['Description', '- Balok B24-1'],
+      ['Unit', 'm3'],
+      ['Volume', 0.2646],
+      // Unit cost row absent
+      ['Line total at-cost (Rp)', 1809779],
+    ]);
+    expect(() => readBreakdownHeader(sheet, 'Breakdown IV.A.2.7')).toThrow(/missing.*unit cost/i);
+  });
+
+  it('throws on missing Line total row', () => {
+    const sheet = makeSheet([
+      ['BREAKDOWN'],
+      [],
+      ['Description', '- Balok B24-1'],
+      ['Unit', 'm3'],
+      ['Volume', 0.2646],
+      ['Unit cost (Rp/m³)', 6839679],
+      // Line total row absent
+    ]);
+    expect(() => readBreakdownHeader(sheet, 'Breakdown IV.A.2.7')).toThrow(/missing.*line total/i);
+  });
 });

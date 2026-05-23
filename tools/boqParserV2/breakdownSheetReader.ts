@@ -1,6 +1,5 @@
 import * as XLSX from 'xlsx';
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import type { RowBreakdown } from './breakdownSheetReader.types';
+import { toNumber } from './classifyComponent';
 
 export interface BreakdownHeader {
   boqCode: string;
@@ -19,16 +18,6 @@ function findLabelledRow(rows: unknown[][], label: string): unknown[] | undefine
   return rows.find((r) => typeof r[0] === 'string' && r[0].trim().toLowerCase() === label.toLowerCase());
 }
 
-function toNumber(v: unknown): number {
-  if (typeof v === 'number') return v;
-  if (typeof v === 'string') {
-    const cleaned = v.replace(/[,\s]/g, '');
-    const n = parseFloat(cleaned);
-    if (!Number.isNaN(n)) return n;
-  }
-  return NaN;
-}
-
 const SHEET_NAME_TO_CODE = /^Breakdown\s+(.+)$/;
 
 export function readBreakdownHeader(sheet: XLSX.WorkSheet, sheetName: string): BreakdownHeader {
@@ -45,12 +34,15 @@ export function readBreakdownHeader(sheet: XLSX.WorkSheet, sheetName: string): B
   const unitCostRow = rows.find((r) => typeof r[0] === 'string' && /^Unit cost/i.test(r[0]));
   const lineTotalRow = rows.find((r) => typeof r[0] === 'string' && /^Line total/i.test(r[0]));
 
+  if (!unitCostRow) throw new Error(`Breakdown ${sheetName}: missing Unit cost row`);
+  if (!lineTotalRow) throw new Error(`Breakdown ${sheetName}: missing Line total row`);
+
   return {
     boqCode,
     description,
     unit,
     volume,
-    unitCost: unitCostRow ? toNumber(unitCostRow[1]) : 0,
-    lineTotal: lineTotalRow ? toNumber(lineTotalRow[1]) : 0,
+    unitCost: toNumber(unitCostRow[1]),
+    lineTotal: toNumber(lineTotalRow[1]),
   };
 }
