@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as XLSX from 'xlsx';
-import { normalizeWorkbook } from '../index';
+import { normalizeWorkbook, makeAnalyzeBlockFromAnalyzer } from '../index';
 import type { BlockSchema } from '../types';
 
 const AAL5 = path.join(__dirname, '..', '..', '..', 'assets', 'BOQ', 'RAB R1 Pakuwon Indah AAL-5.xlsx');
@@ -43,6 +43,37 @@ const FIXED_SCHEMAS: Record<string, BlockSchema> = {
     ],
   },
 };
+
+describe('makeAnalyzeBlockFromAnalyzer', () => {
+  it('caches schemas per blockId — only one call to the underlying analyzer per id', async () => {
+    const mockSchema: BlockSchema = {
+      blockId: 'Analisa!F55', blockType: 'bekisting', elementHint: 'Balok',
+      cycleFactor: 4, ratioBasis: 'per_m2_form_per_cycle', rolledUpTotalPerNativeUnit: 251113,
+      confidence: 'high', notes: null, subItems: [],
+    };
+    const underlyingFn = jest.fn().mockResolvedValue(mockSchema);
+    const analyze = makeAnalyzeBlockFromAnalyzer(underlyingFn, [
+      { sheet: 'Analisa', address: 'F55', row: 55, col: 5, value: 'X', formula: null },
+    ]);
+    const a = await analyze('Analisa!F55');
+    const b = await analyze('Analisa!F55');
+    expect(underlyingFn).toHaveBeenCalledTimes(1);
+    expect(a).toEqual(b);
+  });
+
+  it('different blockIds → separate calls', async () => {
+    const underlyingFn = jest.fn()
+      .mockResolvedValueOnce({ blockId: 'Analisa!F55', blockType: 'bekisting' } as any)
+      .mockResolvedValueOnce({ blockId: 'Analisa!F128', blockType: 'pembesian' } as any);
+    const analyze = makeAnalyzeBlockFromAnalyzer(underlyingFn, [
+      { sheet: 'Analisa', address: 'F55', row: 55, col: 5, value: 'X', formula: null },
+      { sheet: 'Analisa', address: 'F128', row: 128, col: 5, value: 'Y', formula: null },
+    ]);
+    await analyze('Analisa!F55');
+    await analyze('Analisa!F128');
+    expect(underlyingFn).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('normalizeWorkbook (Opus mocked)', () => {
   const ORIGINAL_FLAG = process.env.SANO_BOQ_RECIPE_DETAIL;

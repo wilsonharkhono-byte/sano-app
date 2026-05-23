@@ -1,12 +1,15 @@
 import * as XLSX from 'xlsx';
+import Anthropic from '@anthropic-ai/sdk';
 import { parseBoqV2 } from '../boqParserV2';
 import type { BoqRowV2 } from '../boqParserV2/extractTakeoffs';
 import type { RowBreakdown } from '../boqParserV2/breakdownSheetReader.types';
 import type { AhsBlock } from '../boqParserV2/detectBlocks';
+import type { HarvestedCell } from '../boqParserV2/types';
 import { needsExpansion } from './needsExpansion';
 import { buildRowBreakdown } from './buildBreakdown';
 import { writeBreakdownSheets } from './writeWorkbook';
 import type { BlockSchema, RowExpansionInput, RebarDiameterWeight } from './types';
+import { analyzeBlockWithOpus, extractBlockCellContext } from './blockAnalyzer';
 
 export interface NormalizeOptions {
   analyzeBlock: (blockId: string) => Promise<BlockSchema | null>;
@@ -191,4 +194,41 @@ export async function normalizeWorkbook(
     },
     warnings,
   };
+}
+
+export interface MakeAnalyzeBlockOptions {
+  apiKey: string;
+  cells: HarvestedCell[];
+}
+
+/**
+ * Internal factory exposed for tests: builds an analyzeBlock function from a
+ * caller-supplied "analyzer" (typically `analyzeBlockWithOpus` bound to a client),
+ * adding a per-blockId cache. The production entry point is `makeAnalyzeBlock` below.
+ */
+export function makeAnalyzeBlockFromAnalyzer(
+  analyzer: (blockId: string, ctx: ReturnType<typeof extractBlockCellContext>) => Promise<BlockSchema>,
+  cells: HarvestedCell[],
+): NormalizeOptions['analyzeBlock'] {
+  const cache = new Map<string, BlockSchema>();
+  return async (blockId: string) => {
+    const hit = cache.get(blockId);
+    if (hit) return hit;
+    const ctx = extractBlockCellContext(blockId, cells);
+    const schema = await analyzer(blockId, ctx);
+    cache.set(blockId, schema);
+    return schema;
+  };
+}
+
+/**
+ * Production factory: builds an analyzeBlock function backed by the real
+ * Anthropic SDK (claude-opus-4-7). The API key is required.
+ */
+export function makeAnalyzeBlock(opts: MakeAnalyzeBlockOptions): NormalizeOptions['analyzeBlock'] {
+  const client = new Anthropic({ apiKey: opts.apiKey });
+  return makeAnalyzeBlockFromAnalyzer(
+    (blockId, ctx) => analyzeBlockWithOpus(blockId, ctx, client),
+    opts.cells,
+  );
 }
