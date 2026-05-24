@@ -813,15 +813,18 @@ workbooks by parallel agents. Findings preserved at:
 
 | Workbook | Itemized | Rolled | Unresolved | Total | Coverage |
 |---|---|---|---|---|---|
-| AAL-5 | 59 | 100 | 5 | 164 | 96.9% |
-| PD3-23 | 19 | 210 | 12 | 241 | 95.0% |
-| I4-29 | 6 | 316 | 17 | 339 | 95.0% |
-| **All three** | **84** | **626** | **34** | **744** | **95.4%** |
+| AAL-5 | 74 | 85 | 5 | 164 | 96.9% |
+| PD3-23 | 49 | 180 | 12 | 241 | 95.0% |
+| I4-29 | 17 | 305 | 17 | 339 | 95.0% |
+| **All three** | **140** | **570** | **34** | **744** | **95.4%** |
 
-(Itemized counts updated 2026-05-24 after cycleFactor float fix and
-single-cycle Bata/Batako handling. Total coverage unchanged at 95.4% —
-truth-correctness contract held, the change only upgraded rolled →
-itemized for rows where both tiers agree.)
+(Itemized counts updated 2026-05-24 after layout-aware REKAP adapters
+landed; the Poer adapter's off-by-two column read — the root cause of
+"bottleneck #4: Z vs diameter discrepancy" — was simultaneously fixed
+since the buggy mapping disappears once the header drives column
+selection. Total coverage unchanged at 95.4% — truth-correctness contract
+held, the change only upgraded rolled → itemized for rows where both
+tiers agree.)
 
 All Unresolved rows (34) are confirmed non-structural — Pasangan dinding
 bata merah (masonry), Strong band BB, Planter box, and similar custom
@@ -860,9 +863,17 @@ items where the column-sum invariant doesn't apply.
    that code).
 
 7. **REKAP rebar diameter layouts vary.** AAL-5: L=D6, M=D8, N=D10, O=D13.
-   PD3 Plat: K=D8, L=D10, M=D13, N=D16, O=D25. The current adapters
-   (`tools/boqParserV2/rebarDisaggregator/adapters/`) are hardcoded to
-   AAL-5 columns — see §6.6 for the proposed header-detection fix.
+   PD3 Plat: K=D8, L=D10, M=D13, N=D16, O=D25. ~~The current adapters are
+   hardcoded to AAL-5 columns.~~ **DONE 2026-05-24.** All four adapters
+   (`balokSloof`, `poer`, `plat`, `kolom`) are now layout-aware via
+   `rebarDisaggregator/adapters/headerDetect.ts`: each scans the sheet
+   for the diameter-header row (cells whose values match the canonical
+   diameter set 6/8/10/13/16/19/22/25/29/32) and builds a
+   `{diameter → columnLetter}` map per workbook. Side benefit: the
+   "Poer Z-vs-diameter discrepancy" (bottleneck #4) was caused by the
+   old hardcoded Poer mapping being off by two columns (it was reading
+   column I = "Lantai Kerja" as D8, a phantom 0.76 kg/m³); proper
+   header detection eliminates it without any extra fallback code.
 
 ### Recommended next steps to push itemized coverage higher
 
@@ -882,20 +893,30 @@ itemized:
    instead of col F. Coverage impact: all 11 AAL-5 Sloof rows upgraded
    rolled → itemized.
 
-3. **Make REKAP adapters layout-aware.** Detect the header row, then map
-   `"8"`, `"10"`, etc. to diameters. This unlocks itemized rebar for
-   workbooks that don't follow AAL-5's column letters (e.g., PD3 Plat
-   uses K/L/M/N/O for D8/D10/D13/D16/D25).
+3. ~~**Make REKAP adapters layout-aware.**~~ **DONE 2026-05-24.** Shared
+   `headerDetect.ts` helper scans rows 1..30 (Plat/Balok/Poer) or
+   140..320 (Kolom's REKAP-VOLUME section) for the diameter-header row,
+   producing a `{diameter → columnLetter}` map per workbook. All four
+   adapters (`balokSloof`, `poer`, `plat`, `kolom`) consume the map; the
+   prior hardcoded mappings (which only matched AAL-5 column letters)
+   are gone. Coverage impact (combined with #4 below since they share
+   one fix): AAL-5 itemized 59 → 74, PD3 19 → 49, I4-29 6 → 17. +56
+   structural rows upgraded from rolled to itemized across the three
+   reference workbooks. Total coverage unchanged at 95.4% (the
+   truth-correctness contract — any row that doesn't reconcile within
+   ±1 Rp still falls back to rolled).
 
-4. **Resolve Z-vs-diameter discrepancy in the poer rebar adapter.** On
-   AAL-5 Poer rows, the workbook's `RAB!Z` (total pembesian kg/m³) is
-   ~0.76 kg/m³ LESS than the sum of per-diameter weights the
-   `rebarDisaggregator` extracts. The discrepancy equals the D8 weight,
-   suggesting either the adapter pulls D8 from the wrong REKAP row, or
-   Z's formula excludes D8 for Poer (project-specific). The itemized
-   reconciliation fails by ~7,500 Rp (= 0.16% of source unit cost), so
-   Poer rows currently fall to rolled. Investigate `tools/boqParserV2/rebarDisaggregator/adapters/poer.ts`
-   and `REKAP-PC` row mapping.
+4. ~~**Resolve Z-vs-diameter discrepancy in the poer rebar adapter.**~~
+   **DONE 2026-05-24.** Root cause: the old hardcoded Poer mapping
+   (`H=D6, I=D8, …, O=D25`) was off by two columns vs the actual AAL-5
+   layout (`J=D6, K=D8, …, Q=D25`). Column I on AAL-5 REKAP-PC is
+   "Lantai Kerja" (0.76 kg/m³ for PC.1) — the old adapter mis-reported
+   that as a D8 weight, AND simultaneously mis-mapped every real
+   diameter to a column 2 letters too low. The 0.76 kg/m³ phantom was
+   the visible symptom; the silent damage was the entire diameter
+   spectrum being misread. Header-aware detection (see #3) fixes both
+   together. Verification: AAL-5 PC.5 `Σ(diameter weights) / volume =
+   148.97 / 1.7578 = 84.749 kg/m³`, which equals `RAB(A)!Z59` exactly.
 
 5. ~~**Audit Plat rebar (I4-29 specific).** I4 plat rows include wire-mesh
    accounting via `AC*AD` columns. The rolled tier handles them; for
@@ -912,9 +933,10 @@ itemized:
 
 ---
 
-*Last updated: 2026-05-24 after cross-workbook validation against PD3-23
-and I4-29 (both via parallel sub-agents). Coverage across all three
-reference workbooks: 95.4% (710/744 reconciled, 34 genuinely
-non-structural). See
+*Last updated: 2026-05-24 after layout-aware REKAP adapters landed
+(bottlenecks #3 and #4 in §13). Coverage across all three reference
+workbooks: 95.4% (710/744 reconciled, 34 genuinely non-structural).
+Itemized share rose 84 → 140 (+56) across the three workbooks; total
+reconciled count is unchanged. See
 `docs/superpowers/specs/2026-05-23-recipe-detail-normalizer-design.md` for the
 full design history, and the per-workbook validation docs for raw findings.*

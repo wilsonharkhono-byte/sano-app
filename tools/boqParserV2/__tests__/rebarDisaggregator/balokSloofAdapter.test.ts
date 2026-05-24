@@ -20,10 +20,10 @@ function mkCells(rows: Array<{ row: number; cols: Record<string, unknown> }>): H
 }
 
 describe('balokSloofAdapter.lookupBreakdown', () => {
-  // Header row 264 declares diameter columns: L=D6, M=D8, N=D10, O=D13,
-  // P=D16, Q=D19, R=D22, S=D25.
+  // Header row 12 declares diameter columns: L=D6, M=D8, N=D10, O=D13,
+  // P=D16, Q=D19, R=D22, S=D25. (Matches AAL-5, PD3, I4-29 layouts.)
   const headers = mkCells([
-    { row: 264, cols: { L: 6, M: 8, N: 10, O: 13, P: 16, Q: 19, R: 22, S: 25 } },
+    { row: 12, cols: { L: 6, M: 8, N: 10, O: 13, P: 16, Q: 19, R: 22, S: 25 } },
   ]);
 
   it('returns the diameters and weights for S24-1', () => {
