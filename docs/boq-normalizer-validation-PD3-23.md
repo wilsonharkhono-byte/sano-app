@@ -1,4 +1,26 @@
+
 # BoQ Normalizer — Validation against PD3 no. 23
+
+> ## ⚠️ SUPERSEDED 2026-05-25
+>
+> This document records the CLI's behavior at 15:06 on 2026-05-24, BEFORE
+> the X / AC*AD / L / M column fixes (commit `de7b8a5`), the cycleFactor
+> float + single-cycle Bata/Batako fix (`a5137ca`), and the layout-aware
+> REKAP adapters (`6e74dcb`).
+>
+> **Current coverage (HEAD 6e74dcb):** PD3 itemized 49, rolled 180,
+> unresolved 12 of 241. See `docs/boq-normalizer-field-guide.md` §13 and
+> `docs/boq-normalizer-fix-plan-results.md` for live numbers.
+>
+> Most of §7 ("Updates needed to the field guide") in this doc is now
+> done — the X column, AC/AD, L/M, multi-sheet RAB, non-integer cycle
+> factors, varying readymix coefficients, and REKAP Plat header
+> auto-detection are all shipped. The §3.4 diagnosis of H-side bekisting
+> (Perancah embedded via col H) is the one remaining un-implemented
+> finding — that's the next architectural lever (fix plan §2.1).
+>
+> The §3 / §4 / §5 / §6 analysis below remains valuable as the
+> diagnostic record of the failure mode the CLI used to produce.
 
 > Independent verification of the field guide
 > (`docs/boq-normalizer-field-guide.md`) and the deterministic CLI

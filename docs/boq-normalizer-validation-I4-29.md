@@ -1,4 +1,33 @@
+
 # BoQ Normalizer — Validation against RAB Nusa Golf I4 no. 29 R3
+
+> ## ⚠️ SUPERSEDED 2026-05-25
+>
+> This document records the CLI's behavior at 15:04 on 2026-05-24, BEFORE
+> any of the cross-workbook fixes shipped. At the time of writing the CLI
+> produced 0 itemized / 0 rolled / 0 unresolved for I4-29 because
+> `boqSheet: 'auto'` wasn't passed and `readRowCols` was hardcoded to
+> `'RAB (A)'`. Both bugs are fixed.
+>
+> **Current coverage (HEAD 6e74dcb):** I4-29 itemized 17, rolled 305,
+> unresolved 17 of 339. See `docs/boq-normalizer-field-guide.md` §13 and
+> `docs/boq-normalizer-fix-plan-results.md` for live numbers.
+>
+> Done since this doc was written:
+> - X / AC*AD / L / M columns added to the column-sum invariant
+>   (commit `de7b8a5`).
+> - Multi-sheet RAB layout (`RAB (A..E)`) supported via
+>   `boqSheet: 'auto'` (`de7b8a5`).
+> - Layout-aware REKAP adapters (commit `6e74dcb`).
+> - Itemized wire-mesh component for AC*AD (`6f798c0`, defensive — every
+>   AC/AD cell in I4-29_R3 is 0, so this is forward coverage only).
+>
+> The §3.4 / §6.3 finding about H-side bekisting (Perancah embedded in
+> col H of the Bekisting Balok / Plat block with its own cycle factor)
+> is the one outstanding architectural fix — see fix plan §2.1.
+>
+> The remainder of this doc remains valuable as the diagnostic record of
+> the pre-fix failure modes.
 
 > Independent verification of the field guide claims and the deterministic CLI's
 > behavior against a workbook from a different developer (Nusa Golf, not

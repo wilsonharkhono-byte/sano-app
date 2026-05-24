@@ -809,26 +809,37 @@ workbooks by parallel agents. Findings preserved at:
 - `docs/boq-normalizer-validation-PD3-23.md` — RAB R2 Pakuwon Indah PD3 no. 23
 - `docs/boq-normalizer-validation-I4-29.md` — RAB Nusa Golf I4 no. 29 R3
 
-### Coverage
+### Coverage — two metrics, do not conflate them
 
-| Workbook | Itemized | Rolled | Unresolved | Total | Coverage |
-|---|---|---|---|---|---|
-| AAL-5 | 74 | 85 | 5 | 164 | 96.9% |
-| PD3-23 | 49 | 180 | 12 | 241 | 95.0% |
-| I4-29 | 17 | 305 | 17 | 339 | 95.0% |
-| **All three** | **140** | **570** | **34** | **744** | **95.4%** |
+| Workbook | Itemized | Rolled | Unresolved | Total | Rp coverage | Material coverage |
+|---|---|---|---|---|---|---|
+| AAL-5    |  74 |  85 |  5 | 164 | 96.9% | **45.1%** |
+| PD3-23   |  49 | 180 | 12 | 241 | 95.0% | **20.3%** |
+| I4-29    |  17 | 305 | 17 | 339 | 95.0% |  **5.0%** |
+| **All three** | **140** | **570** | **34** | **744** | **95.4%** | **18.8%** |
 
-(Itemized counts updated 2026-05-24 after layout-aware REKAP adapters
-landed; the Poer adapter's off-by-two column read — the root cause of
-"bottleneck #4: Z vs diameter discrepancy" — was simultaneously fixed
-since the buggy mapping disappears once the header drives column
-selection. Total coverage unchanged at 95.4% — truth-correctness contract
-held, the change only upgraded rolled → itemized for rows where both
-tiers agree.)
+- **Rp coverage** = `(itemized + rolled) / total` — share of project Rp
+  value whose total reconciles to source within ±1 Rp. This is the
+  truth-correctness floor (the rolled tier is a safety net).
+- **Material coverage** = `itemized / total` — share of rows with per-material
+  detail (Multipleks, Usuk, kg D8 vs D13, etc.) available to procurement.
+  **This is the original goal in §1.** The rolled tier emits group lumps
+  (Bekisting lump, Pembesian lump) that reconcile by total but give zero
+  per-material visibility — the audit screen sees "Bekisting Balok lump
+  Rp 2.5M" instead of "Multipleks 1.32 lbr, Usuk vert 5.95 btg, ..."
 
-All Unresolved rows (34) are confirmed non-structural — Pasangan dinding
-bata merah (masonry), Strong band BB, Planter box, and similar custom
-items where the column-sum invariant doesn't apply.
+Stop reporting "95% coverage" as the headline. **The actual deliverable is
+at 18.8%.** The rolled tier kept it from being worse — the truth-correctness
+contract is intact — but the goal in §1 (per-material detail for procurement)
+is still mostly unmet, especially for PD3 (20%) and I4-29 (5%).
+
+All 34 Unresolved rows are confirmed non-structural — Pasangan dinding bata
+merah (masonry), Strong band BB, Planter box, and similar custom items
+where the column-sum invariant doesn't apply. The bigger problem is the 570
+**rolled** rows that DO reconcile by Rp but don't have per-material detail.
+The next architectural lever to upgrade rolled → itemized is the H-side
+bekisting extraction in field guide §6.7 (also discussed in
+`docs/boq-normalizer-fix-plan.md` §2.1).
 
 ### Key cross-workbook learnings
 
