@@ -897,10 +897,18 @@ itemized:
    Poer rows currently fall to rolled. Investigate `tools/boqParserV2/rebarDisaggregator/adapters/poer.ts`
    and `REKAP-PC` row mapping.
 
-5. **Audit Plat rebar (I4-29 specific).** I4 plat rows include wire-mesh
+5. ~~**Audit Plat rebar (I4-29 specific).** I4 plat rows include wire-mesh
    accounting via `AC*AD` columns. The rolled tier handles them; for
    itemized, would need a dedicated wire-mesh sub-item separate from the
-   per-diameter Besi components.
+   per-diameter Besi components.~~ **DONE 2026-05-24.** Added an itemized
+   `WIRE MESH (Material)` component in `buildBreakdownForRow` that fires
+   whenever `AC > 0 && AD > 0`. AC*AD is disjoint from Z*AA by construction
+   (the wire mesh AHS at Analisa rows 235..239 is a separate recipe from
+   Pembesian U24 & U40 at rows 228..233; REKAP per-diameter weights cover
+   U24/U40 only). The current I4-29_R3 workbook has AC/AD = 0 on every
+   row, so this is defensive coverage — itemized count for I4-29 unchanged
+   at 17. Any future plat row that populates AC*AD will graduate from
+   rolled to itemized without falling foul of the column-sum invariant.
 
 ---
 

@@ -565,6 +565,38 @@ function buildBreakdownForRow(args: {
     });
   }
 
+  // 4. Wire mesh (AC*AD) — itemized variant. Some workbooks reinforce plat
+  // with a wire-mesh material that's tracked separately from the per-diameter
+  // U24/U40 rebar in the Pembesian block. AC = kg of wire mesh per m³ beton,
+  // AD = Rp per kg. The workbook's column-sum invariant (field guide §4.0)
+  // includes a dedicated AC*AD term, disjoint from Z*AA — verified against
+  // the I4-29 workbook formula AF = R + V*W + Z*AA [+ AC*AD] where the wire
+  // mesh AHS at Analisa rows 235..239 is a separate recipe from Pembesian
+  // U24 & U40 at rows 228..233. The REKAP per-diameter weights are also
+  // disjoint from wire mesh (REKAP records U24/U40 rebar only, while wire
+  // mesh M6/M8 has its own catalog entry).
+  // Emit as a single material lump with native unit kg and price = AD.
+  // Without this, any row where AC*AD > 0 alongside Z*AA > 0 would short-pay
+  // by AC*AD in the itemized tier and fall back to rolled.
+  if (cols.wireMeshRatioPerM3 > 0 && cols.wireMeshPricePerKg > 0) {
+    const qtyPerBoqUnit = cols.wireMeshRatioPerM3;
+    const costPerBoqUnit = qtyPerBoqUnit * cols.wireMeshPricePerKg;
+    components.push({
+      group: 'material',
+      componentGroup: 'WIRE MESH (Material)',
+      materialName: 'Wire mesh',
+      specNote: 'plat reinforcement — separate from pembesian U24/U40',
+      qtyPerNativeUnit: cols.wireMeshRatioPerM3,
+      nativeUnit: 'kg',
+      nativeBasis: 'per m3 beton',
+      unitPrice: cols.wireMeshPricePerKg,
+      qtyPerBoqUnit,
+      costPerBoqUnit,
+      totalQty: qtyPerBoqUnit * row.planned,
+      totalCost: costPerBoqUnit * row.planned,
+    });
+  }
+
   if (components.length === 0) {
     return { reason: 'No components — no Bekisting/Concrete/Pembesian template matched' };
   }
