@@ -1,28 +1,31 @@
 /**
- * Normalizer CLI
+ * Normalizer CLI — agentic mode.
  *
- * Runs the Node normalizer end-to-end against a workbook on disk. Use this
- * while the Supabase Edge Function `boq-normalize` is still a stub (Task 28).
+ * For each BoQ row that needs detail expansion, give Claude the full Analisa
+ * sheet and a self-verifying submit_breakdown tool. Claude iterates until the
+ * computed unit cost reconciles to the source at-cost target within ±1 Rp.
+ *
+ * Truth-correctness: rows that do NOT reconcile are NOT written as Breakdown
+ * sheets. They go into an "Unresolved" sheet with the variance + reason so a
+ * human can fix them manually. No fake-correct numbers ever reach the workbook.
  *
  * Usage:
- *   ANTHROPIC_API_KEY=sk-... npx tsx tools/normalizer/cli.ts <input.xlsx> [output.xlsx]
+ *   ANTHROPIC_API_KEY=sk-... npm run normalize:boq -- <input.xlsx> [output.xlsx]
  *
- * If output is omitted, writes `<input>_normalized.xlsx` next to the input.
- *
- * After running, upload the normalized workbook to the SANO app with
- * SANO_BOQ_RECIPE_DETAIL=on — the parser will read the Breakdown sheets and
- * produce per-material recipes.
+ * Cost: ~$5 per workbook with prompt caching on the Analisa dump (paid for once,
+ * then near-free reads on subsequent rows). Without caching ~$30.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseBoqV2 } from '../boqParserV2';
-import { normalizeWorkbook, makeAnalyzeBlock } from './index';
+import { normalizeWorkbookAgentic } from './index';
 
 async function main() {
   const args = process.argv.slice(2);
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
-    console.error('Usage: ANTHROPIC_API_KEY=sk-... npx tsx tools/normalizer/cli.ts <input.xlsx> [output.xlsx]');
+    console.error(
+      'Usage: ANTHROPIC_API_KEY=sk-... npm run normalize:boq -- <input.xlsx> [output.xlsx]',
+    );
     process.exit(1);
   }
 
@@ -43,35 +46,46 @@ async function main() {
     : inputPath.replace(/\.xlsx$/i, '_normalized.xlsx');
 
   console.log(`Reading: ${inputPath}`);
+  console.log('Running agentic normalizer — Claude reasons over the full Analisa sheet per row.');
+  console.log('Each row\'s breakdown must reconcile to the source at-cost target within ±1 Rp.');
+  console.log('');
+
   const inputBuffer = fs.readFileSync(inputPath);
 
-  console.log('Dry-parsing for cell extraction...');
-  const dry = await parseBoqV2(inputBuffer);
-  console.log(`  ${dry.boqRows.length} BoQ rows, ${dry.ahsBlocks.length} AHS blocks`);
-
-  console.log('Building Opus-backed analyzeBlock (real API calls)...');
-  const analyzeBlock = makeAnalyzeBlock({ apiKey, cells: dry.cells });
-
-  console.log('Running normalizer (one Opus call per unique block, then expansion)...');
-  const startedAt = Date.now();
-  const result = await normalizeWorkbook(inputBuffer, { analyzeBlock });
-  const elapsedMs = Date.now() - startedAt;
+  const result = await normalizeWorkbookAgentic(inputBuffer, {
+    apiKey,
+    onProgress: ({ row, status, turnsUsed, variance }) => {
+      const icon =
+        status === 'reconciled' ? '✓' :
+        status === 'unable_to_reconcile' ? '⚠' :
+        status === 'no_tool_use' ? '✗' :
+        '✗';
+      const label = `${icon} ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)}`;
+      const meta = `${turnsUsed} turn${turnsUsed === 1 ? '' : 's'}`;
+      const varText = variance != null ? `  (variance Rp ${variance.toFixed(0)})` : '';
+      console.log(`  ${label}  ${meta}${varText}`);
+    },
+  });
 
   console.log('');
   console.log('=== Summary ===');
-  console.log(`  Rows total:       ${result.summary.rows_total}`);
-  console.log(`  Rows normalized:  ${result.summary.rows_normalized}`);
-  console.log(`  Rows skipped:     ${result.summary.rows_skipped}`);
-  console.log(`  Rows mismatched:  ${result.summary.rows_with_mismatch}`);
-  console.log(`  Blocks analyzed:  ${result.summary.blocks_analyzed}`);
-  console.log(`  Elapsed:          ${elapsedMs}ms`);
+  console.log(`  Rows total:        ${result.summary.rows_total}`);
+  console.log(`  Rows eligible:     ${result.summary.rows_eligible}`);
+  console.log(`  Rows reconciled:   ${result.summary.rows_reconciled}  (written as Breakdown sheets)`);
+  console.log(`  Rows unresolved:   ${result.summary.rows_unresolved}  (listed in 'Unresolved' sheet for manual review)`);
+  console.log(`  Elapsed:           ${(result.summary.elapsed_ms / 1000).toFixed(1)}s`);
 
-  if (result.warnings.length > 0) {
+  if (result.unresolved.length > 0) {
     console.log('');
-    console.log('=== Warnings ===');
-    for (const w of result.warnings) {
-      console.log(`  [${w.code}] ${w.message}`);
+    console.log('=== Unresolved rows ===');
+    for (const u of result.unresolved) {
+      console.log(`  ${u.code} ${u.label}`);
+      console.log(`    └─ ${u.reason}`);
     }
+    console.log('');
+    console.log('Open the Unresolved sheet in the output workbook and either:');
+    console.log('  - fix the row manually in Excel, or');
+    console.log('  - re-run the CLI (Claude may pick a different path with fresh sampling).');
   }
 
   fs.writeFileSync(outputPath, result.workbookBuffer);
