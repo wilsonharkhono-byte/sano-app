@@ -213,22 +213,32 @@ function extractPembesianTemplate(
 interface RowCols {
   bekistingRatioM2PerM3: number;       // V column
   bekistingHargaPerM2: number;          // W column
+  bekistingPeralatanPerM2: number;      // X column — Perancah / Bekisting Peralatan (some workbooks embed scaffolding here instead of as a separate BoQ line)
   concreteMatCostPerM3: number;         // R
   concreteLaborCostPerM3: number;       // S
   concreteEquipCostPerM3: number;       // T
   pembesianKgPerM3: number;             // Z
   pembesianBlendedPricePerKg: number;   // AA — blended price/kg used by the workbook
+  wireMeshRatioPerM3: number;           // AC — kg of wire mesh per m³ beton (plat reinforcement, some workbooks)
+  wireMeshPricePerKg: number;           // AD
+  subkonPerM3: number;                  // L — direct subcontractor cost (some workbooks)
+  prelimPerM3: number;                  // M — direct preliminary cost (some workbooks)
 }
 
-function readRowCols(lookup: Map<string, HarvestedCell>, row: number): RowCols {
+function readRowCols(lookup: Map<string, HarvestedCell>, sheet: string, row: number): RowCols {
   return {
-    bekistingRatioM2PerM3: getCellNum(lookup, 'RAB (A)', `V${row}`),
-    bekistingHargaPerM2: getCellNum(lookup, 'RAB (A)', `W${row}`),
-    concreteMatCostPerM3: getCellNum(lookup, 'RAB (A)', `R${row}`),
-    concreteLaborCostPerM3: getCellNum(lookup, 'RAB (A)', `S${row}`),
-    concreteEquipCostPerM3: getCellNum(lookup, 'RAB (A)', `T${row}`),
-    pembesianKgPerM3: getCellNum(lookup, 'RAB (A)', `Z${row}`),
-    pembesianBlendedPricePerKg: getCellNum(lookup, 'RAB (A)', `AA${row}`),
+    bekistingRatioM2PerM3: getCellNum(lookup, sheet, `V${row}`),
+    bekistingHargaPerM2: getCellNum(lookup, sheet, `W${row}`),
+    bekistingPeralatanPerM2: getCellNum(lookup, sheet, `X${row}`),
+    concreteMatCostPerM3: getCellNum(lookup, sheet, `R${row}`),
+    concreteLaborCostPerM3: getCellNum(lookup, sheet, `S${row}`),
+    concreteEquipCostPerM3: getCellNum(lookup, sheet, `T${row}`),
+    pembesianKgPerM3: getCellNum(lookup, sheet, `Z${row}`),
+    pembesianBlendedPricePerKg: getCellNum(lookup, sheet, `AA${row}`),
+    wireMeshRatioPerM3: getCellNum(lookup, sheet, `AC${row}`),
+    wireMeshPricePerKg: getCellNum(lookup, sheet, `AD${row}`),
+    subkonPerM3: getCellNum(lookup, sheet, `L${row}`),
+    prelimPerM3: getCellNum(lookup, sheet, `M${row}`),
   };
 }
 
@@ -314,6 +324,18 @@ function buildRolledBreakdown(args: {
     );
   }
 
+  // Bekisting peralatan / Perancah lump: qty = V (m²/m³), unit_price = X (cost/m²).
+  // Workbooks that don't separate Perancah onto its own BoQ line (e.g., PD3, I4-29)
+  // carry its cost here. AAL-5 leaves X = 0 because Perancah is on a separate line.
+  if (cols.bekistingPeralatanPerM2 > 0 && cols.bekistingRatioM2PerM3 > 0) {
+    pushLump('material',
+      `BEKISTING PERALATAN (Material) — Perancah / scaffolding (rolled)`,
+      'Bekisting peralatan / Perancah (lump)',
+      cols.bekistingRatioM2PerM3, 'm2', cols.bekistingPeralatanPerM2,
+      'per m² of formwork (scaffolding embedded in bekisting block, col H)',
+    );
+  }
+
   // Pembesian lump: qty = Z (kg/m³), unit_price = AA (blended).
   if (cols.pembesianKgPerM3 > 0 && cols.pembesianBlendedPricePerKg > 0) {
     pushLump('material',
@@ -321,6 +343,34 @@ function buildRolledBreakdown(args: {
       'Pembesian U24 & U40 (lump — no per-diameter detail)',
       cols.pembesianKgPerM3, 'kg', cols.pembesianBlendedPricePerKg,
       'per kg finished pembesian (blended: raw besi + decking + bendrat)',
+    );
+  }
+
+  // Wire mesh lump: qty = AC (kg/m³), unit_price = AD. Used for plat reinforcement
+  // in workbooks that decouple wire-mesh-per-plat from the main pembesian flow.
+  if (cols.wireMeshRatioPerM3 > 0 && cols.wireMeshPricePerKg > 0) {
+    pushLump('material',
+      'WIRE MESH (Material) (rolled)',
+      'Wire mesh (lump)',
+      cols.wireMeshRatioPerM3, 'kg', cols.wireMeshPricePerKg,
+      'per m³ beton (plat reinforcement separate from pembesian U24/U40)',
+    );
+  }
+
+  // Subkon (L) and Prelim (M) — direct cost columns some contractors populate.
+  // qty = 1.0 since the column already carries the per-m³ total.
+  if (cols.subkonPerM3 > 0) {
+    pushLump('material', 'SUBKON (Material) (rolled)',
+      'Subkon (lump)',
+      1.0, 'm3', cols.subkonPerM3,
+      'per m³ beton (direct subcontractor cost)',
+    );
+  }
+  if (cols.prelimPerM3 > 0) {
+    pushLump('material', 'PRELIM (Material) (rolled)',
+      'Prelim (lump)',
+      1.0, 'm3', cols.prelimPerM3,
+      'per m³ beton (direct preliminary cost)',
     );
   }
 
@@ -554,7 +604,9 @@ async function main() {
 
   console.log(`Reading: ${inputPath}`);
   const buf = fs.readFileSync(inputPath);
-  const result = await parseBoqV2(buf);
+  // 'auto' so we pick up multi-sheet workbooks like I4-29 (RAB A..E) — not
+  // every contractor packs all BoQ rows into RAB (A).
+  const result = await parseBoqV2(buf, { boqSheet: 'auto' });
   const lookup = buildLookup(result.cells);
 
   console.log('Extracting Analisa templates...');
@@ -577,7 +629,7 @@ async function main() {
   let rolledCount = 0;
 
   for (const row of candidates) {
-    const cols = readRowCols(lookup, row.sourceRow);
+    const cols = readRowCols(lookup, row.source_sheet, row.sourceRow);
     const diameters = readDiametersForRow(row);
     const sourceUnitCost =
       (row.cost_split

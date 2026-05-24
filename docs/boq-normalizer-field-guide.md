@@ -36,25 +36,43 @@ over "here's a confident-looking total that's actually off by Rp 4,000,000".
 
 ### 1.2 Why this is hard
 
-Indonesian RAB workbooks pack a lot of variation:
+Indonesian RAB workbooks pack a lot of variation. Validated against three
+workbooks (AAL-5, PD3-23, I4-29 — see §13), the variations include:
 
-- The same element type (e.g., Balok B24-1) can appear in 3+ chapters with
-  different Pengecoran (concrete) blocks per chapter (lt atas / lt dasar /
-  lt bawah have different upah and equipment costs).
-- Bekisting blocks have different sub-items per element type (Balok has 5
-  sub-items + Perancah; Plat has 5 different sub-items; Kolom has yet another
-  set).
-- Some bekisting blocks use a "Jumlah" then "Harga per m²" with a cycle
-  factor (typical: 4 cycles for Balok, 6 for Plat, 9 for Kolom).
-- Others (Bata/Batako Poer/Sloof) skip the "Harga per m²" entirely — they're
-  single-cycle.
-- REKAP sheets carry per-row rebar diameter weights, not per-element. Each
-  BoQ row reads its own REKAP row (e.g., REKAP Balok row 369 for IV.A.2.7).
+- **Per-contractor column conventions.** AAL-5 uses cols R/S/T (concrete),
+  V/W (bekisting), Z/AA (pembesian). PD3 and I4-29 ADD col X (Perancah
+  embedded in bekisting), AC/AD (wire mesh for plat), L (Subkon), M (Prelim).
+- **Multi-sheet RAB layouts.** AAL-5 has one `RAB (A)` sheet. I4-29 has
+  `RAB (A..E)` — one sheet per building with structural data in B..E.
+- **Per-element Pengecoran blocks.** The same element (e.g., Balok B24-1)
+  appears in 3+ chapters with different Pengecoran blocks per floor (lt
+  atas / lt dasar / lt bawah have different upah and equipment costs).
+- **Per-element Bekisting sub-items.** Balok has Multipleks + 2 Usuk + Paku
+  + Form oil; Plat has a different mix; Kolom has yet another.
+- **Cycle factors are workbook-specific** and not always integers. AAL-5
+  uses 4/6/9; PD3 uses 4.56/5.76/5.76.
+- **Single-cycle vs cyclic bekisting**. Cyclic blocks have `Jumlah` →
+  `Harga per m²` (cycle factor = Jumlah/Harga). Single-cycle (Bata/Batako
+  for Poer/Sloof) skip the `Harga per m²` row.
+- **Pengecoran sub-item count varies.** AAL-5 has 3 sub-items per concrete
+  block (readymix + sewa + upah). I4-29 has 4 (vibrator and pump split).
+- **Pembesian unit prices are workbook-specific.** AAL-5: 9000/100/17500
+  Rp/kg. I4-29: 10000/varies/varies.
+- **REKAP sheets** carry per-row rebar diameter weights, not per-element.
+  Each BoQ row reads its own REKAP row. REKAP column layouts also vary per
+  workbook (see §6.6).
 
-A purely deterministic approach captures the "clean" patterns but breaks on
-edge cases. A purely LLM-driven approach handles edge cases but is expensive
-and slow. The recommended architecture is **deterministic-first, LLM-fallback**
-(see Section 9).
+The truth-correctness contract holds via the **column-sum invariant**: the
+workbook's own arithmetic gives the at-cost unit price as a sum of
+pre-computed column products (see §4.0). When in doubt about an itemized
+breakdown, fall back to a rolled lump per column — it reconciles by
+construction.
+
+A purely deterministic approach for itemized breakdowns captures clean
+patterns but breaks on edge cases. The rolled-tier fallback (see §5) covers
+~95% of structural rows across all three reference workbooks. A purely
+LLM-driven approach handles edge cases but is expensive and slow. The
+recommended architecture is **deterministic-first, LLM-fallback** (see §9).
 
 ---
 
@@ -219,15 +237,52 @@ shouldn't have been written.
 
 ## 4. The math (reference)
 
-For a BoQ row with volume V, the per-m³ unit cost = sum of these:
+### 4.0 The column-sum invariant (the most important formula in this guide)
 
-### 4.1 Concrete
+For ANY structural BoQ row, the at-cost per-m³ unit cost equals the sum of
+the workbook's own pre-computed cost columns:
 
 ```
-beton_readymix:    qty_per_m3 = AHS_qty (1.05)     × AHS_unit_price
+N = R + S + T + V·W + V·X + Z·AA + AC·AD + L + M
+```
+
+Where (in the BoQ row's RAB sheet — usually `RAB (A)`, sometimes multi-sheet):
+
+| Col | Meaning | Always populated? |
+|---|---|---|
+| N | At-cost unit price (the reconciliation target) | Yes (any structural row) |
+| R | Concrete material cost per m³ | Yes |
+| S | Concrete labor cost per m³ | Yes |
+| T | Concrete equipment cost per m³ | Yes |
+| V | Bekisting m²-of-form per m³ beton ratio | Yes (rows with bekisting) |
+| W | Bekisting cost per m² | Yes (rows with bekisting) |
+| X | Bekisting peralatan / Perancah per m² | Workbook-dependent — populated in PD3, I4-29; AAL-5 leaves blank because Perancah is on its own BoQ line |
+| Z | Pembesian kg per m³ | Yes (rows with rebar) |
+| AA | Pembesian blended price per kg | Yes (rows with rebar) |
+| AC | Wire mesh kg per m³ | Workbook-dependent — plat reinforcement in some workbooks |
+| AD | Wire mesh price per kg | Same |
+| L | Subkon (subcontractor) direct cost per m³ | Workbook-dependent |
+| M | Prelim (preliminary) direct cost per m³ | Workbook-dependent |
+
+**This invariant holds across all three reference workbooks** for every
+structural row (95%+ — the residual is genuinely non-structural masonry).
+The deterministic CLI's rolled tier (§5) is built on this invariant: emit a
+lump per non-zero term. By construction, the rolled total equals N.
+
+For per-material itemized breakdown, the formulas below decompose each term
+into its AHS sub-items.
+
+### 4.1 Concrete (R/S/T)
+
+```
+beton_readymix:    qty_per_m3 = AHS_qty (1.05 in AAL-5; 1.20 for Poer in PD3) × AHS_unit_price
 sewa_peralatan:    qty_per_m3 = 1.0                × AHS_unit_price
 upah_borongan:     qty_per_m3 = 1.0                × AHS_unit_price
 ```
+
+Some workbooks (e.g., I4-29) split `sewa_peralatan` into two equipment
+rows — vibrator and concrete pump separately. Group them by which cost
+column they populate (col F=material, G=labor, H=equipment).
 
 ### 4.2 Bekisting (cycle-based)
 
@@ -379,6 +434,31 @@ reconciled (31 itemized + 128 rolled). The 5 truly unresolved are listed at
 §6.4 and §6.5 below. The patterns where itemized fails but rolled succeeds
 are §6.1 through §6.3 — all symptomatic of the same root cause: the
 itemized-tier code mishandles Kolom/Plat/Dinding bekisting blocks.
+
+### 6.0 Itemized vs rolled — the corrected mental model
+
+After cross-workbook validation (§13), the unresolved patterns split into
+two distinct buckets:
+
+- **Rows that reconcile via the column-sum invariant (§4.0) but fail
+  itemized expansion.** The rolled tier (§5) handles these correctly today.
+  They show up as `~ rolled` in CLI output, contributing correct group totals
+  to SANO. Examples: Kolom rows (bug in `extractBekistingTemplates` for the
+  Kolom block — fix outlined in §6.2). Bata/Batako bekisting (fix in §6.1).
+  V/VI chapter Balok (was misframed in earlier versions of this guide — see
+  §6.3).
+
+- **Rows that fail the column-sum invariant.** These are GENUINELY
+  non-structural rows — Pasangan dinding bata merah (masonry), Strong band BB
+  custom items, Planter box custom forms. They cannot be expanded via the
+  Bekisting+Concrete+Pembesian template because they aren't built from those
+  components.
+
+The fix priority is: **first, make sure rolled-tier reconciles every row
+where the invariant holds** (already done across AAL-5/PD3/I4 thanks to the
+9-column lump emission). **Second**, improve itemized expansion for rolled
+rows that have known patterns (§6.1, §6.2 below). **Third**, accept the
+genuine masonry/custom rows as Unresolved.
 
 ### 6.1 Bata/Batako bekisting (Poer + Sloof, chapter III.A.1–2)
 
@@ -719,8 +799,92 @@ on site. Get it right or admit you can't.
 
 ---
 
-*Last updated: 2026-05-24 after the Level-2 rolled-lump fallback shipped.
-Coverage on AAL-5: 159/164 reconciled (31 itemized, 128 rolled, 5 genuinely
+---
+
+## 13. Cross-workbook validation (2026-05-24)
+
+The deterministic CLI was validated against three independent reference
+workbooks by parallel agents. Findings preserved at:
+
+- `docs/boq-normalizer-validation-PD3-23.md` — RAB R2 Pakuwon Indah PD3 no. 23
+- `docs/boq-normalizer-validation-I4-29.md` — RAB Nusa Golf I4 no. 29 R3
+
+### Coverage
+
+| Workbook | Itemized | Rolled | Unresolved | Total | Coverage |
+|---|---|---|---|---|---|
+| AAL-5 | 31 | 128 | 5 | 164 | 96.9% |
+| PD3-23 | 0 | 229 | 12 | 241 | 95.0% |
+| I4-29 | 6 | 316 | 17 | 339 | 95.0% |
+| **All three** | **37** | **673** | **34** | **744** | **95.4%** |
+
+All Unresolved rows (34) are confirmed non-structural — Pasangan dinding
+bata merah (masonry), Strong band BB, Planter box, and similar custom
+items where the column-sum invariant doesn't apply.
+
+### Key cross-workbook learnings
+
+1. **The column-sum invariant holds for every structural row** across all
+   three workbooks. This is the architectural floor — when the invariant
+   holds (R + S + T + V·W + V·X + Z·AA + AC·AD + L + M = N), the rolled
+   tier reconciles by construction.
+
+2. **Earlier framings of §6.2 and §6.3 were wrong.** The "Kolom variance"
+   and "V/VI Balok variance" weren't caused by REKAP weight differences or
+   Pengecoran sub-variants. The root cause was the CLI missing X (Perancah),
+   AC*AD (wire mesh), and L/M (subkon/prelim) columns. Adding those lumps
+   pushed PD3 from 43% → 95% and I4-29 from 0% → 95%.
+
+3. **Multi-sheet RAB is real.** I4-29 splits structural rows across
+   `RAB (A..E)` (one sheet per building). The CLI now uses `boqSheet: 'auto'`
+   to discover them. AAL-5 still has a single `RAB (A)`.
+
+4. **Pengecoran sub-item count varies (3 vs 4).** I4-29 splits vibrator and
+   pump into separate equipment rows. The CLI's column-grouping logic
+   (F=material, G=labor, H=equipment) handles this naturally.
+
+5. **Cycle factors are not always integers.** PD3 has Kolom = 4.56,
+   Plat/Dinding = 5.76. Don't round to known integers — read the literal
+   ratio from `F{jumlah}/F{jumlah+1}` in the Bekisting block.
+
+6. **Pembesian and concrete prices are workbook-specific.** AAL-5 uses
+   9000/100/17500 Rp/kg for the Pembesian sub-items; I4-29 uses
+   10000/varies/varies. The rolled tier reads `RAB!AA{row}` directly so
+   it's correct by construction; the itemized tier reads from the workbook's
+   own AHS block, so it should also be correct (but check if you change
+   that code).
+
+7. **REKAP rebar diameter layouts vary.** AAL-5: L=D6, M=D8, N=D10, O=D13.
+   PD3 Plat: K=D8, L=D10, M=D13, N=D16, O=D25. The current adapters
+   (`tools/boqParserV2/rebarDisaggregator/adapters/`) are hardcoded to
+   AAL-5 columns — see §6.6 for the proposed header-detection fix.
+
+### Recommended next steps to push itemized coverage higher
+
+The rolled tier covers 95% reliably. To upgrade more rows from rolled to
+itemized:
+
+1. **Fix `extractBekistingTemplates` for Kolom blocks.** The bug that
+   produces 18.8× wrong totals for III.A.4.1 K174-1 (and likely affects
+   every Kolom/Plat/Dinding row across all workbooks). Investigation
+   should start by hand-computing the Bekisting Kolom Jumlah and
+   cycleFactor from `Analisa!36..43`, then comparing to what
+   `extractBekistingTemplates` produces.
+
+2. **Make REKAP adapters layout-aware.** Detect the header row, then map
+   `"8"`, `"10"`, etc. to diameters. This unlocks itemized rebar for
+   workbooks that don't follow AAL-5's column letters.
+
+3. **Add Bata/Batako single-cycle bekisting extraction.** Already
+   hypothesized in §6.1; with `cycleFactor = 1`, the existing math should
+   work — just adjust `extractBekistingTemplates` to not skip blocks
+   whose Harga-per-m² row is absent.
+
+---
+
+*Last updated: 2026-05-24 after cross-workbook validation against PD3-23
+and I4-29 (both via parallel sub-agents). Coverage across all three
+reference workbooks: 95.4% (710/744 reconciled, 34 genuinely
 non-structural). See
 `docs/superpowers/specs/2026-05-23-recipe-detail-normalizer-design.md` for the
-full design history.*
+full design history, and the per-workbook validation docs for raw findings.*
