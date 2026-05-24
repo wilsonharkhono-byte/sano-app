@@ -10,6 +10,7 @@
     "sync:materials": "node tools/syncMaterialCatalog.mjs",
     "sync:materials:watch": "node tools/syncMaterialCatalog.mjs --watch",
     "normalize:boq": "tsx --env-file=.env tools/normalizer/cli.ts",
+    "normalize:boq:det": "tsx tools/normalizer/cli-deterministic.ts",
     "test": "jest"
   },
   "dependencies": {
