@@ -6,6 +6,10 @@ import { StyleSheet, Text, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, FONTS, SPACE, TYPE, BREAKPOINTS } from '../workflows/theme';
 import { lazyScreen } from '../workflows/components/LazyScreen';
+import { useProject } from '../workflows/hooks/useProject';
+import { useUnreadCount } from '../workflows/screens/hooks/useUnreadCount';
+import { navigationRef } from '../workflows/App';
+import NotificationsScreen from './screens/NotificationsScreen';
 
 const OfficeHomeScreen = lazyScreen(() => import('./screens/OfficeHomeScreen'));
 const ApprovalsScreen = lazyScreen(() => import('./screens/ApprovalsScreen'));
@@ -25,6 +29,7 @@ export type OfficeTabParamList = {
   Mandor: undefined;
   Opname: undefined;
   Reports: undefined;
+  Notifikasi: undefined;
 };
 
 const Tab = createBottomTabNavigator<OfficeTabParamList>();
@@ -38,6 +43,7 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Mandor: 'people-outline',
   Opname: 'receipt-outline',
   Reports: 'bar-chart-outline',
+  Notifikasi: 'notifications-outline',
 };
 
 const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -49,6 +55,7 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Mandor: 'people',
   Opname: 'receipt',
   Reports: 'bar-chart',
+  Notifikasi: 'notifications',
 };
 
 const LABEL_MAP: Record<string, string> = {
@@ -60,11 +67,14 @@ const LABEL_MAP: Record<string, string> = {
   Mandor: 'Mandor',
   Opname: 'Opname',
   Reports: 'Laporan',
+  Notifikasi: 'Notifikasi',
 };
 
 export default function OfficeNavigation() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
+  const { profile } = useProject();
+  const unread = useUnreadCount(profile?.id);
 
   const isWide    = width >= BREAKPOINTS.tablet;
   const barHeight = isWide
@@ -74,7 +84,7 @@ export default function OfficeNavigation() {
   const labelStyle = isWide ? styles.labelWide : styles.label;
 
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       <Tab.Navigator
         screenOptions={({ route }) => ({
           tabBarIcon: ({ color, focused }) => (
@@ -134,6 +144,14 @@ export default function OfficeNavigation() {
           options={{ tabBarButton: () => null }}
         />
         <Tab.Screen name="Reports" component={OfficeReportsScreen} />
+        <Tab.Screen
+          name="Notifikasi"
+          options={{
+            tabBarBadge: unread > 0 ? unread : undefined,
+          }}
+        >
+          {() => <NotificationsScreen profileId={profile!.id} />}
+        </Tab.Screen>
       </Tab.Navigator>
     </NavigationContainer>
   );

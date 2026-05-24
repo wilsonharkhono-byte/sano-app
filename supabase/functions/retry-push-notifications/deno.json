@@ -1,0 +1,9 @@
+{
+  "tasks": {
+    "test": "deno test --allow-env --allow-net --allow-read"
+  },
+  "imports": {
+    "@supabase/supabase-js": "jsr:@supabase/supabase-js@2",
+    "std/assert": "jsr:@std/assert@1"
+  }
+}

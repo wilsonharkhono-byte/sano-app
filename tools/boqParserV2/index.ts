@@ -1,10 +1,13 @@
 import { harvestWorkbook } from './harvest';
 import { detectAhsBlocks } from './detectBlocks';
+import { readBreakdownSheets } from './breakdownSheetReader';
+import type { RowBreakdown } from './breakdownSheetReader.types';
 import { classifyComponent, toNumber } from './classifyComponent';
 import { extractCatalogRows, type CatalogRow } from './extractCatalog';
 import { extractBoqRows, type BoqRowV2, detectCostSplitColumns, findHeaderRow } from './extractTakeoffs';
 import { buildRecipe } from './recipeBuilder';
-import { validateBlocks } from './validate';
+import { buildRecipeFromBreakdown } from './recipeFromBreakdown';
+import { validateBlocks, validateBreakdowns, type BreakdownWarning } from './validate';
 import { disaggregateRebar } from './rebarDisaggregator';
 import { resolveBoqSheets, type BoqSheetOption } from './multiSheetScanner';
 import type {
@@ -29,6 +32,7 @@ export interface ParseBoqV2Result {
   boqRows: BoqRowV2[];
   validationReport: ValidationReport;
   stagingRows: StagingRowV2[];
+  breakdownWarnings: BreakdownWarning[];
 }
 
 export async function parseBoqV2(
@@ -99,17 +103,43 @@ export async function parseBoqV2(
   }
 
   // Existing per-sheet recipeBuilder loop ends here.
-  // Now disaggregate rebar components for any BoQ row whose label matches
-  // an element prefix (Sloof|Balok|Kolom|Poer|Plat) and whose recipe has
-  // a Pembesian aggregate. Non-rebar rows pass through unchanged.
+
+  // Recipe-detail expansion: if the workbook has "Breakdown {code}" sheets
+  // AND the flag is on, prefer breakdown-derived recipes over the rolled-up
+  // ones. We still run disaggregateRebar across all rows (cheap, idempotent)
+  // and then apply breakdown overrides in-place so original document order
+  // is preserved for downstream staging-row numbering and audit UI display.
+  const flagEnabled = process.env.SANO_BOQ_RECIPE_DETAIL === 'on';
+  const breakdownsResult = flagEnabled
+    ? readBreakdownSheets(workbook)
+    : { breakdowns: new Map<string, RowBreakdown>(), warnings: [] };
+
+  // Count "Breakdown {code}" sheets regardless of flag so the validator can
+  // warn operators who have authored Breakdown sheets but forgot the flag.
+  // Cheap sheet-name scan — no parsing.
+  const breakdownSheetCount = flagEnabled
+    ? breakdownsResult.breakdowns.size
+    : workbook.SheetNames.filter((n) => /^Breakdown\s+/.test(n)).length;
+
   const disaggregateResult = disaggregateRebar(boqRows, cells);
   boqRows.length = 0;
   boqRows.push(...disaggregateResult.boqRows);
-  // Note: disaggregateResult.warnings is collected here for future surfacing
-  // in validationReport. For now we keep it scoped — Task 9+ may include
-  // them in the parsed result.
+
+  // Apply breakdown overrides in-place, preserving order.
+  for (let i = 0; i < boqRows.length; i++) {
+    const bd = breakdownsResult.breakdowns.get(boqRows[i].code);
+    if (!bd) continue;
+    boqRows[i] = { ...boqRows[i], recipe: buildRecipeFromBreakdown(boqRows[i], bd) };
+  }
+  // Note: disaggregateResult.warnings + breakdownsResult.warnings collected
+  // here for future surfacing in validationReport. Task 8 wires them through.
 
   const validationReport = validateBlocks(ahsBlocks);
+  const breakdownWarnings = validateBreakdowns({
+    breakdownsFound: breakdownSheetCount,
+    flagEnabled,
+    readerWarnings: breakdownsResult.warnings,
+  });
 
   const stagingRows: StagingRowV2[] = [];
   let rowNumber = 0;
@@ -376,5 +406,5 @@ export async function parseBoqV2(
     }
   }
 
-  return { cells, lookup, materialRows, ahsBlocks, boqRows, validationReport, stagingRows };
+  return { cells, lookup, materialRows, ahsBlocks, boqRows, validationReport, stagingRows, breakdownWarnings };
 }

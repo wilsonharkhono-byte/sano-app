@@ -47,7 +47,8 @@
     "extra": {
       "eas": {
         "projectId": "30991bf9-4ebe-42a1-8daf-69d631fcad86"
-      }
+      },
+      "sanoBoqRecipeDetail": false
     }
   }
 }

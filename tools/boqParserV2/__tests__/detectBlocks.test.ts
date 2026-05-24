@@ -12,6 +12,10 @@ describe('isTitleRow', () => {
   it('matches "10 m3 Galian tanah"', () => {
     expect(isTitleRow('10 m3 Galian tanah')).toBe(true);
   });
+  it('matches verb-style "Bekisting Balok" / "Bekisting Plat"', () => {
+    expect(isTitleRow('Bekisting Balok')).toBe(true);
+    expect(isTitleRow('Bekisting Plat')).toBe(true);
+  });
   it('rejects non-titles', () => {
     expect(isTitleRow('Uraian')).toBe(false);
     expect(isTitleRow('Semen PC')).toBe(false);

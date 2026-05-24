@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "xlsx": "https://esm.sh/xlsx@0.18.5"
+  }
+}

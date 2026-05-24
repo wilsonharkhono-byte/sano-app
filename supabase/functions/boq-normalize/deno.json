@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "xlsx": "https://esm.sh/xlsx@0.18.5",
+    "@anthropic-ai/sdk": "https://esm.sh/@anthropic-ai/sdk@0.40.0"
+  }
+}

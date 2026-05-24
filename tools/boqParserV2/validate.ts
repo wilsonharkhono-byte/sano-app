@@ -1,5 +1,6 @@
 import type { AhsBlock } from './detectBlocks';
 import type { ValidationReport } from './types';
+import type { ReaderWarning } from './breakdownSheetReader.types';
 
 export function validateBlocks(blocks: AhsBlock[]): ValidationReport {
   const report: ValidationReport = {
@@ -26,4 +27,31 @@ export function validateBlocks(blocks: AhsBlock[]): ValidationReport {
     });
   }
   return report;
+}
+
+export interface BreakdownValidationInput {
+  breakdownsFound: number;
+  flagEnabled: boolean;
+  readerWarnings: ReaderWarning[];
+}
+
+export interface BreakdownWarning {
+  sheet: string | null;
+  code: string;
+  message: string;
+}
+
+export function validateBreakdowns(input: BreakdownValidationInput): BreakdownWarning[] {
+  const out: BreakdownWarning[] = [];
+  if (input.breakdownsFound > 0 && !input.flagEnabled) {
+    out.push({
+      sheet: null,
+      code: 'BREAKDOWN_SHEETS_PRESENT_BUT_FLAG_OFF',
+      message: `Workbook has ${input.breakdownsFound} Breakdown sheet(s) but SANO_BOQ_RECIPE_DETAIL is off — they are being ignored`,
+    });
+  }
+  for (const w of input.readerWarnings) {
+    out.push({ sheet: w.sheet, code: w.code, message: w.message });
+  }
+  return out;
 }
