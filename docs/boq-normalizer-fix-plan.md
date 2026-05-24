@@ -201,7 +201,15 @@ roll back and re-check the side-classification logic.
 expectations. The math is well-understood from PD3/I4-29 validation §3.4
 and §6.3.
 
-### 2.2 Direct-reference breakdown path for masonry / pile / custom items
+### 2.2 Direct-reference breakdown path for masonry / pile / custom items — DONE 2026-05-25
+
+**Result.** `tools/normalizer/cli-deterministic.ts:buildDirectReferenceBreakdown`
+landed. Unresolved counts went 5 → 0 (AAL-5), 12 → 0 (PD3), 17 → 0 (I4-29).
+All 34 newly-handled rows reconcile within ±1 Rp via per-component lumps
+read straight from `row.recipe.components`. Implementation skipped the
+`pickDominantReferencedBlock` heuristic — emitting one lump per component
+(grouped by `lineType`) is simpler and works for all observed rows because
+the row's recipe already sums to its at-cost per-unit by construction.
 
 **Problem.** Rows like `II.B.3 Strauss pile dia. 30 cm` (PD3, N=Rp 3,502,524.51)
 have `R = S = T = V = W = Z = AA = 0` because they aren't built from the

@@ -393,20 +393,35 @@ Pembesian U24&U40 lump: qty=Z,    unit=kg,  price=RAB!AA{row}    (only if Z*AA >
 
 By construction, these 5 lumps sum to `RAB!N{row}` because that's literally
 the workbook's own arithmetic: `N = R + S + T + V*W + Z*AA`. **159/164 rows
-reconcile at this tier within ±1 Rp**. The 5 that don't are non-structural
-(VIII.\* Pasangan bata has R=S=T=V=W=Z=AA=0 because it's masonry, not
-concrete; V.A.2.31 Strong band BB is a custom item).
+on AAL-5 reconcile at this tier within ±1 Rp** (the 5 that fall through to
+tier 2.5 are non-structural — masonry rows have R=S=T=V=W=Z=AA=0).
 
 Each lump carries `specNote: "rolled lump — group total only"` and a
 `materialName` like `"Bekisting (lump — no per-material detail)"` so SANO's
 audit UI naturally groups them separately from itemized per-material lines.
 
+### Tier 2.5 — direct-reference lumps (masonry / pile / custom)
+
+Rows whose structural columns are all zero (so the rolled tier has nothing
+to emit) but whose `I/J/K/L/M` formulas still reference a specific Analisa
+block fall through to `buildDirectReferenceBreakdown`. It reads the parsed
+recipe components (each carries `lineType`, `unitPrice`, `quantityPerUnit`,
+and a `referencedCell` pointer back to the Analisa block) and emits one
+lump per component: material / labor / equipment go to their own
+`BreakdownGroup`; subkon and prelim are grouped under material. By
+construction the components sum to `cost_split.material + .labor + .equipment
++ .prelim + subkon_cost_per_unit`, so reconciliation is automatic.
+
+Covers all 34 previously-Unresolved rows across the three reference
+workbooks (Pasangan dinding bata merah, Strong band BB, bored pile, etc.).
+
 ### Tier 3 — Unresolved
 
-Rows that fail both tiers go to the Unresolved sheet. On AAL-5 this is
-exactly the 5 non-structural rows above. They contribute zero to the audit
-aggregation, which is the correct semantics: we can't decompose what we
-can't read.
+Rows that fail all three tiers go to the Unresolved sheet. As of 2026-05-25
+this set is **empty** on all three reference workbooks — every row reconciles
+through one of itemized / rolled / direct-ref. Any future row that lands
+here means the workbook has a layout we haven't seen before, not that the
+row is genuinely unparseable — investigate before shipping.
 
 ### Run
 
@@ -811,35 +826,39 @@ workbooks by parallel agents. Findings preserved at:
 
 ### Coverage — two metrics, do not conflate them
 
-| Workbook | Itemized | Rolled | Unresolved | Total | Rp coverage | Material coverage |
-|---|---|---|---|---|---|---|
-| AAL-5    |  74 |  85 |  5 | 164 | 96.9% | **45.1%** |
-| PD3-23   |  76 | 153 | 12 | 241 | 95.0% | **31.5%** |
-| I4-29    |  46 | 276 | 17 | 339 | 95.0% | **13.6%** |
-| **All three** | **196** | **514** | **34** | **744** | **95.4%** | **26.3%** |
+| Workbook | Itemized | Rolled | Direct-ref | Unresolved | Total | Rp coverage | Material coverage |
+|---|---|---|---|---|---|---|---|
+| AAL-5    |  74 |  85 |  5 | 0 | 164 | 100% | **45.1%** |
+| PD3-23   |  76 | 153 | 12 | 0 | 241 | 100% | **31.5%** |
+| I4-29    |  46 | 276 | 17 | 0 | 339 | 100% | **13.6%** |
+| **All three** | **196** | **514** | **34** | **0** | **744** | **100%** | **26.3%** |
 
-- **Rp coverage** = `(itemized + rolled) / total` — share of project Rp
-  value whose total reconciles to source within ±1 Rp. This is the
-  truth-correctness floor (the rolled tier is a safety net).
+- **Rp coverage** = `(itemized + rolled + direct-ref) / total` — share of
+  project Rp value whose total reconciles to source within ±1 Rp. This is
+  the truth-correctness floor; with the direct-reference tier added (fix
+  plan §2.2), it is now 100% across all three reference workbooks.
 - **Material coverage** = `itemized / total` — share of rows with per-material
   detail (Multipleks, Usuk, kg D8 vs D13, etc.) available to procurement.
-  **This is the original goal in §1.** The rolled tier emits group lumps
-  (Bekisting lump, Pembesian lump) that reconcile by total but give zero
-  per-material visibility — the audit screen sees "Bekisting Balok lump
-  Rp 2.5M" instead of "Multipleks 1.32 lbr, Usuk vert 5.95 btg, ..."
+  **This is the original goal in §1.** The rolled and direct-ref tiers emit
+  group lumps that reconcile by total but give limited per-material visibility
+  — the audit screen sees "Bekisting Balok lump Rp 2.5M" instead of
+  "Multipleks 1.32 lbr, Usuk vert 5.95 btg, ..."
 
-Stop reporting "95% coverage" as the headline. **The actual deliverable is
-at 26.3%.** The rolled tier kept it from being worse — the truth-correctness
-contract is intact — but the goal in §1 (per-material detail for procurement)
-is still mostly unmet, especially for PD3 (32%) and I4-29 (14%).
+Stop reporting "100% coverage" as the headline. **The actual deliverable is
+at 26.3%.** The rolled and direct-ref tiers kept Rp coverage at the ceiling
+— the truth-correctness contract is intact and no row is silently dropped
+— but the goal in §1 (per-material detail for procurement) is still mostly
+unmet, especially for PD3 (32%) and I4-29 (14%). The next architectural
+lever to upgrade rolled → itemized is unmodeled PD3 Plat/Kolom variants
+(field guide §6.2/§6.3) and the I4-29 plat reinforcement paths.
 
-All 34 Unresolved rows are confirmed non-structural — Pasangan dinding bata
-merah (masonry), Strong band BB, Planter box, and similar custom items
-where the column-sum invariant doesn't apply. The bigger problem is the 570
-**rolled** rows that DO reconcile by Rp but don't have per-material detail.
-The next architectural lever to upgrade rolled → itemized is the H-side
-bekisting extraction in field guide §6.7 (also discussed in
-`docs/boq-normalizer-fix-plan.md` §2.1).
+The 34 previously-Unresolved rows are non-structural — Pasangan dinding bata
+merah (masonry), Strong band BB, Planter box, bored pile, and similar custom
+items where the column-sum invariant doesn't apply but the row's recipe
+still references a specific Analisa block via I/J/K/L columns. The
+direct-reference tier reads the recipe components and emits one lump per
+component (material / labor / equipment / subkon / prelim), reconciling
+by construction. See `tools/normalizer/cli-deterministic.ts:buildDirectReferenceBreakdown`.
 
 ### Key cross-workbook learnings
 
@@ -958,12 +977,15 @@ itemized:
 
 ---
 
-*Last updated: 2026-05-25 after H-side bekisting extraction landed
-(fix plan §2.1). Coverage across all three reference workbooks: 95.4%
-(710/744 reconciled, 34 genuinely non-structural). Itemized share rose
-140 → 196 (+56) on this round (PD3 49→76, I4 17→46, AAL-5 unchanged at
-74). Counts are pinned in `tools/normalizer/__tests__/deterministicCli.integration.test.ts`
-— any drift means either the test needs updating to match a deliberate
-coverage improvement, or a regression has been introduced. See
+*Last updated: 2026-05-25 after the direct-reference tier landed
+(fix plan §2.2). Rp coverage across all three reference workbooks is now
+100% (744/744 reconciled within ±1 Rp). The 34 previously-Unresolved rows
+(masonry / pile / custom) all flow through `buildDirectReferenceBreakdown`,
+which reads the row's recipe components and emits one lump per lineType.
+Itemized share is unchanged at 196 — the direct-ref tier is a third lump
+fallback, not a per-material upgrade. Counts are pinned in
+`tools/normalizer/__tests__/deterministicCli.integration.test.ts` — any
+drift means either the test needs updating to match a deliberate coverage
+improvement, or a regression has been introduced. See
 `docs/superpowers/specs/2026-05-23-recipe-detail-normalizer-design.md` for the
 full design history, and the per-workbook validation docs for raw findings.*

@@ -29,29 +29,32 @@ const describeIf = allPresent ? describe : describe.skip;
 jest.setTimeout(180_000);
 
 describeIf('deterministic CLI — field guide §13 counts (regression gate)', () => {
-  it('AAL-5: 74 itemized / 85 rolled / 5 unresolved, |variance| ≤ 1 Rp', async () => {
+  it('AAL-5: 74 itemized / 85 rolled / 5 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
     const res = await runDeterministic({ inputPath: FIXTURES.aal5, silent: true });
     expect(res.itemizedCount).toBe(74);
     expect(res.rolledCount).toBe(85);
-    expect(res.unresolvedCount).toBe(5);
+    expect(res.rolledDirectCount).toBe(5);
+    expect(res.unresolvedCount).toBe(0);
     expect(res.totalCandidates).toBe(164);
     expect(res.maxAbsVariance).toBeLessThanOrEqual(1);
   });
 
-  it('PD3-23: 76 itemized / 153 rolled / 12 unresolved, |variance| ≤ 1 Rp', async () => {
+  it('PD3-23: 76 itemized / 153 rolled / 12 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
     const res = await runDeterministic({ inputPath: FIXTURES.pd3, silent: true });
     expect(res.itemizedCount).toBe(76);
     expect(res.rolledCount).toBe(153);
-    expect(res.unresolvedCount).toBe(12);
+    expect(res.rolledDirectCount).toBe(12);
+    expect(res.unresolvedCount).toBe(0);
     expect(res.totalCandidates).toBe(241);
     expect(res.maxAbsVariance).toBeLessThanOrEqual(1);
   });
 
-  it('I4-29: 46 itemized / 276 rolled / 17 unresolved, |variance| ≤ 1 Rp', async () => {
+  it('I4-29: 46 itemized / 276 rolled / 17 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
     const res = await runDeterministic({ inputPath: FIXTURES.i4, silent: true });
     expect(res.itemizedCount).toBe(46);
     expect(res.rolledCount).toBe(276);
-    expect(res.unresolvedCount).toBe(17);
+    expect(res.rolledDirectCount).toBe(17);
+    expect(res.unresolvedCount).toBe(0);
     expect(res.totalCandidates).toBe(339);
     expect(res.maxAbsVariance).toBeLessThanOrEqual(1);
   });
@@ -62,11 +65,13 @@ describeIf('deterministic CLI — field guide §13 counts (regression gate)', ()
       runDeterministic({ inputPath: FIXTURES.pd3,  silent: true }),
       runDeterministic({ inputPath: FIXTURES.i4,   silent: true }),
     ]);
-    const itemized = aal5.itemizedCount + pd3.itemizedCount + i4.itemizedCount;
-    const rolled   = aal5.rolledCount   + pd3.rolledCount   + i4.rolledCount;
-    const unresolved = aal5.unresolvedCount + pd3.unresolvedCount + i4.unresolvedCount;
+    const itemized     = aal5.itemizedCount     + pd3.itemizedCount     + i4.itemizedCount;
+    const rolled       = aal5.rolledCount       + pd3.rolledCount       + i4.rolledCount;
+    const rolledDirect = aal5.rolledDirectCount + pd3.rolledDirectCount + i4.rolledDirectCount;
+    const unresolved   = aal5.unresolvedCount   + pd3.unresolvedCount   + i4.unresolvedCount;
     expect(itemized).toBe(196);
     expect(rolled).toBe(514);
-    expect(unresolved).toBe(34);
+    expect(rolledDirect).toBe(34);
+    expect(unresolved).toBe(0);
   });
 });

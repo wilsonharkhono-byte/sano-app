@@ -305,8 +305,14 @@ interface BuildResult {
   reason?: string;
   computedUnitCost?: number;
   variance?: number;
-  /** 'itemized' = per-material/sub-item; 'rolled' = 5 lump components from RAB column totals. */
-  level?: 'itemized' | 'rolled';
+  /**
+   * 'itemized' = per-material/sub-item;
+   * 'rolled'   = 5 lump components from RAB column totals (R/S/T/V·W/V·X/Z·AA/AC·AD/L/M);
+   * 'rolled-direct' = lumps derived from the row's recipe.components when its
+   * structural columns are all zero (masonry, pile, custom items that point
+   * directly at an Analisa block via I/J/K/L formulas).
+   */
+  level?: 'itemized' | 'rolled' | 'rolled-direct';
 }
 
 /**
@@ -445,6 +451,142 @@ function buildRolledBreakdown(args: {
       sourceSheet: `Breakdown ${row.code}`,
     },
     computedUnitCost, variance, level: 'rolled',
+  };
+}
+
+/**
+ * Level-2.5 fallback for rows whose structural columns are all zero
+ * (R = S = T = V = W = Z = AA = AC = AD = L = M = 0) so the column-sum
+ * rolled tier has nothing to emit, but whose I/J/K columns still reference
+ * a specific Analisa block (masonry, bored pile, custom items). Read the
+ * row's parsed recipe components — each one already carries the per-unit
+ * cost contribution and the referenced cell — and emit one lump per
+ * component, grouped by lineType.
+ *
+ * The components sum to the row's at-cost per-unit by construction (that's
+ * how the recipe was built from I/J/K/L/M formulas), so reconciliation
+ * to `sourceUnitCost` is automatic when the recipe is non-empty.
+ */
+function buildDirectReferenceBreakdown(args: {
+  row: BoqRowV2;
+  cols: RowCols;
+  sourceUnitCost: number;
+  sourceLineTotal: number;
+}): BuildResult {
+  const { row, cols, sourceUnitCost, sourceLineTotal } = args;
+
+  // Guard: only fire when every structural column the rolled tier can read
+  // is zero. Otherwise the rolled tier owns the row.
+  const structuralColsPopulated =
+    cols.concreteMatCostPerM3 > 0 ||
+    cols.concreteLaborCostPerM3 > 0 ||
+    cols.concreteEquipCostPerM3 > 0 ||
+    cols.bekistingHargaPerM2 > 0 ||
+    cols.bekistingPeralatanPerM2 > 0 ||
+    cols.pembesianBlendedPricePerKg > 0 ||
+    cols.wireMeshPricePerKg > 0;
+  if (structuralColsPopulated) {
+    return { reason: 'Direct-ref tier skipped: row has populated structural columns.' };
+  }
+
+  if (!row.recipe || row.recipe.components.length === 0) {
+    return { reason: 'Direct-ref tier: row has no recipe components.' };
+  }
+
+  const v = row.planned;
+  const components: BreakdownRow[] = [];
+
+  for (const c of row.recipe.components) {
+    const cost = c.quantityPerUnit * c.unitPrice;
+    if (cost <= 0) continue;
+
+    // BreakdownGroup is 'material' | 'labor' | 'equipment' only. Subkon and
+    // prelim are direct-cost lumps that the audit UI groups under Material.
+    let group: BreakdownRow['group'];
+    let componentGroup: string;
+    switch (c.lineType) {
+      case 'labor':
+        group = 'labor';
+        componentGroup = 'UPAH (Labor) — direct-ref lump';
+        break;
+      case 'equipment':
+        group = 'equipment';
+        componentGroup = 'PERALATAN (Equipment) — direct-ref lump';
+        break;
+      case 'subkon':
+        group = 'material';
+        componentGroup = 'SUBKON (Material) — direct-ref lump';
+        break;
+      case 'prelim':
+        group = 'material';
+        componentGroup = 'PRELIM (Material) — direct-ref lump';
+        break;
+      case 'material':
+      default:
+        group = 'material';
+        componentGroup = 'MATERIAL (Material) — direct-ref lump';
+        break;
+    }
+
+    const matName = c.materialName ?? c.referencedBlockTitle ?? `${c.lineType} lump`;
+    const specNote =
+      `direct-reference lump from ${c.referencedCell.sheet}!${c.referencedCell.address}` +
+      (c.referencedBlockTitle ? ` (block: ${c.referencedBlockTitle})` : '');
+
+    components.push({
+      group,
+      componentGroup,
+      materialName: matName,
+      specNote,
+      qtyPerNativeUnit: c.quantityPerUnit,
+      nativeUnit: row.unit,
+      nativeBasis: `per ${row.unit}`,
+      unitPrice: c.unitPrice,
+      qtyPerBoqUnit: c.quantityPerUnit,
+      costPerBoqUnit: cost,
+      totalQty: c.quantityPerUnit * v,
+      totalCost: cost * v,
+    });
+  }
+
+  if (components.length === 0) {
+    return { reason: 'Direct-ref tier: recipe has no non-zero components.' };
+  }
+
+  const computedUnitCost = components.reduce((s, c) => s + c.costPerBoqUnit, 0);
+  const variance = computedUnitCost - sourceUnitCost;
+  if (Math.abs(variance) > TOLERANCE_RP) {
+    return {
+      reason: `Direct-ref variance ${variance.toFixed(2)} Rp (computed ${computedUnitCost.toFixed(2)} vs source ${sourceUnitCost.toFixed(2)}).`,
+      computedUnitCost,
+      variance,
+    };
+  }
+
+  const computedLineTotal = computedUnitCost * v;
+  return {
+    breakdown: {
+      boqCode: row.code,
+      description: row.label,
+      unit: row.unit,
+      volume: v,
+      unitCost: computedUnitCost,
+      lineTotal: computedLineTotal,
+      components,
+      reconciliation: {
+        computedUnitCost,
+        sourceUnitCost,
+        unitCostVariance: variance,
+        computedLineTotal,
+        sourceLineTotal,
+        lineTotalVariance: computedLineTotal - sourceLineTotal,
+        reconciles: true,
+      },
+      sourceSheet: `Breakdown ${row.code}`,
+    },
+    computedUnitCost,
+    variance,
+    level: 'rolled-direct',
   };
 }
 
@@ -685,6 +827,8 @@ function buildBreakdownForRow(args: {
 export interface RunDeterministicResult {
   itemizedCount: number;
   rolledCount: number;
+  /** Count of rows handled by the direct-reference tier (masonry / pile / custom). */
+  rolledDirectCount: number;
   unresolvedCount: number;
   totalCandidates: number;
   breakdowns: RowBreakdown[];
@@ -727,6 +871,7 @@ export async function runDeterministic(opts: RunDeterministicOptions): Promise<R
   const unresolved: Array<{ code: string; label: string; reason: string }> = [];
   let itemizedCount = 0;
   let rolledCount = 0;
+  let rolledDirectCount = 0;
   let maxAbsVariance = 0;
 
   for (const row of candidates) {
@@ -749,13 +894,25 @@ export async function runDeterministic(opts: RunDeterministicOptions): Promise<R
       if (rolled.breakdown) res = rolled;
     }
 
+    // Tier 2.5: direct-reference rows (masonry / pile / custom) whose
+    // structural columns are all zero but whose recipe still points at
+    // specific Analisa blocks.
+    if (!res.breakdown) {
+      const direct = buildDirectReferenceBreakdown({ row, cols, sourceUnitCost, sourceLineTotal });
+      if (direct.breakdown) res = direct;
+    }
+
     if (res.breakdown) {
       breakdowns.push(res.breakdown);
       if (res.level === 'itemized') itemizedCount++;
+      else if (res.level === 'rolled-direct') rolledDirectCount++;
       else rolledCount++;
       const absVar = Math.abs(res.variance ?? 0);
       if (absVar > maxAbsVariance) maxAbsVariance = absVar;
-      const icon = res.level === 'itemized' ? '✓ itemized' : '~ rolled  ';
+      const icon =
+        res.level === 'itemized'      ? '✓ itemized   ' :
+        res.level === 'rolled-direct' ? '• direct-ref ' :
+                                        '~ rolled     ';
       log(`  ${icon} ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)} variance=${(res.variance ?? 0).toFixed(2)} Rp`);
     } else {
       unresolved.push({ code: row.code, label: row.label, reason: res.reason ?? 'unknown' });
@@ -765,9 +922,10 @@ export async function runDeterministic(opts: RunDeterministicOptions): Promise<R
 
   log('');
   log(`Reconciled total: ${breakdowns.length} / ${candidates.length}`);
-  log(`  ✓ itemized:  ${itemizedCount}  (per-material detail)`);
-  log(`  ~ rolled:    ${rolledCount}  (5-line group lumps from RAB columns)`);
-  log(`Unresolved:       ${unresolved.length}`);
+  log(`  ✓ itemized:      ${itemizedCount}  (per-material detail)`);
+  log(`  ~ rolled:        ${rolledCount}  (5-line group lumps from RAB columns)`);
+  log(`  • direct-ref:    ${rolledDirectCount}  (recipe-derived lumps for masonry / pile / custom)`);
+  log(`Unresolved:        ${unresolved.length}`);
 
   if (opts.outputPath) {
     const wb = XLSX.read(buf, { cellFormula: true, cellStyles: false });
@@ -790,6 +948,7 @@ export async function runDeterministic(opts: RunDeterministicOptions): Promise<R
   return {
     itemizedCount,
     rolledCount,
+    rolledDirectCount,
     unresolvedCount: unresolved.length,
     totalCandidates: candidates.length,
     breakdowns,
