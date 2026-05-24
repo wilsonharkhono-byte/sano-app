@@ -681,40 +681,53 @@ function buildBreakdownForRow(args: {
 
 // --- main ---
 
-async function main() {
-  const args = process.argv.slice(2);
-  if (args.length === 0) {
-    console.error('Usage: npm run normalize:boq:det -- <input.xlsx> [output.xlsx]');
-    process.exit(1);
-  }
-  const inputPath = path.resolve(args[0]);
-  const outputPath = args[1] ?? inputPath.replace(/\.xlsx$/i, '_normalized.xlsx');
+/** Exported for use by the Jest integration test (no process.argv / fs writes). */
+export interface RunDeterministicResult {
+  itemizedCount: number;
+  rolledCount: number;
+  unresolvedCount: number;
+  totalCandidates: number;
+  breakdowns: RowBreakdown[];
+  unresolved: Array<{ code: string; label: string; reason: string }>;
+  /** Max absolute variance across every written breakdown (must be ≤ 1 Rp). */
+  maxAbsVariance: number;
+}
 
-  console.log(`Reading: ${inputPath}`);
+export interface RunDeterministicOptions {
+  inputPath: string;
+  outputPath?: string;     // omit to skip writing to disk
+  silent?: boolean;        // omit per-row console.log when true
+}
+
+export async function runDeterministic(opts: RunDeterministicOptions): Promise<RunDeterministicResult> {
+  const inputPath = path.resolve(opts.inputPath);
+  const log = (m: string) => { if (!opts.silent) console.log(m); };
+
+  log(`Reading: ${inputPath}`);
   const buf = fs.readFileSync(inputPath);
   // 'auto' so we pick up multi-sheet workbooks like I4-29 (RAB A..E) — not
   // every contractor packs all BoQ rows into RAB (A).
   const result = await parseBoqV2(buf, { boqSheet: 'auto' });
   const lookup = buildLookup(result.cells);
 
-  console.log('Extracting Analisa templates...');
+  log('Extracting Analisa templates...');
   const bekistings = extractBekistingTemplates(result.ahsBlocks, lookup);
   const concretes = extractConcreteTemplates(result.ahsBlocks, lookup);
   const pembesian = extractPembesianTemplate(result.ahsBlocks, lookup);
-  console.log(`  ${bekistings.length} bekisting templates, ${concretes.length} concrete templates, pembesian=${pembesian ? 'yes' : 'NO'}`);
+  log(`  ${bekistings.length} bekisting templates, ${concretes.length} concrete templates, pembesian=${pembesian ? 'yes' : 'NO'}`);
 
   if (!pembesian) {
-    console.error('No Pembesian U24 & U40 block found — cannot proceed.');
-    process.exit(2);
+    throw new Error('No Pembesian U24 & U40 block found — cannot proceed.');
   }
 
   const candidates = result.boqRows.filter(needsExpansion);
-  console.log(`\nProcessing ${candidates.length} BoQ rows needing expansion:`);
+  log(`\nProcessing ${candidates.length} BoQ rows needing expansion:`);
 
   const breakdowns: RowBreakdown[] = [];
   const unresolved: Array<{ code: string; label: string; reason: string }> = [];
   let itemizedCount = 0;
   let rolledCount = 0;
+  let maxAbsVariance = 0;
 
   for (const row of candidates) {
     const cols = readRowCols(lookup, row.source_sheet, row.sourceRow);
@@ -731,9 +744,6 @@ async function main() {
     });
 
     // Tier 2: fall back to rolled lump breakdown from RAB(A) column totals.
-    // The 5 lumps (R, S, T, V*W, Z*AA) sum to N by the workbook's own
-    // arithmetic — reconciles by construction for any row with structural
-    // columns populated.
     if (!res.breakdown) {
       const rolled = buildRolledBreakdown({ row, cols, sourceUnitCost, sourceLineTotal });
       if (rolled.breakdown) res = rolled;
@@ -743,38 +753,65 @@ async function main() {
       breakdowns.push(res.breakdown);
       if (res.level === 'itemized') itemizedCount++;
       else rolledCount++;
+      const absVar = Math.abs(res.variance ?? 0);
+      if (absVar > maxAbsVariance) maxAbsVariance = absVar;
       const icon = res.level === 'itemized' ? '✓ itemized' : '~ rolled  ';
-      console.log(`  ${icon} ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)} variance=${(res.variance ?? 0).toFixed(2)} Rp`);
+      log(`  ${icon} ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)} variance=${(res.variance ?? 0).toFixed(2)} Rp`);
     } else {
       unresolved.push({ code: row.code, label: row.label, reason: res.reason ?? 'unknown' });
-      console.log(`  ⚠ unresolved ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)} ${res.reason}`);
+      log(`  ⚠ unresolved ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)} ${res.reason}`);
     }
   }
 
-  console.log('');
-  console.log(`Reconciled total: ${breakdowns.length} / ${candidates.length}`);
-  console.log(`  ✓ itemized:  ${itemizedCount}  (per-material detail)`);
-  console.log(`  ~ rolled:    ${rolledCount}  (5-line group lumps from RAB columns)`);
-  console.log(`Unresolved:       ${unresolved.length}`);
+  log('');
+  log(`Reconciled total: ${breakdowns.length} / ${candidates.length}`);
+  log(`  ✓ itemized:  ${itemizedCount}  (per-material detail)`);
+  log(`  ~ rolled:    ${rolledCount}  (5-line group lumps from RAB columns)`);
+  log(`Unresolved:       ${unresolved.length}`);
 
-  const wb = XLSX.read(buf, { cellFormula: true, cellStyles: false });
-  writeBreakdownSheets(wb, breakdowns);
-  if (unresolved.length > 0) {
-    const rows: unknown[][] = [
-      ['UNRESOLVED ROWS — deterministic templates could not reconcile'],
-      [`Generated: ${new Date().toISOString()}`],
-      [],
-      ['Code', 'Label', 'Reason'],
-      ...unresolved.map((u) => [u.code, u.label, u.reason]),
-    ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Unresolved');
+  if (opts.outputPath) {
+    const wb = XLSX.read(buf, { cellFormula: true, cellStyles: false });
+    writeBreakdownSheets(wb, breakdowns);
+    if (unresolved.length > 0) {
+      const rows: unknown[][] = [
+        ['UNRESOLVED ROWS — deterministic templates could not reconcile'],
+        [`Generated: ${new Date().toISOString()}`],
+        [],
+        ['Code', 'Label', 'Reason'],
+        ...unresolved.map((u) => [u.code, u.label, u.reason]),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Unresolved');
+    }
+    const outBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    fs.writeFileSync(opts.outputPath, outBuf);
+    log(`\nWrote: ${opts.outputPath}`);
   }
-  const outBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-  fs.writeFileSync(outputPath, outBuf);
-  console.log(`\nWrote: ${outputPath}`);
+
+  return {
+    itemizedCount,
+    rolledCount,
+    unresolvedCount: unresolved.length,
+    totalCandidates: candidates.length,
+    breakdowns,
+    unresolved,
+    maxAbsVariance,
+  };
 }
 
-main().catch((err) => {
-  console.error('FAILED:', err);
-  process.exit(10);
-});
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 0) {
+    console.error('Usage: npm run normalize:boq:det -- <input.xlsx> [output.xlsx]');
+    process.exit(1);
+  }
+  const inputPath = path.resolve(args[0]);
+  const outputPath = args[1] ?? inputPath.replace(/\.xlsx$/i, '_normalized.xlsx');
+  await runDeterministic({ inputPath, outputPath });
+}
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('FAILED:', err);
+    process.exit(10);
+  });
+}

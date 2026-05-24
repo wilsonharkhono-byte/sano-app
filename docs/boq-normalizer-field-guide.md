@@ -958,10 +958,12 @@ itemized:
 
 ---
 
-*Last updated: 2026-05-24 after layout-aware REKAP adapters landed
-(bottlenecks #3 and #4 in §13). Coverage across all three reference
-workbooks: 95.4% (710/744 reconciled, 34 genuinely non-structural).
-Itemized share rose 84 → 140 (+56) across the three workbooks; total
-reconciled count is unchanged. See
+*Last updated: 2026-05-25 after H-side bekisting extraction landed
+(fix plan §2.1). Coverage across all three reference workbooks: 95.4%
+(710/744 reconciled, 34 genuinely non-structural). Itemized share rose
+140 → 196 (+56) on this round (PD3 49→76, I4 17→46, AAL-5 unchanged at
+74). Counts are pinned in `tools/normalizer/__tests__/deterministicCli.integration.test.ts`
+— any drift means either the test needs updating to match a deliberate
+coverage improvement, or a regression has been introduced. See
 `docs/superpowers/specs/2026-05-23-recipe-detail-normalizer-design.md` for the
 full design history, and the per-workbook validation docs for raw findings.*
