@@ -1,9 +1,13 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { HarvestedCell } from '../boqParserV2/types';
+import type { AhsBlock } from '../boqParserV2/detectBlocks';
 import type { BlockSchema } from './types';
 
+// Default window when we can't identify the containing AHS block.
 const ROWS_BEFORE = 3;
 const ROWS_AFTER = 15;
+// Rows after jumlahRow to include — captures "Harga per m²" summary rows.
+const ROWS_AFTER_JUMLAH = 3;
 
 export interface CellContext {
   sheet: string;
@@ -11,7 +15,11 @@ export interface CellContext {
   rows: Array<{ row: number; cells: HarvestedCell[] }>;
 }
 
-export function extractBlockCellContext(blockId: string, cells: HarvestedCell[]): CellContext {
+export function extractBlockCellContext(
+  blockId: string,
+  cells: HarvestedCell[],
+  ahsBlocks?: AhsBlock[],
+): CellContext {
   const bangIdx = blockId.indexOf('!');
   if (bangIdx < 0) throw new Error(`extractBlockCellContext: invalid blockId ${blockId}`);
   const sheet = blockId.slice(0, bangIdx);
@@ -19,8 +27,21 @@ export function extractBlockCellContext(blockId: string, cells: HarvestedCell[])
   const m = /^[A-Z]+(\d+)$/.exec(addr);
   if (!m) throw new Error(`extractBlockCellContext: invalid blockId ${blockId}`);
   const anchorRow = parseInt(m[1], 10);
-  const minRow = anchorRow - ROWS_BEFORE;
-  const maxRow = anchorRow + ROWS_AFTER;
+
+  // Prefer the containing AHS block's actual row range when known. This is
+  // critical for Analisa sheets that pack multiple adjacent blocks together
+  // (e.g. four Pengecoran Beton blocks on rows 98/105/112/119) — a fixed
+  // ±row window would span multiple blocks and let Opus mix sub-items between
+  // them (wrong Upah price, wrong cycleFactor, etc.).
+  let minRow = anchorRow - ROWS_BEFORE;
+  let maxRow = anchorRow + ROWS_AFTER;
+  const containingBlock = ahsBlocks?.find(
+    (b) => b.titleRow <= anchorRow && anchorRow <= b.jumlahRow + ROWS_AFTER_JUMLAH,
+  );
+  if (containingBlock) {
+    minRow = containingBlock.titleRow - 1;
+    maxRow = containingBlock.jumlahRow + ROWS_AFTER_JUMLAH;
+  }
 
   const byRow = new Map<number, HarvestedCell[]>();
   for (const c of cells) {

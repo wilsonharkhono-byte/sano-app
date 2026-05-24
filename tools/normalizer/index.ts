@@ -12,7 +12,10 @@ import type { BlockSchema, RowExpansionInput, RebarDiameterWeight } from './type
 import { analyzeBlockWithOpus, extractBlockCellContext } from './blockAnalyzer';
 
 export interface NormalizeOptions {
-  analyzeBlock: (blockId: string) => Promise<BlockSchema | null>;
+  // ahsBlocks is optional — when supplied, the analyzer can scope the cell-
+  // context window to the containing block (avoids cross-block leakage on
+  // sheets that pack multiple adjacent AHS blocks together).
+  analyzeBlock: (blockId: string, ahsBlocks?: AhsBlock[]) => Promise<BlockSchema | null>;
   boqSheet?: string;
   analisaSheet?: string;
 }
@@ -161,7 +164,7 @@ export async function normalizeWorkbook(
 
   const schemas = new Map<string, BlockSchema | null>();
   for (const id of uniqueBlockIds) {
-    schemas.set(id, await options.analyzeBlock(id));
+    schemas.set(id, await options.analyzeBlock(id, dry.ahsBlocks));
   }
 
   const breakdowns: RowBreakdown[] = [];
@@ -259,10 +262,10 @@ export function makeAnalyzeBlockFromAnalyzer(
   cells: HarvestedCell[],
 ): NormalizeOptions['analyzeBlock'] {
   const cache = new Map<string, BlockSchema>();
-  return async (blockId: string) => {
+  return async (blockId: string, ahsBlocks?: AhsBlock[]) => {
     const hit = cache.get(blockId);
     if (hit) return hit;
-    const ctx = extractBlockCellContext(blockId, cells);
+    const ctx = extractBlockCellContext(blockId, cells, ahsBlocks);
     const schema = await analyzer(blockId, ctx);
     cache.set(blockId, schema);
     return schema;
