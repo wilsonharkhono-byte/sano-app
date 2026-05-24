@@ -82,9 +82,11 @@ export async function analyzeBlockWithOpus(
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const resp = await client.messages.create({
+      // Opus 4.7 no longer accepts `temperature` — the model uses its default
+      // sampling. The strict-JSON prompt + retry-on-parse-failure handles
+      // determinism well enough for structured block extraction.
       model: 'claude-opus-4-7',
       max_tokens: 800,
-      temperature: 0,
       system: SYSTEM_PROMPT,
       messages: [{
         role: 'user',
