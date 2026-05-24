@@ -8,9 +8,13 @@ const AAL5 = path.join(__dirname, '..', '..', '..', 'assets', 'BOQ', 'RAB R1 Pak
 const skip = !fs.existsSync(AAL5);
 const itx = skip ? it.skip : it;
 
+// Bekisting key is the FIRST COMPONENT ROW of the Bekisting Balok block
+// (Analisa!F47 = Multipleks row), not the Harga-per-m² summary cell at F55.
+// findBlockIdsFor re-anchors to the block's first component row so the Opus
+// context window captures all sub-items above the bekisting cost cell.
 const FIXED_SCHEMAS: Record<string, BlockSchema> = {
-  'Analisa!F55': {
-    blockId: 'Analisa!F55', blockType: 'bekisting', elementHint: 'Balok',
+  'Analisa!F47': {
+    blockId: 'Analisa!F47', blockType: 'bekisting', elementHint: 'Balok',
     cycleFactor: 4, ratioBasis: 'per_m2_form_per_cycle', rolledUpTotalPerNativeUnit: 251113,
     confidence: 'high', notes: null,
     subItems: [

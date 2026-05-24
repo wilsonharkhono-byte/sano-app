@@ -54,12 +54,12 @@ Output strict JSON matching this schema (no prose, no markdown):
 }
 
 Rules:
-- subItems include ONLY the AHS line items between the block header and its "Jumlah" line.
+- subItems include ALL AHS line items between the block header and its "Jumlah" line, regardless of which cost column (F/G/H/I) carries their cost.
 - The "Jumlah" and "Harga per m²/kg/m³" rows are NOT subItems; rolledUpTotalPerNativeUnit equals "Harga per ...".
-- Items visually separated or with no F-column value (e.g. Perancah) get includedInRolledUpTotal: false.
+- includedInRolledUpTotal defaults to true. Mark it false ONLY when the item is explicitly excluded from the block's rolled-up total — for bekisting blocks this is typically the "Perancah" / scaffolding row (sewa, kept on a separate BoQ line). For concrete blocks, labor (Upah cor) and equipment (Sewa peralatan, vibrator, concrete pump) rows ARE part of the rolled-up total even though their cost sits in col G/H instead of F — keep them as true.
 - cycleFactor (bekisting only) = Jumlah / "Harga per m²"; round to nearest integer if within ±0.05.
 - pembesian: ratioBasis = "per_kg_finished_rebar"; the "Besi beton" qtyPerNativeUnit IS the waste coefficient (typically 1.05).
-- concrete: the readymix sub-row qtyPerNativeUnit is the waste-inclusive coefficient (typically 1.05).`;
+- concrete: ratioBasis = "per_m3_concrete"; the readymix sub-row qtyPerNativeUnit is the waste-inclusive coefficient (typically 1.05). Concrete blocks ALWAYS include a labor sub-item (Upah cor/borongan) and an equipment sub-item (Sewa peralatan/vibrator/pump) in addition to the readymix — include all of them as subItems.`;
 
 function formatCellsForPrompt(ctx: CellContext): string {
   const lines: string[] = [];

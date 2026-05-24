@@ -5,9 +5,12 @@ import { parseBoqV2 } from '../index';
 import { normalizeWorkbook } from '../../normalizer';
 import type { BlockSchema } from '../../normalizer/types';
 
+// See tools/normalizer/index.ts findBlockIdsFor — bekisting is re-anchored
+// to the block's first component row (F47 = Multipleks) so the Opus context
+// window captures all sub-items above the Harga-per-m² cell at F55.
 const FIXED_SCHEMAS: Record<string, BlockSchema> = {
-  'Analisa!F55': {
-    blockId: 'Analisa!F55', blockType: 'bekisting', elementHint: 'Balok',
+  'Analisa!F47': {
+    blockId: 'Analisa!F47', blockType: 'bekisting', elementHint: 'Balok',
     cycleFactor: 4, ratioBasis: 'per_m2_form_per_cycle', rolledUpTotalPerNativeUnit: 251113,
     confidence: 'high', notes: null,
     subItems: [

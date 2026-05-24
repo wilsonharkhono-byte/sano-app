@@ -105,6 +105,31 @@ function findBlockIdsFor(
     }
   }
 
+  // Re-anchor: bekisting cost cells often point to the "Harga per m²" summary
+  // row, which sits AFTER the block's Jumlah line. The default cell-context
+  // extractor's ROWS_BEFORE=3 window starting from F55 would miss the bekisting
+  // sub-items at rows 47–51 (Multipleks, Usuk, Paku, Form oil), and Opus would
+  // return an empty / partial schema. Look up the AhsBlock whose Bekisting
+  // title is just above this cell and re-anchor to the block's first component
+  // row so the context window captures all sub-items.
+  if (out.bekisting) {
+    const bangIdx = out.bekisting.indexOf('!');
+    const sheet = out.bekisting.slice(0, bangIdx);
+    const addr = out.bekisting.slice(bangIdx + 1);
+    const rowMatch = /^[A-Z]+(\d+)$/.exec(addr);
+    if (rowMatch) {
+      const cellRow = parseInt(rowMatch[1], 10);
+      const containingBlock = ahsBlocks.find((b) =>
+        /^(?:\d+\s+m[123²³]\s+)?Bekisting/i.test(b.title) &&
+        b.titleRow <= cellRow &&
+        cellRow <= b.jumlahRow + 3, // allow Harga-per-... row a few lines after Jumlah
+      );
+      if (containingBlock && containingBlock.componentRows.length > 0) {
+        out.bekisting = `${sheet}!F${containingBlock.componentRows[0]}`;
+      }
+    }
+  }
+
   return out;
 }
 
