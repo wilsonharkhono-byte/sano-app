@@ -211,12 +211,13 @@ function extractPembesianTemplate(
 // --- per-row breakdown construction ---
 
 interface RowCols {
-  bekistingRatioM2PerM3: number; // V column
-  bekistingHargaPerM2: number;    // W column
-  concreteMatCostPerM3: number;   // R
-  concreteLaborCostPerM3: number; // S
-  concreteEquipCostPerM3: number; // T
-  pembesianKgPerM3: number;       // Z
+  bekistingRatioM2PerM3: number;       // V column
+  bekistingHargaPerM2: number;          // W column
+  concreteMatCostPerM3: number;         // R
+  concreteLaborCostPerM3: number;       // S
+  concreteEquipCostPerM3: number;       // T
+  pembesianKgPerM3: number;             // Z
+  pembesianBlendedPricePerKg: number;   // AA — blended price/kg used by the workbook
 }
 
 function readRowCols(lookup: Map<string, HarvestedCell>, row: number): RowCols {
@@ -227,6 +228,7 @@ function readRowCols(lookup: Map<string, HarvestedCell>, row: number): RowCols {
     concreteLaborCostPerM3: getCellNum(lookup, 'RAB (A)', `S${row}`),
     concreteEquipCostPerM3: getCellNum(lookup, 'RAB (A)', `T${row}`),
     pembesianKgPerM3: getCellNum(lookup, 'RAB (A)', `Z${row}`),
+    pembesianBlendedPricePerKg: getCellNum(lookup, 'RAB (A)', `AA${row}`),
   };
 }
 
@@ -250,6 +252,107 @@ interface BuildResult {
   reason?: string;
   computedUnitCost?: number;
   variance?: number;
+  /** 'itemized' = per-material/sub-item; 'rolled' = 5 lump components from RAB column totals. */
+  level?: 'itemized' | 'rolled';
+}
+
+/**
+ * Level-1 fallback: when itemized expansion fails to reconcile (or no
+ * bekisting template matches, etc.), produce a 5-line rolled breakdown
+ * directly from the workbook's pre-computed cost columns:
+ *   R = concrete material cost/m³        → readymix lump
+ *   S = concrete labor cost/m³           → upah lump
+ *   T = concrete equipment cost/m³       → peralatan lump
+ *   V*W = bekisting cost/m³              → bekisting lump
+ *   Z*AA = pembesian cost/m³             → pembesian lump
+ * Their sum equals RAB!N{row} by construction — the workbook's own
+ * arithmetic. Reconciles to source within rounding for every structural
+ * row whose RAB(A) columns are populated (159/164 on AAL-5).
+ */
+function buildRolledBreakdown(args: {
+  row: BoqRowV2;
+  cols: RowCols;
+  sourceUnitCost: number;
+  sourceLineTotal: number;
+}): BuildResult {
+  const { row, cols, sourceUnitCost, sourceLineTotal } = args;
+  const v = row.planned;
+  const components: BreakdownRow[] = [];
+
+  const pushLump = (
+    group: BreakdownRow['group'],
+    componentGroup: string,
+    materialName: string,
+    qtyPerBoqUnit: number,
+    nativeUnit: string,
+    unitPrice: number,
+    nativeBasis: string,
+  ) => {
+    if (qtyPerBoqUnit <= 0 || unitPrice <= 0) return;
+    const costPerBoqUnit = qtyPerBoqUnit * unitPrice;
+    components.push({
+      group, componentGroup, materialName, specNote: 'rolled lump — group total only',
+      qtyPerNativeUnit: qtyPerBoqUnit, nativeUnit, nativeBasis,
+      unitPrice, qtyPerBoqUnit, costPerBoqUnit,
+      totalQty: qtyPerBoqUnit * v, totalCost: costPerBoqUnit * v,
+    });
+  };
+
+  // Concrete: material (R), labor (S), equipment (T). These are per-m³ totals,
+  // so qty = 1.0 and unit_price = the column value.
+  pushLump('material', 'BETON READYMIX (Material)', 'Beton readymix K-350 (lump)', 1.0, 'm3', cols.concreteMatCostPerM3, 'per m3 beton');
+  pushLump('labor',    'UPAH (Labor) — borongan',   'Upah cor + besi + bekisting (lump)', 1.0, 'm3', cols.concreteLaborCostPerM3, 'per m3 beton');
+  pushLump('equipment','PERALATAN (Equipment)',     'Sewa peralatan (lump)', 1.0, 'm3', cols.concreteEquipCostPerM3, 'per m3 beton');
+
+  // Bekisting lump: qty = V (m²/m³ ratio), unit_price = W (cost/m²).
+  if (cols.bekistingHargaPerM2 > 0 && cols.bekistingRatioM2PerM3 > 0) {
+    pushLump('material',
+      `BEKISTING (Material) — ratio ${cols.bekistingRatioM2PerM3} m²/m³ (rolled)`,
+      'Bekisting (lump — no per-material detail)',
+      cols.bekistingRatioM2PerM3, 'm2', cols.bekistingHargaPerM2,
+      'per m² of formwork',
+    );
+  }
+
+  // Pembesian lump: qty = Z (kg/m³), unit_price = AA (blended).
+  if (cols.pembesianKgPerM3 > 0 && cols.pembesianBlendedPricePerKg > 0) {
+    pushLump('material',
+      `PEMBESIAN (Material) — ratio ${cols.pembesianKgPerM3.toFixed(2)} kg/m³ (rolled)`,
+      'Pembesian U24 & U40 (lump — no per-diameter detail)',
+      cols.pembesianKgPerM3, 'kg', cols.pembesianBlendedPricePerKg,
+      'per kg finished pembesian (blended: raw besi + decking + bendrat)',
+    );
+  }
+
+  if (components.length === 0) {
+    return { reason: 'Rolled fallback: no concrete/bekisting/pembesian columns populated.' };
+  }
+
+  const computedUnitCost = components.reduce((s, c) => s + c.costPerBoqUnit, 0);
+  const variance = computedUnitCost - sourceUnitCost;
+  if (Math.abs(variance) > TOLERANCE_RP) {
+    return {
+      reason: `Rolled fallback variance ${variance.toFixed(2)} Rp (computed ${computedUnitCost.toFixed(2)} vs source ${sourceUnitCost.toFixed(2)}). Likely a missing column (e.g. Z*AA pembesian) or non-structural row.`,
+      computedUnitCost, variance,
+    };
+  }
+
+  const computedLineTotal = computedUnitCost * v;
+  return {
+    breakdown: {
+      boqCode: row.code, description: row.label, unit: row.unit,
+      volume: v, unitCost: computedUnitCost, lineTotal: computedLineTotal,
+      components,
+      reconciliation: {
+        computedUnitCost, sourceUnitCost, unitCostVariance: variance,
+        computedLineTotal, sourceLineTotal,
+        lineTotalVariance: computedLineTotal - sourceLineTotal,
+        reconciles: true,
+      },
+      sourceSheet: `Breakdown ${row.code}`,
+    },
+    computedUnitCost, variance, level: 'rolled',
+  };
 }
 
 function buildBreakdownForRow(args: {
@@ -435,7 +538,7 @@ function buildBreakdownForRow(args: {
     },
     sourceSheet: `Breakdown ${row.code}`,
   };
-  return { breakdown, computedUnitCost, variance };
+  return { breakdown, computedUnitCost, variance, level: 'itemized' };
 }
 
 // --- main ---
@@ -470,6 +573,8 @@ async function main() {
 
   const breakdowns: RowBreakdown[] = [];
   const unresolved: Array<{ code: string; label: string; reason: string }> = [];
+  let itemizedCount = 0;
+  let rolledCount = 0;
 
   for (const row of candidates) {
     const cols = readRowCols(lookup, row.sourceRow);
@@ -480,22 +585,37 @@ async function main() {
         : 0) + (row.subkon_cost_per_unit ?? 0);
     const sourceLineTotal = row.total_cost ?? 0;
 
-    const res = buildBreakdownForRow({
+    // Tier 1: try itemized expansion.
+    let res = buildBreakdownForRow({
       row, cols, diameters, bekistings, concretes, pembesian, sourceUnitCost, sourceLineTotal,
     });
 
+    // Tier 2: fall back to rolled lump breakdown from RAB(A) column totals.
+    // The 5 lumps (R, S, T, V*W, Z*AA) sum to N by the workbook's own
+    // arithmetic — reconciles by construction for any row with structural
+    // columns populated.
+    if (!res.breakdown) {
+      const rolled = buildRolledBreakdown({ row, cols, sourceUnitCost, sourceLineTotal });
+      if (rolled.breakdown) res = rolled;
+    }
+
     if (res.breakdown) {
       breakdowns.push(res.breakdown);
-      console.log(`  ✓ ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)} variance=${res.variance!.toFixed(2)} Rp`);
+      if (res.level === 'itemized') itemizedCount++;
+      else rolledCount++;
+      const icon = res.level === 'itemized' ? '✓ itemized' : '~ rolled  ';
+      console.log(`  ${icon} ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)} variance=${(res.variance ?? 0).toFixed(2)} Rp`);
     } else {
       unresolved.push({ code: row.code, label: row.label, reason: res.reason ?? 'unknown' });
-      console.log(`  ⚠ ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)} ${res.reason}`);
+      console.log(`  ⚠ unresolved ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)} ${res.reason}`);
     }
   }
 
   console.log('');
-  console.log(`Reconciled: ${breakdowns.length} / ${candidates.length}`);
-  console.log(`Unresolved: ${unresolved.length}`);
+  console.log(`Reconciled total: ${breakdowns.length} / ${candidates.length}`);
+  console.log(`  ✓ itemized:  ${itemizedCount}  (per-material detail)`);
+  console.log(`  ~ rolled:    ${rolledCount}  (5-line group lumps from RAB columns)`);
+  console.log(`Unresolved:       ${unresolved.length}`);
 
   const wb = XLSX.read(buf, { cellFormula: true, cellStyles: false });
   writeBreakdownSheets(wb, breakdowns);

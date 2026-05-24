@@ -295,10 +295,15 @@ your component values is wrong**. Don't loosen the tolerance — find the bug.
 
 ---
 
-## 5. What works today (deterministic CLI)
+## 5. What works today (deterministic CLI, two-tier)
 
-`tools/normalizer/cli-deterministic.ts` reconciles all 30 IV.A.2.\* (Balok lt
-atas) rows at exactly 0.00 Rp variance using this approach:
+`tools/normalizer/cli-deterministic.ts` reconciles **159 of 164 structural
+rows** on AAL-5 (the 5 unresolved are genuinely non-structural — Strong band
+BB and 4 Pasangan dinding bata in chapter VIII). It uses a **two-tier strategy**:
+
+### Tier 1 — itemized expansion (per-material detail)
+
+For each BoQ row:
 
 1. **Parse** the workbook with `parseBoqV2` (extracts rolled-up recipes,
    detected AHS blocks, REKAP rebar diameters).
@@ -306,18 +311,49 @@ atas) rows at exactly 0.00 Rp variance using this approach:
    - Bekisting templates with `(blockTitle, hargaPerM2, cycleFactor, subItems)`.
    - Concrete templates with `(blockTitle, materialCostPerM3, laborCostPerM3, equipCostPerM3, subItems)`.
    - One Pembesian template with raw coefficients.
-3. **For each BoQ row**, match templates by the row's pre-computed cost columns:
+3. **Match templates** by the row's pre-computed cost columns:
    - Find bekisting template where `template.hargaPerM2 ≈ RAB!W{row}`.
    - Find concrete template where `template.{F,G,H} ≈ RAB!{R,S,T}{row}`.
 4. **Build the breakdown** using the math in Section 4.
-5. **Verify** computed unit cost equals source unit cost within ±1 Rp.
-6. **Write** Breakdown sheet only if verification passed. Otherwise list in
-   Unresolved sheet.
+5. **Verify** computed unit cost equals source unit cost within ±1 Rp. If yes
+   → write as itemized Breakdown sheet.
 
-This works because **the workbook's R/S/T/W columns already encode which block
-was used** — we just have to read them.
+Currently reconciles 31/164 rows at the itemized tier (all IV.A.2.\* Balok
+lt atas). The other tier-1 attempts fail because `extractBekistingTemplates`
+mis-derives sub-item totals for Kolom/Plat/Dinding blocks — a real bug to
+fix separately.
 
-Run:
+### Tier 2 — rolled lump breakdown (group totals from RAB columns)
+
+When tier 1 fails, build a **5-line lump breakdown** from the workbook's own
+pre-computed column totals:
+
+```
+Beton readymix lump:    qty=1.0,  unit=m³,  price=RAB!R{row}
+Upah borongan lump:     qty=1.0,  unit=m³,  price=RAB!S{row}
+Sewa peralatan lump:    qty=1.0,  unit=m³,  price=RAB!T{row}
+Bekisting lump:         qty=V,    unit=m²,  price=RAB!W{row}     (only if V*W > 0)
+Pembesian U24&U40 lump: qty=Z,    unit=kg,  price=RAB!AA{row}    (only if Z*AA > 0)
+```
+
+By construction, these 5 lumps sum to `RAB!N{row}` because that's literally
+the workbook's own arithmetic: `N = R + S + T + V*W + Z*AA`. **159/164 rows
+reconcile at this tier within ±1 Rp**. The 5 that don't are non-structural
+(VIII.\* Pasangan bata has R=S=T=V=W=Z=AA=0 because it's masonry, not
+concrete; V.A.2.31 Strong band BB is a custom item).
+
+Each lump carries `specNote: "rolled lump — group total only"` and a
+`materialName` like `"Bekisting (lump — no per-material detail)"` so SANO's
+audit UI naturally groups them separately from itemized per-material lines.
+
+### Tier 3 — Unresolved
+
+Rows that fail both tiers go to the Unresolved sheet. On AAL-5 this is
+exactly the 5 non-structural rows above. They contribute zero to the audit
+aggregation, which is the correct semantics: we can't decompose what we
+can't read.
+
+### Run
 
 ```
 npm run normalize:boq:det -- <input.xlsx> [output.xlsx]
@@ -327,8 +363,22 @@ npm run normalize:boq:det -- <input.xlsx> [output.xlsx]
 
 ## 6. What's unresolved (with hypotheses)
 
-As of the latest run against `RAB R1 Pakuwon Indah AAL-5.xlsx`, 31/164 rows
-reconciled. The 133 unresolved fall into these patterns:
+> **Important correction (2026-05-24):** earlier versions of this guide
+> framed §6.2 and §6.3 as "Kolom rows have a different sub-item shape" and
+> "V/VI chapters use different REKAP weights." Those framings were **wrong**.
+> The actual root cause for those rows is a bug in `extractBekistingTemplates`
+> when reading the Kolom sub-items — the templates DO match by cost column,
+> but the rebuilt per-m² total is wrong (e.g., III.A.4.1 K174-1 computed 18.8×
+> the source). The Level-2 rolled fallback (§5) makes coverage 31 → 159
+> without fixing the bug, but if you want itemized detail back for Kolom rows
+> you have to debug `extractBekistingTemplates` directly. The two sections
+> below are kept as historical record + still-useful pointers for that debug.
+
+As of the latest run against `RAB R1 Pakuwon Indah AAL-5.xlsx`, 159/164 rows
+reconciled (31 itemized + 128 rolled). The 5 truly unresolved are listed at
+§6.4 and §6.5 below. The patterns where itemized fails but rolled succeeds
+are §6.1 through §6.3 — all symptomatic of the same root cause: the
+itemized-tier code mishandles Kolom/Plat/Dinding bekisting blocks.
 
 ### 6.1 Bata/Batako bekisting (Poer + Sloof, chapter III.A.1–2)
 
@@ -610,10 +660,20 @@ Bendrat:          coeff 0.021             unit price 17,500 Rp/kg
 Blended per kg:                          9,917.5 Rp/kg
 ```
 
-### 10.4 The 31 reconciled rows on AAL-5
+### 10.4 AAL-5 coverage (latest run)
 
-All in `IV.A.2.*` (Balok lt atas). 30 rows, all variances < 0.01 Rp.
-These prove the deterministic approach works when the templates are clean.
+```
+Itemized (per-material):    31    (all IV.A.2.* Balok lt atas)
+Rolled (5-line lump):       128   (every other structural row)
+Unresolved:                 5     (V.A.2.31 Strong band + 4 VIII.* Pasangan bata)
+                          ───
+Total:                      164
+```
+
+The 31 itemized rows prove the per-material expansion works when the
+templates extract cleanly. The 128 rolled rows prove the workbook's own
+column arithmetic is correct and reconcilable. The 5 unresolved are
+genuinely non-structural and contribute zero to the structural rollup.
 
 ---
 
@@ -659,6 +719,8 @@ on site. Get it right or admit you can't.
 
 ---
 
-*Last updated: 2026-05-24 after the deterministic CLI shipped, reconciling
-30/164 rows on AAL-5. See `docs/superpowers/specs/2026-05-23-recipe-detail-normalizer-design.md`
-for the full design history.*
+*Last updated: 2026-05-24 after the Level-2 rolled-lump fallback shipped.
+Coverage on AAL-5: 159/164 reconciled (31 itemized, 128 rolled, 5 genuinely
+non-structural). See
+`docs/superpowers/specs/2026-05-23-recipe-detail-normalizer-design.md` for the
+full design history.*
