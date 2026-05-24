@@ -9,7 +9,7 @@
     "web": "expo start --web",
     "sync:materials": "node tools/syncMaterialCatalog.mjs",
     "sync:materials:watch": "node tools/syncMaterialCatalog.mjs --watch",
-    "normalize:boq": "tsx tools/normalizer/cli.ts",
+    "normalize:boq": "tsx --env-file=.env tools/normalizer/cli.ts",
     "test": "jest"
   },
   "dependencies": {
