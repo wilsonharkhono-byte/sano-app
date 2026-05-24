@@ -103,12 +103,24 @@ function extractBekistingTemplates(
   const out: BekistingTemplate[] = [];
   for (const block of ahsBlocks) {
     if (!/Bekisting/i.test(block.title)) continue;
-    // Harga per m² is the cell in F column one row past Jumlah.
+    // Cyclic blocks (Balok/Plat/Kolom/Dinding) put Jumlah in F; Bata/Batako
+    // Poer/Sloof blocks put the grand total in col I (col F is blank).
+    // Pick whichever is populated.
+    const jumlahF = getCellNum(lookup, 'Analisa', `F${block.jumlahRow}`);
+    const jumlahI = getCellNum(lookup, 'Analisa', `I${block.jumlahRow}`);
+    const jumlah = jumlahF > 0 ? jumlahF : jumlahI;
+    // Harga per m² is the cell in F column one row past Jumlah. For
+    // single-cycle bekisting (Bata/Batako) the row is absent — treat as
+    // cycle=1 and use Jumlah itself as Harga per m².
     const hargaRow = block.jumlahRow + 1;
-    const harga = getCellNum(lookup, 'Analisa', `F${hargaRow}`);
+    const hargaFromRow = getCellNum(lookup, 'Analisa', `F${hargaRow}`);
+    const harga = hargaFromRow > 0 ? hargaFromRow : jumlah;
     if (harga === 0) continue;
-    const jumlah = getCellNum(lookup, 'Analisa', `F${block.jumlahRow}`);
-    const cycleFactor = harga > 0 ? Math.round(jumlah / harga) : 1;
+    // Use the LITERAL float ratio, not Math.round. AAL-5 Kolom is 9.1185,
+    // AAL-5 Plat is 5.76, PD3 Kolom is 4.56. Rounding to integer breaks the
+    // V × W = Σ(subitem_cost_per_m³) invariant by 1-2% and cascades into
+    // wrong per-material qty for every itemized row.
+    const cycleFactor = harga > 0 ? jumlah / harga : 1;
     const subItems = block.componentRows.map((r) => {
       const qty = getCellNum(lookup, 'Analisa', `B${r}`);
       const unit = getCellStr(lookup, 'Analisa', `C${r}`);

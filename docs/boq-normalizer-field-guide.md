@@ -813,10 +813,15 @@ workbooks by parallel agents. Findings preserved at:
 
 | Workbook | Itemized | Rolled | Unresolved | Total | Coverage |
 |---|---|---|---|---|---|
-| AAL-5 | 31 | 128 | 5 | 164 | 96.9% |
-| PD3-23 | 0 | 229 | 12 | 241 | 95.0% |
+| AAL-5 | 59 | 100 | 5 | 164 | 96.9% |
+| PD3-23 | 19 | 210 | 12 | 241 | 95.0% |
 | I4-29 | 6 | 316 | 17 | 339 | 95.0% |
-| **All three** | **37** | **673** | **34** | **744** | **95.4%** |
+| **All three** | **84** | **626** | **34** | **744** | **95.4%** |
+
+(Itemized counts updated 2026-05-24 after cycleFactor float fix and
+single-cycle Bata/Batako handling. Total coverage unchanged at 95.4% —
+truth-correctness contract held, the change only upgraded rolled →
+itemized for rows where both tiers agree.)
 
 All Unresolved rows (34) are confirmed non-structural — Pasangan dinding
 bata merah (masonry), Strong band BB, Planter box, and similar custom
@@ -864,21 +869,38 @@ items where the column-sum invariant doesn't apply.
 The rolled tier covers 95% reliably. To upgrade more rows from rolled to
 itemized:
 
-1. **Fix `extractBekistingTemplates` for Kolom blocks.** The bug that
-   produces 18.8× wrong totals for III.A.4.1 K174-1 (and likely affects
-   every Kolom/Plat/Dinding row across all workbooks). Investigation
-   should start by hand-computing the Bekisting Kolom Jumlah and
-   cycleFactor from `Analisa!36..43`, then comparing to what
-   `extractBekistingTemplates` produces.
+1. ~~**Fix `extractBekistingTemplates` for Kolom blocks.**~~ **DONE
+   2026-05-24.** Root cause: `cycleFactor` was being `Math.round`ed (9.12 →
+   9, 5.76 → 6) which broke the `V × W = Σ(subitem_cost_per_m³)` invariant
+   by 1-2%. Fix: read cycleFactor as literal float. Coverage impact:
+   AAL-5 itemized 31 → 59, PD3 itemized 0 → 19.
 
-2. **Make REKAP adapters layout-aware.** Detect the header row, then map
+2. ~~**Add Bata/Batako single-cycle bekisting extraction.**~~ **DONE
+   2026-05-24.** Root cause: blocks with no `Harga per m²` row were
+   skipped. Fix: fall back to `Harga = Jumlah` (single cycle); also check
+   col I for Jumlah since Bata/Batako blocks put grand totals there
+   instead of col F. Coverage impact: all 11 AAL-5 Sloof rows upgraded
+   rolled → itemized.
+
+3. **Make REKAP adapters layout-aware.** Detect the header row, then map
    `"8"`, `"10"`, etc. to diameters. This unlocks itemized rebar for
-   workbooks that don't follow AAL-5's column letters.
+   workbooks that don't follow AAL-5's column letters (e.g., PD3 Plat
+   uses K/L/M/N/O for D8/D10/D13/D16/D25).
 
-3. **Add Bata/Batako single-cycle bekisting extraction.** Already
-   hypothesized in §6.1; with `cycleFactor = 1`, the existing math should
-   work — just adjust `extractBekistingTemplates` to not skip blocks
-   whose Harga-per-m² row is absent.
+4. **Resolve Z-vs-diameter discrepancy in the poer rebar adapter.** On
+   AAL-5 Poer rows, the workbook's `RAB!Z` (total pembesian kg/m³) is
+   ~0.76 kg/m³ LESS than the sum of per-diameter weights the
+   `rebarDisaggregator` extracts. The discrepancy equals the D8 weight,
+   suggesting either the adapter pulls D8 from the wrong REKAP row, or
+   Z's formula excludes D8 for Poer (project-specific). The itemized
+   reconciliation fails by ~7,500 Rp (= 0.16% of source unit cost), so
+   Poer rows currently fall to rolled. Investigate `tools/boqParserV2/rebarDisaggregator/adapters/poer.ts`
+   and `REKAP-PC` row mapping.
+
+5. **Audit Plat rebar (I4-29 specific).** I4 plat rows include wire-mesh
+   accounting via `AC*AD` columns. The rolled tier handles them; for
+   itemized, would need a dedicated wire-mesh sub-item separate from the
+   per-diameter Besi components.
 
 ---
 
