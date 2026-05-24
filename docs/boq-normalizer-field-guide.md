@@ -814,9 +814,9 @@ workbooks by parallel agents. Findings preserved at:
 | Workbook | Itemized | Rolled | Unresolved | Total | Rp coverage | Material coverage |
 |---|---|---|---|---|---|---|
 | AAL-5    |  74 |  85 |  5 | 164 | 96.9% | **45.1%** |
-| PD3-23   |  49 | 180 | 12 | 241 | 95.0% | **20.3%** |
-| I4-29    |  17 | 305 | 17 | 339 | 95.0% |  **5.0%** |
-| **All three** | **140** | **570** | **34** | **744** | **95.4%** | **18.8%** |
+| PD3-23   |  76 | 153 | 12 | 241 | 95.0% | **31.5%** |
+| I4-29    |  46 | 276 | 17 | 339 | 95.0% | **13.6%** |
+| **All three** | **196** | **514** | **34** | **744** | **95.4%** | **26.3%** |
 
 - **Rp coverage** = `(itemized + rolled) / total` — share of project Rp
   value whose total reconciles to source within ±1 Rp. This is the
@@ -829,9 +829,9 @@ workbooks by parallel agents. Findings preserved at:
   Rp 2.5M" instead of "Multipleks 1.32 lbr, Usuk vert 5.95 btg, ..."
 
 Stop reporting "95% coverage" as the headline. **The actual deliverable is
-at 18.8%.** The rolled tier kept it from being worse — the truth-correctness
+at 26.3%.** The rolled tier kept it from being worse — the truth-correctness
 contract is intact — but the goal in §1 (per-material detail for procurement)
-is still mostly unmet, especially for PD3 (20%) and I4-29 (5%).
+is still mostly unmet, especially for PD3 (32%) and I4-29 (14%).
 
 All 34 Unresolved rows are confirmed non-structural — Pasangan dinding bata
 merah (masonry), Strong band BB, Planter box, and similar custom items
@@ -890,6 +890,20 @@ bekisting extraction in field guide §6.7 (also discussed in
 
 The rolled tier covers 95% reliably. To upgrade more rows from rolled to
 itemized:
+
+0. ~~**H-side bekisting sub-item extraction.**~~ **DONE 2026-05-25.**
+   Root cause: PD3 and I4 Bekisting Balok/Plat embed Perancah inside the
+   block with cost in column H (separate Jumlah + Harga per m² row from
+   the F-side forms). The extractor only captured F-side. Fix:
+   `BekistingTemplate` now carries F-side and H-side sub-items separately,
+   each with its own `cycleFactor`; `buildBreakdownForRow` emits both when
+   `RAB!X{row} > 0`. Coverage impact: PD3 itemized 49 → 76 (+27),
+   I4-29 itemized 17 → 46 (+29), AAL-5 unchanged (X=0 in all rows).
+   Reviewer estimate was +125 for PD3 — actual was +27, because many
+   PD3 Plat/Kolom rows have additional unmodeled blockers (different
+   bekisting cycle layouts or pembesian price discrepancies) that keep
+   them in rolled even with H-side fixed.
+
 
 1. ~~**Fix `extractBekistingTemplates` for Kolom blocks.**~~ **DONE
    2026-05-24.** Root cause: `cycleFactor` was being `Math.round`ed (9.12 →

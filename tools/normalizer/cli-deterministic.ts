@@ -59,13 +59,22 @@ function getCellStr(lookup: Map<string, HarvestedCell>, sheet: string, addr: str
 
 interface BekistingTemplate {
   blockTitle: string;
-  hargaPerM2: number;          // per-m² cost — matches RAB!W{row}
-  cycleFactor: number;          // Jumlah / Harga per m²
+  // F-side (forms) per-m² cost — matches RAB!W{row} for the form materials
+  // (Multipleks, Usuk, Paku, Form oil).
+  hargaPerM2_F: number;
+  // H-side (Perancah / scaffolding embedded inside the block) per-m² cost
+  // — matches RAB!X{row}. Zero when the block has no H-side sub-items
+  // (AAL-5: every Bekisting block; PD3 / I4: Balok and Plat carry Perancah
+  // in col H with its own Jumlah and Harga per m² rows).
+  hargaPerM2_H: number;
+  cycleFactor_F: number;       // jumlahF / hargaF — form reuse cycle
+  cycleFactor_H: number;       // jumlahH / hargaH — Perancah reuse cycle (1 if H-side absent)
   subItems: Array<{
     materialName: string;
-    qtyPerNative: number;        // per m² per cycle
+    qtyPerNative: number;        // per m² per cycle (of this sub-item's own side)
     nativeUnit: string;
     unitPrice: number;
+    side: 'F' | 'H';             // which Jumlah column carries this sub-item's cost
     includedInTotal: boolean;
   }>;
 }
@@ -105,39 +114,61 @@ function extractBekistingTemplates(
     if (!/Bekisting/i.test(block.title)) continue;
     // Cyclic blocks (Balok/Plat/Kolom/Dinding) put Jumlah in F; Bata/Batako
     // Poer/Sloof blocks put the grand total in col I (col F is blank).
-    // Pick whichever is populated.
+    // F-side Jumlah is the forms total; H-side Jumlah is the Perancah
+    // (scaffolding) total when the block embeds it. Bata/Batako blocks
+    // have no H-side.
     const jumlahF = getCellNum(lookup, 'Analisa', `F${block.jumlahRow}`);
+    const jumlahH = getCellNum(lookup, 'Analisa', `H${block.jumlahRow}`);
     const jumlahI = getCellNum(lookup, 'Analisa', `I${block.jumlahRow}`);
-    const jumlah = jumlahF > 0 ? jumlahF : jumlahI;
-    // Harga per m² is the cell in F column one row past Jumlah. For
-    // single-cycle bekisting (Bata/Batako) the row is absent — treat as
-    // cycle=1 and use Jumlah itself as Harga per m².
+    const jumlahF_eff = jumlahF > 0 ? jumlahF : jumlahI;
+    // Harga per m² is the cell one row past Jumlah. F-side is in col F,
+    // H-side in col H. For single-cycle bekisting (Bata/Batako) the row
+    // is absent — treat as cycle=1 and use Jumlah itself as Harga per m².
     const hargaRow = block.jumlahRow + 1;
-    const hargaFromRow = getCellNum(lookup, 'Analisa', `F${hargaRow}`);
-    const harga = hargaFromRow > 0 ? hargaFromRow : jumlah;
-    if (harga === 0) continue;
-    // Use the LITERAL float ratio, not Math.round. AAL-5 Kolom is 9.1185,
-    // AAL-5 Plat is 5.76, PD3 Kolom is 4.56. Rounding to integer breaks the
-    // V × W = Σ(subitem_cost_per_m³) invariant by 1-2% and cascades into
-    // wrong per-material qty for every itemized row.
-    const cycleFactor = harga > 0 ? jumlah / harga : 1;
-    const subItems = block.componentRows.map((r) => {
+    const hargaF_fromRow = getCellNum(lookup, 'Analisa', `F${hargaRow}`);
+    const hargaH_fromRow = getCellNum(lookup, 'Analisa', `H${hargaRow}`);
+    const hargaPerM2_F = hargaF_fromRow > 0 ? hargaF_fromRow : jumlahF_eff;
+    const hargaPerM2_H = hargaH_fromRow > 0 ? hargaH_fromRow : jumlahH;
+    if (hargaPerM2_F === 0 && hargaPerM2_H === 0) continue;
+    // Use the LITERAL float ratio, not Math.round. AAL-5 Kolom F-side =
+    // 9.1185, AAL-5 Plat F-side = 5.76, PD3 Kolom F-side = 4.56. I4-29
+    // typically has H-side cycle != F-side cycle (e.g., F=4.0, H=2.88).
+    // Rounding to integer breaks the V × W = Σ(subitem_cost_per_m³)
+    // invariant by 1-2% and cascades into wrong per-material qty for
+    // every itemized row.
+    const cycleFactor_F = hargaPerM2_F > 0 ? jumlahF_eff / hargaPerM2_F : 1;
+    const cycleFactor_H = hargaPerM2_H > 0 ? jumlahH / hargaPerM2_H : 1;
+    const subItems: BekistingTemplate['subItems'] = [];
+    for (const r of block.componentRows) {
       const qty = getCellNum(lookup, 'Analisa', `B${r}`);
       const unit = getCellStr(lookup, 'Analisa', `C${r}`);
       const name = getCellStr(lookup, 'Analisa', `D${r}`);
       const price = getCellNum(lookup, 'Analisa', `E${r}`);
       const fTotal = getCellNum(lookup, 'Analisa', `F${r}`);
-      // included if F-column total is populated (matches what the workbook
-      // included in Jumlah — Perancah etc. show 0 in F by design).
-      return {
+      const hTotal = getCellNum(lookup, 'Analisa', `H${r}`);
+      // Side classification: whichever column carries this row's per-m²
+      // total. Perancah lives in H (separate cycle); form materials in F.
+      // If both are 0, the sub-item isn't included in either Jumlah —
+      // skip it (legacy excluded items).
+      const side: 'F' | 'H' = fTotal > 0 ? 'F' : hTotal > 0 ? 'H' : 'F';
+      const includedInTotal = fTotal > 0 || hTotal > 0;
+      subItems.push({
         materialName: name,
         qtyPerNative: qty,
         nativeUnit: unit,
         unitPrice: price,
-        includedInTotal: fTotal > 0,
-      };
+        side,
+        includedInTotal,
+      });
+    }
+    out.push({
+      blockTitle: block.title,
+      hargaPerM2_F,
+      hargaPerM2_H,
+      cycleFactor_F,
+      cycleFactor_H,
+      subItems,
     });
-    out.push({ blockTitle: block.title, hargaPerM2: harga, cycleFactor, subItems });
   }
   return out;
 }
@@ -469,30 +500,43 @@ function buildBreakdownForRow(args: {
     }
   }
 
-  // 2. Bekisting — match by W column.
+  // 2. Bekisting — match by W column (F-side per-m² cost), then emit
+  // F-side and (when X > 0) H-side sub-items separately. F-side cycle
+  // = Jumlah_F / Harga_F (forms reuse); H-side cycle = Jumlah_H / Harga_H
+  // (Perancah / scaffolding reuse — may differ from F-side).
   let bekisting: BekistingTemplate | undefined;
   if (cols.bekistingHargaPerM2 > 0) {
     for (const b of bekistings) {
-      if (Math.abs(b.hargaPerM2 - cols.bekistingHargaPerM2) <= componentCostMatchTol) {
+      if (Math.abs(b.hargaPerM2_F - cols.bekistingHargaPerM2) <= componentCostMatchTol) {
         bekisting = b;
         break;
       }
     }
     if (bekisting && cols.bekistingRatioM2PerM3 > 0) {
-      const factor = cols.bekistingRatioM2PerM3 / bekisting.cycleFactor;
       const elementHint = bekisting.blockTitle.replace(/.*Bekisting\s+/i, '').toUpperCase();
+      const factor_F = cols.bekistingRatioM2PerM3 / bekisting.cycleFactor_F;
+      const factor_H = cols.bekistingRatioM2PerM3 / bekisting.cycleFactor_H;
+      const groupTag_F = `BEKISTING ${elementHint} (Material) — ratio ${cols.bekistingRatioM2PerM3} m²/m³`;
+      const groupTag_H = `BEKISTING ${elementHint} PERALATAN (Material) — Perancah, ratio ${cols.bekistingRatioM2PerM3} m²/m³`;
       for (const s of bekisting.subItems) {
         if (!s.includedInTotal) continue;
+        // H-side sub-items only contribute when the row's X column is
+        // populated. If X = 0 but the template's H-side has sub-items,
+        // skip them (this row used a different layout — e.g., AAL-5
+        // workbooks that put Perancah on a separate BoQ line).
+        if (s.side === 'H' && cols.bekistingPeralatanPerM2 <= 0) continue;
+        const factor = s.side === 'H' ? factor_H : factor_F;
+        const cycle = s.side === 'H' ? bekisting.cycleFactor_H : bekisting.cycleFactor_F;
         const qtyPerBoqUnit = s.qtyPerNative * factor;
         const costPerBoqUnit = qtyPerBoqUnit * s.unitPrice;
         components.push({
           group: 'material',
-          componentGroup: `BEKISTING ${elementHint} (Material) — ratio ${cols.bekistingRatioM2PerM3} m²/m³`,
+          componentGroup: s.side === 'H' ? groupTag_H : groupTag_F,
           materialName: s.materialName,
           specNote: null,
           qtyPerNativeUnit: s.qtyPerNative,
           nativeUnit: s.nativeUnit,
-          nativeBasis: `per m² form (cycle ${bekisting.cycleFactor})`,
+          nativeBasis: `per m² form (cycle ${cycle.toFixed(2)})`,
           unitPrice: s.unitPrice,
           qtyPerBoqUnit,
           costPerBoqUnit,
