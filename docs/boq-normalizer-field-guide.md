@@ -828,11 +828,11 @@ workbooks by parallel agents. Findings preserved at:
 
 | Workbook | Itemized | Rolled | Direct-ref | Unresolved | Total | Rp coverage | Material coverage |
 |---|---|---|---|---|---|---|---|
-| AAL-5    | 144 |  15 |  5 | 0 | 164 | 100% | **87.8%** |
-| PD3-23   | 214 |  15 | 12 | 0 | 241 | 100% | **88.8%** |
-| I4-29    | 245 |  77 | 17 | 0 | 339 | 100% | **72.3%** |
-| ERNAWATI |  58 |  51 |  9 | 0 | 118 | 100% | **49.2%** |
-| **All four** | **661** | **158** | **43** | **0** | **862** | **100%** | **76.7%** |
+| AAL-5    | 159 |  0  |  5 | 0 | 164 | 100% | **97.0%** |
+| PD3-23   | 229 |  0  | 12 | 0 | 241 | 100% | **95.0%** |
+| I4-29    | 281 |  41 | 17 | 0 | 339 | 100% | **82.9%** |
+| ERNAWATI |  76 |  33 |  9 | 0 | 118 | 100% | **64.4%** |
+| **All four** | **745** | **74** | **43** | **0** | **862** | **100%** | **86.4%** |
 
 - **Rp coverage** = `(itemized + rolled + direct-ref) / total` — share of
   project Rp value whose total reconciles to source within ±1 Rp. This is
@@ -845,12 +845,23 @@ workbooks by parallel agents. Findings preserved at:
   — the audit screen sees "Bekisting Balok lump Rp 2.5M" instead of
   "Multipleks 1.32 lbr, Usuk vert 5.95 btg, ..."
 
-Material coverage is now **76.7%** (was 26.3%) after the formula-driven
-REKAP-row resolver landed (2026-05-26). The disaggregator no longer relies
-on label-search ("find first row with B24-1" → wrong floor when REKAP has
-per-floor summaries). It now reads the BoQ row's own column-Z formula
-(`='REKAP Balok'!X291`) and uses the exact row the workbook references.
-See `tools/boqParserV2/rebarDisaggregator/resolveRekapRow.ts`.
+Material coverage is now **86.4%** (was 76.7%) after the pembesian-lump
+fallback landed (2026-05-26). The itemized tier now stays alive even when
+the rebar disaggregator can't yield reconcilable per-diameter detail —
+instead of bailing the whole row to rolled (which loses bekisting per-
+material detail too), it emits a single `PEMBESIAN (Material) ... (lump)`
+component while keeping `BEKISTING (Material)` itemized to Multipleks,
+Usuk, Paku, Form oil. Triggers when (a) no rebar adapter matches the row
+label (e.g., ERNAWATI Dinding rows whose rebar lives on a "Retaining Wall"
+sheet) or (b) the disaggregator's per-diameter Σ disagrees with `RAB!Z`
+by > 0.01 kg/m³ (e.g., ERNAWATI Plat where REKAP rows are per sub-area,
+not per BoQ row). See the second `else if` branch in
+`tools/normalizer/cli-deterministic.ts:buildBreakdownForRow`.
+
+A second uplift came earlier the same day from the formula-driven
+REKAP-row resolver: the disaggregator now reads the BoQ row's own
+column-Z formula (`='REKAP Balok'!X291`) instead of label-searching for
+"B24-1". See `tools/boqParserV2/rebarDisaggregator/resolveRekapRow.ts`.
 
 The 34 previously-Unresolved rows are non-structural — Pasangan dinding bata
 merah (masonry), Strong band BB, Planter box, bored pile, and similar custom
@@ -977,14 +988,11 @@ itemized:
 
 ---
 
-*Last updated: 2026-05-26 after the formula-driven REKAP-row resolver
-landed. Material coverage tripled (26.3% → 76.7%) across now-four
-reference workbooks (AAL-5 + PD3 + I4 + ERNAWATI). Itemized row count went
-196 → 661 (+465) by replacing the rebar disaggregator's label-search with
-direct formula resolution — the BoQ row's column-Z formula (e.g.,
-`='REKAP Balok'!X291`) tells us exactly which REKAP row to use, avoiding
-the label-collision bug where types repeated across floors (B24-1 has one
-summary row per Lantai). Rp coverage stays at 100% (862/862 reconciled
+*Last updated: 2026-05-26 after the pembesian-lump fallback in the
+itemized tier landed (on top of the same-day formula-driven REKAP-row
+resolver). Material coverage 26.3% → 76.7% → **86.4%** across the four
+reference workbooks. Itemized row count 196 → 661 → **745** (+549 since
+the original baseline). Rp coverage stays at 100% (862/862 reconciled
 within ±1 Rp). Counts are pinned in
 `tools/normalizer/__tests__/deterministicCli.integration.test.ts` and any
 drift means either the test needs updating to match a deliberate coverage

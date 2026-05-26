@@ -30,40 +30,40 @@ const describeIf = allPresent ? describe : describe.skip;
 jest.setTimeout(180_000);
 
 describeIf('deterministic CLI — field guide §13 counts (regression gate)', () => {
-  it('AAL-5: 144 itemized / 15 rolled / 5 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
+  it('AAL-5: 159 itemized / 0 rolled / 5 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
     const res = await runDeterministic({ inputPath: FIXTURES.aal5, silent: true });
-    expect(res.itemizedCount).toBe(144);
-    expect(res.rolledCount).toBe(15);
+    expect(res.itemizedCount).toBe(159);
+    expect(res.rolledCount).toBe(0);
     expect(res.rolledDirectCount).toBe(5);
     expect(res.unresolvedCount).toBe(0);
     expect(res.totalCandidates).toBe(164);
     expect(res.maxAbsVariance).toBeLessThanOrEqual(1);
   });
 
-  it('PD3-23: 214 itemized / 15 rolled / 12 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
+  it('PD3-23: 229 itemized / 0 rolled / 12 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
     const res = await runDeterministic({ inputPath: FIXTURES.pd3, silent: true });
-    expect(res.itemizedCount).toBe(214);
-    expect(res.rolledCount).toBe(15);
+    expect(res.itemizedCount).toBe(229);
+    expect(res.rolledCount).toBe(0);
     expect(res.rolledDirectCount).toBe(12);
     expect(res.unresolvedCount).toBe(0);
     expect(res.totalCandidates).toBe(241);
     expect(res.maxAbsVariance).toBeLessThanOrEqual(1);
   });
 
-  it('I4-29: 245 itemized / 77 rolled / 17 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
+  it('I4-29: 281 itemized / 41 rolled / 17 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
     const res = await runDeterministic({ inputPath: FIXTURES.i4, silent: true });
-    expect(res.itemizedCount).toBe(245);
-    expect(res.rolledCount).toBe(77);
+    expect(res.itemizedCount).toBe(281);
+    expect(res.rolledCount).toBe(41);
     expect(res.rolledDirectCount).toBe(17);
     expect(res.unresolvedCount).toBe(0);
     expect(res.totalCandidates).toBe(339);
     expect(res.maxAbsVariance).toBeLessThanOrEqual(1);
   });
 
-  it('ERNAWATI: 58 itemized / 51 rolled / 9 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
+  it('ERNAWATI: 76 itemized / 33 rolled / 9 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
     const res = await runDeterministic({ inputPath: FIXTURES.ernawati, silent: true });
-    expect(res.itemizedCount).toBe(58);
-    expect(res.rolledCount).toBe(51);
+    expect(res.itemizedCount).toBe(76);
+    expect(res.rolledCount).toBe(33);
     expect(res.rolledDirectCount).toBe(9);
     expect(res.unresolvedCount).toBe(0);
     expect(res.totalCandidates).toBe(118);
@@ -81,8 +81,8 @@ describeIf('deterministic CLI — field guide §13 counts (regression gate)', ()
     const rolled       = aal5.rolledCount       + pd3.rolledCount       + i4.rolledCount       + ern.rolledCount;
     const rolledDirect = aal5.rolledDirectCount + pd3.rolledDirectCount + i4.rolledDirectCount + ern.rolledDirectCount;
     const unresolved   = aal5.unresolvedCount   + pd3.unresolvedCount   + i4.unresolvedCount   + ern.unresolvedCount;
-    expect(itemized).toBe(661);
-    expect(rolled).toBe(158);
+    expect(itemized).toBe(745);
+    expect(rolled).toBe(74);
     expect(rolledDirect).toBe(43);
     expect(unresolved).toBe(0);
   });

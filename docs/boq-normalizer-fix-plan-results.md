@@ -202,3 +202,46 @@ REKAP sheet.
   structural rows where the row uses a different bekisting cycle, a
   different pembesian price, or some other unmodeled variation — they
   reconcile by Rp but don't have per-material detail yet.
+
+---
+
+## 2026-05-26 (later) — pembesian-lump fallback inside itemized tier
+
+Same-day follow-up to the formula-driven REKAP resolver. User report:
+"for ernawati, where is the bekisting? no plywood, usuk kayu, etc."
+Investigation found that ERNAWATI's Plat and Dinding rows had perfectly
+itemizable bekisting (Multipleks / Usuk / Paku / Form oil) but were
+falling back to rolled because the per-diameter rebar breakdown either
+didn't exist (Dinding rows reference a "Retaining Wall" sheet, no adapter
+for that label) or was for the wrong row aggregate (Plat REKAP rows are
+per sub-area with their own volume, not per BoQ-row).
+
+Fix: `tools/normalizer/cli-deterministic.ts:buildBreakdownForRow` now
+emits a single Pembesian lump (qty=Z, price=AA) when the rebar
+disaggregator can't produce a reconcilable per-diameter Σ. The bekisting
+and concrete halves of the row stay itemized — user gets plywood /
+usuk / paku, just not per-diameter rebar detail for these specific rows.
+
+Coverage impact (per workbook):
+
+| Workbook | Itemized before | After | Δ |
+|---|---|---|---|
+| AAL-5    | 144 | **159** | +15 |
+| PD3-23   | 214 | **229** | +15 |
+| I4-29    | 245 | **281** | +36 |
+| ERNAWATI |  58 |  **76** | +18 |
+| **Total** | **661** | **745** | **+84** |
+
+AAL-5 and PD3 now have **zero rolled rows** — every row reconciles via
+itemized or direct-ref. ERNAWATI Plat/Dinding rows show Multipleks 15mm,
+Usuk 5/7, Paku, Form oil, Perancah per `assets/BOQ/RAB ERNAWATI edit_normalized.xlsx`
+`Breakdown (A) IV.A.1.1` and similar sheets.
+
+Material coverage: 76.7% → **86.4%**. Rp coverage stays at 100%
+(862/862 within ±1 Rp). Test count: 225 (43 suites), all green.
+
+Remaining rolled rows (74 total: 41 in I4 + 33 in ERNAWATI) are mostly
+single-material "Besi D13"/"Besi D16"/"Besi D19" pseudo-rows where the
+workbook stores the per-kg pembesian price in column R (unit=kg, not m³).
+These are semantically already per-material — they just need a different
+group label than "BETON READYMIX". Out of scope for this commit.

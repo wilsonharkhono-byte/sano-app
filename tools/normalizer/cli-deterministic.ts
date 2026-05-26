@@ -691,9 +691,23 @@ function buildBreakdownForRow(args: {
     }
   }
 
-  // 3. Pembesian — per-diameter + waste + decking + bendrat.
-  if (diameters.length > 0 && pembesian.besiUnitPrice > 0) {
-    const totalRawKgPerM3 = diameters.reduce((s, d) => s + d.qtyPerM3, 0);
+  // 3. Pembesian — per-diameter + waste + decking + bendrat when the
+  // disaggregator gave a complete per-diameter breakdown (Σ diameters
+  // matches RAB!Z within 0.01 kg/m³). Otherwise fall back to a single
+  // Pembesian lump derived from Z*AA so the row still reconciles and
+  // bekisting itemization isn't lost just because the rebar source has
+  // a layout we don't know how to disaggregate (e.g., ERNAWATI Plat
+  // sub-area rows, "Dinding" rows whose rebar lives on a "Retaining Wall"
+  // sheet with no adapter, etc.).
+  const totalDisaggregatedKgPerM3 = diameters.reduce((s, d) => s + d.qtyPerM3, 0);
+  const aggregateKgPerM3 = cols.pembesianKgPerM3;
+  const aggregatePrice = cols.pembesianBlendedPricePerKg;
+  const disaggregatorOK =
+    diameters.length > 0 &&
+    aggregateKgPerM3 > 0 &&
+    Math.abs(totalDisaggregatedKgPerM3 - aggregateKgPerM3) < 0.01;
+  if (disaggregatorOK && pembesian.besiUnitPrice > 0) {
+    const totalRawKgPerM3 = totalDisaggregatedKgPerM3;
     const wasteCoeff = pembesian.besiCoeff - 1; // 1.05 - 1 = 0.05
     const componentGroup = `PEMBESIAN (Material) — ratio ${totalRawKgPerM3.toFixed(2)} kg/m³`;
     for (const d of diameters) {
@@ -748,6 +762,29 @@ function buildBreakdownForRow(args: {
       costPerBoqUnit: bendratQty * pembesian.bendratUnitPrice,
       totalQty: bendratQty * row.planned,
       totalCost: bendratQty * pembesian.bendratUnitPrice * row.planned,
+    });
+  } else if (aggregateKgPerM3 > 0 && aggregatePrice > 0) {
+    // Pembesian lump fallback: keep the itemized tier alive even when the
+    // rebar disaggregator can't (or won't) produce per-diameter detail.
+    // qty = Z (kg/m³), unit price = AA (blended raw besi + decking + bendrat).
+    // The breakdown's bekisting + concrete components remain itemized, so
+    // the user still sees Multipleks / Usuk / Paku for the bekisting half.
+    const reason = diameters.length === 0
+      ? 'no rebar adapter matched the row label (e.g., dinding/walls)'
+      : `disaggregator yielded ${totalDisaggregatedKgPerM3.toFixed(2)} kg/m³ vs Z=${aggregateKgPerM3.toFixed(2)} kg/m³`;
+    components.push({
+      group: 'material',
+      componentGroup: `PEMBESIAN (Material) — ratio ${aggregateKgPerM3.toFixed(2)} kg/m³ (lump)`,
+      materialName: 'Pembesian U24 & U40 (lump — no per-diameter detail)',
+      specNote: `pembesian lump: ${reason}`,
+      qtyPerNativeUnit: aggregateKgPerM3,
+      nativeUnit: 'kg',
+      nativeBasis: 'per m3 beton (blended: raw besi + decking + bendrat)',
+      unitPrice: aggregatePrice,
+      qtyPerBoqUnit: aggregateKgPerM3,
+      costPerBoqUnit: aggregateKgPerM3 * aggregatePrice,
+      totalQty: aggregateKgPerM3 * row.planned,
+      totalCost: aggregateKgPerM3 * aggregatePrice * row.planned,
     });
   }
 
