@@ -590,6 +590,123 @@ function buildDirectReferenceBreakdown(args: {
   };
 }
 
+/**
+ * Tier 1.5: per-kg "besi-only" pseudo-rows. Some workbooks (ERNAWATI) split
+ * each structural element into one Beton (m³) row plus separate Besi D13 /
+ * D16 / D19 rows (unit=kg, vol=kg) plus a Bekisting (m²) row, instead of one
+ * combined m³ row that carries bekisting+pembesian via the V/W/Z/AA columns.
+ *
+ * Detection contract — all three must hold:
+ *   • row.unit === 'kg'
+ *   • row.label matches /Besi\s+D(\d+)/i
+ *   • cols.concreteMatCostPerM3 (R) ≈ pembesian.pricePerKg (within ±1 Rp)
+ *     — i.e., the workbook is using the Pembesian Jumlah price as the row's
+ *     per-kg unit cost (formula typically `Analisa!$F${pembesianJumlahRow}`)
+ *
+ * Output: three Pembesian sub-items per row (Besi beton D{N}, Beton decking,
+ * Bendrat), each at qty_per_kg = AHS coefficient. Reconciles by construction
+ * because Σ(coeff × price) = pembesian.pricePerKg by the AHS Jumlah formula,
+ * and source unit cost = R = pembesian.pricePerKg.
+ */
+function buildBesiOnlyBreakdown(args: {
+  row: BoqRowV2;
+  cols: RowCols;
+  pembesian: PembesianTemplate;
+  sourceUnitCost: number;
+  sourceLineTotal: number;
+}): BuildResult {
+  const { row, cols, pembesian, sourceUnitCost, sourceLineTotal } = args;
+
+  if (row.unit !== 'kg') {
+    return { reason: 'Besi-only tier: unit is not kg.' };
+  }
+  const diameterMatch = (row.label ?? '').match(/Besi\s+D(\d+)/i);
+  if (!diameterMatch) {
+    return { reason: 'Besi-only tier: label does not match Besi D\\d+.' };
+  }
+  if (pembesian.pricePerKg <= 0) {
+    return { reason: 'Besi-only tier: pembesian template has no pricePerKg.' };
+  }
+  if (Math.abs(cols.concreteMatCostPerM3 - pembesian.pricePerKg) > TOLERANCE_RP) {
+    return {
+      reason: `Besi-only tier: R column ${cols.concreteMatCostPerM3} does not match pembesian pricePerKg ${pembesian.pricePerKg}.`,
+    };
+  }
+
+  const diameter = `D${diameterMatch[1]}`;
+  const v = row.planned;
+  const components: BreakdownRow[] = [];
+  const componentGroup = `PEMBESIAN (Material) — Besi ${diameter}`;
+
+  const pushPembesianSub = (
+    materialName: string,
+    coeff: number,
+    unitPrice: number,
+    nativeBasis: string,
+  ) => {
+    if (coeff <= 0 || unitPrice <= 0) return;
+    const cost = coeff * unitPrice;
+    components.push({
+      group: 'material',
+      componentGroup,
+      materialName,
+      specNote: null,
+      qtyPerNativeUnit: coeff,
+      nativeUnit: 'kg',
+      nativeBasis,
+      unitPrice,
+      qtyPerBoqUnit: coeff,
+      costPerBoqUnit: cost,
+      totalQty: coeff * v,
+      totalCost: cost * v,
+    });
+  };
+
+  pushPembesianSub(`Besi beton ${diameter}`, pembesian.besiCoeff, pembesian.besiUnitPrice, 'per kg finished rebar (5% waste)');
+  pushPembesianSub('Beton decking', pembesian.deckingCoeff, pembesian.deckingUnitPrice, 'per kg finished rebar');
+  pushPembesianSub('Bendrat (kawat ikat)', pembesian.bendratCoeff, pembesian.bendratUnitPrice, 'per kg finished rebar');
+
+  if (components.length === 0) {
+    return { reason: 'Besi-only tier: pembesian template yielded no components.' };
+  }
+
+  const computedUnitCost = components.reduce((s, c) => s + c.costPerBoqUnit, 0);
+  const variance = computedUnitCost - sourceUnitCost;
+  if (Math.abs(variance) > TOLERANCE_RP) {
+    return {
+      reason: `Besi-only variance ${variance.toFixed(2)} Rp (computed ${computedUnitCost.toFixed(2)} vs source ${sourceUnitCost.toFixed(2)}).`,
+      computedUnitCost,
+      variance,
+    };
+  }
+
+  const computedLineTotal = computedUnitCost * v;
+  return {
+    breakdown: {
+      boqCode: row.code,
+      description: row.label,
+      unit: row.unit,
+      volume: v,
+      unitCost: computedUnitCost,
+      lineTotal: computedLineTotal,
+      components,
+      reconciliation: {
+        computedUnitCost,
+        sourceUnitCost,
+        unitCostVariance: variance,
+        computedLineTotal,
+        sourceLineTotal,
+        lineTotalVariance: computedLineTotal - sourceLineTotal,
+        reconciles: true,
+      },
+      sourceSheet: `Breakdown ${row.code}`,
+    },
+    computedUnitCost,
+    variance,
+    level: 'itemized',
+  };
+}
+
 function buildBreakdownForRow(args: {
   row: BoqRowV2;
   cols: RowCols;
@@ -924,6 +1041,15 @@ export async function runDeterministic(opts: RunDeterministicOptions): Promise<R
     let res = buildBreakdownForRow({
       row, cols, diameters, bekistings, concretes, pembesian, sourceUnitCost, sourceLineTotal,
     });
+
+    // Tier 1.5: besi-only pseudo-rows (Besi D{N}, unit=kg). Reconciles by
+    // expanding the AHS Pembesian block (Besi beton + Beton decking + Bendrat)
+    // at qty_per_kg = AHS coefficient. Currently only triggers for ERNAWATI's
+    // split-row layout; AAL-5/PD3/I4 use a combined m³ row and never match.
+    if (!res.breakdown && pembesian) {
+      const besi = buildBesiOnlyBreakdown({ row, cols, pembesian, sourceUnitCost, sourceLineTotal });
+      if (besi.breakdown) res = besi;
+    }
 
     // Tier 2: fall back to rolled lump breakdown from RAB(A) column totals.
     if (!res.breakdown) {

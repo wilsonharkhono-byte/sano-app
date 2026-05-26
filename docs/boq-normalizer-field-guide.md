@@ -831,8 +831,8 @@ workbooks by parallel agents. Findings preserved at:
 | AAL-5    | 159 |  0  |  5 | 0 | 164 | 100% | **97.0%** |
 | PD3-23   | 229 |  0  | 12 | 0 | 241 | 100% | **95.0%** |
 | I4-29    | 281 |  41 | 17 | 0 | 339 | 100% | **82.9%** |
-| ERNAWATI |  76 |  33 |  9 | 0 | 118 | 100% | **64.4%** |
-| **All four** | **745** | **74** | **43** | **0** | **862** | **100%** | **86.4%** |
+| ERNAWATI | 109 |  0  |  9 | 0 | 118 | 100% | **92.4%** |
+| **All four** | **778** | **41** | **43** | **0** | **862** | **100%** | **90.3%** |
 
 - **Rp coverage** = `(itemized + rolled + direct-ref) / total` — share of
   project Rp value whose total reconciles to source within ±1 Rp. This is
@@ -845,17 +845,28 @@ workbooks by parallel agents. Findings preserved at:
   — the audit screen sees "Bekisting Balok lump Rp 2.5M" instead of
   "Multipleks 1.32 lbr, Usuk vert 5.95 btg, ..."
 
-Material coverage is now **86.4%** (was 76.7%) after the pembesian-lump
-fallback landed (2026-05-26). The itemized tier now stays alive even when
-the rebar disaggregator can't yield reconcilable per-diameter detail —
-instead of bailing the whole row to rolled (which loses bekisting per-
-material detail too), it emits a single `PEMBESIAN (Material) ... (lump)`
-component while keeping `BEKISTING (Material)` itemized to Multipleks,
-Usuk, Paku, Form oil. Triggers when (a) no rebar adapter matches the row
-label (e.g., ERNAWATI Dinding rows whose rebar lives on a "Retaining Wall"
-sheet) or (b) the disaggregator's per-diameter Σ disagrees with `RAB!Z`
-by > 0.01 kg/m³ (e.g., ERNAWATI Plat where REKAP rows are per sub-area,
-not per BoQ row). See the second `else if` branch in
+Material coverage is now **90.3%** (was 86.4%) after the besi-only
+tier landed (2026-05-27). ERNAWATI splits each structural element into
+separate Beton (m³) / Besi D13 / D16 / D19 (kg) / Bekisting (m²) BoQ
+rows instead of one combined m³ row carrying bekisting+pembesian via
+the V/W/Z/AA columns. The 33 `Besi D{N}` pseudo-rows (unit=kg) used to
+land in the rolled tier with a single mislabeled `BETON READYMIX` lump;
+they now expand to the three AHS Pembesian sub-items — `Besi beton
+D{N}`, `Beton decking`, `Bendrat` — at the AHS coefficients (1.05 /
+1.00 / 0.021). Trigger guard: `row.unit === 'kg'`, label matches
+`/Besi D\d+/i`, `RAB!R{row} ≈ pembesian.pricePerKg`. See
+`tools/normalizer/cli-deterministic.ts:buildBesiOnlyBreakdown`.
+
+The preceding uplift came from the pembesian-lump fallback (2026-05-26):
+when the rebar disaggregator can't yield reconcilable per-diameter
+detail, the itemized tier now emits a single `PEMBESIAN (Material) ...
+(lump)` component instead of bailing the whole row to rolled (which
+would also drop bekisting per-material detail). Triggers when
+(a) no rebar adapter matches the row label (e.g., ERNAWATI Dinding rows
+whose rebar lives on a "Retaining Wall" sheet) or (b) the
+disaggregator's per-diameter Σ disagrees with `RAB!Z` by > 0.01 kg/m³
+(e.g., ERNAWATI Plat where REKAP rows are per sub-area, not per BoQ
+row). See the second `else if` branch in
 `tools/normalizer/cli-deterministic.ts:buildBreakdownForRow`.
 
 A second uplift came earlier the same day from the formula-driven

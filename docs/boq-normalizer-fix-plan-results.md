@@ -245,3 +245,62 @@ single-material "Besi D13"/"Besi D16"/"Besi D19" pseudo-rows where the
 workbook stores the per-kg pembesian price in column R (unit=kg, not m³).
 These are semantically already per-material — they just need a different
 group label than "BETON READYMIX". Out of scope for this commit.
+
+---
+
+## 2026-05-27 — besi-only itemization tier for ERNAWATI
+
+User request: "continue with ernawati parsing boq. it should read more
+like pakuwon AAL 5 normalizer. it should have more breakdown of besi,
+bekisting, etc". Per-kg "Besi D13/D16/D19" pseudo-rows in ERNAWATI's
+III.A.1..11 chapters were falling into the rolled tier and emitted as
+a single misnamed `BETON READYMIX (Material)` lump. Each row is actually
+one BoQ line per rebar diameter (unit=kg, vol=kg of finished rebar),
+referencing the AHS Pembesian Jumlah row (`R{row} = Analisa!$F${jumlah}`).
+
+Fix: new tier 1.5 in `tools/normalizer/cli-deterministic.ts:buildBesiOnlyBreakdown`
+fires when (a) `row.unit === 'kg'`, (b) `row.label` matches `/Besi D\d+/i`,
+and (c) `cols.concreteMatCostPerM3 ≈ pembesian.pricePerKg` within ±1 Rp.
+It emits the three AHS Pembesian sub-items (Besi beton D{N} @ 1.05 kg/kg,
+Beton decking @ 1.0 kg/kg, Bendrat @ 0.021 kg/kg) at the AHS unit prices,
+re-grouped under `PEMBESIAN (Material) — Besi D{N}`.
+
+```
+=== RAB ERNAWATI edit.xlsx ===
+  ✓ itemized:      109  (per-material detail)
+  ~ rolled:        0    (5-line group lumps from RAB columns)
+  • direct-ref:    9    (recipe-derived lumps for masonry / pile / custom)
+Unresolved:        0
+```
+
+### Coverage impact (ERNAWATI only)
+
+| Tier | Before | After | Δ |
+|---|---|---|---|
+| Itemized   |  76 | **109** | +33 |
+| Rolled     |  33 |   **0** | -33 |
+| Direct-ref |   9 |   9     | 0 |
+
+### Aggregate (all four workbooks)
+
+| Tier | Before | After | Δ |
+|---|---|---|---|
+| Itemized   | 745 | **778** | +33 |
+| Rolled     |  74 |  **41** | -33 |
+| Direct-ref |  43 |  43     | 0 |
+
+Material coverage: 86.4% → **90.3%**. Rp coverage stays at 100%
+(862/862 within ±1 Rp). Verified: `Breakdown (A) III.A.1.2` (Besi D13,
+558.24 kg) now lists Besi beton D13 / Beton decking / Bendrat with
+variance 0.00 Rp.
+
+Remaining 41 rolled rows are all in I4-29 and have a different shape
+(structural rows where the column-sum reconciles by Rp but no template
+combination yields a per-material expansion). Out of scope here.
+
+### Scope check
+
+The detection contract is narrow enough that no other workbook fires
+the new tier: AAL-5, PD3-23, I4-29 each have **0** rows matching
+`unit === 'kg' && label =~ /Besi D\d+/`. Regression test confirms
+their counts are unchanged (159/0/5, 229/0/12, 281/41/17 respectively).
