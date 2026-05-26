@@ -828,10 +828,11 @@ workbooks by parallel agents. Findings preserved at:
 
 | Workbook | Itemized | Rolled | Direct-ref | Unresolved | Total | Rp coverage | Material coverage |
 |---|---|---|---|---|---|---|---|
-| AAL-5    |  74 |  85 |  5 | 0 | 164 | 100% | **45.1%** |
-| PD3-23   |  76 | 153 | 12 | 0 | 241 | 100% | **31.5%** |
-| I4-29    |  46 | 276 | 17 | 0 | 339 | 100% | **13.6%** |
-| **All three** | **196** | **514** | **34** | **0** | **744** | **100%** | **26.3%** |
+| AAL-5    | 144 |  15 |  5 | 0 | 164 | 100% | **87.8%** |
+| PD3-23   | 214 |  15 | 12 | 0 | 241 | 100% | **88.8%** |
+| I4-29    | 245 |  77 | 17 | 0 | 339 | 100% | **72.3%** |
+| ERNAWATI |  58 |  51 |  9 | 0 | 118 | 100% | **49.2%** |
+| **All four** | **661** | **158** | **43** | **0** | **862** | **100%** | **76.7%** |
 
 - **Rp coverage** = `(itemized + rolled + direct-ref) / total` — share of
   project Rp value whose total reconciles to source within ±1 Rp. This is
@@ -844,13 +845,12 @@ workbooks by parallel agents. Findings preserved at:
   — the audit screen sees "Bekisting Balok lump Rp 2.5M" instead of
   "Multipleks 1.32 lbr, Usuk vert 5.95 btg, ..."
 
-Stop reporting "100% coverage" as the headline. **The actual deliverable is
-at 26.3%.** The rolled and direct-ref tiers kept Rp coverage at the ceiling
-— the truth-correctness contract is intact and no row is silently dropped
-— but the goal in §1 (per-material detail for procurement) is still mostly
-unmet, especially for PD3 (32%) and I4-29 (14%). The next architectural
-lever to upgrade rolled → itemized is unmodeled PD3 Plat/Kolom variants
-(field guide §6.2/§6.3) and the I4-29 plat reinforcement paths.
+Material coverage is now **76.7%** (was 26.3%) after the formula-driven
+REKAP-row resolver landed (2026-05-26). The disaggregator no longer relies
+on label-search ("find first row with B24-1" → wrong floor when REKAP has
+per-floor summaries). It now reads the BoQ row's own column-Z formula
+(`='REKAP Balok'!X291`) and uses the exact row the workbook references.
+See `tools/boqParserV2/rebarDisaggregator/resolveRekapRow.ts`.
 
 The 34 previously-Unresolved rows are non-structural — Pasangan dinding bata
 merah (masonry), Strong band BB, Planter box, bored pile, and similar custom
@@ -977,14 +977,16 @@ itemized:
 
 ---
 
-*Last updated: 2026-05-25 after the direct-reference tier landed
-(fix plan §2.2). Rp coverage across all three reference workbooks is now
-100% (744/744 reconciled within ±1 Rp). The 34 previously-Unresolved rows
-(masonry / pile / custom) all flow through `buildDirectReferenceBreakdown`,
-which reads the row's recipe components and emits one lump per lineType.
-Itemized share is unchanged at 196 — the direct-ref tier is a third lump
-fallback, not a per-material upgrade. Counts are pinned in
-`tools/normalizer/__tests__/deterministicCli.integration.test.ts` — any
+*Last updated: 2026-05-26 after the formula-driven REKAP-row resolver
+landed. Material coverage tripled (26.3% → 76.7%) across now-four
+reference workbooks (AAL-5 + PD3 + I4 + ERNAWATI). Itemized row count went
+196 → 661 (+465) by replacing the rebar disaggregator's label-search with
+direct formula resolution — the BoQ row's column-Z formula (e.g.,
+`='REKAP Balok'!X291`) tells us exactly which REKAP row to use, avoiding
+the label-collision bug where types repeated across floors (B24-1 has one
+summary row per Lantai). Rp coverage stays at 100% (862/862 reconciled
+within ±1 Rp). Counts are pinned in
+`tools/normalizer/__tests__/deterministicCli.integration.test.ts` and any
 drift means either the test needs updating to match a deliberate coverage
 improvement, or a regression has been introduced. See
 `docs/superpowers/specs/2026-05-23-recipe-detail-normalizer-design.md` for the

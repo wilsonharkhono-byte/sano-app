@@ -112,3 +112,93 @@ counts per workbook + asserts `|variance| ≤ 1 Rp` on every breakdown.
   `pickDominantReferencedBlock` heuristic wasn't needed: emit one lump
   per `row.recipe.components[i]`, group by `lineType`, sum reconciles
   by construction. ~75 lines added in `cli-deterministic.ts`.
+
+---
+
+## 2026-05-26 — formula-driven REKAP-row resolver
+
+Following commits in scope:
+- `(HEAD)` — fix(parser): formula-driven REKAP-row resolution in rebar disaggregator
+
+Run results (now four reference workbooks; ERNAWATI promoted to the
+pinned set since the fix exposed it):
+
+```
+=== RAB R1 Pakuwon Indah AAL-5.xlsx ===
+  ✓ itemized:      144  (per-material detail)
+  ~ rolled:        15  (5-line group lumps from RAB columns)
+  • direct-ref:    5   (recipe-derived lumps for masonry / pile / custom)
+Unresolved:        0
+
+=== RAB R2 Pakuwon Indah PD3 no. 23.xlsx ===
+  ✓ itemized:      214  (per-material detail)
+  ~ rolled:        15  (5-line group lumps from RAB columns)
+  • direct-ref:    12  (recipe-derived lumps for masonry / pile / custom)
+Unresolved:        0
+
+=== RAB Nusa Golf I4 no. 29_R3.xlsx ===
+  ✓ itemized:      245  (per-material detail)
+  ~ rolled:        77  (5-line group lumps from RAB columns)
+  • direct-ref:    17  (recipe-derived lumps for masonry / pile / custom)
+Unresolved:        0
+
+=== RAB ERNAWATI edit.xlsx ===
+  ✓ itemized:      58  (per-material detail)
+  ~ rolled:        51  (5-line group lumps from RAB columns)
+  • direct-ref:    9   (recipe-derived lumps for masonry / pile / custom)
+Unresolved:        0
+```
+
+### Aggregate
+
+| Workbook | Itemized | Rolled | Direct-ref | Unresolved | Total | Rp coverage | Material coverage |
+|---|---|---|---|---|---|---|---|
+| AAL-5    | 144 |  15 |  5 | 0 | 164 | 100% | **87.8%** |
+| PD3-23   | 214 |  15 | 12 | 0 | 241 | 100% | **88.8%** |
+| I4-29    | 245 |  77 | 17 | 0 | 339 | 100% | **72.3%** |
+| ERNAWATI |  58 |  51 |  9 | 0 | 118 | 100% | **49.2%** |
+| **All four** | **661** | **158** | **43** | **0** | **862** | **100%** | **76.7%** |
+
+Material coverage tripled (26.3% → 76.7%). Itemized row count rose
+196 → 661 (+465 rows) across the now-four reference workbooks.
+
+Test count: 225 (43 suites). All green.
+
+### Root cause
+
+The rebar disaggregator used label-search to find a REKAP row for each
+BoQ row's element type (e.g., "B24-1" → first REKAP Balok row in
+column D containing "B24-1"). When REKAP has **one summary row per
+floor** for the same element type — as in ERNAWATI (Lantai 1/2/3 each
+get their own "B24-1" entry), PD3, and I4 — the search always picked
+the first floor's row, applying its diameter weights to every floor's
+BoQ row. That made the Pembesian per-diameter components short of
+the actual `Z×AA` total by 70–90%, the itemized variance check failed
+(>1 Rp), and the row fell back to rolled.
+
+### Fix
+
+`tools/boqParserV2/rebarDisaggregator/resolveRekapRow.ts` reads the BoQ
+row's column-Z formula directly (e.g., `='REKAP Balok'!X291` for
+ERNAWATI IV.A.2.3 Balok B24-1 Lantai 2) and extracts the row number.
+All four adapters (`balokSloof`, `plat`, `poer`, `kolom`) now accept
+an optional `LookupHint.rekapRow` and use it when provided, falling
+back to label-search only when the formula doesn't cite the expected
+REKAP sheet.
+
+### Notes
+
+- AAL-5's old label-search "worked" by accident: REKAP entries for
+  every element type happened to be single-row (one floor's data
+  reused across all floor BoQ rows). The fix found 70 additional
+  AAL-5 rows that the workbook's formulas actually distinguished by
+  floor — those went from rolled lump to itemized per-material.
+- PD3 went from 76 itemized → 214 (+138). I4 went from 46 → 245
+  (+199). These were the rows that always had per-floor REKAP entries
+  but the label-search collapsed them.
+- Truth-correctness contract intact: every newly-itemized row still
+  reconciles to source within ±1 Rp by construction.
+- The remaining rolled rows (158 across all four workbooks) are
+  structural rows where the row uses a different bekisting cycle, a
+  different pembesian price, or some other unmodeled variation — they
+  reconcile by Rp but don't have per-material detail yet.

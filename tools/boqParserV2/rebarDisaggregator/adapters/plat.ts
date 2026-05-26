@@ -25,19 +25,23 @@ export const platAdapter: RebarAdapter = {
   name: 'plat',
   sheetName: SHEET,
   prefixPattern: /^Plat\s+(.+)$/i,
-  lookupBreakdown(typeCode, cells) {
+  lookupBreakdown(typeCode, cells, hint) {
     const header = detectDiameterHeader(cells, SHEET, { rowMin: 1, rowMax: 30 });
     if (!header) return null;
-    const found = findRowByLabel(cells, SHEET, LABEL_COLS, typeCode, {
-      rowMin: header.row + 1,
-    });
-    if (!found) return null;
+    let targetRow: number | null = hint?.rekapRow ?? null;
+    if (targetRow == null) {
+      const found = findRowByLabel(cells, SHEET, LABEL_COLS, typeCode, {
+        rowMin: header.row + 1,
+      });
+      if (!found) return null;
+      targetRow = found.row;
+    }
     const out: RebarBreakdown[] = [];
     for (const [diameter, col] of header.map) {
-      const cell = cells.find((c) => c.sheet === SHEET && c.address === `${col}${found.row}`);
+      const cell = cells.find((c) => c.sheet === SHEET && c.address === `${col}${targetRow}`);
       const w = Number(cell?.value ?? 0);
       if (w > 0) {
-        out.push({ diameter, weightKg: w, sourceCell: `${SHEET}!${col}${found.row}` });
+        out.push({ diameter, weightKg: w, sourceCell: `${SHEET}!${col}${targetRow}` });
       }
     }
     return out;

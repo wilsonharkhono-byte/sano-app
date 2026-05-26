@@ -29,19 +29,27 @@ export const balokSloofAdapter: RebarAdapter = {
   name: 'balokSloof',
   sheetName: SHEET,
   prefixPattern: /^(?:Sloof|Balok)\s+(.+)$/i,
-  lookupBreakdown(typeCode, cells) {
+  lookupBreakdown(typeCode, cells, hint) {
     const header = detectDiameterHeader(cells, SHEET, { rowMin: 1, rowMax: 30 });
     if (!header) return null;
-    const found = findRowByLabel(cells, SHEET, LABEL_COLS, typeCode, {
-      rowMin: header.row + 1,
-    });
-    if (!found) return null;
+    // Prefer the hint row (BoQ row's own Z-formula reference). Otherwise
+    // label-search — fine when REKAP has a single summary row per type, but
+    // wrong when types repeat across floors (ERNAWATI Lantai 1/2/3 each get
+    // their own B24-1 summary row).
+    let targetRow: number | null = hint?.rekapRow ?? null;
+    if (targetRow == null) {
+      const found = findRowByLabel(cells, SHEET, LABEL_COLS, typeCode, {
+        rowMin: header.row + 1,
+      });
+      if (!found) return null;
+      targetRow = found.row;
+    }
     const out: RebarBreakdown[] = [];
     for (const [diameter, col] of header.map) {
-      const cell = cells.find((c) => c.sheet === SHEET && c.address === `${col}${found.row}`);
+      const cell = cells.find((c) => c.sheet === SHEET && c.address === `${col}${targetRow}`);
       const w = Number(cell?.value ?? 0);
       if (w > 0) {
-        out.push({ diameter, weightKg: w, sourceCell: `${SHEET}!${col}${found.row}` });
+        out.push({ diameter, weightKg: w, sourceCell: `${SHEET}!${col}${targetRow}` });
       }
     }
     return out;

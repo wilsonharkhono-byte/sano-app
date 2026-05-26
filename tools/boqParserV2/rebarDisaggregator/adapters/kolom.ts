@@ -99,14 +99,20 @@ export const kolomAdapter: RebarAdapter = {
   name: 'kolom',
   sheetName: SHEET,
   prefixPattern: /^Kolom\s+(.+)$/i,
-  lookupBreakdown(typeCode, cells) {
+  lookupBreakdown(typeCode, cells, hint) {
     const header = detectKolomHeader(cells);
     if (!header) return null;
-    const found = findRowByLabel(cells, SHEET, LABEL_COLS, typeCode, {
-      rowMin: header.row + 1,
-      rowMax: SUMMARY_ROW_MAX,
-    });
-    if (!found) return null;
+    let targetRow: number | null = hint?.rekapRow ?? null;
+    if (targetRow == null) {
+      const found = findRowByLabel(cells, SHEET, LABEL_COLS, typeCode, {
+        rowMin: header.row + 1,
+        rowMax: SUMMARY_ROW_MAX,
+      });
+      if (!found) return null;
+      targetRow = found.row;
+    }
+    // targetRow is non-null below: either hint set it, or label-search did.
+    const row: number = targetRow;
 
     // Union of diameters seen in either group — preserves the existing
     // semantics where D8 is stirrup-only and D19+ is main-only.
@@ -122,17 +128,17 @@ export const kolomAdapter: RebarAdapter = {
     for (const diameter of sortedDiameters) {
       const stirrupCol = header.stirrupCols.get(diameter) ?? null;
       const mainCol = header.mainCols.get(diameter) ?? null;
-      const stirrupKg = stirrupCol ? readWeight(cells, stirrupCol, found.row) : 0;
-      const mainKg = mainCol ? readWeight(cells, mainCol, found.row) : 0;
+      const stirrupKg = stirrupCol ? readWeight(cells, stirrupCol, row) : 0;
+      const mainKg = mainCol ? readWeight(cells, mainCol, row) : 0;
       const total = stirrupKg + mainKg;
       if (total <= 0) continue;
       let sourceCell: string;
       if (stirrupKg > 0 && mainKg > 0 && stirrupCol && mainCol) {
-        sourceCell = `${SHEET}!${stirrupCol}${found.row}+${mainCol}${found.row}`;
+        sourceCell = `${SHEET}!${stirrupCol}${row}+${mainCol}${row}`;
       } else if (stirrupKg > 0 && stirrupCol) {
-        sourceCell = `${SHEET}!${stirrupCol}${found.row}`;
+        sourceCell = `${SHEET}!${stirrupCol}${row}`;
       } else if (mainCol) {
-        sourceCell = `${SHEET}!${mainCol}${found.row}`;
+        sourceCell = `${SHEET}!${mainCol}${row}`;
       } else {
         // Unreachable — total > 0 implies at least one column.
         continue;
