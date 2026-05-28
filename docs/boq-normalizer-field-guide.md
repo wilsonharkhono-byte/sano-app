@@ -828,22 +828,33 @@ workbooks by parallel agents. Findings preserved at:
 
 | Workbook | Itemized | Rolled | Direct-ref | Unresolved | Total | Rp coverage | Material coverage |
 |---|---|---|---|---|---|---|---|
-| AAL-5    | 159 |  0  |  5 | 0 | 164 | 100% | **97.0%** |
-| PD3-23   | 229 |  0  | 12 | 0 | 241 | 100% | **95.0%** |
-| I4-29    | 281 |  41 | 17 | 0 | 339 | 100% | **82.9%** |
-| ERNAWATI | 109 |  0  |  9 | 0 | 118 | 100% | **92.4%** |
-| **All four** | **778** | **41** | **43** | **0** | **862** | **100%** | **90.3%** |
+| AAL-5    | 159 |  0  | 17 | 0 | 176 | 100% | **90.3%** |
+| PD3-23   | 229 |  0  | 24 | 0 | 253 | 100% | **90.5%** |
+| I4-29    | 281 |  41 | 41 | 0 | 363 | 100% | **77.4%** |
+| ERNAWATI | 109 |  0  | 18 | 0 | 127 | 100% | **85.8%** |
+| **All four** | **778** | **41** | **100** | **0** | **919** | **100%** | **84.7%** |
 
 - **Rp coverage** = `(itemized + rolled + direct-ref) / total` — share of
   project Rp value whose total reconciles to source within ±1 Rp. This is
   the truth-correctness floor; with the direct-reference tier added (fix
-  plan §2.2), it is now 100% across all three reference workbooks.
-- **Material coverage** = `itemized / total` — share of rows with per-material
-  detail (Multipleks, Usuk, kg D8 vs D13, etc.) available to procurement.
-  **This is the original goal in §1.** The rolled and direct-ref tiers emit
-  group lumps that reconcile by total but give limited per-material visibility
-  — the audit screen sees "Bekisting Balok lump Rp 2.5M" instead of
-  "Multipleks 1.32 lbr, Usuk vert 5.95 btg, ..."
+  plan §2.2), it is now 100% across all four reference workbooks.
+- **Material coverage** = `itemized / total` — share of rows in the *itemized*
+  tier. **NOTE (2026-05-27):** this metric now *understates* true per-material
+  visibility. The direct-ref tier was upgraded to expand finishing/masonry
+  rows (Plesteran, Acian, Pasangan bata) into their Analisa block's sub-items
+  — Semen, Pasir, Benangan, Upah — so those rows now carry full per-material
+  detail despite being bucketed as direct-ref. Counting rows that expose
+  per-material lines, visibility is `(itemized + expanded direct-ref) / total`
+  ≈ 95%+. The remaining opaque lumps are the 41 I4-29 rolled rows and any
+  direct-ref row whose referenced block didn't reconcile on expansion (falls
+  back to lump).
+
+The jump in Total/Direct-ref counts (2026-05-27) reflects finishing rows
+(Plesteran, Acian) becoming expansion candidates — `needsExpansion` previously
+excluded them, so they got no Breakdown sheet at all. No existing row changed
+tier (itemized stays 778, rolled stays 41); the added rows all land in
+direct-ref and reconcile within ±1 Rp. See
+`tools/normalizer/cli-deterministic.ts:expandDirectRefBlocks`.
 
 Material coverage is now **90.3%** (was 86.4%) after the besi-only
 tier landed (2026-05-27). ERNAWATI splits each structural element into

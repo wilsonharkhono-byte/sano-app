@@ -304,3 +304,49 @@ The detection contract is narrow enough that no other workbook fires
 the new tier: AAL-5, PD3-23, I4-29 each have **0** rows matching
 `unit === 'kg' && label =~ /Besi D\d+/`. Regression test confirms
 their counts are unchanged (159/0/5, 229/0/12, 281/41/17 respectively).
+
+---
+
+## 2026-05-27 (later) — direct-ref block expansion for plesteran / acian / masonry
+
+User report (PD3-23): "plesteran dinding bata and acian has not shown in the
+AI parsing. this should show upah, and material (pasir, semen)."
+
+Root cause (two parts):
+1. `needsExpansion` excluded finishing rows entirely. Plesteran/Acian rows
+   carry two non-zero recipe lumps (one material, one labor) that BOTH point
+   at the referenced Analisa block's **Jumlah row** — so neither the zero-cost
+   branch nor the structural-title branch fired. They got no Breakdown sheet.
+2. Even as candidates, the direct-ref tier emitted one opaque lump per recipe
+   component (e.g. "MATERIAL lump 24,635" / "UPAH lump 84,000") instead of the
+   block's sub-items.
+
+Fix:
+- `needsExpansion.ts` adds `FINISHING_PATTERNS = [/Plesteran/i, /Acian/i]`
+  (matched against `referencedBlockTitle`).
+- `cli-deterministic.ts:expandDirectRefBlocks` — for each recipe component
+  pointing at an Analisa block's Jumlah row, expands that block's componentRows
+  into itemized lines (F→material, G→labor, H→equipment), scaled by the
+  component's `quantityPerUnit`, each block expanded once, composite rows
+  (both F and G > 0, e.g. Benangan) split into separate material + labor lines.
+  `buildDirectReferenceBreakdown` adopts the expanded list only when it
+  reconciles within ±1 Rp, else falls back to the proven lump list.
+
+Verified — PD3 IX.A.2 Plesteran reconciles at 0.0000 Rp:
+Semen PC 0.215 sak × 65,000 = 13,975 · Pasir Lumajang 0.026 m³ × 350,000 =
+9,100 · Benangan 1,560 (mat) + 24,000 (upah) · Upah plesteran 60,000.
+IX.A.4 Acian: Semen PC 12,350 · Air Kerja 4,000 · Upah acian 30,000.
+
+Counts (no existing row changed tier — itemized stays 778, rolled stays 41;
+finishing rows were previously uncounted, now land in direct-ref):
+
+| Workbook | Direct-ref before | after | Total before | after |
+|---|---|---|---|---|
+| AAL-5    |  5 | 17 | 164 | 176 |
+| PD3-23   | 12 | 24 | 241 | 253 |
+| I4-29    | 17 | 41 | 339 | 363 |
+| ERNAWATI |  9 | 18 | 118 | 127 |
+| **Total**| 43 | **100** | 862 | **919** |
+
+All rows reconcile within ±1 Rp (maxAbsVariance ~3.7e-9). Agentic review
+confirmed no truth-correctness violation, no double-count, safe fallback.

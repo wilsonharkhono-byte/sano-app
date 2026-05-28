@@ -467,13 +467,106 @@ function buildRolledBreakdown(args: {
  * how the recipe was built from I/J/K/L/M formulas), so reconciliation
  * to `sourceUnitCost` is automatic when the recipe is non-empty.
  */
+/**
+ * For a direct-reference row whose recipe components point at an Analisa
+ * block's Jumlah row (column F/G/H of that row), expand each referenced
+ * block's sub-items into itemized BreakdownRows. Returns null when no recipe
+ * component references an expandable block (the lump path then owns the row).
+ *
+ * Each referenced block is expanded ONCE even if multiple components point at
+ * it (e.g. an F-Jumlah material lump + a G-Jumlah labor lump both reference
+ * the same block). The scaling factor is the component's `quantityPerUnit`
+ * (1 for plesteran/acian, which reference `=Analisa!$F$485` directly), kept
+ * general by multiplying every sub-item cost by it.
+ */
+function expandDirectRefBlocks(
+  row: BoqRowV2,
+  _cols: RowCols,
+  ahsBlocks: AhsBlock[],
+  lookup: Map<string, HarvestedCell>,
+): BreakdownRow[] | null {
+  if (!row.recipe) return null;
+  const v = row.planned;
+
+  // Map jumlahRow → { block, factor }. First component referencing a block
+  // wins the factor (they share quantityPerUnit when several point at it).
+  const blocksToExpand = new Map<number, { block: AhsBlock; factor: number }>();
+  for (const c of row.recipe.components) {
+    if (c.referencedCell.sheet !== 'Analisa') continue;
+    const m = c.referencedCell.address.match(/^[A-Z]+(\d+)$/i);
+    if (!m) continue;
+    const refRow = Number(m[1]);
+    const block = ahsBlocks.find((b) => b.jumlahRow === refRow);
+    if (!block) continue;
+    if (!blocksToExpand.has(refRow)) {
+      blocksToExpand.set(refRow, { block, factor: c.quantityPerUnit });
+    }
+  }
+  if (blocksToExpand.size === 0) return null;
+
+  const components: BreakdownRow[] = [];
+  for (const { block, factor } of blocksToExpand.values()) {
+    for (const r of block.componentRows) {
+      const coeff = getCellNum(lookup, 'Analisa', `B${r}`);
+      const unit = getCellStr(lookup, 'Analisa', `C${r}`);
+      const name = getCellStr(lookup, 'Analisa', `D${r}`).trim();
+      const price = getCellNum(lookup, 'Analisa', `E${r}`);
+      const fTotal = getCellNum(lookup, 'Analisa', `F${r}`);
+      const gTotal = getCellNum(lookup, 'Analisa', `G${r}`);
+      const hTotal = getCellNum(lookup, 'Analisa', `H${r}`);
+      const composite = (fTotal > 0 ? 1 : 0) + (gTotal > 0 ? 1 : 0) + (hTotal > 0 ? 1 : 0) > 1;
+
+      const pushLine = (
+        group: BreakdownRow['group'],
+        groupLabel: string,
+        columnValue: number,
+        materialName: string,
+      ) => {
+        if (columnValue <= 0) return;
+        const costPerBoqUnit = columnValue * factor;
+        // Clean coefficient line: B × E ≈ column total (material with no labor
+        // mixed in). Otherwise fall back to factor-as-qty with the column
+        // value as the unit price.
+        const cleanCoeff = Math.abs(coeff * price - columnValue) <= TOLERANCE_RP;
+        const qtyPerNativeUnit = cleanCoeff ? coeff * factor : factor;
+        const nativeUnit = cleanCoeff ? unit : row.unit;
+        const unitPrice = cleanCoeff ? price : columnValue;
+        components.push({
+          group,
+          componentGroup: `${groupLabel} — ${block.title}`,
+          materialName,
+          specNote: `expanded from Analisa block jumlah row ${block.jumlahRow}`,
+          qtyPerNativeUnit,
+          nativeUnit,
+          nativeBasis: `per ${row.unit}`,
+          unitPrice,
+          qtyPerBoqUnit: qtyPerNativeUnit,
+          costPerBoqUnit,
+          totalQty: qtyPerNativeUnit * v,
+          totalCost: costPerBoqUnit * v,
+        });
+      };
+
+      // For a composite row (both material + labor, e.g. Benangan) suffix the
+      // labor line so the two lines are distinguishable.
+      pushLine('material', 'MATERIAL (Material)', fTotal, name);
+      pushLine('labor', 'UPAH (Labor)', gTotal, composite ? `${name} (upah)` : name);
+      pushLine('equipment', 'PERALATAN (Equipment)', hTotal, composite ? `${name} (alat)` : name);
+    }
+  }
+
+  return components.length > 0 ? components : null;
+}
+
 function buildDirectReferenceBreakdown(args: {
   row: BoqRowV2;
   cols: RowCols;
+  ahsBlocks: AhsBlock[];
+  lookup: Map<string, HarvestedCell>;
   sourceUnitCost: number;
   sourceLineTotal: number;
 }): BuildResult {
-  const { row, cols, sourceUnitCost, sourceLineTotal } = args;
+  const { row, cols, ahsBlocks, lookup, sourceUnitCost, sourceLineTotal } = args;
 
   // Guard: only fire when every structural column the rolled tier can read
   // is zero. Otherwise the rolled tier owns the row.
@@ -494,8 +587,11 @@ function buildDirectReferenceBreakdown(args: {
   }
 
   const v = row.planned;
-  const components: BreakdownRow[] = [];
 
+  // Build the original opaque-lump component list (one BreakdownRow per recipe
+  // component). This is the proven fallback if block expansion doesn't
+  // reconcile.
+  const lumpComponents: BreakdownRow[] = [];
   for (const c of row.recipe.components) {
     const cost = c.quantityPerUnit * c.unitPrice;
     if (cost <= 0) continue;
@@ -533,7 +629,7 @@ function buildDirectReferenceBreakdown(args: {
       `direct-reference lump from ${c.referencedCell.sheet}!${c.referencedCell.address}` +
       (c.referencedBlockTitle ? ` (block: ${c.referencedBlockTitle})` : '');
 
-    components.push({
+    lumpComponents.push({
       group,
       componentGroup,
       materialName: matName,
@@ -549,8 +645,24 @@ function buildDirectReferenceBreakdown(args: {
     });
   }
 
-  if (components.length === 0) {
+  if (lumpComponents.length === 0) {
     return { reason: 'Direct-ref tier: recipe has no non-zero components.' };
+  }
+
+  // Expansion: when a recipe component points at an Analisa block's Jumlah
+  // row (col F/G/H of that row), expand the block's sub-items into itemized
+  // breakdown lines so the row shows the real materials (e.g. Semen / Pasir /
+  // Upah plesteran) instead of opaque "MATERIAL lump" / "UPAH lump".
+  const expandedComponents = expandDirectRefBlocks(row, cols, ahsBlocks, lookup);
+
+  // Prefer expanded lines when they exist AND reconcile within ±1 Rp;
+  // otherwise fall back to the proven lump list.
+  let components = lumpComponents;
+  if (expandedComponents && expandedComponents.length > 0) {
+    const expandedUnitCost = expandedComponents.reduce((s, c) => s + c.costPerBoqUnit, 0);
+    if (Math.abs(expandedUnitCost - sourceUnitCost) <= TOLERANCE_RP) {
+      components = expandedComponents;
+    }
   }
 
   const computedUnitCost = components.reduce((s, c) => s + c.costPerBoqUnit, 0);
@@ -1061,7 +1173,9 @@ export async function runDeterministic(opts: RunDeterministicOptions): Promise<R
     // structural columns are all zero but whose recipe still points at
     // specific Analisa blocks.
     if (!res.breakdown) {
-      const direct = buildDirectReferenceBreakdown({ row, cols, sourceUnitCost, sourceLineTotal });
+      const direct = buildDirectReferenceBreakdown({
+        row, cols, ahsBlocks: result.ahsBlocks, lookup, sourceUnitCost, sourceLineTotal,
+      });
       if (direct.breakdown) res = direct;
     }
 
