@@ -385,6 +385,62 @@ export interface BoqBreakdown {
   grandTotal: number;
 }
 
+/**
+ * Synthesize per-BoQ-row breakdown lines from the row's own `recipe.components`.
+ *
+ * v2 attaches per-material `ahs` staging rows to the AHS *block*, and a block
+ * back-references only ONE BoQ code (`linked_boq_code`). So when many BoQ rows
+ * share a block (every Poer row → "Pengecoran Beton KHUSUS POER"), only the
+ * single linked row gets MATERIAL/UPAH/PERALATAN lines; all others render
+ * empty. But every BoQ row already carries its own per-material breakdown in
+ * `recipe.components` (the same data "Lihat Resep Komponen" shows). This turns
+ * each component into a display line owned by the row.
+ *
+ * `costContribution` is authoritative (= quantityPerUnit × unitPrice, already
+ * waste-inclusive), so perUnitCost is taken directly rather than recomputed via
+ * `coefficient × price × (1 + waste)`.
+ */
+function synthesizeRecipeLines(boq: AuditBoqRow): BoqLineView[] {
+  const components = boq.recipe?.components ?? [];
+  return components
+    .filter(c => (c.costContribution ?? 0) !== 0)
+    .map((c, idx): BoqLineView => {
+      const sourceRowMatch = /(\d+)$/.exec(c.referencedCell?.address ?? '');
+      const ahs: AuditAhsRow = {
+        stagingId: `recipe:${boq.stagingId}:${idx}`,
+        rowNumber: boq.rowNumber,
+        boqCode: boq.code,
+        blockTitle: c.referencedBlockTitle ?? null,
+        titleRow: null,
+        jumlahRow: null,
+        lineType: c.lineType,
+        materialCode: null,
+        materialName: c.materialName ?? c.referencedBlockTitle ?? '(tanpa nama)',
+        materialSpec: c.disaggregatedFrom ? `disagregasi dari ${c.disaggregatedFrom}` : null,
+        tier: 2,
+        coefficient: c.quantityPerUnit,
+        unit: boq.unit,
+        unitPrice: c.unitPrice,
+        wasteFactor: 0,
+        sourceRow: sourceRowMatch ? Number(sourceRowMatch[1]) : null,
+        linkMethod: 'recipe',
+        reviewStatus: boq.reviewStatus,
+        needsReview: false,
+        confidence: c.confidence ?? 1,
+        costBasis: null,
+        parentAhsStagingId: null,
+        refCells: null,
+        costSplit: null,
+        parserVersion: 'v2',
+      };
+      return {
+        ahs,
+        perUnitCost: c.costContribution,
+        totalCost: c.costContribution * boq.planned,
+      };
+    });
+}
+
 export function pivotByBoq(
   boqRows: AuditBoqRow[],
   ahsRows: AuditAhsRow[],
@@ -398,7 +454,7 @@ export function pivotByBoq(
   }
 
   return boqRows.map(boq => {
-    const lines = (ahsByCode.get(normalize(boq.code)) ?? []).map(ahs => {
+    let lines = (ahsByCode.get(normalize(boq.code)) ?? []).map(ahs => {
       const pUnit = perUnitCost(ahs);
       return {
         ahs,
@@ -406,6 +462,17 @@ export function pivotByBoq(
         totalCost: pUnit * boq.planned,
       };
     });
+
+    // Prefer the row's own recipe breakdown when present (v2). It splits
+    // material/labor/equipment correctly and carries per-row quantities,
+    // whereas the block-linked path attaches lines to only ONE row per shared
+    // block and mis-labels every line as 'material' (the staging `ahs` rows
+    // carry no lineType). Block-linked lines remain the source for v1 rows,
+    // which have no recipe.
+    const recipeLines = synthesizeRecipeLines(boq);
+    if (recipeLines.length > 0) {
+      lines = recipeLines;
+    }
 
     const totals = {
       material: { perUnit: 0, total: 0 },

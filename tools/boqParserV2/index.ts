@@ -109,14 +109,22 @@ export async function parseBoqV2(
   // ones. We still run disaggregateRebar across all rows (cheap, idempotent)
   // and then apply breakdown overrides in-place so original document order
   // is preserved for downstream staging-row numbering and audit UI display.
-  const flagEnabled = process.env.SANO_BOQ_RECIPE_DETAIL === 'on';
+  // Auto-enable breakdown consumption whenever the workbook actually ships
+  // "Breakdown {code}" sheets — a normalized upload exists precisely so SANO
+  // reads the AI's reconciled per-material work at the back of the file rather
+  // than re-deriving rolled-up recipes from the front RAB/Analisa sheets.
+  // SANO_BOQ_RECIPE_DETAIL='off' is an explicit force-off escape hatch;
+  // ='on' forces it even if the sheet-name scan somehow misses.
+  const hasBreakdownSheets = workbook.SheetNames.some((n) => /^Breakdown\s+/.test(n));
+  const flagSetting = process.env.SANO_BOQ_RECIPE_DETAIL;
+  const flagEnabled =
+    flagSetting === 'off' ? false : flagSetting === 'on' ? true : hasBreakdownSheets;
   const breakdownsResult = flagEnabled
     ? readBreakdownSheets(workbook)
     : { breakdowns: new Map<string, RowBreakdown>(), warnings: [] };
 
   // Count "Breakdown {code}" sheets regardless of flag so the validator can
-  // warn operators who have authored Breakdown sheets but forgot the flag.
-  // Cheap sheet-name scan — no parsing.
+  // warn operators who explicitly disabled reading. Cheap sheet-name scan.
   const breakdownSheetCount = flagEnabled
     ? breakdownsResult.breakdowns.size
     : workbook.SheetNames.filter((n) => /^Breakdown\s+/.test(n)).length;
@@ -125,9 +133,31 @@ export async function parseBoqV2(
   boqRows.length = 0;
   boqRows.push(...disaggregateResult.boqRows);
 
+  // Breakdown sheet codes carry the multi-sheet namespace prefix the normalizer
+  // applied (e.g. "(A) III.B.1.14") because the normalizer parses with
+  // boqSheet:'auto'. SANO re-parses single-sheet ('RAB (A)'), so its
+  // boqRow.code has no prefix. Match prefix-robustly: index each breakdown by
+  // its exact code, plus its sheet-tag-stripped code when that stripped form is
+  // unambiguous (avoids cross-sheet collisions in multi-building workbooks).
+  const stripSheetTag = (code: string) => code.replace(/^\([A-Z]\)\s*/i, '');
+  const strippedCounts = new Map<string, number>();
+  for (const code of breakdownsResult.breakdowns.keys()) {
+    const s = stripSheetTag(code);
+    strippedCounts.set(s, (strippedCounts.get(s) ?? 0) + 1);
+  }
+  const breakdownByCode = new Map<string, RowBreakdown>();
+  for (const [code, bd] of breakdownsResult.breakdowns) {
+    breakdownByCode.set(code, bd);
+    const stripped = stripSheetTag(code);
+    if (stripped !== code && strippedCounts.get(stripped) === 1 && !breakdownByCode.has(stripped)) {
+      breakdownByCode.set(stripped, bd);
+    }
+  }
+
   // Apply breakdown overrides in-place, preserving order.
   for (let i = 0; i < boqRows.length; i++) {
-    const bd = breakdownsResult.breakdowns.get(boqRows[i].code);
+    const code = boqRows[i].code;
+    const bd = breakdownByCode.get(code) ?? breakdownByCode.get(stripSheetTag(code));
     if (!bd) continue;
     boqRows[i] = { ...boqRows[i], recipe: buildRecipeFromBreakdown(boqRows[i], bd) };
   }
