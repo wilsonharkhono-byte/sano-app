@@ -357,6 +357,8 @@ import {
   type CatalogEntry,
 } from './excelParser';
 import { applyAIBoqGrouping } from './ai-assist';
+import { parseBoqV2 } from './boqParserV2';
+import { publishBaselineV2 } from './publishBaselineV2';
 import type { ImportAnomaly } from './types';
 
 /**
@@ -398,7 +400,6 @@ export async function parseAndStageWorkbook(
       .eq('id', sessionId)
       .single();
     if (sessionRow?.parser_version === 'v2') {
-      const { parseBoqV2 } = await import('./boqParserV2');
       // Task 22 bug fix: previously a string fileInput was coerced to an
       // empty ArrayBuffer, which made v2 silently parse nothing. Resolve
       // the path the same way v1 would (read local file into memory).
@@ -646,7 +647,6 @@ export async function publishBaseline(
       .eq('id', sessionId)
       .single();
     if (session?.parser_version === 'v2') {
-      const { publishBaselineV2 } = await import('./publishBaselineV2');
       return publishBaselineV2(sessionId, projectId);
     }
 

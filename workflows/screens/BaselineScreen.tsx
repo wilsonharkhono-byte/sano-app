@@ -25,6 +25,7 @@ import {
   deleteImportSession,
 } from '../../tools/baseline';
 import { parseBoqWorkbook, applyBoqGrouping, type ParsedWorkbook } from '../../tools/excelParser';
+import { parseBoqV2 } from '../../tools/boqParserV2';
 import { applyAIBoqGrouping } from '../../tools/ai-assist';
 import { supabase } from '../../tools/supabase';
 import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools/types';
@@ -232,7 +233,6 @@ export default function BaselineScreen({
       });
       if (picked.canceled || !picked.assets?.[0]) return;
       const { arrayBuffer } = await readPickedWorkbook(picked.assets[0]);
-      const { parseBoqV2 } = await import('../../tools/boqParserV2');
       const result = await parseBoqV2(arrayBuffer);
       console.log('[parseBoqV2 dry-run]', {
         materials: result.materialRows.length,
