@@ -81,6 +81,10 @@ export interface RecipeComponent {
   costContribution: number;
   lineType: 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
   confidence: number;
+  // Optional: native unit of the component (e.g. "kg", "lbr", "m3"). Populated
+  // from breakdown sheets; the audit material view needs it to show "Total
+  // Kebutuhan X kg" rather than falling back to the BoQ row's unit.
+  unit?: string;
   // Optional: populated by rebar disaggregator post-pass for components
   // produced from REKAP Balok / REKAP-PC / REKAP Plat / Hasil-Kolom.
   materialName?: string;          // e.g. "Besi D8"

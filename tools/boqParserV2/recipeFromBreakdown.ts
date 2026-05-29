@@ -24,6 +24,7 @@ export function buildRecipeFromBreakdown(row: BoqRowV2, breakdown: RowBreakdown)
       costContribution: c.costPerBoqUnit,
       lineType: lineTypeFromGroup(c.group),
       confidence: 1,
+      unit: c.nativeUnit || undefined,
       materialName: c.materialName,
       disaggregatedFrom: c.componentGroup || undefined,
     };

@@ -313,11 +313,10 @@ export function pivotByMaterial(
 
   const buckets = new Map<string, MaterialUsage>();
 
-  // Only 'material' line types feed the material pivot; labor/equipment/subkon
-  // are shown under their own lens inside the BoQ and AHS tabs.
-  for (const ahs of ahsRows) {
-    if (ahs.lineType !== 'material') continue;
-
+  // Add one AHS-derived line to its material bucket. `perUnitCostOverride` lets
+  // recipe-derived lines pass the breakdown's authoritative per-unit cost
+  // (= quantityPerUnit × unitPrice, waste-inclusive) instead of recomputing it.
+  const addLine = (ahs: AuditAhsRow, boq: AuditBoqRow | null, perUnitCostOverride?: number) => {
     const resolved =
       (ahs.materialCode ? materialByCode.get(normalize(ahs.materialCode)) : null)
       ?? materialByName.get(normalize(ahs.materialName))
@@ -327,10 +326,9 @@ export function pivotByMaterial(
       ? `mat:${resolved.stagingId}`
       : `name:${normalize(ahs.materialName)}`;
 
-    const boq = ahs.boqCode ? boqByCode.get(normalize(ahs.boqCode)) ?? null : null;
     const planned = boq?.planned ?? 0;
     const pUnitQty = perUnitQuantity(ahs);
-    const pUnitCost = perUnitCost(ahs);
+    const pUnitCost = perUnitCostOverride ?? perUnitCost(ahs);
 
     const line: MaterialUsageLine = {
       ahs,
@@ -360,6 +358,33 @@ export function pivotByMaterial(
     bucket.grandQty += line.totalQty;
     bucket.grandCost += line.totalCost;
     if (!boq) bucket.hasOrphan = true;
+  };
+
+  // Pass 1 — each BoQ row's own recipe. v2 attaches per-material `ahs` rows to
+  // the AHS *block*, and a block back-references only ONE BoQ code, so the
+  // block-linked path below surfaces just one row per shared block (every Poer
+  // row → "Pengecoran Beton KHUSUS POER"). Each BoQ row already carries its
+  // full per-material breakdown in `recipe.components` (same source the BoQ tab
+  // uses), so synthesize from there to fan out across every consuming row.
+  const recipeCoveredCodes = new Set<string>();
+  for (const boq of boqRows) {
+    const recipeLines = synthesizeRecipeLines(boq);
+    if (recipeLines.length === 0) continue;
+    recipeCoveredCodes.add(normalize(boq.code));
+    for (const line of recipeLines) {
+      if (line.ahs.lineType !== 'material') continue;
+      addLine(line.ahs, boq, line.perUnitCost);
+    }
+  }
+
+  // Pass 2 — block-linked AHS rows for BoQ rows WITHOUT a recipe (v1, or v2
+  // rows the parser couldn't split) plus orphan rows (no matching BoQ). Rows
+  // already covered by a recipe are skipped to avoid double counting.
+  for (const ahs of ahsRows) {
+    if (ahs.lineType !== 'material') continue;
+    const boq = ahs.boqCode ? boqByCode.get(normalize(ahs.boqCode)) ?? null : null;
+    if (boq && recipeCoveredCodes.has(normalize(boq.code))) continue;
+    addLine(ahs, boq);
   }
 
   return Array.from(buckets.values()).sort((a, b) => b.grandCost - a.grandCost);
@@ -419,7 +444,7 @@ function synthesizeRecipeLines(boq: AuditBoqRow): BoqLineView[] {
         materialSpec: c.disaggregatedFrom ? `disagregasi dari ${c.disaggregatedFrom}` : null,
         tier: 2,
         coefficient: c.quantityPerUnit,
-        unit: boq.unit,
+        unit: c.unit ?? boq.unit,
         unitPrice: c.unitPrice,
         wasteFactor: 0,
         sourceRow: sourceRowMatch ? Number(sourceRowMatch[1]) : null,
