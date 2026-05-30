@@ -60,7 +60,7 @@ export function ProjectProvider({ userId, children }: { userId: string; children
 
   const project = projects.find(p => p.id === activeProjectId) ?? null;
 
-  // Load profile and all assigned projects
+  // Load profile and every project the user is allowed to see.
   const loadProjects = useCallback(async () => {
     try {
       const { data: prof, error: profErr } = await supabase
@@ -71,23 +71,14 @@ export function ProjectProvider({ userId, children }: { userId: string; children
       if (profErr) console.warn('Profile fetch error:', profErr.message);
       setProfile(prof);
 
-      // Load all assigned project IDs
-      const { data: assignments, error: assignErr } = await supabase
-        .from('project_assignments')
-        .select('project_id')
-        .eq('user_id', userId);
-
-      if (assignErr || !assignments || assignments.length === 0) {
-        setLoading(false);
-        return;
-      }
-
-      const projectIds = assignments.map(a => a.project_id);
-
+      // Fetch projects directly and let RLS decide visibility:
+      //   • office roles (admin/principal/estimator) see every project
+      //   • site supervisors see only the projects they are assigned to
+      // (see 036_office_global_project_access.sql). No client-side assignment
+      // pre-filter — that was what siloed estimators from each other's work.
       const { data: projectList, error: projErr } = await supabase
         .from('projects')
         .select('*')
-        .in('id', projectIds)
         .order('code', { ascending: true });
 
       if (projErr) console.warn('Projects fetch error:', projErr.message);
@@ -98,9 +89,14 @@ export function ProjectProvider({ userId, children }: { userId: string; children
       // Auto-select first project if none active without retriggering loadProjects.
       if (loadedProjects.length > 0) {
         setActiveProjectId(current => current ?? loadedProjects[0].id);
+      } else {
+        // No visible projects → loadProjectData never runs, so clear the
+        // loading flag here (otherwise the screen hangs on the spinner).
+        setLoading(false);
       }
     } catch (err) {
       console.warn('Project load failed:', err);
+      setLoading(false);
     }
   }, [userId]);
 
@@ -164,7 +160,7 @@ export function ProjectProvider({ userId, children }: { userId: string; children
   }, [loadProjects, loadProjectData, activeProjectId]);
 
   const setActiveProject = useCallback((projectId: string) => {
-    // Only allow switching to assigned projects
+    // Only allow switching to a project that is visible to this user
     if (projects.some(p => p.id === projectId) || projects.length === 0) {
       setActiveProjectId(projectId);
     }
