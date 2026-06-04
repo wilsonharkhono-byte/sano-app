@@ -313,11 +313,10 @@ export function pivotByMaterial(
 
   const buckets = new Map<string, MaterialUsage>();
 
-  // Only 'material' line types feed the material pivot; labor/equipment/subkon
-  // are shown under their own lens inside the BoQ and AHS tabs.
-  for (const ahs of ahsRows) {
-    if (ahs.lineType !== 'material') continue;
-
+  // Add one AHS-derived line to its material bucket. `perUnitCostOverride` lets
+  // recipe-derived lines pass the breakdown's authoritative per-unit cost
+  // (= quantityPerUnit × unitPrice, waste-inclusive) instead of recomputing it.
+  const addLine = (ahs: AuditAhsRow, boq: AuditBoqRow | null, perUnitCostOverride?: number) => {
     const resolved =
       (ahs.materialCode ? materialByCode.get(normalize(ahs.materialCode)) : null)
       ?? materialByName.get(normalize(ahs.materialName))
@@ -327,10 +326,9 @@ export function pivotByMaterial(
       ? `mat:${resolved.stagingId}`
       : `name:${normalize(ahs.materialName)}`;
 
-    const boq = ahs.boqCode ? boqByCode.get(normalize(ahs.boqCode)) ?? null : null;
     const planned = boq?.planned ?? 0;
     const pUnitQty = perUnitQuantity(ahs);
-    const pUnitCost = perUnitCost(ahs);
+    const pUnitCost = perUnitCostOverride ?? perUnitCost(ahs);
 
     const line: MaterialUsageLine = {
       ahs,
@@ -360,6 +358,33 @@ export function pivotByMaterial(
     bucket.grandQty += line.totalQty;
     bucket.grandCost += line.totalCost;
     if (!boq) bucket.hasOrphan = true;
+  };
+
+  // Pass 1 — each BoQ row's own recipe. v2 attaches per-material `ahs` rows to
+  // the AHS *block*, and a block back-references only ONE BoQ code, so the
+  // block-linked path below surfaces just one row per shared block (every Poer
+  // row → "Pengecoran Beton KHUSUS POER"). Each BoQ row already carries its
+  // full per-material breakdown in `recipe.components` (same source the BoQ tab
+  // uses), so synthesize from there to fan out across every consuming row.
+  const recipeCoveredCodes = new Set<string>();
+  for (const boq of boqRows) {
+    const recipeLines = synthesizeRecipeLines(boq);
+    if (recipeLines.length === 0) continue;
+    recipeCoveredCodes.add(normalize(boq.code));
+    for (const line of recipeLines) {
+      if (line.ahs.lineType !== 'material') continue;
+      addLine(line.ahs, boq, line.perUnitCost);
+    }
+  }
+
+  // Pass 2 — block-linked AHS rows for BoQ rows WITHOUT a recipe (v1, or v2
+  // rows the parser couldn't split) plus orphan rows (no matching BoQ). Rows
+  // already covered by a recipe are skipped to avoid double counting.
+  for (const ahs of ahsRows) {
+    if (ahs.lineType !== 'material') continue;
+    const boq = ahs.boqCode ? boqByCode.get(normalize(ahs.boqCode)) ?? null : null;
+    if (boq && recipeCoveredCodes.has(normalize(boq.code))) continue;
+    addLine(ahs, boq);
   }
 
   return Array.from(buckets.values()).sort((a, b) => b.grandCost - a.grandCost);
@@ -385,6 +410,62 @@ export interface BoqBreakdown {
   grandTotal: number;
 }
 
+/**
+ * Synthesize per-BoQ-row breakdown lines from the row's own `recipe.components`.
+ *
+ * v2 attaches per-material `ahs` staging rows to the AHS *block*, and a block
+ * back-references only ONE BoQ code (`linked_boq_code`). So when many BoQ rows
+ * share a block (every Poer row → "Pengecoran Beton KHUSUS POER"), only the
+ * single linked row gets MATERIAL/UPAH/PERALATAN lines; all others render
+ * empty. But every BoQ row already carries its own per-material breakdown in
+ * `recipe.components` (the same data "Lihat Resep Komponen" shows). This turns
+ * each component into a display line owned by the row.
+ *
+ * `costContribution` is authoritative (= quantityPerUnit × unitPrice, already
+ * waste-inclusive), so perUnitCost is taken directly rather than recomputed via
+ * `coefficient × price × (1 + waste)`.
+ */
+function synthesizeRecipeLines(boq: AuditBoqRow): BoqLineView[] {
+  const components = boq.recipe?.components ?? [];
+  return components
+    .filter(c => (c.costContribution ?? 0) !== 0)
+    .map((c, idx): BoqLineView => {
+      const sourceRowMatch = /(\d+)$/.exec(c.referencedCell?.address ?? '');
+      const ahs: AuditAhsRow = {
+        stagingId: `recipe:${boq.stagingId}:${idx}`,
+        rowNumber: boq.rowNumber,
+        boqCode: boq.code,
+        blockTitle: c.referencedBlockTitle ?? null,
+        titleRow: null,
+        jumlahRow: null,
+        lineType: c.lineType,
+        materialCode: null,
+        materialName: c.materialName ?? c.referencedBlockTitle ?? '(tanpa nama)',
+        materialSpec: c.disaggregatedFrom ? `disagregasi dari ${c.disaggregatedFrom}` : null,
+        tier: 2,
+        coefficient: c.quantityPerUnit,
+        unit: c.unit ?? boq.unit,
+        unitPrice: c.unitPrice,
+        wasteFactor: 0,
+        sourceRow: sourceRowMatch ? Number(sourceRowMatch[1]) : null,
+        linkMethod: 'recipe',
+        reviewStatus: boq.reviewStatus,
+        needsReview: false,
+        confidence: c.confidence ?? 1,
+        costBasis: null,
+        parentAhsStagingId: null,
+        refCells: null,
+        costSplit: null,
+        parserVersion: 'v2',
+      };
+      return {
+        ahs,
+        perUnitCost: c.costContribution,
+        totalCost: c.costContribution * boq.planned,
+      };
+    });
+}
+
 export function pivotByBoq(
   boqRows: AuditBoqRow[],
   ahsRows: AuditAhsRow[],
@@ -398,7 +479,7 @@ export function pivotByBoq(
   }
 
   return boqRows.map(boq => {
-    const lines = (ahsByCode.get(normalize(boq.code)) ?? []).map(ahs => {
+    let lines = (ahsByCode.get(normalize(boq.code)) ?? []).map(ahs => {
       const pUnit = perUnitCost(ahs);
       return {
         ahs,
@@ -406,6 +487,17 @@ export function pivotByBoq(
         totalCost: pUnit * boq.planned,
       };
     });
+
+    // Prefer the row's own recipe breakdown when present (v2). It splits
+    // material/labor/equipment correctly and carries per-row quantities,
+    // whereas the block-linked path attaches lines to only ONE row per shared
+    // block and mis-labels every line as 'material' (the staging `ahs` rows
+    // carry no lineType). Block-linked lines remain the source for v1 rows,
+    // which have no recipe.
+    const recipeLines = synthesizeRecipeLines(boq);
+    if (recipeLines.length > 0) {
+      lines = recipeLines;
+    }
 
     const totals = {
       material: { perUnit: 0, total: 0 },

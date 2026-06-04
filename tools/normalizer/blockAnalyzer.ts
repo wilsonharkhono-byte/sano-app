@@ -1,9 +1,13 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { HarvestedCell } from '../boqParserV2/types';
+import type { AhsBlock } from '../boqParserV2/detectBlocks';
 import type { BlockSchema } from './types';
 
+// Default window when we can't identify the containing AHS block.
 const ROWS_BEFORE = 3;
 const ROWS_AFTER = 15;
+// Rows after jumlahRow to include — captures "Harga per m²" summary rows.
+const ROWS_AFTER_JUMLAH = 3;
 
 export interface CellContext {
   sheet: string;
@@ -11,7 +15,11 @@ export interface CellContext {
   rows: Array<{ row: number; cells: HarvestedCell[] }>;
 }
 
-export function extractBlockCellContext(blockId: string, cells: HarvestedCell[]): CellContext {
+export function extractBlockCellContext(
+  blockId: string,
+  cells: HarvestedCell[],
+  ahsBlocks?: AhsBlock[],
+): CellContext {
   const bangIdx = blockId.indexOf('!');
   if (bangIdx < 0) throw new Error(`extractBlockCellContext: invalid blockId ${blockId}`);
   const sheet = blockId.slice(0, bangIdx);
@@ -19,8 +27,21 @@ export function extractBlockCellContext(blockId: string, cells: HarvestedCell[])
   const m = /^[A-Z]+(\d+)$/.exec(addr);
   if (!m) throw new Error(`extractBlockCellContext: invalid blockId ${blockId}`);
   const anchorRow = parseInt(m[1], 10);
-  const minRow = anchorRow - ROWS_BEFORE;
-  const maxRow = anchorRow + ROWS_AFTER;
+
+  // Prefer the containing AHS block's actual row range when known. This is
+  // critical for Analisa sheets that pack multiple adjacent blocks together
+  // (e.g. four Pengecoran Beton blocks on rows 98/105/112/119) — a fixed
+  // ±row window would span multiple blocks and let Opus mix sub-items between
+  // them (wrong Upah price, wrong cycleFactor, etc.).
+  let minRow = anchorRow - ROWS_BEFORE;
+  let maxRow = anchorRow + ROWS_AFTER;
+  const containingBlock = ahsBlocks?.find(
+    (b) => b.titleRow <= anchorRow && anchorRow <= b.jumlahRow + ROWS_AFTER_JUMLAH,
+  );
+  if (containingBlock) {
+    minRow = containingBlock.titleRow - 1;
+    maxRow = containingBlock.jumlahRow + ROWS_AFTER_JUMLAH;
+  }
 
   const byRow = new Map<number, HarvestedCell[]>();
   for (const c of cells) {
@@ -54,12 +75,12 @@ Output strict JSON matching this schema (no prose, no markdown):
 }
 
 Rules:
-- subItems include ONLY the AHS line items between the block header and its "Jumlah" line.
+- subItems include ALL AHS line items between the block header and its "Jumlah" line, regardless of which cost column (F/G/H/I) carries their cost.
 - The "Jumlah" and "Harga per m²/kg/m³" rows are NOT subItems; rolledUpTotalPerNativeUnit equals "Harga per ...".
-- Items visually separated or with no F-column value (e.g. Perancah) get includedInRolledUpTotal: false.
+- includedInRolledUpTotal defaults to true. Mark it false ONLY when the item is explicitly excluded from the block's rolled-up total — for bekisting blocks this is typically the "Perancah" / scaffolding row (sewa, kept on a separate BoQ line). For concrete blocks, labor (Upah cor) and equipment (Sewa peralatan, vibrator, concrete pump) rows ARE part of the rolled-up total even though their cost sits in col G/H instead of F — keep them as true.
 - cycleFactor (bekisting only) = Jumlah / "Harga per m²"; round to nearest integer if within ±0.05.
 - pembesian: ratioBasis = "per_kg_finished_rebar"; the "Besi beton" qtyPerNativeUnit IS the waste coefficient (typically 1.05).
-- concrete: the readymix sub-row qtyPerNativeUnit is the waste-inclusive coefficient (typically 1.05).`;
+- concrete: ratioBasis = "per_m3_concrete"; the readymix sub-row qtyPerNativeUnit is the waste-inclusive coefficient (typically 1.05). Concrete blocks ALWAYS include a labor sub-item (Upah cor/borongan) and an equipment sub-item (Sewa peralatan/vibrator/pump) in addition to the readymix — include all of them as subItems.`;
 
 function formatCellsForPrompt(ctx: CellContext): string {
   const lines: string[] = [];
@@ -82,9 +103,11 @@ export async function analyzeBlockWithOpus(
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     const resp = await client.messages.create({
+      // Opus 4.7 no longer accepts `temperature` — the model uses its default
+      // sampling. The strict-JSON prompt + retry-on-parse-failure handles
+      // determinism well enough for structured block extraction.
       model: 'claude-opus-4-7',
       max_tokens: 800,
-      temperature: 0,
       system: SYSTEM_PROMPT,
       messages: [{
         role: 'user',

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Platform, TextInput } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,6 +16,7 @@ import {
   getProjectImportSessions,
   getStagingRows,
   reviewStagingRow,
+  bulkReviewStagingRows,
   publishBaseline,
   generateMaterialMaster,
   createImportSession,
@@ -25,6 +26,7 @@ import {
   deleteImportSession,
 } from '../../tools/baseline';
 import { parseBoqWorkbook, applyBoqGrouping, type ParsedWorkbook } from '../../tools/excelParser';
+import { parseBoqV2 } from '../../tools/boqParserV2';
 import { applyAIBoqGrouping } from '../../tools/ai-assist';
 import { supabase } from '../../tools/supabase';
 import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools/types';
@@ -192,6 +194,11 @@ export default function BaselineScreen({
   const [sessions, setSessions] = useState<ImportSession[]>([]);
   const [activeSession, setActiveSession] = useState<ImportSession | null>(null);
   const [stagingRows, setStagingRows] = useState<ImportStagingRow[]>([]);
+  // Exception-based review: default to showing only rows that need a human
+  // (flagged needs_review or already rejected). Clean rows are hidden until
+  // the user flips to 'all'. Keeps a 300-row import down to a short queue.
+  const [reviewFilter, setReviewFilter] = useState<'exceptions' | 'all'>('exceptions');
+  const [bulkApproving, setBulkApproving] = useState(false);
   const [anomalies, setAnomalies] = useState<ImportAnomaly[]>([]);
   const [loading, setLoading] = useState(false);
   const [publishing, setPublishing] = useState(false);
@@ -205,8 +212,10 @@ export default function BaselineScreen({
   const [lastPreview, setLastPreview] = useState<ParsePreview | null>(null);
   const [lastImportIssue, setLastImportIssue] = useState<string | null>(null);
   const [showAuditModal, setShowAuditModal] = useState(false);
-  const [parserVersion, setParserVersion] = useState<'v1' | 'v2'>('v1');
-  const canSeeParserToggle = profile?.role === 'principal' || profile?.role === 'admin' || profile?.role === 'estimator';
+  // BoQ uploads always use the v2 parser. The v1/v2 toggle was removed once v2
+  // became the default; v1 parser code is retained only for the legacy upload
+  // preview and MandorSetup, not selectable for new uploads.
+  const parserVersion = 'v2' as const;
   const [probe, setProbe] = useState<import('../api/normalize').ProbeResult | null>(null);
   const [normalizing, setNormalizing] = useState(false);
   const [normalized, setNormalized] = useState<import('../api/normalize').NormalizeResult | null>(null);
@@ -232,7 +241,6 @@ export default function BaselineScreen({
       });
       if (picked.canceled || !picked.assets?.[0]) return;
       const { arrayBuffer } = await readPickedWorkbook(picked.assets[0]);
-      const { parseBoqV2 } = await import('../../tools/boqParserV2');
       const result = await parseBoqV2(arrayBuffer);
       console.log('[parseBoqV2 dry-run]', {
         materials: result.materialRows.length,
@@ -510,6 +518,46 @@ export default function BaselineScreen({
     toast(action === 'APPROVED' ? 'Row disetujui' : 'Row ditolak', action === 'APPROVED' ? 'ok' : 'warning');
   };
 
+  // Clean rows = parser-confident, not flagged for review. They never block
+  // publish, but bulk-approving them gives an explicit sign-off and clears the
+  // PENDING badge so the only thing left in view is genuine exceptions.
+  const cleanPendingRows = useMemo(
+    () => stagingRows.filter(r => !r.needs_review && r.review_status === 'PENDING'),
+    [stagingRows],
+  );
+
+  const handleBulkApproveClean = async () => {
+    if (cleanPendingRows.length === 0) {
+      toast('Tidak ada baris bersih yang menunggu.', 'warning');
+      return;
+    }
+    const ids = cleanPendingRows.map(r => r.id);
+    setBulkApproving(true);
+    try {
+      const res = await bulkReviewStagingRows(ids, 'APPROVED');
+      if (!res.success) {
+        toast(`Gagal menyetujui massal: ${res.error}`, 'critical');
+        return;
+      }
+      const idSet = new Set(ids);
+      setStagingRows(prev => prev.map(r =>
+        idSet.has(r.id) ? { ...r, review_status: 'APPROVED' } : r
+      ));
+      toast(`${res.count} baris bersih disetujui`, 'ok');
+    } finally {
+      setBulkApproving(false);
+    }
+  };
+
+  // Rows shown in the review queue. 'exceptions' (default) surfaces only what
+  // needs a human: flagged rows + anything rejected. 'all' shows everything.
+  const visibleReviewRows = useMemo(
+    () => reviewFilter === 'all'
+      ? stagingRows
+      : stagingRows.filter(r => r.needs_review || r.review_status === 'REJECTED'),
+    [stagingRows, reviewFilter],
+  );
+
   const handlePublish = async () => {
     if (!activeSession || !project) return;
 
@@ -638,38 +686,6 @@ export default function BaselineScreen({
                   <Text style={styles.primaryBtnText}>Atur Jadwal →</Text>
                 </TouchableOpacity>
               </Card>
-            )}
-
-            {canSeeParserToggle && (
-              <View style={styles.parserToggleRow}>
-                <Text style={styles.parserToggleLabel}>Parser:</Text>
-                <TouchableOpacity
-                  onPress={() => setParserVersion('v1')}
-                  style={[
-                    styles.parserToggleBtn,
-                    parserVersion === 'v1' && styles.parserToggleBtnActive,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Gunakan parser v1 stable"
-                >
-                  <Text style={parserVersion === 'v1' ? styles.parserToggleTextActive : styles.parserToggleText}>
-                    v1 (stable)
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setParserVersion('v2')}
-                  style={[
-                    styles.parserToggleBtn,
-                    parserVersion === 'v2' && styles.parserToggleBtnActive,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel="Gunakan parser v2 beta"
-                >
-                  <Text style={parserVersion === 'v2' ? styles.parserToggleTextActive : styles.parserToggleText}>
-                    v2 (beta)
-                  </Text>
-                </TouchableOpacity>
-              </View>
             )}
 
             <TouchableOpacity style={[styles.uploadBtn, parsing && { opacity: 0.6 }]} onPress={handleUpload} disabled={parsing}>
@@ -928,7 +944,55 @@ export default function BaselineScreen({
               </>
             )}
 
-            {stagingRows.map(row => (
+            {/* ── Exception-based review controls ── */}
+            <View style={styles.reviewControls}>
+              <View style={styles.reviewFilterRow}>
+                <TouchableOpacity
+                  onPress={() => setReviewFilter('exceptions')}
+                  style={[styles.reviewFilterBtn, reviewFilter === 'exceptions' && styles.reviewFilterBtnActive]}
+                  accessibilityRole="button"
+                >
+                  <Text style={reviewFilter === 'exceptions' ? styles.reviewFilterTextActive : styles.reviewFilterText}>
+                    Perlu review ({stagingRows.filter(r => r.needs_review || r.review_status === 'REJECTED').length})
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setReviewFilter('all')}
+                  style={[styles.reviewFilterBtn, reviewFilter === 'all' && styles.reviewFilterBtnActive]}
+                  accessibilityRole="button"
+                >
+                  <Text style={reviewFilter === 'all' ? styles.reviewFilterTextActive : styles.reviewFilterText}>
+                    Semua ({stagingRows.length})
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              {cleanPendingRows.length > 0 && (
+                <TouchableOpacity
+                  style={[styles.bulkApproveBtn, bulkApproving && { opacity: 0.6 }]}
+                  onPress={handleBulkApproveClean}
+                  disabled={bulkApproving}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Setujui ${cleanPendingRows.length} baris bersih`}
+                >
+                  {bulkApproving
+                    ? <ActivityIndicator size="small" color={COLORS.ok} />
+                    : <Ionicons name="checkmark-done" size={16} color={COLORS.ok} />}
+                  <Text style={styles.bulkApproveText}>Setujui {cleanPendingRows.length} baris bersih</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {visibleReviewRows.length === 0 && (
+              <Card>
+                <Text style={styles.hint}>
+                  {reviewFilter === 'exceptions'
+                    ? 'Tidak ada baris yang perlu review — semua bersih. Pilih “Semua” untuk meninjau seluruh baris.'
+                    : 'Tidak ada baris.'}
+                </Text>
+              </Card>
+            )}
+
+            {visibleReviewRows.map(row => (
               <Card key={row.id} borderColor={row.needs_review ? COLORS.warning : COLORS.border}>
                 <View style={styles.rowHeader}>
                   <View style={{ flex: 1 }}>
@@ -1260,21 +1324,28 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS, padding: 14, marginBottom: SPACE.md,
   },
   auditBtnTitle: { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.primary },
-  parserToggleRow: {
-    flexDirection: 'row', alignItems: 'center', gap: SPACE.sm,
-    marginBottom: SPACE.sm,
+  reviewControls: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    gap: SPACE.sm, marginBottom: SPACE.sm, flexWrap: 'wrap',
   },
-  parserToggleLabel: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textSec },
-  parserToggleBtn: {
+  reviewFilterRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm },
+  reviewFilterBtn: {
     paddingHorizontal: SPACE.md, paddingVertical: 8,
     borderRadius: RADIUS, borderWidth: 1, borderColor: COLORS.border,
     backgroundColor: COLORS.surface,
   },
-  parserToggleBtnActive: {
+  reviewFilterBtnActive: {
     backgroundColor: COLORS.primary, borderColor: COLORS.primary,
   },
-  parserToggleText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.text },
-  parserToggleTextActive: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textInverse },
+  reviewFilterText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.text },
+  reviewFilterTextActive: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textInverse },
+  bulkApproveBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: SPACE.xs,
+    paddingHorizontal: SPACE.md, paddingVertical: 8,
+    borderRadius: RADIUS, borderWidth: 1, borderColor: COLORS.ok,
+    backgroundColor: COLORS.surface,
+  },
+  bulkApproveText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.ok },
   normalizeBanner: { backgroundColor: COLORS.surface, borderRadius: RADIUS, padding: SPACE.base, marginBottom: SPACE.base, borderWidth: 1, borderColor: COLORS.border },
   normalizeBannerText: { fontSize: TYPE.sm, fontFamily: FONTS.regular, color: COLORS.text, marginBottom: SPACE.sm },
   normalizeBannerActions: { flexDirection: 'row', gap: SPACE.sm },

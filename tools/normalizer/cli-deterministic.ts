@@ -1,0 +1,1253 @@
+/**
+ * Deterministic normalizer — no LLM calls.
+ *
+ * Identifies the right Analisa block for each BoQ row by MATCHING the row's
+ * pre-computed cost columns (W = bekisting cost/m², R/S/T = concrete
+ * material/labor/equipment cost/m³) against the per-block "Harga per ..." /
+ * Jumlah totals. This avoids any "which Pengecoran block applies?" guesswork
+ * because the workbook itself already encodes the answer via cell references.
+ *
+ * Truth-correctness gate: rows that don't reconcile within ±1 Rp are listed
+ * in the Unresolved sheet, not written as Breakdown sheets.
+ *
+ * Usage:
+ *   npm run normalize:boq:det -- <input.xlsx> [output.xlsx]
+ *
+ * Cost: zero. Pure local math.
+ */
+
+import * as fs from 'fs';
+import * as path from 'path';
+import * as XLSX from 'xlsx';
+import { parseBoqV2 } from '../boqParserV2';
+import type { BoqRowV2 } from '../boqParserV2/extractTakeoffs';
+import type { HarvestedCell } from '../boqParserV2/types';
+import type { AhsBlock } from '../boqParserV2/detectBlocks';
+import type { RowBreakdown, BreakdownRow } from '../boqParserV2/breakdownSheetReader.types';
+import { needsExpansion } from './needsExpansion';
+import { writeBreakdownSheets } from './writeWorkbook';
+
+const TOLERANCE_RP = 1;
+
+// --- helpers ---
+
+function buildLookup(cells: HarvestedCell[]): Map<string, HarvestedCell> {
+  const m = new Map<string, HarvestedCell>();
+  for (const c of cells) m.set(`${c.sheet}!${c.address}`, c);
+  return m;
+}
+
+function num(v: unknown): number {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  if (typeof v === 'string') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
+function getCellNum(lookup: Map<string, HarvestedCell>, sheet: string, addr: string): number {
+  return num(lookup.get(`${sheet}!${addr}`)?.value);
+}
+
+function getCellStr(lookup: Map<string, HarvestedCell>, sheet: string, addr: string): string {
+  const v = lookup.get(`${sheet}!${addr}`)?.value;
+  return v == null ? '' : String(v).trim();
+}
+
+// --- block model ---
+
+interface BekistingTemplate {
+  blockTitle: string;
+  // F-side (forms) per-m² cost — matches RAB!W{row} for the form materials
+  // (Multipleks, Usuk, Paku, Form oil).
+  hargaPerM2_F: number;
+  // H-side (Perancah / scaffolding embedded inside the block) per-m² cost
+  // — matches RAB!X{row}. Zero when the block has no H-side sub-items
+  // (AAL-5: every Bekisting block; PD3 / I4: Balok and Plat carry Perancah
+  // in col H with its own Jumlah and Harga per m² rows).
+  hargaPerM2_H: number;
+  cycleFactor_F: number;       // jumlahF / hargaF — form reuse cycle
+  cycleFactor_H: number;       // jumlahH / hargaH — Perancah reuse cycle (1 if H-side absent)
+  subItems: Array<{
+    materialName: string;
+    qtyPerNative: number;        // per m² per cycle (of this sub-item's own side)
+    nativeUnit: string;
+    unitPrice: number;
+    side: 'F' | 'H';             // which Jumlah column carries this sub-item's cost
+    includedInTotal: boolean;
+  }>;
+}
+
+interface ConcreteTemplate {
+  blockTitle: string;
+  materialCostPerM3: number;    // matches RAB!R
+  laborCostPerM3: number;        // matches RAB!S
+  equipCostPerM3: number;        // matches RAB!T
+  subItems: Array<{
+    materialName: string;
+    group: 'material' | 'labor' | 'equipment';
+    qtyPerNative: number;
+    nativeUnit: string;
+    unitPrice: number;
+    specNote: string | null;
+  }>;
+}
+
+interface PembesianTemplate {
+  blockTitle: string;
+  pricePerKg: number;           // matches RAB!AA
+  besiCoeff: number;             // typically 1.05
+  besiUnitPrice: number;         // typically 9000
+  deckingCoeff: number;          // typically 1.0
+  deckingUnitPrice: number;
+  bendratCoeff: number;          // typically 0.021
+  bendratUnitPrice: number;
+}
+
+function extractBekistingTemplates(
+  ahsBlocks: AhsBlock[],
+  lookup: Map<string, HarvestedCell>,
+): BekistingTemplate[] {
+  const out: BekistingTemplate[] = [];
+  for (const block of ahsBlocks) {
+    if (!/Bekisting/i.test(block.title)) continue;
+    // Cyclic blocks (Balok/Plat/Kolom/Dinding) put Jumlah in F; Bata/Batako
+    // Poer/Sloof blocks put the grand total in col I (col F is blank).
+    // F-side Jumlah is the forms total; H-side Jumlah is the Perancah
+    // (scaffolding) total when the block embeds it. Bata/Batako blocks
+    // have no H-side.
+    const jumlahF = getCellNum(lookup, 'Analisa', `F${block.jumlahRow}`);
+    const jumlahH = getCellNum(lookup, 'Analisa', `H${block.jumlahRow}`);
+    const jumlahI = getCellNum(lookup, 'Analisa', `I${block.jumlahRow}`);
+    const jumlahF_eff = jumlahF > 0 ? jumlahF : jumlahI;
+    // Harga per m² is the cell one row past Jumlah. F-side is in col F,
+    // H-side in col H. For single-cycle bekisting (Bata/Batako) the row
+    // is absent — treat as cycle=1 and use Jumlah itself as Harga per m².
+    const hargaRow = block.jumlahRow + 1;
+    const hargaF_fromRow = getCellNum(lookup, 'Analisa', `F${hargaRow}`);
+    const hargaH_fromRow = getCellNum(lookup, 'Analisa', `H${hargaRow}`);
+    const hargaPerM2_F = hargaF_fromRow > 0 ? hargaF_fromRow : jumlahF_eff;
+    const hargaPerM2_H = hargaH_fromRow > 0 ? hargaH_fromRow : jumlahH;
+    if (hargaPerM2_F === 0 && hargaPerM2_H === 0) continue;
+    // Use the LITERAL float ratio, not Math.round. AAL-5 Kolom F-side =
+    // 9.1185, AAL-5 Plat F-side = 5.76, PD3 Kolom F-side = 4.56. I4-29
+    // typically has H-side cycle != F-side cycle (e.g., F=4.0, H=2.88).
+    // Rounding to integer breaks the V × W = Σ(subitem_cost_per_m³)
+    // invariant by 1-2% and cascades into wrong per-material qty for
+    // every itemized row.
+    const cycleFactor_F = hargaPerM2_F > 0 ? jumlahF_eff / hargaPerM2_F : 1;
+    const cycleFactor_H = hargaPerM2_H > 0 ? jumlahH / hargaPerM2_H : 1;
+    const subItems: BekistingTemplate['subItems'] = [];
+    for (const r of block.componentRows) {
+      const qty = getCellNum(lookup, 'Analisa', `B${r}`);
+      const unit = getCellStr(lookup, 'Analisa', `C${r}`);
+      const name = getCellStr(lookup, 'Analisa', `D${r}`);
+      const price = getCellNum(lookup, 'Analisa', `E${r}`);
+      const fTotal = getCellNum(lookup, 'Analisa', `F${r}`);
+      const hTotal = getCellNum(lookup, 'Analisa', `H${r}`);
+      // Side classification: whichever column carries this row's per-m²
+      // total. Perancah lives in H (separate cycle); form materials in F.
+      // If both are 0, the sub-item isn't included in either Jumlah —
+      // skip it (legacy excluded items).
+      const side: 'F' | 'H' = fTotal > 0 ? 'F' : hTotal > 0 ? 'H' : 'F';
+      const includedInTotal = fTotal > 0 || hTotal > 0;
+      subItems.push({
+        materialName: name,
+        qtyPerNative: qty,
+        nativeUnit: unit,
+        unitPrice: price,
+        side,
+        includedInTotal,
+      });
+    }
+    out.push({
+      blockTitle: block.title,
+      hargaPerM2_F,
+      hargaPerM2_H,
+      cycleFactor_F,
+      cycleFactor_H,
+      subItems,
+    });
+  }
+  return out;
+}
+
+function extractConcreteTemplates(
+  ahsBlocks: AhsBlock[],
+  lookup: Map<string, HarvestedCell>,
+): ConcreteTemplate[] {
+  const out: ConcreteTemplate[] = [];
+  for (const block of ahsBlocks) {
+    if (!/Pengecoran Beton/i.test(block.title)) continue;
+    // Sum the column F/G/H totals on the Jumlah row to get the per-m³ breakdown.
+    const matCost = getCellNum(lookup, 'Analisa', `F${block.jumlahRow}`);
+    const laborCost = getCellNum(lookup, 'Analisa', `G${block.jumlahRow}`);
+    const equipCost = getCellNum(lookup, 'Analisa', `H${block.jumlahRow}`);
+    if (matCost === 0) continue;
+    const subItems: ConcreteTemplate['subItems'] = [];
+    for (const r of block.componentRows) {
+      const qty = getCellNum(lookup, 'Analisa', `B${r}`);
+      const unit = getCellStr(lookup, 'Analisa', `C${r}`);
+      const name = getCellStr(lookup, 'Analisa', `D${r}`);
+      const price = getCellNum(lookup, 'Analisa', `E${r}`);
+      // Group by which cost column carries the total: F=material, G=labor, H=equipment.
+      const f = getCellNum(lookup, 'Analisa', `F${r}`);
+      const g = getCellNum(lookup, 'Analisa', `G${r}`);
+      const h = getCellNum(lookup, 'Analisa', `H${r}`);
+      const group: 'material' | 'labor' | 'equipment' =
+        g > 0 ? 'labor' : h > 0 ? 'equipment' : f >= 0 && /upah|borongan/i.test(name) ? 'labor' :
+        /peralatan|sewa|vibrator|pump/i.test(name) ? 'equipment' : 'material';
+      subItems.push({
+        materialName: name,
+        group,
+        qtyPerNative: qty,
+        nativeUnit: unit,
+        unitPrice: price,
+        specNote: null,
+      });
+    }
+    out.push({
+      blockTitle: block.title,
+      materialCostPerM3: matCost,
+      laborCostPerM3: laborCost,
+      equipCostPerM3: equipCost,
+      subItems,
+    });
+  }
+  return out;
+}
+
+function extractPembesianTemplate(
+  ahsBlocks: AhsBlock[],
+  lookup: Map<string, HarvestedCell>,
+): PembesianTemplate | null {
+  const block = ahsBlocks.find((b) => /^Pembesian/i.test(b.title));
+  if (!block) return null;
+  // Sub-rows: row[0] = Besi beton, row[1] = decking, row[2] = bendrat.
+  const findSub = (regex: RegExp) =>
+    block.componentRows
+      .map((r) => ({
+        row: r,
+        name: getCellStr(lookup, 'Analisa', `D${r}`),
+        coeff: getCellNum(lookup, 'Analisa', `B${r}`),
+        price: getCellNum(lookup, 'Analisa', `E${r}`),
+      }))
+      .find((x) => regex.test(x.name));
+  const besi = findSub(/^Besi beton/i);
+  const decking = findSub(/decking/i);
+  const bendrat = findSub(/bendrat/i);
+  if (!besi) return null;
+  const pricePerKg = getCellNum(lookup, 'Analisa', `F${block.jumlahRow}`);
+  return {
+    blockTitle: block.title,
+    pricePerKg,
+    besiCoeff: besi.coeff,
+    besiUnitPrice: besi.price,
+    deckingCoeff: decking?.coeff ?? 0,
+    deckingUnitPrice: decking?.price ?? 0,
+    bendratCoeff: bendrat?.coeff ?? 0,
+    bendratUnitPrice: bendrat?.price ?? 0,
+  };
+}
+
+// --- per-row breakdown construction ---
+
+interface RowCols {
+  bekistingRatioM2PerM3: number;       // V column
+  bekistingHargaPerM2: number;          // W column
+  bekistingPeralatanPerM2: number;      // X column — Perancah / Bekisting Peralatan (some workbooks embed scaffolding here instead of as a separate BoQ line)
+  concreteMatCostPerM3: number;         // R
+  concreteLaborCostPerM3: number;       // S
+  concreteEquipCostPerM3: number;       // T
+  pembesianKgPerM3: number;             // Z
+  pembesianBlendedPricePerKg: number;   // AA — blended price/kg used by the workbook
+  wireMeshRatioPerM3: number;           // AC — kg of wire mesh per m³ beton (plat reinforcement, some workbooks)
+  wireMeshPricePerKg: number;           // AD
+  subkonPerM3: number;                  // L — direct subcontractor cost (some workbooks)
+  prelimPerM3: number;                  // M — direct preliminary cost (some workbooks)
+}
+
+function readRowCols(lookup: Map<string, HarvestedCell>, sheet: string, row: number): RowCols {
+  return {
+    bekistingRatioM2PerM3: getCellNum(lookup, sheet, `V${row}`),
+    bekistingHargaPerM2: getCellNum(lookup, sheet, `W${row}`),
+    bekistingPeralatanPerM2: getCellNum(lookup, sheet, `X${row}`),
+    concreteMatCostPerM3: getCellNum(lookup, sheet, `R${row}`),
+    concreteLaborCostPerM3: getCellNum(lookup, sheet, `S${row}`),
+    concreteEquipCostPerM3: getCellNum(lookup, sheet, `T${row}`),
+    pembesianKgPerM3: getCellNum(lookup, sheet, `Z${row}`),
+    pembesianBlendedPricePerKg: getCellNum(lookup, sheet, `AA${row}`),
+    wireMeshRatioPerM3: getCellNum(lookup, sheet, `AC${row}`),
+    wireMeshPricePerKg: getCellNum(lookup, sheet, `AD${row}`),
+    subkonPerM3: getCellNum(lookup, sheet, `L${row}`),
+    prelimPerM3: getCellNum(lookup, sheet, `M${row}`),
+  };
+}
+
+interface DiameterWeight {
+  diameter: string;
+  qtyPerM3: number;
+}
+
+function readDiametersForRow(row: BoqRowV2): DiameterWeight[] {
+  if (!row.recipe) return [];
+  return row.recipe.components
+    .filter((c) => c.materialName && /^Besi /i.test(c.materialName))
+    .map((c) => ({
+      diameter: c.materialName!.replace(/^Besi\s+/i, ''),
+      qtyPerM3: c.quantityPerUnit,
+    }));
+}
+
+interface BuildResult {
+  breakdown?: RowBreakdown;
+  reason?: string;
+  computedUnitCost?: number;
+  variance?: number;
+  /**
+   * 'itemized' = per-material/sub-item;
+   * 'rolled'   = 5 lump components from RAB column totals (R/S/T/V·W/V·X/Z·AA/AC·AD/L/M);
+   * 'rolled-direct' = lumps derived from the row's recipe.components when its
+   * structural columns are all zero (masonry, pile, custom items that point
+   * directly at an Analisa block via I/J/K/L formulas).
+   */
+  level?: 'itemized' | 'rolled' | 'rolled-direct';
+}
+
+/**
+ * Level-1 fallback: when itemized expansion fails to reconcile (or no
+ * bekisting template matches, etc.), produce a 5-line rolled breakdown
+ * directly from the workbook's pre-computed cost columns:
+ *   R = concrete material cost/m³        → readymix lump
+ *   S = concrete labor cost/m³           → upah lump
+ *   T = concrete equipment cost/m³       → peralatan lump
+ *   V*W = bekisting cost/m³              → bekisting lump
+ *   Z*AA = pembesian cost/m³             → pembesian lump
+ * Their sum equals RAB!N{row} by construction — the workbook's own
+ * arithmetic. Reconciles to source within rounding for every structural
+ * row whose RAB(A) columns are populated (159/164 on AAL-5).
+ */
+function buildRolledBreakdown(args: {
+  row: BoqRowV2;
+  cols: RowCols;
+  sourceUnitCost: number;
+  sourceLineTotal: number;
+}): BuildResult {
+  const { row, cols, sourceUnitCost, sourceLineTotal } = args;
+  const v = row.planned;
+  const components: BreakdownRow[] = [];
+
+  const pushLump = (
+    group: BreakdownRow['group'],
+    componentGroup: string,
+    materialName: string,
+    qtyPerBoqUnit: number,
+    nativeUnit: string,
+    unitPrice: number,
+    nativeBasis: string,
+  ) => {
+    if (qtyPerBoqUnit <= 0 || unitPrice <= 0) return;
+    const costPerBoqUnit = qtyPerBoqUnit * unitPrice;
+    components.push({
+      group, componentGroup, materialName, specNote: 'rolled lump — group total only',
+      qtyPerNativeUnit: qtyPerBoqUnit, nativeUnit, nativeBasis,
+      unitPrice, qtyPerBoqUnit, costPerBoqUnit,
+      totalQty: qtyPerBoqUnit * v, totalCost: costPerBoqUnit * v,
+    });
+  };
+
+  // Concrete: material (R), labor (S), equipment (T). These are per-m³ totals,
+  // so qty = 1.0 and unit_price = the column value.
+  pushLump('material', 'BETON READYMIX (Material)', 'Beton readymix K-350 (lump)', 1.0, 'm3', cols.concreteMatCostPerM3, 'per m3 beton');
+  pushLump('labor',    'UPAH (Labor) — borongan',   'Upah cor + besi + bekisting (lump)', 1.0, 'm3', cols.concreteLaborCostPerM3, 'per m3 beton');
+  pushLump('equipment','PERALATAN (Equipment)',     'Sewa peralatan (lump)', 1.0, 'm3', cols.concreteEquipCostPerM3, 'per m3 beton');
+
+  // Bekisting lump: qty = V (m²/m³ ratio), unit_price = W (cost/m²).
+  if (cols.bekistingHargaPerM2 > 0 && cols.bekistingRatioM2PerM3 > 0) {
+    pushLump('material',
+      `BEKISTING (Material) — ratio ${cols.bekistingRatioM2PerM3} m²/m³ (rolled)`,
+      'Bekisting (lump — no per-material detail)',
+      cols.bekistingRatioM2PerM3, 'm2', cols.bekistingHargaPerM2,
+      'per m² of formwork',
+    );
+  }
+
+  // Bekisting peralatan / Perancah lump: qty = V (m²/m³), unit_price = X (cost/m²).
+  // Workbooks that don't separate Perancah onto its own BoQ line (e.g., PD3, I4-29)
+  // carry its cost here. AAL-5 leaves X = 0 because Perancah is on a separate line.
+  if (cols.bekistingPeralatanPerM2 > 0 && cols.bekistingRatioM2PerM3 > 0) {
+    pushLump('material',
+      `BEKISTING PERALATAN (Material) — Perancah / scaffolding (rolled)`,
+      'Bekisting peralatan / Perancah (lump)',
+      cols.bekistingRatioM2PerM3, 'm2', cols.bekistingPeralatanPerM2,
+      'per m² of formwork (scaffolding embedded in bekisting block, col H)',
+    );
+  }
+
+  // Pembesian lump: qty = Z (kg/m³), unit_price = AA (blended).
+  if (cols.pembesianKgPerM3 > 0 && cols.pembesianBlendedPricePerKg > 0) {
+    pushLump('material',
+      `PEMBESIAN (Material) — ratio ${cols.pembesianKgPerM3.toFixed(2)} kg/m³ (rolled)`,
+      'Pembesian U24 & U40 (lump — no per-diameter detail)',
+      cols.pembesianKgPerM3, 'kg', cols.pembesianBlendedPricePerKg,
+      'per kg finished pembesian (blended: raw besi + decking + bendrat)',
+    );
+  }
+
+  // Wire mesh lump: qty = AC (kg/m³), unit_price = AD. Used for plat reinforcement
+  // in workbooks that decouple wire-mesh-per-plat from the main pembesian flow.
+  if (cols.wireMeshRatioPerM3 > 0 && cols.wireMeshPricePerKg > 0) {
+    pushLump('material',
+      'WIRE MESH (Material) (rolled)',
+      'Wire mesh (lump)',
+      cols.wireMeshRatioPerM3, 'kg', cols.wireMeshPricePerKg,
+      'per m³ beton (plat reinforcement separate from pembesian U24/U40)',
+    );
+  }
+
+  // Subkon (L) and Prelim (M) — direct cost columns some contractors populate.
+  // qty = 1.0 since the column already carries the per-m³ total.
+  if (cols.subkonPerM3 > 0) {
+    pushLump('material', 'SUBKON (Material) (rolled)',
+      'Subkon (lump)',
+      1.0, 'm3', cols.subkonPerM3,
+      'per m³ beton (direct subcontractor cost)',
+    );
+  }
+  if (cols.prelimPerM3 > 0) {
+    pushLump('material', 'PRELIM (Material) (rolled)',
+      'Prelim (lump)',
+      1.0, 'm3', cols.prelimPerM3,
+      'per m³ beton (direct preliminary cost)',
+    );
+  }
+
+  if (components.length === 0) {
+    return { reason: 'Rolled fallback: no concrete/bekisting/pembesian columns populated.' };
+  }
+
+  const computedUnitCost = components.reduce((s, c) => s + c.costPerBoqUnit, 0);
+  const variance = computedUnitCost - sourceUnitCost;
+  if (Math.abs(variance) > TOLERANCE_RP) {
+    return {
+      reason: `Rolled fallback variance ${variance.toFixed(2)} Rp (computed ${computedUnitCost.toFixed(2)} vs source ${sourceUnitCost.toFixed(2)}). Likely a missing column (e.g. Z*AA pembesian) or non-structural row.`,
+      computedUnitCost, variance,
+    };
+  }
+
+  const computedLineTotal = computedUnitCost * v;
+  return {
+    breakdown: {
+      boqCode: row.code, description: row.label, unit: row.unit,
+      volume: v, unitCost: computedUnitCost, lineTotal: computedLineTotal,
+      components,
+      reconciliation: {
+        computedUnitCost, sourceUnitCost, unitCostVariance: variance,
+        computedLineTotal, sourceLineTotal,
+        lineTotalVariance: computedLineTotal - sourceLineTotal,
+        reconciles: true,
+      },
+      sourceSheet: `Breakdown ${row.code}`,
+    },
+    computedUnitCost, variance, level: 'rolled',
+  };
+}
+
+/**
+ * Level-2.5 fallback for rows whose structural columns are all zero
+ * (R = S = T = V = W = Z = AA = AC = AD = L = M = 0) so the column-sum
+ * rolled tier has nothing to emit, but whose I/J/K columns still reference
+ * a specific Analisa block (masonry, bored pile, custom items). Read the
+ * row's parsed recipe components — each one already carries the per-unit
+ * cost contribution and the referenced cell — and emit one lump per
+ * component, grouped by lineType.
+ *
+ * The components sum to the row's at-cost per-unit by construction (that's
+ * how the recipe was built from I/J/K/L/M formulas), so reconciliation
+ * to `sourceUnitCost` is automatic when the recipe is non-empty.
+ */
+/**
+ * For a direct-reference row whose recipe components point at an Analisa
+ * block's Jumlah row (column F/G/H of that row), expand each referenced
+ * block's sub-items into itemized BreakdownRows. Returns null when no recipe
+ * component references an expandable block (the lump path then owns the row).
+ *
+ * Each referenced block is expanded ONCE even if multiple components point at
+ * it (e.g. an F-Jumlah material lump + a G-Jumlah labor lump both reference
+ * the same block). The scaling factor is the component's `quantityPerUnit`
+ * (1 for plesteran/acian, which reference `=Analisa!$F$485` directly), kept
+ * general by multiplying every sub-item cost by it.
+ */
+function expandDirectRefBlocks(
+  row: BoqRowV2,
+  _cols: RowCols,
+  ahsBlocks: AhsBlock[],
+  lookup: Map<string, HarvestedCell>,
+): BreakdownRow[] | null {
+  if (!row.recipe) return null;
+  const v = row.planned;
+
+  // Map jumlahRow → { block, factor }. First component referencing a block
+  // wins the factor (they share quantityPerUnit when several point at it).
+  const blocksToExpand = new Map<number, { block: AhsBlock; factor: number }>();
+  for (const c of row.recipe.components) {
+    if (c.referencedCell.sheet !== 'Analisa') continue;
+    const m = c.referencedCell.address.match(/^[A-Z]+(\d+)$/i);
+    if (!m) continue;
+    const refRow = Number(m[1]);
+    const block = ahsBlocks.find((b) => b.jumlahRow === refRow);
+    if (!block) continue;
+    if (!blocksToExpand.has(refRow)) {
+      blocksToExpand.set(refRow, { block, factor: c.quantityPerUnit });
+    }
+  }
+  if (blocksToExpand.size === 0) return null;
+
+  const components: BreakdownRow[] = [];
+  for (const { block, factor } of blocksToExpand.values()) {
+    for (const r of block.componentRows) {
+      const coeff = getCellNum(lookup, 'Analisa', `B${r}`);
+      const unit = getCellStr(lookup, 'Analisa', `C${r}`);
+      const name = getCellStr(lookup, 'Analisa', `D${r}`).trim();
+      const price = getCellNum(lookup, 'Analisa', `E${r}`);
+      const fTotal = getCellNum(lookup, 'Analisa', `F${r}`);
+      const gTotal = getCellNum(lookup, 'Analisa', `G${r}`);
+      const hTotal = getCellNum(lookup, 'Analisa', `H${r}`);
+      const composite = (fTotal > 0 ? 1 : 0) + (gTotal > 0 ? 1 : 0) + (hTotal > 0 ? 1 : 0) > 1;
+
+      const pushLine = (
+        group: BreakdownRow['group'],
+        groupLabel: string,
+        columnValue: number,
+        materialName: string,
+      ) => {
+        if (columnValue <= 0) return;
+        const costPerBoqUnit = columnValue * factor;
+        // Clean coefficient line: B × E ≈ column total (material with no labor
+        // mixed in). Otherwise fall back to factor-as-qty with the column
+        // value as the unit price.
+        const cleanCoeff = Math.abs(coeff * price - columnValue) <= TOLERANCE_RP;
+        const qtyPerNativeUnit = cleanCoeff ? coeff * factor : factor;
+        const nativeUnit = cleanCoeff ? unit : row.unit;
+        const unitPrice = cleanCoeff ? price : columnValue;
+        components.push({
+          group,
+          componentGroup: `${groupLabel} — ${block.title}`,
+          materialName,
+          specNote: `expanded from Analisa block jumlah row ${block.jumlahRow}`,
+          qtyPerNativeUnit,
+          nativeUnit,
+          nativeBasis: `per ${row.unit}`,
+          unitPrice,
+          qtyPerBoqUnit: qtyPerNativeUnit,
+          costPerBoqUnit,
+          totalQty: qtyPerNativeUnit * v,
+          totalCost: costPerBoqUnit * v,
+        });
+      };
+
+      // For a composite row (both material + labor, e.g. Benangan) suffix the
+      // labor line so the two lines are distinguishable.
+      pushLine('material', 'MATERIAL (Material)', fTotal, name);
+      pushLine('labor', 'UPAH (Labor)', gTotal, composite ? `${name} (upah)` : name);
+      pushLine('equipment', 'PERALATAN (Equipment)', hTotal, composite ? `${name} (alat)` : name);
+    }
+  }
+
+  return components.length > 0 ? components : null;
+}
+
+function buildDirectReferenceBreakdown(args: {
+  row: BoqRowV2;
+  cols: RowCols;
+  ahsBlocks: AhsBlock[];
+  lookup: Map<string, HarvestedCell>;
+  sourceUnitCost: number;
+  sourceLineTotal: number;
+}): BuildResult {
+  const { row, cols, ahsBlocks, lookup, sourceUnitCost, sourceLineTotal } = args;
+
+  // Guard: only fire when every structural column the rolled tier can read
+  // is zero. Otherwise the rolled tier owns the row.
+  const structuralColsPopulated =
+    cols.concreteMatCostPerM3 > 0 ||
+    cols.concreteLaborCostPerM3 > 0 ||
+    cols.concreteEquipCostPerM3 > 0 ||
+    cols.bekistingHargaPerM2 > 0 ||
+    cols.bekistingPeralatanPerM2 > 0 ||
+    cols.pembesianBlendedPricePerKg > 0 ||
+    cols.wireMeshPricePerKg > 0;
+  if (structuralColsPopulated) {
+    return { reason: 'Direct-ref tier skipped: row has populated structural columns.' };
+  }
+
+  if (!row.recipe || row.recipe.components.length === 0) {
+    return { reason: 'Direct-ref tier: row has no recipe components.' };
+  }
+
+  const v = row.planned;
+
+  // Build the original opaque-lump component list (one BreakdownRow per recipe
+  // component). This is the proven fallback if block expansion doesn't
+  // reconcile.
+  const lumpComponents: BreakdownRow[] = [];
+  for (const c of row.recipe.components) {
+    const cost = c.quantityPerUnit * c.unitPrice;
+    if (cost <= 0) continue;
+
+    // BreakdownGroup is 'material' | 'labor' | 'equipment' only. Subkon and
+    // prelim are direct-cost lumps that the audit UI groups under Material.
+    let group: BreakdownRow['group'];
+    let componentGroup: string;
+    switch (c.lineType) {
+      case 'labor':
+        group = 'labor';
+        componentGroup = 'UPAH (Labor) — direct-ref lump';
+        break;
+      case 'equipment':
+        group = 'equipment';
+        componentGroup = 'PERALATAN (Equipment) — direct-ref lump';
+        break;
+      case 'subkon':
+        group = 'material';
+        componentGroup = 'SUBKON (Material) — direct-ref lump';
+        break;
+      case 'prelim':
+        group = 'material';
+        componentGroup = 'PRELIM (Material) — direct-ref lump';
+        break;
+      case 'material':
+      default:
+        group = 'material';
+        componentGroup = 'MATERIAL (Material) — direct-ref lump';
+        break;
+    }
+
+    const matName = c.materialName ?? c.referencedBlockTitle ?? `${c.lineType} lump`;
+    const specNote =
+      `direct-reference lump from ${c.referencedCell.sheet}!${c.referencedCell.address}` +
+      (c.referencedBlockTitle ? ` (block: ${c.referencedBlockTitle})` : '');
+
+    lumpComponents.push({
+      group,
+      componentGroup,
+      materialName: matName,
+      specNote,
+      qtyPerNativeUnit: c.quantityPerUnit,
+      nativeUnit: row.unit,
+      nativeBasis: `per ${row.unit}`,
+      unitPrice: c.unitPrice,
+      qtyPerBoqUnit: c.quantityPerUnit,
+      costPerBoqUnit: cost,
+      totalQty: c.quantityPerUnit * v,
+      totalCost: cost * v,
+    });
+  }
+
+  if (lumpComponents.length === 0) {
+    return { reason: 'Direct-ref tier: recipe has no non-zero components.' };
+  }
+
+  // Expansion: when a recipe component points at an Analisa block's Jumlah
+  // row (col F/G/H of that row), expand the block's sub-items into itemized
+  // breakdown lines so the row shows the real materials (e.g. Semen / Pasir /
+  // Upah plesteran) instead of opaque "MATERIAL lump" / "UPAH lump".
+  const expandedComponents = expandDirectRefBlocks(row, cols, ahsBlocks, lookup);
+
+  // Prefer expanded lines when they exist AND reconcile within ±1 Rp;
+  // otherwise fall back to the proven lump list.
+  let components = lumpComponents;
+  if (expandedComponents && expandedComponents.length > 0) {
+    const expandedUnitCost = expandedComponents.reduce((s, c) => s + c.costPerBoqUnit, 0);
+    if (Math.abs(expandedUnitCost - sourceUnitCost) <= TOLERANCE_RP) {
+      components = expandedComponents;
+    }
+  }
+
+  const computedUnitCost = components.reduce((s, c) => s + c.costPerBoqUnit, 0);
+  const variance = computedUnitCost - sourceUnitCost;
+  if (Math.abs(variance) > TOLERANCE_RP) {
+    return {
+      reason: `Direct-ref variance ${variance.toFixed(2)} Rp (computed ${computedUnitCost.toFixed(2)} vs source ${sourceUnitCost.toFixed(2)}).`,
+      computedUnitCost,
+      variance,
+    };
+  }
+
+  const computedLineTotal = computedUnitCost * v;
+  return {
+    breakdown: {
+      boqCode: row.code,
+      description: row.label,
+      unit: row.unit,
+      volume: v,
+      unitCost: computedUnitCost,
+      lineTotal: computedLineTotal,
+      components,
+      reconciliation: {
+        computedUnitCost,
+        sourceUnitCost,
+        unitCostVariance: variance,
+        computedLineTotal,
+        sourceLineTotal,
+        lineTotalVariance: computedLineTotal - sourceLineTotal,
+        reconciles: true,
+      },
+      sourceSheet: `Breakdown ${row.code}`,
+    },
+    computedUnitCost,
+    variance,
+    level: 'rolled-direct',
+  };
+}
+
+/**
+ * Tier 1.5: per-kg "besi-only" pseudo-rows. Some workbooks (ERNAWATI) split
+ * each structural element into one Beton (m³) row plus separate Besi D13 /
+ * D16 / D19 rows (unit=kg, vol=kg) plus a Bekisting (m²) row, instead of one
+ * combined m³ row that carries bekisting+pembesian via the V/W/Z/AA columns.
+ *
+ * Detection contract — all three must hold:
+ *   • row.unit === 'kg'
+ *   • row.label matches /Besi\s+D(\d+)/i
+ *   • cols.concreteMatCostPerM3 (R) ≈ pembesian.pricePerKg (within ±1 Rp)
+ *     — i.e., the workbook is using the Pembesian Jumlah price as the row's
+ *     per-kg unit cost (formula typically `Analisa!$F${pembesianJumlahRow}`)
+ *
+ * Output: three Pembesian sub-items per row (Besi beton D{N}, Beton decking,
+ * Bendrat), each at qty_per_kg = AHS coefficient. Reconciles by construction
+ * because Σ(coeff × price) = pembesian.pricePerKg by the AHS Jumlah formula,
+ * and source unit cost = R = pembesian.pricePerKg.
+ */
+function buildBesiOnlyBreakdown(args: {
+  row: BoqRowV2;
+  cols: RowCols;
+  pembesian: PembesianTemplate;
+  sourceUnitCost: number;
+  sourceLineTotal: number;
+}): BuildResult {
+  const { row, cols, pembesian, sourceUnitCost, sourceLineTotal } = args;
+
+  if (row.unit !== 'kg') {
+    return { reason: 'Besi-only tier: unit is not kg.' };
+  }
+  const diameterMatch = (row.label ?? '').match(/Besi\s+D(\d+)/i);
+  if (!diameterMatch) {
+    return { reason: 'Besi-only tier: label does not match Besi D\\d+.' };
+  }
+  if (pembesian.pricePerKg <= 0) {
+    return { reason: 'Besi-only tier: pembesian template has no pricePerKg.' };
+  }
+  if (Math.abs(cols.concreteMatCostPerM3 - pembesian.pricePerKg) > TOLERANCE_RP) {
+    return {
+      reason: `Besi-only tier: R column ${cols.concreteMatCostPerM3} does not match pembesian pricePerKg ${pembesian.pricePerKg}.`,
+    };
+  }
+
+  const diameter = `D${diameterMatch[1]}`;
+  const v = row.planned;
+  const components: BreakdownRow[] = [];
+  const componentGroup = `PEMBESIAN (Material) — Besi ${diameter}`;
+
+  const pushPembesianSub = (
+    materialName: string,
+    coeff: number,
+    unitPrice: number,
+    nativeBasis: string,
+  ) => {
+    if (coeff <= 0 || unitPrice <= 0) return;
+    const cost = coeff * unitPrice;
+    components.push({
+      group: 'material',
+      componentGroup,
+      materialName,
+      specNote: null,
+      qtyPerNativeUnit: coeff,
+      nativeUnit: 'kg',
+      nativeBasis,
+      unitPrice,
+      qtyPerBoqUnit: coeff,
+      costPerBoqUnit: cost,
+      totalQty: coeff * v,
+      totalCost: cost * v,
+    });
+  };
+
+  pushPembesianSub(`Besi beton ${diameter}`, pembesian.besiCoeff, pembesian.besiUnitPrice, 'per kg finished rebar (5% waste)');
+  pushPembesianSub('Beton decking', pembesian.deckingCoeff, pembesian.deckingUnitPrice, 'per kg finished rebar');
+  pushPembesianSub('Bendrat (kawat ikat)', pembesian.bendratCoeff, pembesian.bendratUnitPrice, 'per kg finished rebar');
+
+  if (components.length === 0) {
+    return { reason: 'Besi-only tier: pembesian template yielded no components.' };
+  }
+
+  const computedUnitCost = components.reduce((s, c) => s + c.costPerBoqUnit, 0);
+  const variance = computedUnitCost - sourceUnitCost;
+  if (Math.abs(variance) > TOLERANCE_RP) {
+    return {
+      reason: `Besi-only variance ${variance.toFixed(2)} Rp (computed ${computedUnitCost.toFixed(2)} vs source ${sourceUnitCost.toFixed(2)}).`,
+      computedUnitCost,
+      variance,
+    };
+  }
+
+  const computedLineTotal = computedUnitCost * v;
+  return {
+    breakdown: {
+      boqCode: row.code,
+      description: row.label,
+      unit: row.unit,
+      volume: v,
+      unitCost: computedUnitCost,
+      lineTotal: computedLineTotal,
+      components,
+      reconciliation: {
+        computedUnitCost,
+        sourceUnitCost,
+        unitCostVariance: variance,
+        computedLineTotal,
+        sourceLineTotal,
+        lineTotalVariance: computedLineTotal - sourceLineTotal,
+        reconciles: true,
+      },
+      sourceSheet: `Breakdown ${row.code}`,
+    },
+    computedUnitCost,
+    variance,
+    level: 'itemized',
+  };
+}
+
+function buildBreakdownForRow(args: {
+  row: BoqRowV2;
+  cols: RowCols;
+  diameters: DiameterWeight[];
+  bekistings: BekistingTemplate[];
+  concretes: ConcreteTemplate[];
+  pembesian: PembesianTemplate;
+  sourceUnitCost: number;
+  sourceLineTotal: number;
+}): BuildResult {
+  const { row, cols, diameters, bekistings, concretes, pembesian, sourceUnitCost, sourceLineTotal } = args;
+  const components: BreakdownRow[] = [];
+  const componentCostMatchTol = 1; // Rp 1
+
+  // 1. Concrete — match by R/S/T cost columns.
+  let concrete: ConcreteTemplate | undefined;
+  for (const c of concretes) {
+    if (
+      Math.abs(c.materialCostPerM3 - cols.concreteMatCostPerM3) <= componentCostMatchTol &&
+      Math.abs(c.laborCostPerM3 - cols.concreteLaborCostPerM3) <= componentCostMatchTol &&
+      Math.abs(c.equipCostPerM3 - cols.concreteEquipCostPerM3) <= componentCostMatchTol
+    ) {
+      concrete = c;
+      break;
+    }
+  }
+  if (concrete) {
+    for (const s of concrete.subItems) {
+      const qtyPerBoqUnit = s.qtyPerNative;
+      const costPerBoqUnit = qtyPerBoqUnit * s.unitPrice;
+      components.push({
+        group: s.group,
+        componentGroup:
+          s.group === 'material' ? 'BETON READYMIX (Material)' :
+          s.group === 'labor' ? 'UPAH (Labor) — borongan' :
+          'PERALATAN (Equipment)',
+        materialName: s.materialName,
+        specNote: s.specNote,
+        qtyPerNativeUnit: s.qtyPerNative,
+        nativeUnit: s.nativeUnit,
+        nativeBasis:
+          s.group === 'material' ? 'per m3 beton (waste 5%)' :
+          'per m3 beton',
+        unitPrice: s.unitPrice,
+        qtyPerBoqUnit,
+        costPerBoqUnit,
+        totalQty: qtyPerBoqUnit * row.planned,
+        totalCost: costPerBoqUnit * row.planned,
+      });
+    }
+  }
+
+  // 2. Bekisting — match by W column (F-side per-m² cost), then emit
+  // F-side and (when X > 0) H-side sub-items separately. F-side cycle
+  // = Jumlah_F / Harga_F (forms reuse); H-side cycle = Jumlah_H / Harga_H
+  // (Perancah / scaffolding reuse — may differ from F-side).
+  let bekisting: BekistingTemplate | undefined;
+  if (cols.bekistingHargaPerM2 > 0) {
+    for (const b of bekistings) {
+      if (Math.abs(b.hargaPerM2_F - cols.bekistingHargaPerM2) <= componentCostMatchTol) {
+        bekisting = b;
+        break;
+      }
+    }
+    if (bekisting && cols.bekistingRatioM2PerM3 > 0) {
+      const elementHint = bekisting.blockTitle.replace(/.*Bekisting\s+/i, '').toUpperCase();
+      const factor_F = cols.bekistingRatioM2PerM3 / bekisting.cycleFactor_F;
+      const factor_H = cols.bekistingRatioM2PerM3 / bekisting.cycleFactor_H;
+      const groupTag_F = `BEKISTING ${elementHint} (Material) — ratio ${cols.bekistingRatioM2PerM3} m²/m³`;
+      const groupTag_H = `BEKISTING ${elementHint} PERALATAN (Material) — Perancah, ratio ${cols.bekistingRatioM2PerM3} m²/m³`;
+      for (const s of bekisting.subItems) {
+        if (!s.includedInTotal) continue;
+        // H-side sub-items only contribute when the row's X column is
+        // populated. If X = 0 but the template's H-side has sub-items,
+        // skip them (this row used a different layout — e.g., AAL-5
+        // workbooks that put Perancah on a separate BoQ line).
+        if (s.side === 'H' && cols.bekistingPeralatanPerM2 <= 0) continue;
+        const factor = s.side === 'H' ? factor_H : factor_F;
+        const cycle = s.side === 'H' ? bekisting.cycleFactor_H : bekisting.cycleFactor_F;
+        const qtyPerBoqUnit = s.qtyPerNative * factor;
+        const costPerBoqUnit = qtyPerBoqUnit * s.unitPrice;
+        components.push({
+          group: 'material',
+          componentGroup: s.side === 'H' ? groupTag_H : groupTag_F,
+          materialName: s.materialName,
+          specNote: null,
+          qtyPerNativeUnit: s.qtyPerNative,
+          nativeUnit: s.nativeUnit,
+          nativeBasis: `per m² form (cycle ${cycle.toFixed(2)})`,
+          unitPrice: s.unitPrice,
+          qtyPerBoqUnit,
+          costPerBoqUnit,
+          totalQty: qtyPerBoqUnit * row.planned,
+          totalCost: costPerBoqUnit * row.planned,
+        });
+      }
+    } else if (!bekisting) {
+      return { reason: `No bekisting block matches W=${cols.bekistingHargaPerM2}` };
+    }
+  }
+
+  // 3. Pembesian — per-diameter + waste + decking + bendrat when the
+  // disaggregator gave a complete per-diameter breakdown (Σ diameters
+  // matches RAB!Z within 0.01 kg/m³). Otherwise fall back to a single
+  // Pembesian lump derived from Z*AA so the row still reconciles and
+  // bekisting itemization isn't lost just because the rebar source has
+  // a layout we don't know how to disaggregate (e.g., ERNAWATI Plat
+  // sub-area rows, "Dinding" rows whose rebar lives on a "Retaining Wall"
+  // sheet with no adapter, etc.).
+  const totalDisaggregatedKgPerM3 = diameters.reduce((s, d) => s + d.qtyPerM3, 0);
+  const aggregateKgPerM3 = cols.pembesianKgPerM3;
+  const aggregatePrice = cols.pembesianBlendedPricePerKg;
+  const disaggregatorOK =
+    diameters.length > 0 &&
+    aggregateKgPerM3 > 0 &&
+    Math.abs(totalDisaggregatedKgPerM3 - aggregateKgPerM3) < 0.01;
+  if (disaggregatorOK && pembesian.besiUnitPrice > 0) {
+    const totalRawKgPerM3 = totalDisaggregatedKgPerM3;
+    const wasteCoeff = pembesian.besiCoeff - 1; // 1.05 - 1 = 0.05
+    const componentGroup = `PEMBESIAN (Material) — ratio ${totalRawKgPerM3.toFixed(2)} kg/m³`;
+    for (const d of diameters) {
+      components.push({
+        group: 'material',
+        componentGroup,
+        materialName: `Besi beton ${d.diameter}`,
+        specNote: 'U24/U40 polos',
+        qtyPerNativeUnit: d.qtyPerM3,
+        nativeUnit: 'kg',
+        nativeBasis: 'per m3 beton',
+        unitPrice: pembesian.besiUnitPrice,
+        qtyPerBoqUnit: d.qtyPerM3,
+        costPerBoqUnit: d.qtyPerM3 * pembesian.besiUnitPrice,
+        totalQty: d.qtyPerM3 * row.planned,
+        totalCost: d.qtyPerM3 * pembesian.besiUnitPrice * row.planned,
+      });
+    }
+    const wasteQty = totalRawKgPerM3 * wasteCoeff;
+    components.push({
+      group: 'material', componentGroup,
+      materialName: 'Besi beton — waste (5%)',
+      specNote: 'applied via AHS coeff 1.05',
+      qtyPerNativeUnit: wasteCoeff, nativeUnit: 'kg', nativeBasis: 'per m3 beton',
+      unitPrice: pembesian.besiUnitPrice,
+      qtyPerBoqUnit: wasteQty,
+      costPerBoqUnit: wasteQty * pembesian.besiUnitPrice,
+      totalQty: wasteQty * row.planned,
+      totalCost: wasteQty * pembesian.besiUnitPrice * row.planned,
+    });
+    const deckingQty = totalRawKgPerM3 * pembesian.deckingCoeff;
+    components.push({
+      group: 'material', componentGroup,
+      materialName: 'Beton decking',
+      specNote: 'spacer',
+      qtyPerNativeUnit: pembesian.deckingCoeff, nativeUnit: 'kg-eq', nativeBasis: 'per kg besi',
+      unitPrice: pembesian.deckingUnitPrice,
+      qtyPerBoqUnit: deckingQty,
+      costPerBoqUnit: deckingQty * pembesian.deckingUnitPrice,
+      totalQty: deckingQty * row.planned,
+      totalCost: deckingQty * pembesian.deckingUnitPrice * row.planned,
+    });
+    // Bendrat: coeff is per kg of "finished" pembesian (= raw kg). 0.021 in AAL-5.
+    const bendratQty = totalRawKgPerM3 * pembesian.bendratCoeff;
+    components.push({
+      group: 'material', componentGroup,
+      materialName: 'Bendrat (kawat ikat)',
+      specNote: `${(pembesian.bendratCoeff * 100).toFixed(1)}% of besi (raw)`,
+      qtyPerNativeUnit: pembesian.bendratCoeff, nativeUnit: 'kg', nativeBasis: 'per kg besi (raw)',
+      unitPrice: pembesian.bendratUnitPrice,
+      qtyPerBoqUnit: bendratQty,
+      costPerBoqUnit: bendratQty * pembesian.bendratUnitPrice,
+      totalQty: bendratQty * row.planned,
+      totalCost: bendratQty * pembesian.bendratUnitPrice * row.planned,
+    });
+  } else if (aggregateKgPerM3 > 0 && aggregatePrice > 0) {
+    // Pembesian lump fallback: keep the itemized tier alive even when the
+    // rebar disaggregator can't (or won't) produce per-diameter detail.
+    // qty = Z (kg/m³), unit price = AA (blended raw besi + decking + bendrat).
+    // The breakdown's bekisting + concrete components remain itemized, so
+    // the user still sees Multipleks / Usuk / Paku for the bekisting half.
+    const reason = diameters.length === 0
+      ? 'no rebar adapter matched the row label (e.g., dinding/walls)'
+      : `disaggregator yielded ${totalDisaggregatedKgPerM3.toFixed(2)} kg/m³ vs Z=${aggregateKgPerM3.toFixed(2)} kg/m³`;
+    components.push({
+      group: 'material',
+      componentGroup: `PEMBESIAN (Material) — ratio ${aggregateKgPerM3.toFixed(2)} kg/m³ (lump)`,
+      materialName: 'Pembesian U24 & U40 (lump — no per-diameter detail)',
+      specNote: `pembesian lump: ${reason}`,
+      qtyPerNativeUnit: aggregateKgPerM3,
+      nativeUnit: 'kg',
+      nativeBasis: 'per m3 beton (blended: raw besi + decking + bendrat)',
+      unitPrice: aggregatePrice,
+      qtyPerBoqUnit: aggregateKgPerM3,
+      costPerBoqUnit: aggregateKgPerM3 * aggregatePrice,
+      totalQty: aggregateKgPerM3 * row.planned,
+      totalCost: aggregateKgPerM3 * aggregatePrice * row.planned,
+    });
+  }
+
+  // 4. Wire mesh (AC*AD) — itemized variant. Some workbooks reinforce plat
+  // with a wire-mesh material that's tracked separately from the per-diameter
+  // U24/U40 rebar in the Pembesian block. AC = kg of wire mesh per m³ beton,
+  // AD = Rp per kg. The workbook's column-sum invariant (field guide §4.0)
+  // includes a dedicated AC*AD term, disjoint from Z*AA — verified against
+  // the I4-29 workbook formula AF = R + V*W + Z*AA [+ AC*AD] where the wire
+  // mesh AHS at Analisa rows 235..239 is a separate recipe from Pembesian
+  // U24 & U40 at rows 228..233. The REKAP per-diameter weights are also
+  // disjoint from wire mesh (REKAP records U24/U40 rebar only, while wire
+  // mesh M6/M8 has its own catalog entry).
+  // Emit as a single material lump with native unit kg and price = AD.
+  // Without this, any row where AC*AD > 0 alongside Z*AA > 0 would short-pay
+  // by AC*AD in the itemized tier and fall back to rolled.
+  if (cols.wireMeshRatioPerM3 > 0 && cols.wireMeshPricePerKg > 0) {
+    const qtyPerBoqUnit = cols.wireMeshRatioPerM3;
+    const costPerBoqUnit = qtyPerBoqUnit * cols.wireMeshPricePerKg;
+    components.push({
+      group: 'material',
+      componentGroup: 'WIRE MESH (Material)',
+      materialName: 'Wire mesh',
+      specNote: 'plat reinforcement — separate from pembesian U24/U40',
+      qtyPerNativeUnit: cols.wireMeshRatioPerM3,
+      nativeUnit: 'kg',
+      nativeBasis: 'per m3 beton',
+      unitPrice: cols.wireMeshPricePerKg,
+      qtyPerBoqUnit,
+      costPerBoqUnit,
+      totalQty: qtyPerBoqUnit * row.planned,
+      totalCost: costPerBoqUnit * row.planned,
+    });
+  }
+
+  if (components.length === 0) {
+    return { reason: 'No components — no Bekisting/Concrete/Pembesian template matched' };
+  }
+
+  const computedUnitCost = components.reduce((s, c) => s + c.costPerBoqUnit, 0);
+  const variance = computedUnitCost - sourceUnitCost;
+
+  if (Math.abs(variance) > TOLERANCE_RP) {
+    return {
+      reason: `Computed unit cost ${computedUnitCost.toFixed(2)} vs source ${sourceUnitCost.toFixed(2)} — variance ${variance.toFixed(2)} Rp`,
+      computedUnitCost,
+      variance,
+    };
+  }
+
+  const computedLineTotal = computedUnitCost * row.planned;
+  const breakdown: RowBreakdown = {
+    boqCode: row.code,
+    description: row.label,
+    unit: row.unit,
+    volume: row.planned,
+    unitCost: computedUnitCost,
+    lineTotal: computedLineTotal,
+    components,
+    reconciliation: {
+      computedUnitCost,
+      sourceUnitCost,
+      unitCostVariance: variance,
+      computedLineTotal,
+      sourceLineTotal,
+      lineTotalVariance: computedLineTotal - sourceLineTotal,
+      reconciles: true,
+    },
+    sourceSheet: `Breakdown ${row.code}`,
+  };
+  return { breakdown, computedUnitCost, variance, level: 'itemized' };
+}
+
+// --- main ---
+
+/** Exported for use by the Jest integration test (no process.argv / fs writes). */
+export interface RunDeterministicResult {
+  itemizedCount: number;
+  rolledCount: number;
+  /** Count of rows handled by the direct-reference tier (masonry / pile / custom). */
+  rolledDirectCount: number;
+  unresolvedCount: number;
+  totalCandidates: number;
+  breakdowns: RowBreakdown[];
+  unresolved: Array<{ code: string; label: string; reason: string }>;
+  /** Max absolute variance across every written breakdown (must be ≤ 1 Rp). */
+  maxAbsVariance: number;
+}
+
+export interface RunDeterministicOptions {
+  inputPath: string;
+  outputPath?: string;     // omit to skip writing to disk
+  silent?: boolean;        // omit per-row console.log when true
+}
+
+export async function runDeterministic(opts: RunDeterministicOptions): Promise<RunDeterministicResult> {
+  const inputPath = path.resolve(opts.inputPath);
+  const log = (m: string) => { if (!opts.silent) console.log(m); };
+
+  log(`Reading: ${inputPath}`);
+  const buf = fs.readFileSync(inputPath);
+  // 'auto' so we pick up multi-sheet workbooks like I4-29 (RAB A..E) — not
+  // every contractor packs all BoQ rows into RAB (A).
+  const result = await parseBoqV2(buf, { boqSheet: 'auto' });
+  const lookup = buildLookup(result.cells);
+
+  log('Extracting Analisa templates...');
+  const bekistings = extractBekistingTemplates(result.ahsBlocks, lookup);
+  const concretes = extractConcreteTemplates(result.ahsBlocks, lookup);
+  const pembesian = extractPembesianTemplate(result.ahsBlocks, lookup);
+  log(`  ${bekistings.length} bekisting templates, ${concretes.length} concrete templates, pembesian=${pembesian ? 'yes' : 'NO'}`);
+
+  if (!pembesian) {
+    throw new Error('No Pembesian U24 & U40 block found — cannot proceed.');
+  }
+
+  const candidates = result.boqRows.filter(needsExpansion);
+  log(`\nProcessing ${candidates.length} BoQ rows needing expansion:`);
+
+  const breakdowns: RowBreakdown[] = [];
+  const unresolved: Array<{ code: string; label: string; reason: string }> = [];
+  let itemizedCount = 0;
+  let rolledCount = 0;
+  let rolledDirectCount = 0;
+  let maxAbsVariance = 0;
+
+  for (const row of candidates) {
+    const cols = readRowCols(lookup, row.source_sheet, row.sourceRow);
+    const diameters = readDiametersForRow(row);
+    const sourceUnitCost =
+      (row.cost_split
+        ? row.cost_split.material + row.cost_split.labor + row.cost_split.equipment + row.cost_split.prelim
+        : 0) + (row.subkon_cost_per_unit ?? 0);
+    const sourceLineTotal = row.total_cost ?? 0;
+
+    // Tier 1: try itemized expansion.
+    let res = buildBreakdownForRow({
+      row, cols, diameters, bekistings, concretes, pembesian, sourceUnitCost, sourceLineTotal,
+    });
+
+    // Tier 1.5: besi-only pseudo-rows (Besi D{N}, unit=kg). Reconciles by
+    // expanding the AHS Pembesian block (Besi beton + Beton decking + Bendrat)
+    // at qty_per_kg = AHS coefficient. Currently only triggers for ERNAWATI's
+    // split-row layout; AAL-5/PD3/I4 use a combined m³ row and never match.
+    if (!res.breakdown && pembesian) {
+      const besi = buildBesiOnlyBreakdown({ row, cols, pembesian, sourceUnitCost, sourceLineTotal });
+      if (besi.breakdown) res = besi;
+    }
+
+    // Tier 2: fall back to rolled lump breakdown from RAB(A) column totals.
+    if (!res.breakdown) {
+      const rolled = buildRolledBreakdown({ row, cols, sourceUnitCost, sourceLineTotal });
+      if (rolled.breakdown) res = rolled;
+    }
+
+    // Tier 2.5: direct-reference rows (masonry / pile / custom) whose
+    // structural columns are all zero but whose recipe still points at
+    // specific Analisa blocks.
+    if (!res.breakdown) {
+      const direct = buildDirectReferenceBreakdown({
+        row, cols, ahsBlocks: result.ahsBlocks, lookup, sourceUnitCost, sourceLineTotal,
+      });
+      if (direct.breakdown) res = direct;
+    }
+
+    if (res.breakdown) {
+      breakdowns.push(res.breakdown);
+      if (res.level === 'itemized') itemizedCount++;
+      else if (res.level === 'rolled-direct') rolledDirectCount++;
+      else rolledCount++;
+      const absVar = Math.abs(res.variance ?? 0);
+      if (absVar > maxAbsVariance) maxAbsVariance = absVar;
+      const icon =
+        res.level === 'itemized'      ? '✓ itemized   ' :
+        res.level === 'rolled-direct' ? '• direct-ref ' :
+                                        '~ rolled     ';
+      log(`  ${icon} ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)} variance=${(res.variance ?? 0).toFixed(2)} Rp`);
+    } else {
+      unresolved.push({ code: row.code, label: row.label, reason: res.reason ?? 'unknown' });
+      log(`  ⚠ unresolved ${row.code.padEnd(14)} ${row.label.slice(0, 35).padEnd(35)} ${res.reason}`);
+    }
+  }
+
+  log('');
+  log(`Reconciled total: ${breakdowns.length} / ${candidates.length}`);
+  log(`  ✓ itemized:      ${itemizedCount}  (per-material detail)`);
+  log(`  ~ rolled:        ${rolledCount}  (5-line group lumps from RAB columns)`);
+  log(`  • direct-ref:    ${rolledDirectCount}  (recipe-derived lumps for masonry / pile / custom)`);
+  log(`Unresolved:        ${unresolved.length}`);
+
+  if (opts.outputPath) {
+    const wb = XLSX.read(buf, { cellFormula: true, cellStyles: false });
+    writeBreakdownSheets(wb, breakdowns);
+    if (unresolved.length > 0) {
+      const rows: unknown[][] = [
+        ['UNRESOLVED ROWS — deterministic templates could not reconcile'],
+        [`Generated: ${new Date().toISOString()}`],
+        [],
+        ['Code', 'Label', 'Reason'],
+        ...unresolved.map((u) => [u.code, u.label, u.reason]),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Unresolved');
+    }
+    const outBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    fs.writeFileSync(opts.outputPath, outBuf);
+    log(`\nWrote: ${opts.outputPath}`);
+  }
+
+  return {
+    itemizedCount,
+    rolledCount,
+    rolledDirectCount,
+    unresolvedCount: unresolved.length,
+    totalCandidates: candidates.length,
+    breakdowns,
+    unresolved,
+    maxAbsVariance,
+  };
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 0) {
+    console.error('Usage: npm run normalize:boq:det -- <input.xlsx> [output.xlsx]');
+    process.exit(1);
+  }
+  const inputPath = path.resolve(args[0]);
+  const outputPath = args[1] ?? inputPath.replace(/\.xlsx$/i, '_normalized.xlsx');
+  await runDeterministic({ inputPath, outputPath });
+}
+
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('FAILED:', err);
+    process.exit(10);
+  });
+}

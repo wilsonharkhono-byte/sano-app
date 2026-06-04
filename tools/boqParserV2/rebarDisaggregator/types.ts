@@ -7,6 +7,18 @@ export interface RebarBreakdown {
   role?: 'stirrup' | 'main';   // Kolom only; undefined for others
 }
 
+export interface LookupHint {
+  /**
+   * REKAP row to read weights from, derived from the BoQ row's own column-Z
+   * formula reference (e.g., `='REKAP Balok'!X291`). When set, the adapter
+   * MUST use this exact row and skip its label search — this avoids picking
+   * up the wrong floor's weights when a single type code (e.g., "B24-1")
+   * appears multiple times in REKAP (one summary row per floor, as in the
+   * ERNAWATI workbook).
+   */
+  rekapRow?: number;
+}
+
 export interface RebarAdapter {
   name: string;                        // for logging — "balokSloof" | "poer" | "plat" | "kolom"
   sheetName: string;
@@ -14,5 +26,6 @@ export interface RebarAdapter {
   lookupBreakdown(
     typeCode: string,
     cells: HarvestedCell[],
+    hint?: LookupHint,
   ): RebarBreakdown[] | null;          // null = type code not found
 }

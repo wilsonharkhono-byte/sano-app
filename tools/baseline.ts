@@ -48,7 +48,7 @@ export async function createImportSession(
   userId: string,
   filePath: string,
   fileName: string,
-  parserVersion: 'v1' | 'v2' = 'v1',
+  parserVersion: 'v1' | 'v2' = 'v2',
 ): Promise<{ session: ImportSession | null; error: string | null }> {
   const { data, error } = await supabase
     .from('import_sessions')
@@ -221,6 +221,24 @@ export async function reviewStagingRow(
 }
 
 /**
+ * Approve/reject many staging rows in one round-trip. Used by the
+ * exception-based review flow to clear all clean (high-confidence,
+ * non-flagged) rows at once instead of one server call per row.
+ */
+export async function bulkReviewStagingRows(
+  rowIds: string[],
+  status: 'APPROVED' | 'REJECTED',
+): Promise<{ success: boolean; error?: string; count: number }> {
+  if (rowIds.length === 0) return { success: true, count: 0 };
+  const { error } = await supabase
+    .from('import_staging_rows')
+    .update({ review_status: status })
+    .in('id', rowIds);
+  if (error) return { success: false, error: error.message, count: 0 };
+  return { success: true, count: rowIds.length };
+}
+
+/**
  * Audit-trace edits update both parsed_data and raw_data and auto-mark the
  * row as MODIFIED. publishBaseline reads coefficient/unit_price from raw_data
  * first, so writes to coefficient-family fields must land in both places.
@@ -357,6 +375,8 @@ import {
   type CatalogEntry,
 } from './excelParser';
 import { applyAIBoqGrouping } from './ai-assist';
+import { parseBoqV2 } from './boqParserV2';
+import { publishBaselineV2 } from './publishBaselineV2';
 import type { ImportAnomaly } from './types';
 
 /**
@@ -398,7 +418,6 @@ export async function parseAndStageWorkbook(
       .eq('id', sessionId)
       .single();
     if (sessionRow?.parser_version === 'v2') {
-      const { parseBoqV2 } = await import('./boqParserV2');
       // Task 22 bug fix: previously a string fileInput was coerced to an
       // empty ArrayBuffer, which made v2 silently parse nothing. Resolve
       // the path the same way v1 would (read local file into memory).
@@ -646,7 +665,6 @@ export async function publishBaseline(
       .eq('id', sessionId)
       .single();
     if (session?.parser_version === 'v2') {
-      const { publishBaselineV2 } = await import('./publishBaselineV2');
       return publishBaselineV2(sessionId, projectId);
     }
 

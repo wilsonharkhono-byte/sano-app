@@ -9,6 +9,8 @@
     "web": "expo start --web",
     "sync:materials": "node tools/syncMaterialCatalog.mjs",
     "sync:materials:watch": "node tools/syncMaterialCatalog.mjs --watch",
+    "normalize:boq": "tsx --env-file=.env tools/normalizer/cli.ts",
+    "normalize:boq:det": "tsx tools/normalizer/cli-deterministic.ts",
     "test": "jest"
   },
   "dependencies": {
@@ -59,6 +61,7 @@
     "@types/react": "~19.1.10",
     "jest": "^30.3.0",
     "ts-jest": "^29.4.6",
+    "tsx": "^4.22.3",
     "typescript": "^5.5.0"
   },
   "jest": {
