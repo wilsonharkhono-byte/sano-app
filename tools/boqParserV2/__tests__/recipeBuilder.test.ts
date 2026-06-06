@@ -26,6 +26,7 @@ describe('buildRecipe', () => {
     {
       title: 'Pengecoran Beton Readymix (KHUSUS POER)',
       titleRow: 77,
+      titleAddress: 'B77',
       jumlahRow: 89,
       jumlahCachedValue: 2428240.77,
       grandTotalAddress: 'I89',

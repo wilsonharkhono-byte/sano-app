@@ -9,6 +9,7 @@ function mockBlock(
   return {
     title,
     titleRow: 1,
+    titleAddress: 'B1',
     jumlahRow: 10,
     jumlahCachedValue: jumlah,
     grandTotalAddress: null,
