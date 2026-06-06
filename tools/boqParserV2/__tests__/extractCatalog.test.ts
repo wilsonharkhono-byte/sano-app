@@ -110,4 +110,30 @@ describe('extractCatalogRows', () => {
     const { cells } = await harvestWorkbook(wb);
     expect(extractCatalogRows(cells, ['Material'])).toEqual([]);
   });
+
+  describe('catalog provenance', () => {
+    it('records sourceSheet and nameAddress for each material row', async () => {
+      const wb = await buildFixtureBuffer([
+        {
+          name: 'Material',
+          cells: [
+            { address: 'A1', value: 'Kode' },
+            { address: 'B1', value: 'Uraian' },
+            { address: 'C1', value: 'Satuan' },
+            { address: 'D1', value: 'Harga' },
+            { address: 'A2', value: 'M001' },
+            { address: 'B2', value: 'Semen PC' },
+            { address: 'C2', value: 'zak' },
+            { address: 'D2', value: 65000 },
+          ],
+        },
+      ]);
+      const { cells } = await harvestWorkbook(wb);
+      const rows = extractCatalogRows(cells, ['Material']);
+      const semen = rows.find(r => r.name === 'Semen PC');
+      expect(semen).toBeDefined();
+      expect(semen!.sourceSheet).toBe('Material');
+      expect(semen!.nameAddress).toBe('B2');
+    });
+  });
 });

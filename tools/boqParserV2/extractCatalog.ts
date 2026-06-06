@@ -7,6 +7,8 @@ export interface CatalogRow {
   unit: string;
   reference_unit_price: number;
   sourceRow: number;
+  sourceSheet: string;
+  nameAddress: string | null;   // A1 address of the name cell, e.g. "B2"
 }
 
 function cellText(c: HarvestedCell | undefined): string {
@@ -102,7 +104,8 @@ export function extractCatalogRows(
       const cols = byRow.get(row);
       if (!cols) continue;
 
-      const name = cellText(cols.get(colMap.name));
+      const nameCell = cols.get(colMap.name);
+      const name = cellText(nameCell);
       if (!name || name.length < 2) continue;
 
       const unit = cellText(cols.get(colMap.unit));
@@ -118,6 +121,8 @@ export function extractCatalogRows(
         unit,
         reference_unit_price: price,
         sourceRow: row,
+        sourceSheet: sheet,
+        nameAddress: nameCell ? nameCell.address : null,
       });
     }
   }
