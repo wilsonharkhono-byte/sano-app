@@ -178,7 +178,12 @@ export async function parseBoqV2(
     stagingRows.push({
       row_type: 'material',
       row_number: ++rowNumber,
-      raw_data: { sourceRow: m.sourceRow },
+      raw_data: {
+        sourceRow: m.sourceRow,
+        source_sheet: m.sourceSheet,
+        source_row: m.sourceRow,
+        source_cell: m.nameAddress,
+      },
       parsed_data: {
         code: m.code,
         name: m.name,
@@ -308,6 +313,9 @@ export async function parseBoqV2(
         titleRow: block.titleRow,
         jumlahRow: block.jumlahRow,
         grandTotalAddress: block.grandTotalAddress,
+        source_sheet: analisaSheet,
+        source_row: block.titleRow,
+        source_cell: block.titleAddress,
       },
       parsed_data: {
         title: block.title,
@@ -361,7 +369,13 @@ export async function parseBoqV2(
       stagingRows.push({
         row_type: 'ahs',
         row_number: ++rowNumber,
-        raw_data: { sourceRow: compRow, blockTitle: block.title },
+        raw_data: {
+          sourceRow: compRow,
+          blockTitle: block.title,
+          source_sheet: eCell.sheet,
+          source_row: compRow,
+          source_cell: `D${compRow}`,
+        },
         parsed_data: {
           material_name: materialName,
           unit: unit,
@@ -390,6 +404,9 @@ export async function parseBoqV2(
         subChapter: b.sub_chapter,
         subChapterLetter: b.sub_chapter_letter,
         isSubItem: b.is_sub_item,
+        source_sheet: b.source_sheet,
+        source_row: b.sourceRow,
+        source_cell: `A${b.sourceRow}`,
       },
       parsed_data: {
         code: b.code,
