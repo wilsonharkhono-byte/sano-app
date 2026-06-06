@@ -31,6 +31,7 @@ import { applyAIBoqGrouping } from '../../tools/ai-assist';
 import { supabase } from '../../tools/supabase';
 import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools/types';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
+import { sourceLocation, sourceContext } from '../../tools/sourceProvenance';
 
 type ScreenView = 'sessions' | 'review' | 'anomalies' | 'detail';
 
@@ -996,9 +997,13 @@ export default function BaselineScreen({
               <Card key={row.id} borderColor={row.needs_review ? COLORS.warning : COLORS.border}>
                 <View style={styles.rowHeader}>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.rowType}>{row.row_type.toUpperCase()} — Baris {row.row_number}</Text>
+                    <Text style={styles.sourceLoc}>📄 {sourceLocation(row)}</Text>
+                    {(() => {
+                      const ctx = sourceContext(row, stagingRows);
+                      return ctx ? <Text style={styles.sourceCtx}>{ctx}</Text> : null;
+                    })()}
                     <View style={styles.confRow}>
-                      <Text style={styles.hint}>Confidence: </Text>
+                      <Text style={styles.hint}>{row.row_type.toUpperCase()} · Confidence: </Text>
                       <Text style={[styles.confValue, { color: confidenceColor(row.confidence) }]}>
                         {(row.confidence * 100).toFixed(0)}%
                       </Text>
@@ -1051,7 +1056,7 @@ export default function BaselineScreen({
                 {editingRowId === row.id && (
                   <View style={styles.inlineEditor}>
                     <Text style={styles.inlineEditorTitle}>
-                      Editor Koreksi — {row.row_type.toUpperCase()} Baris {row.row_number}
+                      Editor Koreksi — 📄 {sourceLocation(row)}
                     </Text>
                     <Text style={styles.hint}>
                       {editingAnomalyId
@@ -1262,6 +1267,8 @@ const styles = StyleSheet.create({
   summaryValue: { fontSize: 20, fontFamily: FONTS.bold },
   rowHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
   rowType: { fontSize: TYPE.xs, fontFamily: FONTS.bold, textTransform: 'uppercase', letterSpacing: 0.5 },
+  sourceLoc: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 14, fontWeight: '700', color: COLORS.text },
+  sourceCtx: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2 },
   confRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
   confValue: { fontSize: TYPE.xs, fontFamily: FONTS.bold },
   dataPreview: { backgroundColor: 'rgba(0,0,0,0.03)', borderRadius: 4, padding: 8, marginTop: 8 },
