@@ -559,6 +559,11 @@ export default function BaselineScreen({
     [stagingRows, reviewFilter],
   );
 
+  const ahsBlockRows = useMemo(
+    () => stagingRows.filter(r => r.row_type === 'ahs_block'),
+    [stagingRows],
+  );
+
   const handlePublish = async () => {
     if (!activeSession || !project) return;
 
@@ -999,7 +1004,7 @@ export default function BaselineScreen({
                   <View style={{ flex: 1 }}>
                     <Text style={styles.sourceLoc}>📄 {sourceLocation(row)}</Text>
                     {(() => {
-                      const ctx = sourceContext(row, stagingRows);
+                      const ctx = sourceContext(row, ahsBlockRows);
                       return ctx ? <Text style={styles.sourceCtx}>{ctx}</Text> : null;
                     })()}
                     <View style={styles.confRow}>
@@ -1267,7 +1272,7 @@ const styles = StyleSheet.create({
   summaryValue: { fontSize: 20, fontFamily: FONTS.bold },
   rowHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
   rowType: { fontSize: TYPE.xs, fontFamily: FONTS.bold, textTransform: 'uppercase', letterSpacing: 0.5 },
-  sourceLoc: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 14, fontWeight: '700', color: COLORS.text },
+  sourceLoc: { fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: TYPE.base, fontWeight: '700', color: COLORS.text },
   sourceCtx: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2 },
   confRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
   confValue: { fontSize: TYPE.xs, fontFamily: FONTS.bold },
