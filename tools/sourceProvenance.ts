@@ -81,6 +81,8 @@ export function sourceContext(
       if (chapter && code) return `${chapter} › ${code}`;
       return code ?? chapter ?? null;
     }
+    case 'material':
+      return 'Katalog material';
     default:
       return null;
   }

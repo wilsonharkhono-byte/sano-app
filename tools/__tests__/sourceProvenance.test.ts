@@ -56,4 +56,9 @@ describe('sourceContext', () => {
     const boq = row({ row_type: 'boq', raw_data: { chapter: 'III.A.1' }, parsed_data: { code: 'III.A.1.2' } });
     expect(sourceContext(boq, [boq])).toBe('III.A.1 › III.A.1.2');
   });
+
+  it('labels a material row as catalog', () => {
+    const material = row({ row_type: 'material', raw_data: { source_sheet: 'Material', source_cell: 'B2' } });
+    expect(sourceContext(material, [material])).toBe('Katalog material');
+  });
 });
