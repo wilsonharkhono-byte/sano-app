@@ -3,6 +3,7 @@ import type { HarvestedCell } from './types';
 export interface AhsBlock {
   title: string;
   titleRow: number;
+  titleAddress: string | null;       // e.g. "B142" — the cell holding the title text
   jumlahRow: number;
   jumlahCachedValue: number;
   grandTotalAddress: string | null;  // e.g. "I150"
@@ -74,10 +75,11 @@ export function detectAhsBlocks(cells: HarvestedCell[], sheetName: string): AhsB
 
   for (let i = 0; i < sortedRows.length; i++) {
     const row = sortedRows[i];
-    const b = cellText(cellAt(row, 'B'));
-    const c = cellText(cellAt(row, 'C'));
-    const titleText = isTitleRow(b) ? b : isTitleRow(c) ? c : null;
-    if (!titleText) continue;
+    const bCell = cellAt(row, 'B');
+    const cCell = cellAt(row, 'C');
+    const titleCell = isTitleRow(cellText(bCell)) ? bCell : isTitleRow(cellText(cCell)) ? cCell : null;
+    if (!titleCell) continue;
+    const titleText = cellText(titleCell) as string;
 
     // Scan forward for Jumlah row. Standard Indonesian BoQ layout puts
     // "Jumlah" in col E (per v1 parser); other workbooks vary. Check every
@@ -122,6 +124,7 @@ export function detectAhsBlocks(cells: HarvestedCell[], sheetName: string): AhsB
     blocks.push({
       title: titleText.trim(),
       titleRow: row,
+      titleAddress: titleCell.address,
       jumlahRow,
       jumlahCachedValue: toNumber(jumlahF?.value),
       grandTotalAddress: jumlahI?.address ?? null,

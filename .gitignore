@@ -11,3 +11,6 @@ web-build/
 *.orig.*
 .DS_Store
 .vercel
+
+# Brainstorming visual companion (local mockups)
+.superpowers/

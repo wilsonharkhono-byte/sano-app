@@ -67,6 +67,26 @@ describe('detectAhsBlocks', () => {
     expect(blocks[0].jumlahCachedValue).toBe(85000);
   });
 
+  it('captures the title cell address', async () => {
+    const wb = await buildFixtureBuffer([
+      {
+        name: 'Analisa',
+        cells: [
+          { address: 'B142', value: '1 m3 Lantai Kerja' },
+          { address: 'B144', value: 'Semen PC' },
+          { address: 'E144', value: 1500000 },
+          { address: 'F144', value: 75000 },
+          { address: 'B150', value: 'Jumlah' },
+          { address: 'F150', formula: 'SUM(F142:F149)', result: 85000 },
+        ],
+      },
+    ]);
+    const { cells } = await harvestWorkbook(wb);
+    const blocks = detectAhsBlocks(cells, 'Analisa');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].titleAddress).toBe('B142');
+  });
+
   it('returns empty when no title rows present', async () => {
     const wb = await buildFixtureBuffer([
       { name: 'Analisa', cells: [{ address: 'B1', value: 'random' }] },
