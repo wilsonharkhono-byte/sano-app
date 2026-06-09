@@ -52,6 +52,19 @@ describe('sourceContext', () => {
     expect(sourceContext(orphanComp, [block, orphanComp])).toBe('Komponen AHS (blok induk tidak ditemukan)');
   });
 
+  it('does not attribute a component to a block whose sheet is unknown/different', () => {
+    // Block's row range (10-15) would contain the component's row 12, but the
+    // block carries no source_sheet — when the component's sheet IS known, a
+    // sheet mismatch must NOT be silently matched across sheets.
+    const unknownSheetBlock = row({
+      row_type: 'ahs_block',
+      raw_data: { titleRow: 10, jumlahRow: 15 },
+      parsed_data: { title: 'Block On Another Sheet', is_orphan: false, linked_boq_code: 'Z.9' },
+    });
+    const comp = row({ row_type: 'ahs', raw_data: { source_sheet: 'Analisa', source_row: 12 } });
+    expect(sourceContext(comp, [unknownSheetBlock, comp])).toBe('Komponen AHS (blok induk tidak ditemukan)');
+  });
+
   it('shows chapter › code for a BoQ row', () => {
     const boq = row({ row_type: 'boq', raw_data: { chapter: 'III.A.1' }, parsed_data: { code: 'III.A.1.2' } });
     expect(sourceContext(boq, [boq])).toBe('III.A.1 › III.A.1.2');
