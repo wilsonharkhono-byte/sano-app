@@ -32,6 +32,7 @@ import { supabase } from '../../tools/supabase';
 import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools/types';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import { sourceLocation, sourceContext } from '../../tools/sourceProvenance';
+import { flagExplanation, ACTION_CAPTIONS } from '../../tools/flagExplanation';
 
 type ScreenView = 'sessions' | 'review' | 'anomalies' | 'detail';
 
@@ -1020,6 +1021,16 @@ export default function BaselineScreen({
                   />
                 </View>
 
+                {(() => {
+                  const fx = flagExplanation(row);
+                  return fx ? (
+                    <View style={styles.flagCallout}>
+                      <Text style={styles.flagWhy}>❓ Kenapa dicek: {fx.why}</Text>
+                      <Text style={styles.flagSaran}>💡 Saran: {fx.saran}</Text>
+                    </View>
+                  ) : null;
+                })()}
+
                 {/* Show parsed data summary */}
                 {row.parsed_data && (
                   <View style={styles.dataPreview}>
@@ -1040,18 +1051,21 @@ export default function BaselineScreen({
                       onPress={() => handleReviewRow(row.id, 'APPROVED')}
                     >
                       <Text style={styles.reviewBtnText}>Setuju</Text>
+                      <Text style={styles.reviewBtnCaption}>{ACTION_CAPTIONS.setuju}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={[styles.reviewBtn, { backgroundColor: COLORS.critical }]}
                       onPress={() => handleReviewRow(row.id, 'REJECTED')}
                     >
                       <Text style={styles.reviewBtnText}>Tolak</Text>
+                      <Text style={styles.reviewBtnCaption}>{ACTION_CAPTIONS.tolak}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={[styles.reviewBtn, { backgroundColor: COLORS.warning }]}
                       onPress={() => startRowCorrection(row)}
                     >
                       <Text style={styles.reviewBtnText}>Koreksi</Text>
+                      <Text style={styles.reviewBtnCaption}>{ACTION_CAPTIONS.koreksi}</Text>
                     </TouchableOpacity>
                   </View>
                 )}
@@ -1324,6 +1338,17 @@ const styles = StyleSheet.create({
   reviewActions: { flexDirection: 'row', gap: SPACE.sm, marginTop: SPACE.sm + 2 },
   reviewBtn: { flex: 1, borderRadius: RADIUS, padding: 10, alignItems: 'center' },
   reviewBtnText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
+  reviewBtnCaption: { fontSize: 10, color: '#FFFFFF', opacity: 0.85, textAlign: 'center', marginTop: 2 },
+  flagCallout: {
+    backgroundColor: COLORS.surface,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.warning,
+    borderRadius: 6,
+    padding: 8,
+    marginTop: 8,
+  },
+  flagWhy: { fontSize: TYPE.sm, color: COLORS.text },
+  flagSaran: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2 },
   publishBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.sm, backgroundColor: COLORS.ok, borderRadius: RADIUS, padding: SPACE.base, marginTop: SPACE.base },
   publishText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.bold, textTransform: 'uppercase' },
   anomalyBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(255,152,0,0.08)', borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: 14, marginBottom: SPACE.md },
