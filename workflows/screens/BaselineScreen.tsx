@@ -1023,7 +1023,7 @@ export default function BaselineScreen({
 
                 {(() => {
                   const fx = flagExplanation(row);
-                  return fx ? (
+                  return fx && row.review_status === 'PENDING' ? (
                     <View style={styles.flagCallout}>
                       <Text style={styles.flagWhy}>❓ Kenapa dicek: {fx.why}</Text>
                       <Text style={styles.flagSaran}>💡 Saran: {fx.saran}</Text>
@@ -1344,8 +1344,8 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3,
     borderLeftColor: COLORS.warning,
     borderRadius: 6,
-    padding: 8,
-    marginTop: 8,
+    padding: SPACE.sm,
+    marginTop: SPACE.sm,
   },
   flagWhy: { fontSize: TYPE.sm, color: COLORS.text },
   flagSaran: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2 },
