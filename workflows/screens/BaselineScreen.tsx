@@ -1338,7 +1338,7 @@ const styles = StyleSheet.create({
   reviewActions: { flexDirection: 'row', gap: SPACE.sm, marginTop: SPACE.sm + 2 },
   reviewBtn: { flex: 1, borderRadius: RADIUS, padding: 10, alignItems: 'center' },
   reviewBtnText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
-  reviewBtnCaption: { fontSize: 10, color: '#FFFFFF', opacity: 0.85, textAlign: 'center', marginTop: 2 },
+  reviewBtnCaption: { fontSize: TYPE.xs, color: COLORS.textInverse, opacity: 0.85, textAlign: 'center', marginTop: 2 },
   flagCallout: {
     backgroundColor: COLORS.surface,
     borderLeftWidth: 3,
