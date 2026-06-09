@@ -316,6 +316,7 @@ export async function parseBoqV2(
         source_sheet: analisaSheet,
         source_row: block.titleRow,
         source_cell: block.titleAddress,
+        flag_reason: linkedBoqCode == null ? 'orphan_ahs_block' : undefined,
       },
       parsed_data: {
         title: block.title,
@@ -375,6 +376,7 @@ export async function parseBoqV2(
           source_sheet: eCell.sheet,
           source_row: compRow,
           source_cell: `D${compRow}`,
+          flag_reason: classification.cost_basis === 'literal' ? 'literal_component' : undefined,
         },
         parsed_data: {
           material_name: materialName,
