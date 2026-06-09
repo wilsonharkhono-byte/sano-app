@@ -32,7 +32,9 @@ export function flagExplanation(row: ImportStagingRow): FlagExplanation | null {
   if (!row.needs_review) return null;
   const raw = (row.raw_data ?? {}) as Record<string, unknown>;
   const reason = raw.flag_reason;
-  if (typeof reason === 'string' && reason in FLAG_COPY) return FLAG_COPY[reason];
+  if (typeof reason === 'string' && Object.prototype.hasOwnProperty.call(FLAG_COPY, reason)) {
+    return FLAG_COPY[reason];
+  }
   return GENERIC;
 }
 

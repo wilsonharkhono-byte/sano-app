@@ -36,6 +36,11 @@ describe('flagExplanation', () => {
     expect(fx!.saran).toContain('Periksa nilainya');
   });
 
+  it('treats prototype-inherited keys as an unknown reason (generic)', () => {
+    const fx = flagExplanation(row({ raw_data: { flag_reason: 'constructor' } }));
+    expect(fx!.why).toBe('Baris ini ditandai untuk dicek manual.');
+  });
+
   it('exposes static action captions', () => {
     expect(ACTION_CAPTIONS.setuju).toBe('pakai apa adanya di baseline');
     expect(ACTION_CAPTIONS.tolak).toBe('buang dari baseline');
