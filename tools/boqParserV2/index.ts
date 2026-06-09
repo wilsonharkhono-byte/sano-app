@@ -305,6 +305,7 @@ export async function parseBoqV2(
 
   for (const block of ahsBlocks) {
     const linkedBoqCode = resolveLinkedBoqCode(block);
+    const isOrphan = linkedBoqCode == null;
     const blockRowNumber = ++rowNumber;
     stagingRows.push({
       row_type: 'ahs_block',
@@ -316,7 +317,7 @@ export async function parseBoqV2(
         source_sheet: analisaSheet,
         source_row: block.titleRow,
         source_cell: block.titleAddress,
-        flag_reason: linkedBoqCode == null ? 'orphan_ahs_block' : undefined,
+        flag_reason: isOrphan ? 'orphan_ahs_block' : undefined,
       },
       parsed_data: {
         title: block.title,
@@ -339,8 +340,8 @@ export async function parseBoqV2(
           return true;
         })(),
       },
-      needs_review: linkedBoqCode == null,
-      confidence: linkedBoqCode == null ? 0.5 : 1,
+      needs_review: isOrphan,
+      confidence: isOrphan ? 0.5 : 1,
       review_status: 'PENDING',
       cost_basis: null,
       parent_ahs_staging_id: null,
@@ -355,6 +356,7 @@ export async function parseBoqV2(
       const gCell = lookup.get(`${eCell.sheet}!G${compRow}`) ?? null;
       const hCell = lookup.get(`${eCell.sheet}!H${compRow}`) ?? null;
       const classification = classifyComponent(eCell, fCell, gCell, hCell, lookup);
+      const isLiteral = classification.cost_basis === 'literal';
 
       // Analisa layout: B=coefficient, C=unit, D=material name, E=unit price
       const bCell = lookup.get(`${eCell.sheet}!B${compRow}`);
@@ -376,7 +378,7 @@ export async function parseBoqV2(
           source_sheet: eCell.sheet,
           source_row: compRow,
           source_cell: `D${compRow}`,
-          flag_reason: classification.cost_basis === 'literal' ? 'literal_component' : undefined,
+          flag_reason: isLiteral ? 'literal_component' : undefined,
         },
         parsed_data: {
           material_name: materialName,
@@ -384,8 +386,8 @@ export async function parseBoqV2(
           coefficient: coefficient,
           unit_price: unitPrice,
         },
-        needs_review: classification.cost_basis === 'literal',
-        confidence: classification.cost_basis === 'literal' ? 0.5 : 1,
+        needs_review: isLiteral,
+        confidence: isLiteral ? 0.5 : 1,
         review_status: 'PENDING',
         cost_basis: classification.cost_basis,
         parent_ahs_staging_id: null,
