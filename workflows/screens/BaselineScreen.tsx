@@ -33,6 +33,7 @@ import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import { sourceLocation, sourceContext } from '../../tools/sourceProvenance';
 import { flagExplanation, ACTION_CAPTIONS } from '../../tools/flagExplanation';
+import { groupReviewRows, subGroupByParentBlock, pendingRowIds } from '../../tools/flagGroups';
 
 type ScreenView = 'sessions' | 'review' | 'anomalies' | 'detail';
 
@@ -549,6 +550,34 @@ export default function BaselineScreen({
     } finally {
       setBulkApproving(false);
     }
+  };
+
+  // Per-group collapse state. A group key absent here uses the size default
+  // (>10 rows → collapsed) computed at render time.
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  const handleBatchReview = (ids: string[], status: 'APPROVED' | 'REJECTED') => {
+    if (ids.length === 0) return;
+    const verb = status === 'REJECTED' ? 'Tolak' : 'Setujui';
+    Alert.alert(
+      `${verb} ${ids.length} blok?`,
+      'Tindakan ini bisa diubah lagi sebelum publish.',
+      [
+        { text: 'Batal', style: 'cancel' },
+        {
+          text: verb,
+          style: status === 'REJECTED' ? 'destructive' : 'default',
+          onPress: async () => {
+            const res = await bulkReviewStagingRows(ids, status);
+            if (!res.success) { toast(`Gagal: ${res.error}`, 'critical'); return; }
+            const idSet = new Set(ids);
+            setStagingRows(prev => prev.map(r => (idSet.has(r.id) ? { ...r, review_status: status } : r)));
+            toast(`${res.count} blok ${status === 'REJECTED' ? 'ditolak' : 'disetujui'}`,
+              status === 'REJECTED' ? 'warning' : 'ok');
+          },
+        },
+      ],
+    );
   };
 
   // Rows shown in the review queue. 'exceptions' (default) surfaces only what
@@ -1146,7 +1175,46 @@ export default function BaselineScreen({
               </Card>
             )}
 
-            {visibleReviewRows.map(renderReviewCard)}
+            {reviewFilter === 'exceptions'
+              ? groupReviewRows(visibleReviewRows).map(group => {
+                  const pending = pendingRowIds(group.rows);
+                  const isCollapsed = collapsedGroups[group.key] ?? group.rows.length > 10;
+                  return (
+                    <View key={group.key} style={styles.reviewGroup}>
+                      <View style={styles.groupHeader}>
+                        <TouchableOpacity
+                          style={styles.groupHeaderMain}
+                          onPress={() => setCollapsedGroups(c => ({ ...c, [group.key]: !isCollapsed }))}
+                          accessibilityRole="button"
+                        >
+                          <Ionicons name={isCollapsed ? 'chevron-forward' : 'chevron-down'} size={16} color={COLORS.textSec} />
+                          <Text style={styles.groupHeaderTitle}>{group.label} — {group.rows.length} baris</Text>
+                        </TouchableOpacity>
+                        {group.batchable && pending.length > 0 && (
+                          <View style={styles.groupBatchBtns}>
+                            <TouchableOpacity onPress={() => handleBatchReview(pending, 'REJECTED')} style={styles.groupBatchReject}>
+                              <Text style={styles.groupBatchRejectText}>Tolak semua {pending.length}</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={() => handleBatchReview(pending, 'APPROVED')} style={styles.groupBatchApprove}>
+                              <Text style={styles.groupBatchApproveText}>Setujui semua {pending.length}</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+                      </View>
+                      {!isCollapsed && (
+                        group.key === 'literal_component'
+                          ? subGroupByParentBlock(group.rows).map(sub => (
+                              <View key={sub.title}>
+                                <Text style={styles.subGroupHeader}>{sub.title} ({sub.rows.length})</Text>
+                                {sub.rows.map(renderReviewCard)}
+                              </View>
+                            ))
+                          : group.rows.map(renderReviewCard)
+                      )}
+                    </View>
+                  );
+                })
+              : visibleReviewRows.map(renderReviewCard)}
 
             {stagingRows.length > 0 && (
               <TouchableOpacity style={styles.publishBtn} onPress={handlePublish} disabled={publishing}>
@@ -1388,4 +1456,14 @@ const styles = StyleSheet.create({
   normalizeBanner: { backgroundColor: COLORS.surface, borderRadius: RADIUS, padding: SPACE.base, marginBottom: SPACE.base, borderWidth: 1, borderColor: COLORS.border },
   normalizeBannerText: { fontSize: TYPE.sm, fontFamily: FONTS.regular, color: COLORS.text, marginBottom: SPACE.sm },
   normalizeBannerActions: { flexDirection: 'row', gap: SPACE.sm },
+  reviewGroup: { marginTop: SPACE.sm },
+  groupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: SPACE.sm, gap: SPACE.sm },
+  groupHeaderMain: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
+  groupHeaderTitle: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text, flexShrink: 1 },
+  groupBatchBtns: { flexDirection: 'row', gap: 6 },
+  groupBatchReject: { backgroundColor: COLORS.critical, borderRadius: 6, paddingVertical: 4, paddingHorizontal: 8 },
+  groupBatchRejectText: { fontSize: TYPE.xs, color: COLORS.textInverse, fontFamily: FONTS.semibold },
+  groupBatchApprove: { backgroundColor: COLORS.ok, borderRadius: 6, paddingVertical: 4, paddingHorizontal: 8 },
+  groupBatchApproveText: { fontSize: TYPE.xs, color: COLORS.textInverse, fontFamily: FONTS.semibold },
+  subGroupHeader: { fontSize: TYPE.xs, color: COLORS.textSec, fontFamily: FONTS.semibold, marginTop: SPACE.sm, marginBottom: 2 },
 });
