@@ -1470,7 +1470,7 @@ const styles = StyleSheet.create({
   normalizeBannerActions: { flexDirection: 'row', gap: SPACE.sm },
   reviewGroup: { marginTop: SPACE.sm },
   groupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: SPACE.sm, gap: SPACE.sm },
-  groupHeaderMain: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
+  groupHeaderMain: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, flex: 1 },
   groupHeaderTitle: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text, flexShrink: 1 },
   groupHeaderHint: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2 },
   groupBatchBtns: { flexDirection: 'row', gap: 6 },
