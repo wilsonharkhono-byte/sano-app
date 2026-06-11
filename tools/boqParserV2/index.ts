@@ -377,7 +377,10 @@ export async function parseBoqV2(
           blockTitle: block.title,
           source_sheet: eCell.sheet,
           source_row: compRow,
-          source_cell: `D${compRow}`,
+          // Anchor on the real material-name cell (col D) when it exists; fall
+          // back to the real price cell (eCell) rather than emitting a "D{row}"
+          // address that resolves to nothing.
+          source_cell: dCell ? dCell.address : eCell.address,
           flag_reason: isLiteral ? 'literal_component' : undefined,
         },
         parsed_data: {

@@ -41,7 +41,10 @@ function findContainingBlock(
     if (r.row_type !== 'ahs_block') continue;
     const rd = raw(r);
     const bSheet = str(rd.source_sheet);
-    if (sheet && bSheet && bSheet !== sheet) continue;
+    // When the component's sheet is known, the block must be on that exact
+    // sheet — a block with a different or unrecorded sheet is not a match
+    // (prevents cross-sheet mis-attribution).
+    if (sheet != null && bSheet !== sheet) continue;
     const t = num(rd.titleRow);
     const j = num(rd.jumlahRow);
     if (t != null && j != null && srow >= t && srow <= j) return r;
