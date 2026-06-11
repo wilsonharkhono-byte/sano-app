@@ -18,6 +18,12 @@ export const FLAG_GROUP_LABELS: Record<string, string> = {
   __other__: 'Lainnya',
 };
 
+// Optional one-line explanation rendered under a group header. Only the
+// batchable orphan group benefits from up-front context.
+export const FLAG_GROUP_HINTS: Record<string, string> = {
+  orphan_ahs_block: 'Resep harga ini ada di sheet Analisa, tapi tidak ada baris BoQ yang memakainya.',
+};
+
 // Fixed top-level order; only `orphan_ahs_block` supports batch actions.
 const GROUP_ORDER = ['orphan_ahs_block', 'literal_component', '__other__'] as const;
 const BATCHABLE = new Set<string>(['orphan_ahs_block']);

@@ -1,4 +1,4 @@
-import { groupReviewRows, subGroupByParentBlock, pendingRowIds, FLAG_GROUP_LABELS } from '../flagGroups';
+import { groupReviewRows, subGroupByParentBlock, pendingRowIds, FLAG_GROUP_LABELS, FLAG_GROUP_HINTS } from '../flagGroups';
 import type { ImportStagingRow } from '../types';
 
 function row(partial: Partial<ImportStagingRow>): ImportStagingRow {
@@ -52,5 +52,13 @@ describe('pendingRowIds', () => {
     const p = row({ id: 'p', review_status: 'PENDING' });
     const a = row({ id: 'a', review_status: 'APPROVED' });
     expect(pendingRowIds([p, a])).toEqual(['p']);
+  });
+});
+
+describe('FLAG_GROUP_HINTS', () => {
+  it('explains the orphan-block group on its header', () => {
+    expect(FLAG_GROUP_HINTS.orphan_ahs_block).toBe(
+      'Resep harga ini ada di sheet Analisa, tapi tidak ada baris BoQ yang memakainya.',
+    );
   });
 });

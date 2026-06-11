@@ -33,7 +33,7 @@ import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import { sourceLocation, sourceContext } from '../../tools/sourceProvenance';
 import { flagExplanation, ACTION_CAPTIONS } from '../../tools/flagExplanation';
-import { groupReviewRows, subGroupByParentBlock, pendingRowIds } from '../../tools/flagGroups';
+import { groupReviewRows, subGroupByParentBlock, pendingRowIds, FLAG_GROUP_HINTS } from '../../tools/flagGroups';
 
 type ScreenView = 'sessions' | 'review' | 'anomalies' | 'detail';
 
@@ -381,6 +381,7 @@ export default function BaselineScreen({
       getImportAnomalies(session.id),
     ]);
     setStagingRows(rows);
+    setCollapsedGroups({});
     setAnomalies(anomalyData);
     setLoading(false);
     setView('review');
@@ -555,6 +556,7 @@ export default function BaselineScreen({
   // Per-group collapse state. A group key absent here uses the size default
   // (>10 rows → collapsed) computed at render time.
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [batchReviewing, setBatchReviewing] = useState(false);
 
   const handleBatchReview = (ids: string[], status: 'APPROVED' | 'REJECTED') => {
     if (ids.length === 0) return;
@@ -568,12 +570,17 @@ export default function BaselineScreen({
           text: verb,
           style: status === 'REJECTED' ? 'destructive' : 'default',
           onPress: async () => {
-            const res = await bulkReviewStagingRows(ids, status);
-            if (!res.success) { toast(`Gagal: ${res.error}`, 'critical'); return; }
-            const idSet = new Set(ids);
-            setStagingRows(prev => prev.map(r => (idSet.has(r.id) ? { ...r, review_status: status } : r)));
-            toast(`${res.count} blok ${status === 'REJECTED' ? 'ditolak' : 'disetujui'}`,
-              status === 'REJECTED' ? 'warning' : 'ok');
+            setBatchReviewing(true);
+            try {
+              const res = await bulkReviewStagingRows(ids, status);
+              if (!res.success) { toast(`Gagal: ${res.error}`, 'critical'); return; }
+              const idSet = new Set(ids);
+              setStagingRows(prev => prev.map(r => (idSet.has(r.id) ? { ...r, review_status: status } : r)));
+              toast(`${res.count} blok ${status === 'REJECTED' ? 'ditolak' : 'disetujui'}`,
+                status === 'REJECTED' ? 'warning' : 'ok');
+            } finally {
+              setBatchReviewing(false);
+            }
           },
         },
       ],
@@ -1188,14 +1195,19 @@ export default function BaselineScreen({
                           accessibilityRole="button"
                         >
                           <Ionicons name={isCollapsed ? 'chevron-forward' : 'chevron-down'} size={16} color={COLORS.textSec} />
-                          <Text style={styles.groupHeaderTitle}>{group.label} — {group.rows.length} baris</Text>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.groupHeaderTitle}>{group.label} ({pending.length}/{group.rows.length})</Text>
+                            {FLAG_GROUP_HINTS[group.key] ? (
+                              <Text style={styles.groupHeaderHint}>{FLAG_GROUP_HINTS[group.key]}</Text>
+                            ) : null}
+                          </View>
                         </TouchableOpacity>
                         {group.batchable && pending.length > 0 && (
-                          <View style={styles.groupBatchBtns}>
-                            <TouchableOpacity onPress={() => handleBatchReview(pending, 'REJECTED')} style={styles.groupBatchReject}>
+                          <View style={[styles.groupBatchBtns, batchReviewing && { opacity: 0.5 }]}>
+                            <TouchableOpacity onPress={() => handleBatchReview(pending, 'REJECTED')} style={styles.groupBatchReject} disabled={batchReviewing}>
                               <Text style={styles.groupBatchRejectText}>Tolak semua {pending.length}</Text>
                             </TouchableOpacity>
-                            <TouchableOpacity onPress={() => handleBatchReview(pending, 'APPROVED')} style={styles.groupBatchApprove}>
+                            <TouchableOpacity onPress={() => handleBatchReview(pending, 'APPROVED')} style={styles.groupBatchApprove} disabled={batchReviewing}>
                               <Text style={styles.groupBatchApproveText}>Setujui semua {pending.length}</Text>
                             </TouchableOpacity>
                           </View>
@@ -1460,6 +1472,7 @@ const styles = StyleSheet.create({
   groupHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: SPACE.sm, gap: SPACE.sm },
   groupHeaderMain: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
   groupHeaderTitle: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text, flexShrink: 1 },
+  groupHeaderHint: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2 },
   groupBatchBtns: { flexDirection: 'row', gap: 6 },
   groupBatchReject: { backgroundColor: COLORS.critical, borderRadius: 6, paddingVertical: 4, paddingHorizontal: 8 },
   groupBatchRejectText: { fontSize: TYPE.xs, color: COLORS.textInverse, fontFamily: FONTS.semibold },
