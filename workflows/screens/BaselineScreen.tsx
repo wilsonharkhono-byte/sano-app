@@ -667,6 +667,153 @@ export default function BaselineScreen({
 
   const confidenceColor = (c: number) => c >= 0.9 ? COLORS.ok : c >= 0.7 ? COLORS.warning : COLORS.critical;
 
+  const renderReviewCard = (row: ImportStagingRow) => (
+    <Card key={row.id} borderColor={row.needs_review ? COLORS.warning : COLORS.border}>
+      <View style={styles.rowHeader}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.sourceLoc}>📄 {sourceLocation(row)}</Text>
+          {(() => {
+            const ctx = sourceContext(row, ahsBlockRows);
+            return ctx ? <Text style={styles.sourceCtx}>{ctx}</Text> : null;
+          })()}
+          <View style={styles.confRow}>
+            <Text style={styles.hint}>{row.row_type.toUpperCase()} · Confidence: </Text>
+            <Text style={[styles.confValue, { color: confidenceColor(row.confidence) }]}>
+              {(row.confidence * 100).toFixed(0)}%
+            </Text>
+          </View>
+        </View>
+        <Badge
+          flag={row.review_status === 'APPROVED' || row.review_status === 'MODIFIED' ? 'OK' : row.review_status === 'REJECTED' ? 'CRITICAL' : row.needs_review ? 'WARNING' : 'INFO'}
+          label={row.review_status}
+        />
+      </View>
+
+      {(() => {
+        const fx = flagExplanation(row);
+        return fx && row.review_status === 'PENDING' ? (
+          <View style={styles.flagCallout}>
+            <Text style={styles.flagWhy}>❓ Kenapa dicek: {fx.why}</Text>
+            <Text style={styles.flagSaran}>💡 Saran: {fx.saran}</Text>
+          </View>
+        ) : null;
+      })()}
+
+      {/* Show parsed data summary */}
+      {row.parsed_data && (
+        <View style={styles.dataPreview}>
+          {Object.entries(row.parsed_data as Record<string, unknown>).slice(0, 4).map(([key, val]) => (
+            <Text key={key} style={styles.dataLine}>
+              <Text style={{ fontWeight: '600' }}>{key}: </Text>
+              {String(val)}
+            </Text>
+          ))}
+        </View>
+      )}
+
+      {/* Review actions */}
+      {row.needs_review && row.review_status === 'PENDING' && (
+        <View style={styles.reviewActions}>
+          <TouchableOpacity
+            style={[styles.reviewBtn, { backgroundColor: COLORS.ok }]}
+            onPress={() => handleReviewRow(row.id, 'APPROVED')}
+          >
+            <Text style={styles.reviewBtnText}>Setuju</Text>
+            <Text style={styles.reviewBtnCaption}>{ACTION_CAPTIONS.setuju}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.reviewBtn, { backgroundColor: COLORS.critical }]}
+            onPress={() => handleReviewRow(row.id, 'REJECTED')}
+          >
+            <Text style={styles.reviewBtnText}>Tolak</Text>
+            <Text style={styles.reviewBtnCaption}>{ACTION_CAPTIONS.tolak}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.reviewBtn, { backgroundColor: COLORS.warning }]}
+            onPress={() => startRowCorrection(row)}
+          >
+            <Text style={styles.reviewBtnText}>Koreksi</Text>
+            <Text style={styles.reviewBtnCaption}>{ACTION_CAPTIONS.koreksi}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Inline koreksi editor — expands directly under the tapped
+          card, never jumps to the top of the list. */}
+      {editingRowId === row.id && (
+        <View style={styles.inlineEditor}>
+          <Text style={styles.inlineEditorTitle}>
+            Editor Koreksi — 📄 {sourceLocation(row)}
+          </Text>
+          <Text style={styles.hint}>
+            {editingAnomalyId
+              ? 'Koreksi ini berasal dari review anomali. Saat disimpan, anomali akan ditandai CORRECTED.'
+              : 'Ubah hasil parse sebelum baseline dipublish.'}
+          </Text>
+
+          {Object.entries((row.parsed_data ?? {}) as Record<string, unknown>).map(([key]) => {
+            const dropdownOptions = row.row_type === 'material' ? MATERIAL_DROPDOWNS[key] : null;
+            const label = fieldLabel(key);
+            const helperText = FIELD_HINTS[key];
+            return (
+              <View key={key} style={styles.editorField}>
+                <Text style={styles.editorLabel}>{label}</Text>
+                {helperText && (
+                  <Text style={styles.editorHint}>{helperText}</Text>
+                )}
+                {dropdownOptions ? (
+                  <View style={styles.pickerWrap}>
+                    <Picker
+                      selectedValue={editDraft[key] ?? ''}
+                      onValueChange={(val) => setEditDraft(prev => ({ ...prev, [key]: String(val) }))}
+                      style={styles.picker}
+                    >
+                      <Picker.Item label={`Pilih ${label}...`} value="" color={COLORS.textSec} />
+                      {key === 'tier'
+                        ? MATERIAL_TIER_OPTIONS.map(opt => (
+                            <Picker.Item key={opt.value} label={opt.label} value={opt.value} />
+                          ))
+                        : dropdownOptions.map(opt => (
+                            <Picker.Item key={opt} label={opt} value={opt} />
+                          ))}
+                    </Picker>
+                  </View>
+                ) : (
+                  <TextInput
+                    style={styles.editorInput}
+                    value={editDraft[key] ?? ''}
+                    onChangeText={(text) => setEditDraft(prev => ({ ...prev, [key]: text }))}
+                    placeholder={`Isi ${label}`}
+                    placeholderTextColor={COLORS.textSec}
+                  />
+                )}
+              </View>
+            );
+          })}
+
+          <View style={styles.reviewActions}>
+            <TouchableOpacity
+              style={[styles.reviewBtn, { backgroundColor: COLORS.ok }]}
+              onPress={handleSaveCorrection}
+            >
+              <Text style={styles.reviewBtnText}>Simpan Koreksi</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.reviewBtn, { backgroundColor: COLORS.textSec }]}
+              onPress={() => {
+                setEditingRowId(null);
+                setEditingAnomalyId(null);
+                setEditDraft({});
+              }}
+            >
+              <Text style={styles.reviewBtnText}>Batal</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+    </Card>
+  );
+
   return (
     <View style={styles.flex}>
       <Header />
@@ -999,152 +1146,7 @@ export default function BaselineScreen({
               </Card>
             )}
 
-            {visibleReviewRows.map(row => (
-              <Card key={row.id} borderColor={row.needs_review ? COLORS.warning : COLORS.border}>
-                <View style={styles.rowHeader}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.sourceLoc}>📄 {sourceLocation(row)}</Text>
-                    {(() => {
-                      const ctx = sourceContext(row, ahsBlockRows);
-                      return ctx ? <Text style={styles.sourceCtx}>{ctx}</Text> : null;
-                    })()}
-                    <View style={styles.confRow}>
-                      <Text style={styles.hint}>{row.row_type.toUpperCase()} · Confidence: </Text>
-                      <Text style={[styles.confValue, { color: confidenceColor(row.confidence) }]}>
-                        {(row.confidence * 100).toFixed(0)}%
-                      </Text>
-                    </View>
-                  </View>
-                  <Badge
-                    flag={row.review_status === 'APPROVED' || row.review_status === 'MODIFIED' ? 'OK' : row.review_status === 'REJECTED' ? 'CRITICAL' : row.needs_review ? 'WARNING' : 'INFO'}
-                    label={row.review_status}
-                  />
-                </View>
-
-                {(() => {
-                  const fx = flagExplanation(row);
-                  return fx && row.review_status === 'PENDING' ? (
-                    <View style={styles.flagCallout}>
-                      <Text style={styles.flagWhy}>❓ Kenapa dicek: {fx.why}</Text>
-                      <Text style={styles.flagSaran}>💡 Saran: {fx.saran}</Text>
-                    </View>
-                  ) : null;
-                })()}
-
-                {/* Show parsed data summary */}
-                {row.parsed_data && (
-                  <View style={styles.dataPreview}>
-                    {Object.entries(row.parsed_data as Record<string, unknown>).slice(0, 4).map(([key, val]) => (
-                      <Text key={key} style={styles.dataLine}>
-                        <Text style={{ fontWeight: '600' }}>{key}: </Text>
-                        {String(val)}
-                      </Text>
-                    ))}
-                  </View>
-                )}
-
-                {/* Review actions */}
-                {row.needs_review && row.review_status === 'PENDING' && (
-                  <View style={styles.reviewActions}>
-                    <TouchableOpacity
-                      style={[styles.reviewBtn, { backgroundColor: COLORS.ok }]}
-                      onPress={() => handleReviewRow(row.id, 'APPROVED')}
-                    >
-                      <Text style={styles.reviewBtnText}>Setuju</Text>
-                      <Text style={styles.reviewBtnCaption}>{ACTION_CAPTIONS.setuju}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.reviewBtn, { backgroundColor: COLORS.critical }]}
-                      onPress={() => handleReviewRow(row.id, 'REJECTED')}
-                    >
-                      <Text style={styles.reviewBtnText}>Tolak</Text>
-                      <Text style={styles.reviewBtnCaption}>{ACTION_CAPTIONS.tolak}</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.reviewBtn, { backgroundColor: COLORS.warning }]}
-                      onPress={() => startRowCorrection(row)}
-                    >
-                      <Text style={styles.reviewBtnText}>Koreksi</Text>
-                      <Text style={styles.reviewBtnCaption}>{ACTION_CAPTIONS.koreksi}</Text>
-                    </TouchableOpacity>
-                  </View>
-                )}
-
-                {/* Inline koreksi editor — expands directly under the tapped
-                    card, never jumps to the top of the list. */}
-                {editingRowId === row.id && (
-                  <View style={styles.inlineEditor}>
-                    <Text style={styles.inlineEditorTitle}>
-                      Editor Koreksi — 📄 {sourceLocation(row)}
-                    </Text>
-                    <Text style={styles.hint}>
-                      {editingAnomalyId
-                        ? 'Koreksi ini berasal dari review anomali. Saat disimpan, anomali akan ditandai CORRECTED.'
-                        : 'Ubah hasil parse sebelum baseline dipublish.'}
-                    </Text>
-
-                    {Object.entries((row.parsed_data ?? {}) as Record<string, unknown>).map(([key]) => {
-                      const dropdownOptions = row.row_type === 'material' ? MATERIAL_DROPDOWNS[key] : null;
-                      const label = fieldLabel(key);
-                      const helperText = FIELD_HINTS[key];
-                      return (
-                        <View key={key} style={styles.editorField}>
-                          <Text style={styles.editorLabel}>{label}</Text>
-                          {helperText && (
-                            <Text style={styles.editorHint}>{helperText}</Text>
-                          )}
-                          {dropdownOptions ? (
-                            <View style={styles.pickerWrap}>
-                              <Picker
-                                selectedValue={editDraft[key] ?? ''}
-                                onValueChange={(val) => setEditDraft(prev => ({ ...prev, [key]: String(val) }))}
-                                style={styles.picker}
-                              >
-                                <Picker.Item label={`Pilih ${label}...`} value="" color={COLORS.textSec} />
-                                {key === 'tier'
-                                  ? MATERIAL_TIER_OPTIONS.map(opt => (
-                                      <Picker.Item key={opt.value} label={opt.label} value={opt.value} />
-                                    ))
-                                  : dropdownOptions.map(opt => (
-                                      <Picker.Item key={opt} label={opt} value={opt} />
-                                    ))}
-                              </Picker>
-                            </View>
-                          ) : (
-                            <TextInput
-                              style={styles.editorInput}
-                              value={editDraft[key] ?? ''}
-                              onChangeText={(text) => setEditDraft(prev => ({ ...prev, [key]: text }))}
-                              placeholder={`Isi ${label}`}
-                              placeholderTextColor={COLORS.textSec}
-                            />
-                          )}
-                        </View>
-                      );
-                    })}
-
-                    <View style={styles.reviewActions}>
-                      <TouchableOpacity
-                        style={[styles.reviewBtn, { backgroundColor: COLORS.ok }]}
-                        onPress={handleSaveCorrection}
-                      >
-                        <Text style={styles.reviewBtnText}>Simpan Koreksi</Text>
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[styles.reviewBtn, { backgroundColor: COLORS.textSec }]}
-                        onPress={() => {
-                          setEditingRowId(null);
-                          setEditingAnomalyId(null);
-                          setEditDraft({});
-                        }}
-                      >
-                        <Text style={styles.reviewBtnText}>Batal</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                )}
-              </Card>
-            ))}
+            {visibleReviewRows.map(renderReviewCard)}
 
             {stagingRows.length > 0 && (
               <TouchableOpacity style={styles.publishBtn} onPress={handlePublish} disabled={publishing}>
