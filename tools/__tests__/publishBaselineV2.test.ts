@@ -119,7 +119,7 @@ describe('flattenBlock', () => {
       {
         row_number: 10,
         row_type: 'ahs' as const,
-        parsed_data: { material_name: 'Semen', unit_price: 75000 },
+        parsed_data: { material_name: 'Semen', unit: 'zak', unit_price: 75000 },
         cost_basis: 'catalog' as const,
         ref_cells: {
           unit_price: { sheet: 'Material', cell: 'D2', cached_value: 75000 },
@@ -136,6 +136,7 @@ describe('flattenBlock', () => {
     expect(lines.length).toBe(1);
     expect(lines[0].unit_price).toBe(75000);
     expect(lines[0].line_type).toBe('material');
+    expect(lines[0].unit).toBe('zak'); // unit carried through for the NOT NULL ahs_lines.unit column
   });
 
   it('emits 3 ahs_lines from a cross_ref cost_split', () => {
@@ -194,6 +195,7 @@ describe('flattenBlock', () => {
       {
         line_type: 'material',
         material_name: 'Semen',
+        unit: 'zak',
         unit_price: 75000,
         coefficient: 1,
         origin_parent_ahs_id: null,

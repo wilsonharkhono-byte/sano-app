@@ -77,6 +77,7 @@ export function topoSortBlocks(stagingRows: StagingRowV2[]): StagingRowV2[] {
 export interface FlattenedLine {
   line_type: 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
   material_name: string;
+  unit: string;
   unit_price: number;
   coefficient: number;
   origin_parent_ahs_id: string | null;
@@ -94,6 +95,7 @@ export function flattenBlock(
   const out: FlattenedLine[] = [];
   for (const c of components) {
     const materialName = pd(c, 'material_name', '');
+    const unit = pd(c, 'unit', '');
     const coefficient = toNumber(pd(c, 'coefficient', 1));
     const unitPriceRaw = toNumber(pd(c, 'unit_price', 0));
 
@@ -109,6 +111,7 @@ export function flattenBlock(
         out.push({
           line_type: 'material',
           material_name: materialName,
+          unit,
           unit_price: unitPrice,
           coefficient,
           origin_parent_ahs_id: null,
@@ -125,6 +128,7 @@ export function flattenBlock(
         out.push({
           line_type: 'material',
           material_name: materialName,
+          unit,
           unit_price: split.material,
           coefficient,
           origin_parent_ahs_id: null,
@@ -132,6 +136,7 @@ export function flattenBlock(
         out.push({
           line_type: 'labor',
           material_name: materialName,
+          unit,
           unit_price: split.labor,
           coefficient,
           origin_parent_ahs_id: null,
@@ -139,6 +144,7 @@ export function flattenBlock(
         out.push({
           line_type: 'equipment',
           material_name: materialName,
+          unit,
           unit_price: split.equipment,
           coefficient,
           origin_parent_ahs_id: null,
@@ -147,6 +153,7 @@ export function flattenBlock(
           out.push({
             line_type: 'prelim',
             material_name: materialName,
+            unit,
             unit_price: split.prelim,
             coefficient,
             origin_parent_ahs_id: null,
@@ -245,14 +252,17 @@ export async function publishBaselineV2(
 
   const rows = stagingRowsDB as unknown as StagingRowV2[];
 
-  // Translate DB uuids into row_number keys for topological sort
+  // Translate DB uuids into row_number keys for topological sort, and keep the
+  // reverse map so the nested-unfold breadcrumb (stored internally as
+  // "block:<row>") can be turned back into the parent block's staging uuid when
+  // we write ahs_lines.origin_parent_ahs_id (a uuid column).
   const blockRowNumberByUuid = new Map<string, number>();
+  const blockUuidByRowNumber = new Map<number, string>();
   for (const r of rows) {
     if (r.row_type === 'ahs_block') {
-      blockRowNumberByUuid.set(
-        (r as unknown as { id: string }).id,
-        r.row_number,
-      );
+      const id = (r as unknown as { id: string }).id;
+      blockRowNumberByUuid.set(id, r.row_number);
+      blockUuidByRowNumber.set(r.row_number, id);
     }
   }
   // Rewrite parent_ahs_staging_id from uuid form (DB) back to block:<row_number>
@@ -365,7 +375,15 @@ export async function publishBaselineV2(
     (boqData ?? []).map(b => [b.code as string, b.id as string]),
   );
 
-  // Now write ahs_lines — one batch per block
+  // Now write ahs_lines — one batch per block.
+  //
+  // ahs_lines requires boq_item_id (NOT NULL, FK), tier (NOT NULL, 1|2|3) and
+  // unit (NOT NULL). We only emit lines for blocks that resolve to a real BoQ
+  // item: blocks not linked to any BoQ ("Blok harga tidak dipakai BoQ") and
+  // blocks whose BoQ was excluded (e.g. zero-volume) carry no baseline demand,
+  // and a nested parent's lines already flow into its linked child via
+  // flattenBlock — so skipping the standalone insert loses nothing. tier has no
+  // meaning for a disaggregated line, so we use the catalog base tier (1).
   const ahsLineInserts: Record<string, unknown>[] = [];
   for (const block of sortedBlocks) {
     const blockParsed = block.parsed_data as { title: string };
@@ -373,17 +391,24 @@ export async function publishBaselineV2(
     const linkedBoqCode = (block.parsed_data as { linked_boq_code?: string | null })
       .linked_boq_code;
     const linkedBoqId = linkedBoqCode ? boqIdByCode.get(linkedBoqCode) ?? null : null;
+    if (linkedBoqId == null) continue;
     for (const line of lines) {
+      // Breadcrumb is stored as "block:<row>"; resolve back to the parent
+      // block's staging uuid so it satisfies the uuid column (null otherwise).
+      const m = /^block:(\d+)$/.exec(line.origin_parent_ahs_id ?? '');
+      const originUuid = m ? blockUuidByRowNumber.get(Number(m[1])) ?? null : null;
       ahsLineInserts.push({
         ahs_version_id: ahsVersionId,
         boq_item_id: linkedBoqId,
+        tier: 1,
+        unit: line.unit || '',
         material_spec: line.material_name,
         coefficient: line.coefficient,
         unit_price: line.unit_price,
         line_type: line.line_type,
         description: line.material_name,
         ahs_block_title: blockParsed.title,
-        origin_parent_ahs_id: line.origin_parent_ahs_id ?? null,
+        origin_parent_ahs_id: originUuid,
       });
     }
   }
