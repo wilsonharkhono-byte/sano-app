@@ -34,6 +34,9 @@ export interface RowBreakdown {
     reconciles: boolean;
   };
   sourceSheet: string;             // e.g. "Breakdown IV.A.2.7"
+  // Non-empty when this row's BoQ code was auto-disambiguated due to a source
+  // numbering typo. Surfaced in the Recipe Index Notes column.
+  codeNote?: string;
 }
 
 export interface ReaderWarning {

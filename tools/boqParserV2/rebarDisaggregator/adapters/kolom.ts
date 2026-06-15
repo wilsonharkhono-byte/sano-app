@@ -98,7 +98,11 @@ function detectKolomHeader(cells: HarvestedCell[]): KolomHeader | null {
 export const kolomAdapter: RebarAdapter = {
   name: 'kolom',
   sheetName: SHEET,
-  prefixPattern: /^Kolom\s+(.+)$/i,
+  // "Kolom K174" and also shear walls "SW1"/"SW 2": shear-wall rebar is
+  // computed on the same Hasil-Kolom sheet (the BoQ row's Z-formula cites
+  // 'Hasil-Kolom'!W{row}), so they disaggregate through this adapter via the
+  // Z-hint. Without this, SW rows fall back to the "U24 & U40" pembesian lump.
+  prefixPattern: /^(?:Kolom\s+|SW\s*)(.+)$/i,
   lookupBreakdown(typeCode, cells, hint) {
     const header = detectKolomHeader(cells);
     if (!header) return null;

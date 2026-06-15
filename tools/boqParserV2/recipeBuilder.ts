@@ -47,6 +47,15 @@ function evalColumn(
   const res = evaluateFormula(cell, input.lookup, { targetSheet: input.analisaSheet });
   const components: RecipeComponent[] = res.components.map(c => {
     const block = findBlockFor(input.blocks, c.referencedCell, input.analisaSheet);
+    // Honor the truth-correctness contract: a quantity/cost we could not compute
+    // (NaN — e.g. produced by an unresolved Excel function in the formula) must
+    // stay visibly unresolved, never silently coerced to a confident 0. We keep
+    // the NaN so downstream review/reconciliation flags the row, and drop the
+    // confidence to 0 so it can never masquerade as a verified value.
+    const unresolved =
+      !Number.isFinite(c.coefficient) ||
+      !Number.isFinite(c.costContribution) ||
+      !Number.isFinite(c.unitPrice);
     return {
       sourceCell: c.sourceCell,
       referencedCell: c.referencedCell,
@@ -56,7 +65,7 @@ function evalColumn(
       unitPrice: c.unitPrice,
       costContribution: c.costContribution,
       lineType,
-      confidence: c.confidence * res.confidence,
+      confidence: unresolved ? 0 : c.confidence * res.confidence,
     };
   });
   return {

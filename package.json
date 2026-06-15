@@ -9,8 +9,9 @@
     "web": "expo start --web",
     "sync:materials": "node tools/syncMaterialCatalog.mjs",
     "sync:materials:watch": "node tools/syncMaterialCatalog.mjs --watch",
-    "normalize:boq": "tsx --env-file=.env tools/normalizer/cli.ts",
+    "normalize:boq": "env -u ANTHROPIC_API_KEY tsx --env-file=.env tools/normalizer/cli.ts",
     "normalize:boq:det": "tsx tools/normalizer/cli-deterministic.ts",
+    "normalize:boq:rollup": "tsx tools/normalizer/cli-rollup.ts",
     "test": "jest"
   },
   "dependencies": {

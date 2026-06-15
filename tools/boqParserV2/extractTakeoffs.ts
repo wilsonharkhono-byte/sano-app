@@ -24,6 +24,11 @@ export interface BoqRowV2 {
   sub_chapter_letter: string | null; // e.g. "A"
   is_sub_item: boolean;            // true when B starts with "-" under a sub-chapter
   recipe: BoqRowRecipe | null;
+  // Set by the defensive dedup guard when a source numbering typo forced this
+  // row's code to be auto-disambiguated (e.g. two source rows both numbered
+  // "5" -> "IX.5" / "IX.5b"). Null for the common case. Surfaced in the
+  // Recipe Index Notes column so the source workbook can be corrected.
+  code_note?: string | null;
 }
 
 function cellText(c: HarvestedCell | undefined): string {
@@ -148,6 +153,16 @@ export function extractBoqRows(
   // group's items collide on the same code (III.A.1 five times). Including
   // it as the third segment keeps codes unique across groups.
   let subSubChapterCounter = 0;
+  // Citraland (SPH 4) nests *named* subgroups ("Sloof Elevasi -0.80",
+  // "Sloof & Balok Lantai 1") UNDER a col-A numbered item ("2 Sloof & Balok").
+  // AAL-5 never did this: there the decorators ARE the numbered level, with no
+  // numeric col-A item above them. When a decorator appears while a numbered
+  // item is active (itemCounter > 0), we must keep the item number AND nest a
+  // subgroup ordinal beneath it (-> III.A.2.1.*, III.A.2.2.*) so the bullets
+  // under different subgroups don't collide on the parent item's code. This
+  // counter is only ever non-zero in that nested case, so AAL-5 codes are
+  // byte-for-byte unchanged.
+  let itemSubgroupCounter = 0;
   // AAL-5 (VII chapter) re-uses the same sub-chapter letter ("B") for two
   // consecutive sub-chapters, which would otherwise produce duplicate codes
   // across both groups. Track how many times we've seen each letter in the
@@ -175,6 +190,7 @@ export function extractBoqRows(
       itemCounter = 0;
       subItemCounter = 0;
       subSubChapterCounter = 0;
+      itemSubgroupCounter = 0;
       lettersInChapter = new Map();
       continue;
     }
@@ -190,6 +206,7 @@ export function extractBoqRows(
       itemCounter = 0;
       subItemCounter = 0;
       subSubChapterCounter = 0;
+      itemSubgroupCounter = 0;
       continue;
     }
 
@@ -207,12 +224,28 @@ export function extractBoqRows(
     if (!unit && planned <= 0) {
       if (/^\d+$/.test(aText)) {
         itemCounter = parseInt(aText, 10);
+        itemSubgroupCounter = 0;
         subItemCounter = 0;
+        // Use the numbered item's own title as the group label so bullets that
+        // sit DIRECTLY under it (no named decorator in between) don't inherit a
+        // stale label from the previous item. Citraland: "4 Plat lantai…" and
+        // "5 Dinding…" were both wrongly labelled "Kolom Lantai 1" carried over
+        // from item 3's last subgroup. A named decorator below still overrides
+        // this (Sloof/Kolom subgroups keep their specific names).
+        subChapterLabel = label;
         continue;
       }
       subChapterLabel = label;
-      subSubChapterCounter++;
-      itemCounter = 0;
+      if (itemCounter > 0) {
+        // Named subgroup nested under an active numbered item (Citraland
+        // shape). Preserve the item number; nest a subgroup ordinal so the
+        // bullets below encode as e.g. III.A.2.1.* and III.A.2.2.*.
+        itemSubgroupCounter++;
+      } else {
+        // Decorator IS the numbered level (legacy AAL-5 shape: "Poer :",
+        // "Sloof :", "Kolom :" directly under III.A with no numeric item).
+        subSubChapterCounter++;
+      }
       subItemCounter = 0;
       continue;
     }
@@ -229,6 +262,7 @@ export function extractBoqRows(
       if (subChapterLetter) parts.push(subChapterLetter);
       if (subSubChapterCounter > 0) parts.push(String(subSubChapterCounter));
       if (itemCounter > 0) parts.push(String(itemCounter));
+      if (itemSubgroupCounter > 0) parts.push(String(itemSubgroupCounter));
       parts.push(`${subItemCounter}`);
       code = parts.join('.');
     } else {
@@ -299,8 +333,32 @@ export function extractBoqRows(
       sub_chapter_letter: subChapterLetter,
       is_sub_item: isSubItem,
       recipe: null,
+      code_note: null,
     });
   }
+
+  // Defensive dedup guard. The structural derivation above keeps codes unique
+  // for well-formed RAB sheets, but a source workbook can still carry a
+  // genuine numbering typo — e.g. SPH 4 Sonny has rows 325 and 326 BOTH
+  // numbered "5" in col A, yielding "IX.5" twice. Silent collision would crash
+  // the breakdown writer and, worse, let a code-keyed consumer (SANO) merge
+  // two distinct line items. Append a disambiguation suffix to the 2nd+
+  // occurrence and record a note so the source can be corrected later.
+  const seenCodes = new Map<string, number>();
+  for (const r of out) {
+    const n = (seenCodes.get(r.code) ?? 0) + 1;
+    seenCodes.set(r.code, n);
+    if (n > 1) {
+      const original = r.code;
+      const suffix = String.fromCharCode(96 + n); // 2 -> "b", 3 -> "c", ...
+      r.code = `${original}${suffix}`;
+      r.code_note =
+        `Duplicate source code "${original}" at ${r.source_sheet}!A${r.sourceRow} ` +
+        `— auto-disambiguated to "${r.code}". Fix source numbering.`;
+      console.warn(`[extractTakeoffs] ${r.code_note}`);
+    }
+  }
+
   // sortedRowNums iteration is already in row order, but keep the sort as
   // a safety net if callers compose rows from multiple sources.
   return out.sort((a, b) => a.sourceRow - b.sourceRow);

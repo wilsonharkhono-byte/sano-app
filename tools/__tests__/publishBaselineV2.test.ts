@@ -1,6 +1,6 @@
 jest.mock('../supabase', () => ({ supabase: {} }));
 
-import { topoSortBlocks, flattenBlock, type FlattenedLine } from '../publishBaselineV2';
+import { topoSortBlocks, flattenBlock, findDuplicateBoqCodes, type FlattenedLine } from '../publishBaselineV2';
 
 describe('topoSortBlocks', () => {
   it('orders children after parents (deepest-first via reverse)', () => {
@@ -29,6 +29,43 @@ describe('topoSortBlocks', () => {
       { row_number: 20, row_type: 'ahs' as const, parent_ahs_staging_id: 'block:1', parsed_data: {} },
     ];
     expect(() => topoSortBlocks(stagingRows as never)).toThrow(/cycle/i);
+  });
+});
+
+describe('findDuplicateBoqCodes', () => {
+  const boq = (code: string) => ({
+    row_type: 'boq' as const,
+    parsed_data: { code },
+  });
+
+  it('returns empty when all BoQ codes are unique', () => {
+    const rows = [boq('III.A.2.1.1'), boq('III.A.2.2.1'), boq('IV.A.2.7')];
+    expect(findDuplicateBoqCodes(rows as never)).toEqual([]);
+  });
+
+  it('flags codes that appear more than once (stale-staging signature)', () => {
+    // Old parser collapsed "Sloof Elevasi -0.80" and "Sloof & Balok Lantai 1"
+    // onto the same codes — the exact shape that breaks the ON CONFLICT upsert.
+    const rows = [
+      boq('III.A.1.1'),
+      boq('III.A.1.1'),
+      boq('III.A.1.2'),
+      boq('III.A.1.2'),
+      boq('IV.A.2.7'),
+    ];
+    const dupes = findDuplicateBoqCodes(rows as never);
+    expect(dupes).toContain('III.A.1.1 (×2)');
+    expect(dupes).toContain('III.A.1.2 (×2)');
+    expect(dupes).not.toContain('IV.A.2.7 (×2)');
+  });
+
+  it('ignores non-boq staging rows', () => {
+    const rows = [
+      boq('III.A.2.1'),
+      { row_type: 'ahs' as const, parsed_data: { code: 'III.A.2.1' } },
+      { row_type: 'material' as const, parsed_data: { code: 'III.A.2.1' } },
+    ];
+    expect(findDuplicateBoqCodes(rows as never)).toEqual([]);
   });
 });
 

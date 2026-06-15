@@ -1,0 +1,2721 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SANO — Panduan Onboarding Tim Proyek</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --primary: #141210;
+  --accent: #B29F86;
+  --accent-dk: #7A6B56;
+  --bg: #D2D0C4;
+  --surface: #FDFAF6;
+  --surface-alt: #F2EFE9;
+  --text: #141210;
+  --text-sec: #524E49;
+  --text-muted: #847E78;
+  --border: #B5AFA8;
+  --border-sub: rgba(148,148,148,0.18);
+  --ok: #3D8B40; --ok-bg: rgba(61,139,64,0.08);
+  --info: #1565C0; --info-bg: rgba(21,101,192,0.08);
+  --warning: #E65100; --warning-bg: rgba(230,81,0,0.10);
+  --high: #BF360C; --high-bg: rgba(191,54,12,0.10);
+  --critical: #C62828; --critical-bg: rgba(198,40,40,0.08);
+  --accent-bg: rgba(178,159,134,0.12);
+  --text-inv: #FDFAF6;
+  --text-inv-sec: rgba(253,250,246,0.65);
+  --text-inv-muted: rgba(253,250,246,0.35);
+  --radius: 8px; --radius-sm: 5px; --radius-lg: 14px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body { width: 100%; height: 100%; }
+
+body {
+  font-family: 'Space Grotesk', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* === Slide Engine === */
+.deck {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.slide {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.4s ease;
+  overflow: hidden;
+}
+
+.slide.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.slide-content {
+  width: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: var(--surface);
+}
+
+.slide-header {
+  background: var(--primary);
+  padding: 28px 60px 24px;
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  border-bottom: 3px solid var(--accent);
+}
+
+.slide-tag {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--accent);
+  padding: 4px 10px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  flex-shrink: 0;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.slide-title {
+  font-size: 44px;
+  font-weight: 700;
+  color: var(--text-inv);
+  line-height: 1.1;
+}
+
+.slide-body {
+  padding: 36px 60px;
+  overflow: auto;
+  display: flex;
+  gap: 40px;
+}
+
+.slide-body.col-1 {
+  flex-direction: column;
+  gap: 24px;
+}
+
+.slide-body.col-2 {
+  flex-direction: row;
+  gap: 48px;
+}
+
+.slide-body.col-3 {
+  flex-direction: row;
+  gap: 32px;
+}
+
+.col {
+  flex: 1;
+}
+
+.col-narrow {
+  flex: 0 0 300px;
+}
+
+/* === Typography === */
+h1 {
+  font-size: 56px;
+  font-weight: 700;
+  color: var(--text-inv);
+  line-height: 1.1;
+}
+
+h2 {
+  font-size: 44px;
+  font-weight: 700;
+  color: var(--text-inv);
+  line-height: 1.1;
+}
+
+h3 {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+h4 {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text-sec);
+  margin-bottom: 8px;
+}
+
+p {
+  font-size: 18px;
+  color: var(--text-sec);
+  line-height: 1.55;
+  margin-bottom: 12px;
+}
+
+.lead {
+  font-size: 20px;
+  color: var(--text);
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+ul {
+  margin-left: 20px;
+  margin-bottom: 16px;
+}
+
+li {
+  font-size: 17px;
+  color: var(--text-sec);
+  margin-bottom: 6px;
+  line-height: 1.5;
+}
+
+/* === Flag Badges === */
+.flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.flag-ok { background: var(--ok-bg); color: var(--ok); }
+.flag-info { background: var(--info-bg); color: var(--info); }
+.flag-warning { background: var(--warning-bg); color: var(--warning); }
+.flag-high { background: var(--high-bg); color: var(--high); }
+.flag-critical { background: var(--critical-bg); color: var(--critical); }
+
+/* === Step List === */
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.step {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 13px 16px;
+  background: var(--surface-alt);
+  border-radius: var(--radius);
+  border-left: 3px solid var(--accent);
+}
+
+.step-num {
+  width: 28px;
+  height: 28px;
+  background: var(--accent);
+  color: var(--text-inv);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.step-content {
+  flex: 1;
+}
+
+.step-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+
+.step-desc {
+  font-size: 15px;
+  color: var(--text-sec);
+  line-height: 1.45;
+}
+
+/* === Table === */
+.sano-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 16px;
+}
+
+.sano-table th {
+  background: var(--primary);
+  color: var(--text-inv);
+  font-weight: 600;
+  padding: 10px 14px;
+  text-align: left;
+  font-size: 15px;
+}
+
+.sano-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-sub);
+  color: var(--text-sec);
+  vertical-align: top;
+  line-height: 1.4;
+}
+
+.sano-table tr:nth-child(even) td {
+  background: var(--surface-alt);
+}
+
+.sano-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* === Role Card === */
+.role-card {
+  background: var(--surface);
+  border: 1px solid var(--border-sub);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.role-card-top {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.role-icon {
+  width: 48px;
+  height: 48px;
+  background: var(--primary);
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.role-name {
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.role-device {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.role-desc {
+  font-size: 16px;
+  color: var(--text-sec);
+  line-height: 1.5;
+  flex-grow: 1;
+}
+
+.role-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.role-tab {
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  color: var(--text-sec);
+}
+
+/* === Phone Frame === */
+.phone-wrap {
+  display: flex;
+  justify-content: center;
+}
+
+.phone-frame {
+  width: 240px;
+  background: #1C1C1E;
+  border-radius: 40px;
+  padding: 10px 7px 0;
+  box-shadow: 0 24px 64px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(255,255,255,0.07);
+  flex-shrink: 0;
+}
+
+.phone-notch {
+  width: 80px;
+  height: 20px;
+  background: #1C1C1E;
+  border-radius: 0 0 12px 12px;
+  margin: 0 auto 4px;
+}
+
+.phone-status {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 14px 4px;
+  font-size: 9px;
+  color: rgba(255,255,255,0.45);
+}
+
+.phone-screen {
+  background: var(--surface);
+  border-radius: 28px 28px 0 0;
+  overflow: hidden;
+  min-height: 380px;
+  display: flex;
+  flex-direction: column;
+}
+
+.phone-screen-inner {
+  flex: 1;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  overflow: hidden;
+}
+
+.phone-header {
+  background: var(--primary);
+  padding: 10px 12px;
+  color: var(--text-inv);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.phone-tabs {
+  display: flex;
+  background: var(--surface-alt);
+  border-top: 1px solid var(--border);
+  padding: 6px 0 8px;
+  flex-shrink: 0;
+}
+
+.phone-tab {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.phone-tab.active {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.phone-tab-icon {
+  font-size: 17px;
+}
+
+/* === Info / Highlight Boxes === */
+.info-box {
+  background: var(--info-bg);
+  border: 1px solid rgba(21,101,192,0.2);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  font-size: 17px;
+  color: var(--info);
+  line-height: 1.5;
+}
+
+.accent-box {
+  background: var(--accent-bg);
+  border: 1px solid rgba(178,159,134,0.3);
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  font-size: 18px;
+  color: var(--accent-dk);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+/* === Problem Row === */
+.problem-row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-sub);
+}
+
+.problem-icon {
+  font-size: 24px;
+  flex-shrink: 0;
+}
+
+.problem-title {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 3px;
+}
+
+.problem-desc {
+  font-size: 16px;
+  color: var(--text-sec);
+}
+
+/* === Gate Chip === */
+.gate-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent);
+  color: var(--accent-dk);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 20px;
+}
+
+.gate-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* === Divider === */
+.divider {
+  height: 1px;
+  background: var(--border-sub);
+  margin: 16px 0;
+}
+
+/* === Cover Slide Specific === */
+.cover-left {
+  background: var(--primary);
+  display: flex;
+  flex-direction: column;
+  padding: 60px;
+  gap: 0;
+}
+
+.cover-left h1 {
+  margin-top: auto;
+  margin-bottom: 16px;
+}
+
+.cover-left p {
+  color: var(--text-inv-sec);
+  font-size: 20px;
+  margin-bottom: 0;
+}
+
+.cover-left-footer {
+  margin-top: auto;
+  font-size: 13px;
+  color: var(--text-inv-muted);
+}
+
+.cover-right {
+  background: var(--accent-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px;
+  gap: 40px;
+}
+
+.gate-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+  width: 100%;
+}
+
+.gate-box {
+  border: 1px solid rgba(178,159,134,0.3);
+  border-radius: var(--radius);
+  padding: 12px 20px;
+  text-align: center;
+  background: var(--surface);
+  font-size: 14px;
+  color: var(--text-sec);
+  min-width: 200px;
+  position: relative;
+}
+
+.gate-box .gate-num {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.gate-arrow {
+  color: var(--accent);
+  font-size: 20px;
+  height: 20px;
+  line-height: 1;
+}
+
+/* === TOC Specific === */
+.toc-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 48px;
+}
+
+.toc-section {
+  display: flex;
+  gap: 12px;
+}
+
+.toc-num {
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+  flex-shrink: 0;
+  width: 60px;
+  text-align: right;
+}
+
+.toc-content h4 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.toc-content ul {
+  list-style: none;
+  margin: 0;
+}
+
+.toc-content li {
+  font-size: 15px;
+  margin-bottom: 4px;
+  color: var(--text-sec);
+}
+
+.toc-content li span {
+  display: inline-block;
+  width: 60px;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-left: 8px;
+}
+
+/* === Comparison Table === */
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  margin-top: 16px;
+}
+
+.comparison-table th {
+  background: var(--primary);
+  color: var(--text-inv);
+  font-weight: 600;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.comparison-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-sub);
+  vertical-align: top;
+}
+
+.comparison-table tr:nth-child(even) td {
+  background: var(--surface-alt);
+}
+
+.before-cell {
+  color: #C62828;
+  font-weight: 600;
+}
+
+.after-cell {
+  color: #3D8B40;
+  font-weight: 600;
+}
+
+/* === Solution Cards === */
+.solution-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 16px 0;
+}
+
+.solution-card {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.solution-card-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.solution-card-text h4 {
+  font-size: 14px;
+  margin: 0 0 4px 0;
+}
+
+.solution-card-text p {
+  font-size: 13px;
+  margin: 0;
+  color: var(--text-muted);
+}
+
+/* === Role Flow Diagram === */
+.role-flow {
+  display: flex;
+  justify-content: space-around;
+  align-items: center;
+  margin: 20px 0;
+  gap: 16px;
+}
+
+.role-flow-box {
+  background: var(--surface-alt);
+  border: 1px solid var(--border-sub);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 100px;
+  text-align: center;
+}
+
+.role-flow-box.center {
+  background: var(--primary);
+  color: var(--text-inv);
+  min-width: 120px;
+}
+
+.role-flow-arrow {
+  color: var(--accent);
+  font-size: 18px;
+}
+
+/* === Grid Layout for 4 Cards === */
+.card-grid-4 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  width: 100%;
+}
+
+/* === Desktop Frame === */
+.desktop-frame {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.28);
+  border: 1px solid var(--border);
+}
+
+.desktop-titlebar {
+  background: #2A2A2A;
+  padding: 9px 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.traffic-lights {
+  display: flex;
+  gap: 6px;
+}
+
+.tl {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.tl-red { background: #FF5F57; }
+.tl-yellow { background: #FFBD2E; }
+.tl-green { background: #28C840; }
+
+.desktop-url {
+  background: rgba(255,255,255,0.08);
+  border-radius: 5px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+  margin-left: 10px;
+  flex: 1;
+}
+
+.desktop-body {
+  display: flex;
+  min-height: 320px;
+}
+
+.desktop-sidebar {
+  width: 160px;
+  background: var(--primary);
+  padding: 10px 0;
+  flex-shrink: 0;
+}
+
+.sidebar-item {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--text-inv-sec);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-item.active {
+  background: rgba(253,250,246,0.09);
+  color: var(--text-inv);
+  font-weight: 600;
+  border-left: 2px solid var(--accent);
+}
+
+.desktop-main {
+  flex: 1;
+  padding: 14px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.desktop-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--accent);
+}
+
+.d-list-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  background: var(--surface);
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--text-sec);
+  margin-bottom: 4px;
+  border: 1px solid var(--border-sub);
+}
+
+.d-card-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.d-card-val {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.phone-mockup-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.phone-mockup-header {
+  background: var(--primary);
+  color: var(--text-inv);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.phone-mockup-body {
+  flex: 1;
+  padding: 8px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.stat-card {
+  background: var(--surface-alt);
+  border: 1px solid var(--border-sub);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+.stat-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.stat-value {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.activity-item {
+  background: var(--surface);
+  border: 1px solid var(--border-sub);
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-sec);
+}
+
+.phone-mockup-tabs {
+  border-top: 1px solid var(--border);
+  display: flex;
+  padding: 4px 0 0;
+}
+
+.phone-mockup-tab {
+  flex: 1;
+  text-align: center;
+  padding: 4px;
+  font-size: 9px;
+  color: var(--text-muted);
+  border-top: 2px solid transparent;
+}
+
+.phone-mockup-tab.active {
+  color: var(--primary);
+  border-top-color: var(--primary);
+  font-weight: 600;
+}
+
+/* === Responsive Adjustments === */
+@media (max-height: 800px) {
+  .slide-header { padding: 20px 40px 16px; }
+  .slide-body { padding: 24px 40px; gap: 30px; }
+  .slide-title { font-size: 36px; }
+  h3 { font-size: 18px; }
+  p { font-size: 16px; }
+}
+
+</style>
+</head>
+<body>
+
+<div class="deck" id="deck">
+
+<!-- ===== SLIDE 1: COVER ===== -->
+<div class="slide slide-cover active" id="slide-1">
+  <div style="display: grid; grid-template-columns: 1fr 1fr; width: 100%; height: 100%;">
+
+    <!-- Left Column -->
+    <div class="cover-left">
+      <svg viewBox="0 0 315.66 87.26" fill="var(--text-inv)" style="width:160px;height:auto;margin-bottom:40px;">
+        <path d="M242.17,68.69c-5.62-.09-10.19-4.72-10.19-10.33v-13.92l7.32,7.32v6.6c0,1.63,1.31,2.98,2.92,3.01h51.59c1.59-.03,2.9-1.38,2.91-3.01V25.74c0-.87-.38-1.7-1.04-2.27-.53-.46-1.22-.73-1.92-.74h-51.52c-.69.01-1.37.27-1.9.74-.66.57-1.04,1.4-1.04,2.27v19.34l-7.32-7.32v-12.02c0-2.99,1.3-5.84,3.56-7.8,1.83-1.59,4.17-2.49,6.59-2.53h51.74c2.44.04,4.78.94,6.61,2.53,2.26,1.96,3.56,4.81,3.56,7.8v32.62c0,5.61-4.56,10.24-10.17,10.33h-51.7Z"/>
+        <path d="M26.17,45.71c-4.05,0-7.85-1.58-10.71-4.44-2.86-2.86-4.44-6.67-4.44-10.71s1.58-7.85,4.44-10.71,6.67-4.44,10.71-4.44h52.29v7.32H26.17c-4.32,0-7.83,3.51-7.83,7.83s3.51,7.83,7.83,7.83h7.74l-7.32,7.32h-.41Z"/>
+        <path d="M9.6,68.69l7.32-7.32h56.42c2.09,0,4.06-.81,5.54-2.29l1.92-1.92,5.84,4.52-2.58,2.58c-2.86,2.86-6.67,4.44-10.71,4.44H9.6Z"/>
+        <polygon points="166.3 68.69 122.96 25.35 100.6 47.71 94.76 43.19 122.96 14.99 176.66 68.69 166.3 68.69"/>
+        <path d="M110.91,68.69c-3.34,0-6.63-1.12-9.27-3.17l-23.51-18.18c-1.36-1.05-3.06-1.64-4.79-1.64h-40.06l7.32-7.32h32.74c3.34,0,6.63,1.12,9.27,3.17l23.51,18.18c1.36,1.05,3.06,1.64,4.79,1.64h38.69v7.32h-38.69Z"/>
+        <path d="M214.33,68.69c-2.76,0-5.36-1.07-7.31-3.03l-41.96-41.96c-.57-.57-1.32-.88-2.13-.88-.4,0-.78.08-1.15.23-1.13.47-1.86,1.56-1.86,2.78v18.25l-7.32-7.32v-10.92c0-4.19,2.5-7.94,6.38-9.55,1.26-.52,2.59-.79,3.95-.79,2.76,0,5.36,1.07,7.31,3.03l41.96,41.96c.57.57,1.32.88,2.13.88.4,0,.78-.08,1.15-.23,1.13-.47,1.86-1.56,1.86-2.78V15.4h7.32v42.95c0,4.19-2.5,7.94-6.38,9.55-1.26.52-2.59.79-3.95.79Z"/>
+      </svg>
+
+      <h1>Platform Kendali Proyek Konstruksi</h1>
+      <p class="lead">Panduan Onboarding Tim Proyek</p>
+
+      <div class="cover-left-footer">© 2025 SANO System</div>
+    </div>
+
+    <!-- Right Column -->
+    <div class="cover-right">
+      <div class="gate-flow">
+        <div class="gate-box">
+          <div class="gate-num">Gate 1</div>
+          Permintaan Material
+        </div>
+        <div class="gate-arrow">↓</div>
+        <div class="gate-box">
+          <div class="gate-num">Gate 2</div>
+          Validasi Harga & PO
+        </div>
+        <div class="gate-arrow">↓</div>
+        <div class="gate-box">
+          <div class="gate-num">Gate 3</div>
+          Penerimaan Barang
+        </div>
+        <div class="gate-arrow">↓</div>
+        <div class="gate-box">
+          <div class="gate-num">Gate 4</div>
+          Progres & Mutu
+        </div>
+        <div class="gate-arrow">↓</div>
+        <div class="gate-box">
+          <div class="gate-num">Gate 5</div>
+          Rekonsiliasi & Laporan
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ===== SLIDE 2: DAFTAR ISI ===== -->
+<div class="slide slide-content" id="slide-2">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">PANDUAN</span>
+      <h2 class="slide-title">Daftar Isi</h2>
+    </div>
+    <div class="slide-body col-1">
+      <div class="toc-grid">
+        <!-- Left Column -->
+        <div>
+          <div class="toc-section">
+            <div class="toc-num">1</div>
+            <div class="toc-content">
+              <h4>Mengapa SANO</h4>
+              <ul>
+                <li>Latar Belakang<span>Slide 3</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="divider" style="margin: 24px 0;"></div>
+
+          <div class="toc-section">
+            <div class="toc-num">2</div>
+            <div class="toc-content">
+              <h4>Pembagian Peran</h4>
+              <ul>
+                <li>4 Peran Utama<span>Slide 4</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="divider" style="margin: 24px 0;"></div>
+
+          <div class="toc-section">
+            <div class="toc-num">3</div>
+            <div class="toc-content">
+              <h4>Panduan per Peran</h4>
+              <ul>
+                <li>Supervisor<span>Slide 5–7</span></li>
+                <li>Estimator<span>Slide 8–9</span></li>
+                <li>Admin<span>Slide 10</span></li>
+                <li>Prinsipal<span>Slide 11</span></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right Column -->
+        <div>
+          <div class="toc-section">
+            <div class="toc-num">4</div>
+            <div class="toc-content">
+              <h4>Sistem 5 Gate</h4>
+              <ul>
+                <li>Alur Validasi Lengkap<span>Slide 12–17</span></li>
+              </ul>
+            </div>
+          </div>
+          <div class="divider" style="margin: 24px 0;"></div>
+
+          <div class="toc-section">
+            <div class="toc-num">5</div>
+            <div class="toc-content">
+              <h4>Referensi Cepat</h4>
+              <ul>
+                <li>Tips & Panduan<span>Slide 18</span></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SLIDE 3: MENGAPA SANO ===== -->
+<div class="slide slide-content" id="slide-3">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">LATAR BELAKANG</span>
+      <h2 class="slide-title">Mengapa SANO?</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col">
+        <h3>Masalah Lama</h3>
+        <div class="problem-row">
+          <div class="problem-icon">📊</div>
+          <div>
+            <div class="problem-title">Data Tersebar</div>
+            <div class="problem-desc">Chat pribadi, nota fisik, Excel berbeda versi</div>
+          </div>
+        </div>
+
+        <div class="problem-row">
+          <div class="problem-icon">🔍</div>
+          <div>
+            <div class="problem-title">Tidak Ada Jejak Audit</div>
+            <div class="problem-desc">Siapa setujui apa, kapan, dan mengapa tidak tercatat</div>
+          </div>
+        </div>
+
+        <div class="problem-row">
+          <div class="problem-icon">⏱</div>
+          <div>
+            <div class="problem-title">Validasi Manual & Lambat</div>
+            <div class="problem-desc">Setiap permintaan dicek manual tanpa deteksi anomali</div>
+          </div>
+        </div>
+
+        <div class="problem-row">
+          <div class="problem-icon">📋</div>
+          <div>
+            <div class="problem-title">Laporan Manual</div>
+            <div class="problem-desc">Data dikumpulkan dari berbagai sumber, rawan duplikasi</div>
+          </div>
+        </div>
+
+        <div class="problem-row">
+          <div class="problem-icon">👁</div>
+          <div>
+            <div class="problem-title">Visibilitas Terbatas</div>
+            <div class="problem-desc">Prinsipal tidak bisa lihat kondisi proyek real-time</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col">
+        <h3>Solusi SANO</h3>
+        <div class="solution-cards">
+          <div class="solution-card">
+            <div class="solution-card-icon">🗄</div>
+            <div class="solution-card-text">
+              <h4>Satu Sumber Kebenaran</h4>
+              <p>Database terpusat, data terstruktur</p>
+            </div>
+          </div>
+          <div class="solution-card">
+            <div class="solution-card-icon">👥</div>
+            <div class="solution-card-text">
+              <h4>Pembagian Peran Jelas</h4>
+              <p>Setiap orang tahu tugas mereka</p>
+            </div>
+          </div>
+          <div class="solution-card">
+            <div class="solution-card-icon">🚦</div>
+            <div class="solution-card-text">
+              <h4>Sistem 5 Gate</h4>
+              <p>Validasi otomatis setiap tahap</p>
+            </div>
+          </div>
+          <div class="solution-card">
+            <div class="solution-card-icon">📡</div>
+            <div class="solution-card-text">
+              <h4>Komunikasi Data</h4>
+              <p>Berbasis data, bukan chat</p>
+            </div>
+          </div>
+        </div>
+
+        <h3 style="margin-top: 24px;">Sebelum vs Sesudah</h3>
+        <table class="comparison-table">
+          <tr>
+            <th>Aspek</th>
+            <th>Sebelum</th>
+            <th>Dengan SANO</th>
+          </tr>
+          <tr>
+            <td>Data</td>
+            <td class="before-cell">❌ Tersebar</td>
+            <td class="after-cell">✅ Terpusat</td>
+          </tr>
+          <tr>
+            <td>Audit Trail</td>
+            <td class="before-cell">❌ Tidak ada</td>
+            <td class="after-cell">✅ Lengkap</td>
+          </tr>
+          <tr>
+            <td>Validasi</td>
+            <td class="before-cell">❌ Manual</td>
+            <td class="after-cell">✅ Otomatis</td>
+          </tr>
+          <tr>
+            <td>Laporan</td>
+            <td class="before-cell">❌ Manual</td>
+            <td class="after-cell">✅ Otomatis</td>
+          </tr>
+        </table>
+
+        <div class="accent-box" style="margin-top: 20px;">
+          "Input sederhana di lapangan, logika kuat di backend."
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SLIDE 4: PEMBAGIAN PERAN ===== -->
+<div class="slide slide-content" id="slide-4">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">PERAN</span>
+      <h2 class="slide-title">Pembagian Peran</h2>
+    </div>
+    <div class="slide-body col-1">
+      <div class="card-grid-4">
+        <div class="role-card">
+          <div class="role-card-top">
+            <div class="role-icon">📱</div>
+            <div>
+              <div class="role-name">Supervisor</div>
+              <div class="role-device">Handphone</div>
+            </div>
+          </div>
+          <div class="role-desc">Input data lapangan: permintaan material, penerimaan barang, progres harian, cacat & mutu.</div>
+          <div class="role-tabs">
+            <span class="role-tab">Beranda</span>
+            <span class="role-tab">Permintaan</span>
+            <span class="role-tab">Terima</span>
+            <span class="role-tab">Progres</span>
+            <span class="role-tab">Laporan</span>
+          </div>
+        </div>
+
+        <div class="role-card">
+          <div class="role-card-top">
+            <div class="role-icon">💻</div>
+            <div>
+              <div class="role-name">Estimator</div>
+              <div class="role-device">Komputer</div>
+            </div>
+          </div>
+          <div class="role-desc">Review, validasi & analisis: baseline BoQ/AHS, harga, opname mandor, performa proyek.</div>
+          <div class="role-tabs">
+            <span class="role-tab">Home</span>
+            <span class="role-tab">Approval</span>
+            <span class="role-tab">Harga</span>
+            <span class="role-tab">Katalog</span>
+            <span class="role-tab">Laporan</span>
+          </div>
+        </div>
+
+        <div class="role-card">
+          <div class="role-card-top">
+            <div class="role-icon">💻</div>
+            <div>
+              <div class="role-name">Admin</div>
+              <div class="role-device">Komputer</div>
+            </div>
+          </div>
+          <div class="role-desc">Operasional pengadaan: buat PO, kelola vendor, harga material, manajemen tim.</div>
+          <div class="role-tabs">
+            <span class="role-tab">Home</span>
+            <span class="role-tab">Approval</span>
+            <span class="role-tab">Harga</span>
+            <span class="role-tab">Katalog</span>
+            <span class="role-tab">Laporan</span>
+          </div>
+        </div>
+
+        <div class="role-card">
+          <div class="role-card-top">
+            <div class="role-icon">📱</div>
+            <div>
+              <div class="role-name">Prinsipal</div>
+              <div class="role-device">Handphone</div>
+            </div>
+          </div>
+          <div class="role-desc">Monitoring & keputusan: dashboard eksekutif, approval, audit laporan.</div>
+          <div class="role-tabs">
+            <span class="role-tab">Beranda</span>
+            <span class="role-tab">Approval</span>
+            <span class="role-tab">Laporan</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SLIDE 5: SUPERVISOR - NAVIGASI ===== -->
+<div class="slide slide-content" id="slide-5">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">SUPERVISOR</span>
+      <h2 class="slide-title">Supervisor — Navigasi & Tampilan</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col" style="flex: 0 0 55%;">
+        <h3>5 Tab Navigasi Utama</h3>
+        <table class="sano-table">
+          <thead>
+            <tr>
+              <th>Tab</th>
+              <th>Fungsi</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Beranda</strong></td>
+              <td>Dashboard ringkasan proyek, prioritas hari ini, shortcut</td>
+            </tr>
+            <tr>
+              <td><strong>Permintaan</strong></td>
+              <td>Ajukan permintaan material per item BoQ</td>
+            </tr>
+            <tr>
+              <td><strong>Terima</strong></td>
+              <td>Konfirmasi penerimaan barang dari PO aktif</td>
+            </tr>
+            <tr>
+              <td><strong>Progres</strong></td>
+              <td>Catat progres pemasangan, cacat, VO, rework, absensi</td>
+            </tr>
+            <tr>
+              <td><strong>Laporan</strong></td>
+              <td>Lihat dan export laporan PDF/Excel</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="info-box" style="margin-top: 20px;">
+          Supervisor menggunakan handphone. Tampilan dirancang untuk input cepat di lapangan.
+        </div>
+      </div>
+
+      <div class="col" style="flex: 0 0 45%; display: flex; justify-content: center;">
+        <div class="phone-wrap">
+          <div class="phone-frame">
+            <div class="phone-notch"></div>
+            <div class="phone-status">
+              <span>9:41</span>
+              <span>100%</span>
+            </div>
+            <div class="phone-screen">
+              <div class="phone-mockup-content">
+                <div class="phone-mockup-header">Beranda</div>
+                <div class="phone-mockup-body">
+                  <div style="background: var(--accent); height: 4px; border-radius: 2px; margin: 4px 0;"></div>
+                  <div style="font-size: 10px; color: var(--text-muted);">Progres: 68%</div>
+
+                  <div class="stat-card">
+                    <div class="stat-label">Pengiriman Menunggu</div>
+                    <div class="stat-value">2</div>
+                  </div>
+
+                  <div class="stat-card">
+                    <div class="stat-label">Cacat Terbuka</div>
+                    <div class="stat-value">5</div>
+                  </div>
+
+                  <div class="stat-card">
+                    <div class="stat-label">Milestone</div>
+                    <div class="stat-value">3 hari lagi</div>
+                  </div>
+
+                  <div style="font-size: 11px; font-weight: 600; color: var(--text); margin-top: 6px;">Aktivitas Terbaru</div>
+                  <div class="activity-item">✓ Diterima: Batu Bata (500 bh)</div>
+                  <div class="activity-item">! Cacat dilaporkan di Area B1</div>
+                  <div class="activity-item">→ Progres: Kolom 3</div>
+                </div>
+              </div>
+              <div class="phone-mockup-tabs">
+                <div class="phone-mockup-tab active">
+                  <div class="phone-tab-icon">🏠</div>
+                  <div>Beranda</div>
+                </div>
+                <div class="phone-mockup-tab">
+                  <div class="phone-tab-icon">📦</div>
+                  <div>Permintaan</div>
+                </div>
+                <div class="phone-mockup-tab">
+                  <div class="phone-tab-icon">📥</div>
+                  <div>Terima</div>
+                </div>
+                <div class="phone-mockup-tab">
+                  <div class="phone-tab-icon">📊</div>
+                  <div>Progres</div>
+                </div>
+                <div class="phone-mockup-tab">
+                  <div class="phone-tab-icon">📄</div>
+                  <div>Laporan</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SLIDE 6: SUPERVISOR - PERMINTAAN MATERIAL ===== -->
+<div class="slide slide-content" id="slide-6">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">SUPERVISOR</span>
+      <h2 class="slide-title">Cara Mengajukan Permintaan Material</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col">
+        <div class="steps">
+          <div class="step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <div class="step-title">Buka tab <strong>Permintaan</strong></div>
+              <div class="step-desc">Tap tab Permintaan di navigasi bawah layar handphone</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <div class="step-title">Pilih item BoQ</div>
+              <div class="step-desc">Sistem menampilkan daftar BoQ proyek yang sedang aktif</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">3</div>
+            <div class="step-content">
+              <div class="step-title">Lihat resep material dari AHS</div>
+              <div class="step-desc">Sistem otomatis menampilkan material yang dibutuhkan beserta kuantitas teoritis</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">4</div>
+            <div class="step-content">
+              <div class="step-title">Isi kuantitas, tanggal & urgensi</div>
+              <div class="step-desc">Bisa tambah beberapa baris material sekaligus dalam satu permintaan</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="steps">
+          <div class="step">
+            <div class="step-num">5</div>
+            <div class="step-content">
+              <div class="step-title">Material Custom (opsional)</div>
+              <div class="step-desc">Untuk material di luar daftar AHS, gunakan opsi "Material Custom"</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">6</div>
+            <div class="step-content">
+              <div class="step-title">Tambahkan catatan</div>
+              <div class="step-desc">Catatan khusus jika ada kondisi lapangan yang perlu disampaikan</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">7</div>
+            <div class="step-content">
+              <div class="step-title">Tekan <strong>Kirim</strong></div>
+              <div class="step-desc">Sistem langsung menjalankan validasi Gate 1 otomatis</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">8</div>
+            <div class="step-content">
+              <div class="step-title">Pantau status</div>
+              <div class="step-desc">Terkirim → Sedang Ditinjau → Diblokir / Disetujui</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="accent-box" style="margin-top: 16px;">
+          Sistem otomatis menjalankan validasi Gate 1. Lihat slide 13 untuk detail flag status.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SLIDE 7: SUPERVISOR - TERIMA & PROGRES ===== -->
+<div class="slide slide-content" id="slide-7">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">SUPERVISOR</span>
+      <h2 class="slide-title">Konfirmasi Penerimaan & Catat Progres</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col">
+        <h3>Konfirmasi Penerimaan Barang</h3>
+        <div class="steps">
+          <div class="step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <div class="step-title">Buka tab <strong>Terima</strong></div>
+              <div class="step-desc">Pilih PO yang barangnya datang</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <div class="step-title">Cek akumulasi</div>
+              <div class="step-desc">Sistem tampilkan sudah diterima berapa, sisa berapa</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">3</div>
+            <div class="step-content">
+              <div class="step-title">Masukkan kuantitas diterima kali ini</div>
+              <div class="step-desc">Bisa parsial atau full sesuai pengiriman</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">4</div>
+            <div class="step-content">
+              <div class="step-title">📸 Ambil foto bukti (WAJIB)</div>
+              <div class="step-desc">Foto kendaraan (GPS otomatis), foto material, foto surat jalan</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">5</div>
+            <div class="step-content">
+              <div class="step-title">Simpan</div>
+              <div class="step-desc">Sebagai Terima Parsial atau Terima Final</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="accent-box" style="margin-top: 16px;">
+          Satu PO bisa diterima dalam beberapa kali pengiriman. Sistem otomatis akumulasi.
+        </div>
+      </div>
+
+      <div class="col">
+        <h3>Catat Progres Harian</h3>
+        <div class="steps">
+          <div class="step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <div class="step-title">Buka tab <strong>Progres</strong></div>
+              <div class="step-desc">Pilih item BoQ yang dikerjakan hari ini</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <div class="step-title">Masukkan kuantitas terpasang</div>
+              <div class="step-desc">Lokasi, status pekerjaan, persentase progres</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">3</div>
+            <div class="step-content">
+              <div class="step-title">📸 Foto bukti pemasangan (wajib)</div>
+              <div class="step-desc">Tidak perlu before/after, tidak perlu GPS</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">4</div>
+            <div class="step-content">
+              <div class="step-title">Jika ada cacat</div>
+              <div class="step-desc">Tandai "Complete with Defect" → form cacat terbuka otomatis</div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="step-num">5</div>
+            <div class="step-content">
+              <div class="step-title">Tekan <strong>Simpan</strong></div>
+              <div class="step-desc">Data append-only, tidak bisa diubah/dihapus</div>
+            </div>
+          </div>
+        </div>
+
+        <p style="font-size: 14px; color: var(--text-muted); margin-top: 16px;">
+          Dari tab Progres juga bisa: Catat Perubahan (VO), Catat Rework, Isi Absensi Pekerja
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SLIDE 8: ESTIMATOR - NAVIGASI & TUGAS ===== -->
+<div class="slide slide-content" id="slide-8">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">ESTIMATOR</span>
+      <h2 class="slide-title">Estimator — Navigasi & Tugas Utama</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col">
+        <h3>Tampilan Office — 5 Tab Utama</h3>
+        <table class="sano-table">
+          <tr>
+            <th>Tab</th>
+            <th>Fungsi</th>
+          </tr>
+          <tr>
+            <td>Home</td>
+            <td>Manajemen proyek, undang user, atur tim</td>
+          </tr>
+          <tr>
+            <td>Approval</td>
+            <td>Review catatan perubahan, permintaan material, MTN</td>
+          </tr>
+          <tr>
+            <td>Harga</td>
+            <td>Validasi harga vendor (Gate 2), histori harga, benchmark</td>
+          </tr>
+          <tr>
+            <td>Katalog</td>
+            <td>Kelola katalog material: kode, tier, spesifikasi, harga supplier</td>
+          </tr>
+          <tr>
+            <td>Laporan</td>
+            <td>Laporan lengkap: progres, material, tenaga kerja, audit</td>
+          </tr>
+        </table>
+        <div class="divider"></div>
+        <h3>Menu Tersembunyi (dari workflow)</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;background:var(--surface-alt);">
+            <div style="font-size:20px;margin-bottom:8px;">📐</div>
+            <div style="font-weight:600;font-size:15px;margin-bottom:6px;">Baseline</div>
+            <div style="font-size:13px;color:var(--text-sec);">Upload BoQ & AHS, review mapping, publish baseline</div>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;background:var(--surface-alt);">
+            <div style="font-size:20px;margin-bottom:8px;">👷</div>
+            <div style="font-weight:600;font-size:15px;margin-bottom:6px;">Mandor</div>
+            <div style="font-size:13px;color:var(--text-sec);">Kontrak mandor, rate per BoQ, daftar pekerja</div>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;background:var(--surface-alt);">
+            <div style="font-size:20px;margin-bottom:8px;">💰</div>
+            <div style="font-weight:600;font-size:15px;margin-bottom:6px;">Opname</div>
+            <div style="font-size:13px;color:var(--text-sec);">Opname mingguan, waterfall pembayaran, kasbon</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="desktop-frame">
+          <div class="desktop-titlebar">
+            <div class="traffic-lights">
+              <div class="tl tl-red"></div>
+              <div class="tl tl-yellow"></div>
+              <div class="tl tl-green"></div>
+            </div>
+            <div class="desktop-url">sano.app/projects/PROJ-001</div>
+          </div>
+          <div class="desktop-body">
+            <div class="desktop-sidebar">
+              <div class="sidebar-item">🏠 Home</div>
+              <div class="sidebar-item active">✅ Approval</div>
+              <div class="sidebar-item">💰 Harga</div>
+              <div class="sidebar-item">📚 Katalog</div>
+              <div class="sidebar-item">📊 Laporan</div>
+            </div>
+            <div class="desktop-main">
+              <div class="desktop-section-title">Menunggu Review (3)</div>
+              <div class="d-list-row">
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:16px;">Catatan Perubahan</div>
+                  <div style="font-size:14px;color:var(--text-sec);margin-top:4px;">Revisi desain fondasi</div>
+                </div>
+                <span class="flag flag-warning" style="white-space:nowrap;">⚠ Warning</span>
+              </div>
+              <div class="d-list-row">
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:16px;">Permintaan Material</div>
+                  <div style="font-size:14px;color:var(--text-sec);margin-top:4px;">Besi Beton D16, 500 kg</div>
+                </div>
+                <span class="flag flag-info" style="white-space:nowrap;">ℹ Info</span>
+              </div>
+              <div class="d-list-row">
+                <div style="flex:1;">
+                  <div style="font-weight:600;font-size:16px;">MTN</div>
+                  <div style="font-size:14px;color:var(--text-sec);margin-top:4px;">Transfer pasir ke Site B</div>
+                </div>
+                <span class="flag flag-ok" style="white-space:nowrap;">✅ OK</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SLIDE 9: ESTIMATOR - OPNAME & REVIEW HARGA ===== -->
+<div class="slide slide-content" id="slide-9">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">ESTIMATOR</span>
+      <h2 class="slide-title">Estimator — Opname & Review Harga</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col">
+        <h3>Proses Opname Mingguan Mandor</h3>
+        <div class="steps">
+          <div class="step">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <div class="step-title">Buka Opname</div>
+              <div class="step-desc">dari menu tersembunyi di workflow Progres</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <div class="step-title">Hitung Klaim Otomatis</div>
+              <div class="step-desc">Sistem hitung klaim minggu ini dari data progres masuk</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">3</div>
+            <div class="step-content">
+              <div class="step-title">Review per Item</div>
+              <div class="step-desc">kuantitas terpasang × rate kontrak = subtotal</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">4</div>
+            <div class="step-content">
+              <div class="step-title">Hitung Waterfall</div>
+              <div class="step-desc">Sistem hitung waterfall pembayaran otomatis</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">5</div>
+            <div class="step-content">
+              <div class="step-title">Ajukan Opname</div>
+              <div class="step-desc">masuk approval queue</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+        <h3>Kelola Kasbon Mandor</h3>
+        <div style="display:flex;gap:12px;margin:16px 0;">
+          <div style="flex:1;padding:12px;background:var(--surface-alt);border-radius:var(--radius);text-align:center;border:2px solid var(--border);">
+            <div style="font-weight:600;font-size:14px;color:var(--text);">REQUESTED</div>
+          </div>
+          <div style="display:flex;align-items:center;color:var(--accent);">→</div>
+          <div style="flex:1;padding:12px;background:var(--surface-alt);border-radius:var(--radius);text-align:center;border:2px solid var(--border);">
+            <div style="font-weight:600;font-size:14px;color:var(--text);">APPROVED</div>
+          </div>
+          <div style="display:flex;align-items:center;color:var(--accent);">→</div>
+          <div style="flex:1;padding:12px;background:var(--surface-alt);border-radius:var(--radius);text-align:center;border:2px solid var(--border);">
+            <div style="font-weight:600;font-size:14px;color:var(--text);">SETTLED</div>
+          </div>
+        </div>
+        <p style="font-size:16px;">Kasbon otomatis terpotong dari opname berikutnya. Aging kasbon dipantau otomatis.</p>
+      </div>
+
+      <div class="col">
+        <h3>Waterfall Pembayaran Opname</h3>
+        <div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px;margin-bottom:20px;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border);">
+            <span style="font-weight:600;">BRUTO KLAIM</span>
+            <span style="font-weight:600;color:var(--text);">Rp 8.500.000</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border);">
+            <span style="color:var(--text-sec);">– Retensi (5%)</span>
+            <span style="color:var(--text-sec);">– Rp 425.000</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:12px;padding-bottom:12px;border-bottom:1px solid var(--border);">
+            <span style="color:var(--text-sec);">– Sudah Dibayar</span>
+            <span style="color:var(--text-sec);">– Rp 5.200.000</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border);">
+            <span style="color:var(--text-sec);">– Kasbon</span>
+            <span style="color:var(--text-sec);">– Rp 750.000</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;background:var(--accent);color:var(--text-inv);padding:12px;border-radius:var(--radius);font-weight:600;font-size:16px;">
+            <span>NET BAYAR</span>
+            <span>Rp 2.125.000</span>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+        <h3>Validasi Harga (Gate 2) — tab Harga</h3>
+        <p>Estimator melihat perbandingan harga vendor vs baseline, histori harga sebelumnya, dan alert deviasi signifikan. Jika deviasi HIGH/CRITICAL → wajib review sebelum PO bisa diterbitkan.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- slide 10 -->
+<div class="slide slide-content" id="slide-10">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">ADMIN</span>
+      <h2 class="slide-title">Admin — Navigasi & Pengadaan</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col">
+        <h3>Tugas Utama Admin</h3>
+        <div class="steps">
+          <div class="step">
+            <div class="step-num">1</div>
+            <div>
+              <div class="step-title">Kelola Tim & Proyek</div>
+              <div class="step-desc">buat proyek baru, undang user, atur peran (Supervisor/Estimator/Admin/Prinsipal)</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">2</div>
+            <div>
+              <div class="step-title">Proses Pengadaan</div>
+              <div class="step-desc">terima permintaan yang lolos Gate 1, bandingkan vendor, buat PO</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">3</div>
+            <div>
+              <div class="step-title">Kelola Katalog Material</div>
+              <div class="step-desc">kode, kategori, tier (Presisi/Bulk/Consumables), harga supplier</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">4</div>
+            <div>
+              <div class="step-title">Pantau Status PO</div>
+              <div class="step-desc">OPEN → PARTIAL RECEIVED → FULLY RECEIVED → CLOSED</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+        <div class="info-box">
+          Validasi harga (Gate 2) berjalan otomatis saat admin input harga. Jika deviasi WARNING ke atas, wajib tulis justifikasi.
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="desktop-frame">
+          <div class="desktop-titlebar">
+            <div class="traffic-lights">
+              <div class="tl tl-red"></div>
+              <div class="tl tl-yellow"></div>
+              <div class="tl tl-green"></div>
+            </div>
+            <div class="desktop-url">sano.app/projects/PROJ-001</div>
+          </div>
+          <div class="desktop-body">
+            <div class="desktop-sidebar">
+              <div class="sidebar-item">🏠 Home</div>
+              <div class="sidebar-item">✅ Approval</div>
+              <div class="sidebar-item active">💰 Harga</div>
+              <div class="sidebar-item">📚 Katalog</div>
+              <div class="sidebar-item">📊 Laporan</div>
+            </div>
+            <div class="desktop-main">
+              <div class="desktop-section-title">Purchase Order Baru</div>
+              <div class="d-list-row">
+                <div class="d-card-label">Material</div>
+                <div class="d-card-val">Besi Beton D13</div>
+              </div>
+              <div class="d-list-row">
+                <div class="d-card-label">Vendor</div>
+                <div class="d-card-val">PT. Baja Jaya Nusantara</div>
+              </div>
+              <div class="d-list-row">
+                <div class="d-card-label">Kuantitas</div>
+                <div class="d-card-val">250 kg</div>
+              </div>
+              <div class="d-list-row">
+                <div class="d-card-label">Harga/kg</div>
+                <div class="d-card-val">Rp 14.200</div>
+              </div>
+              <div class="d-list-row">
+                <div class="d-card-label">Total</div>
+                <div class="d-card-val" style="font-weight:600;font-size:16px;">Rp 3.550.000</div>
+              </div>
+              <div class="d-list-row">
+                <div class="d-card-label">Deviasi baseline</div>
+                <div class="d-card-val">+8.4%</div>
+              </div>
+              <div style="margin-top:12px;padding:12px;background:var(--warning-bg);border-radius:var(--radius);border-left:4px solid var(--warning);">
+                <span class="flag flag-warning">⚠ Warning</span>
+                <span style="font-size:14px;color:var(--text-sec);margin-left:8px;">Deviasi di atas normal — wajib justifikasi</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- slide 11 -->
+<div class="slide slide-content" id="slide-11">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">PRINSIPAL</span>
+      <h2 class="slide-title">Prinsipal — Dashboard & Approval</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col">
+        <h3>Dashboard Eksekutif (Beranda)</h3>
+        <table class="sano-table">
+          <tr>
+            <th>Bagian</th>
+            <th>Isi</th>
+          </tr>
+          <tr>
+            <td>Persetujuan Menunggu</td>
+            <td>Jumlah item yang butuh keputusan (catatan perubahan, MTN)</td>
+          </tr>
+          <tr>
+            <td>Ringkasan Hari Ini</td>
+            <td>Progres dicatat, penerimaan, kehadiran, catatan perubahan</td>
+          </tr>
+          <tr>
+            <td>Aktivitas Tim</td>
+            <td>Semua aktivitas tim 7 hari terakhir</td>
+          </tr>
+          <tr>
+            <td>Status Keuangan</td>
+            <td>Opname bulan ini vs lalu, PO outstanding, kasbon total</td>
+          </tr>
+          <tr>
+            <td>Progres vs Jadwal</td>
+            <td>Bar progres + status milestone: On Track / At Risk / Delayed</td>
+          </tr>
+          <tr>
+            <td>Cacat Terbuka</td>
+            <td>Cacat Critical/Major yang memblokir serah terima</td>
+          </tr>
+          <tr>
+            <td>Catatan Perubahan</td>
+            <td>VO pending/disetujui/ditolak, rework, total biaya</td>
+          </tr>
+        </table>
+
+        <div class="divider"></div>
+        <h3>Cara Melakukan Approval</h3>
+        <div class="steps">
+          <div class="step">
+            <div class="step-num">1</div>
+            <div>
+              <div class="step-title">Buka Tinjau Semua</div>
+              <div class="step-desc">dari Beranda atau buka tab Approval</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">2</div>
+            <div>
+              <div class="step-title">Pilih Item</div>
+              <div class="step-desc">Catatan Perubahan / Permintaan Material / MTN</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">3</div>
+            <div>
+              <div class="step-title">Baca Detail Lengkap</div>
+              <div class="step-desc">foto, deskripsi, dampak, histori</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">4</div>
+            <div>
+              <div class="step-title">Pilih Tindakan</div>
+              <div class="step-desc"><strong>Setujui</strong> / <strong>Tolak</strong> / <strong>Tahan</strong> + catatan</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col">
+        <div class="phone-frame">
+          <div class="phone-notch"></div>
+          <div class="phone-status">
+            <span>9:41</span>
+            <span style="display:flex;gap:4px;">📶 📡 🔋</span>
+          </div>
+          <div class="phone-header">Beranda</div>
+          <div class="phone-screen-inner">
+            <div style="background:var(--info-bg);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px;">
+              <div style="font-weight:600;font-size:15px;margin-bottom:4px;">Persetujuan Menunggu</div>
+              <div style="font-size:20px;font-weight:700;color:var(--info);margin-bottom:8px;">3 item menunggu</div>
+              <div style="font-size:13px;color:var(--text-sec);">→ Tinjau Semua</div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+              <div style="background:var(--surface-alt);border-radius:var(--radius);padding:12px;text-align:center;">
+                <div style="font-size:16px;font-weight:700;color:var(--primary);">4</div>
+                <div style="font-size:12px;color:var(--text-muted);">Progres</div>
+              </div>
+              <div style="background:var(--surface-alt);border-radius:var(--radius);padding:12px;text-align:center;">
+                <div style="font-size:16px;font-weight:700;color:var(--primary);">2</div>
+                <div style="font-size:12px;color:var(--text-muted);">Terima</div>
+              </div>
+              <div style="background:var(--surface-alt);border-radius:var(--radius);padding:12px;text-align:center;">
+                <div style="font-size:16px;font-weight:700;color:var(--primary);">18</div>
+                <div style="font-size:12px;color:var(--text-muted);">Hadir</div>
+              </div>
+              <div style="background:var(--surface-alt);border-radius:var(--radius);padding:12px;text-align:center;">
+                <div style="font-size:16px;font-weight:700;color:var(--primary);">1</div>
+                <div style="font-size:12px;color:var(--text-muted);">Perubahan</div>
+              </div>
+            </div>
+
+            <div style="background:var(--surface-alt);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:16px;">
+              <div style="font-weight:600;font-size:13px;margin-bottom:8px;">Status Keuangan</div>
+              <div style="font-size:13px;margin-bottom:4px;color:var(--text-sec);">Opname Juli: <span style="font-weight:600;color:var(--text);">Rp 42jt</span></div>
+              <div style="font-size:13px;color:var(--text-sec);">PO Outstanding: <span style="font-weight:600;color:var(--text);">3</span></div>
+            </div>
+
+            <div style="padding:12px;border-bottom:1px solid var(--border);margin-bottom:12px;">
+              <div style="font-size:13px;color:var(--text-sec);margin-bottom:4px;">Struktur Lantai 2</div>
+              <div style="font-weight:600;font-size:14px;">● On Track</div>
+            </div>
+
+            <div style="padding:12px;background:var(--critical-bg);border-radius:var(--radius);">
+              <div style="font-size:13px;color:var(--critical);">🔴 2 cacat Critical belum selesai</div>
+            </div>
+          </div>
+          <div class="phone-tabs">
+            <div class="phone-tab active">🏠 Beranda</div>
+            <div class="phone-tab">✅ Approval</div>
+            <div class="phone-tab">📄 Laporan</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- slide 12 -->
+<div class="slide slide-content" id="slide-12">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">SISTEM GATE</span>
+      <h2 class="slide-title">Sistem 5 Gate — Alur Kendali Proyek</h2>
+    </div>
+    <div class="slide-body col-1">
+      <p class="lead">SANO menggunakan sistem 5 Gate — lima pintu validasi yang memastikan setiap langkah tercatat, tervalidasi, dan bisa diaudit. Data mengalir dari satu gate ke gate berikutnya.</p>
+
+      <div style="display:flex;gap:8px;align-items:stretch;margin:24px 0;overflow-x:auto;">
+        <div style="flex:1;background:var(--surface-alt);border:2px solid var(--border);border-radius:var(--radius-lg);padding:16px 12px;text-align:center;min-width:160px;">
+          <div style="font-size:12px;font-weight:700;color:var(--accent);letter-spacing:1px;margin-bottom:8px;">GATE 1</div>
+          <div style="font-weight:600;font-size:15px;margin-bottom:8px;">Permintaan Material</div>
+          <div style="font-size:12px;color:var(--text-muted);">Supervisor + Estimator</div>
+        </div>
+        <div style="display:flex;align-items:center;color:var(--accent);font-size:24px;flex-shrink:0;padding:0 8px;">→</div>
+        <div style="flex:1;background:var(--surface-alt);border:2px solid var(--border);border-radius:var(--radius-lg);padding:16px 12px;text-align:center;min-width:160px;">
+          <div style="font-size:12px;font-weight:700;color:var(--accent);letter-spacing:1px;margin-bottom:8px;">GATE 2</div>
+          <div style="font-weight:600;font-size:15px;margin-bottom:8px;">Validasi Harga & PO</div>
+          <div style="font-size:12px;color:var(--text-muted);">Admin + Estimator + Prinsipal</div>
+        </div>
+        <div style="display:flex;align-items:center;color:var(--accent);font-size:24px;flex-shrink:0;padding:0 8px;">→</div>
+        <div style="flex:1;background:var(--surface-alt);border:2px solid var(--border);border-radius:var(--radius-lg);padding:16px 12px;text-align:center;min-width:160px;">
+          <div style="font-size:12px;font-weight:700;color:var(--accent);letter-spacing:1px;margin-bottom:8px;">GATE 3</div>
+          <div style="font-weight:600;font-size:15px;margin-bottom:8px;">Penerimaan Barang</div>
+          <div style="font-size:12px;color:var(--text-muted);">Supervisor</div>
+        </div>
+        <div style="display:flex;align-items:center;color:var(--accent);font-size:24px;flex-shrink:0;padding:0 8px;">→</div>
+        <div style="flex:1;background:var(--surface-alt);border:2px solid var(--border);border-radius:var(--radius-lg);padding:16px 12px;text-align:center;min-width:160px;">
+          <div style="font-size:12px;font-weight:700;color:var(--accent);letter-spacing:1px;margin-bottom:8px;">GATE 4</div>
+          <div style="font-weight:600;font-size:15px;margin-bottom:8px;">Progres & Mutu</div>
+          <div style="font-size:12px;color:var(--text-muted);">Supervisor + Estimator</div>
+        </div>
+        <div style="display:flex;align-items:center;color:var(--accent);font-size:24px;flex-shrink:0;padding:0 8px;">→</div>
+        <div style="flex:1;background:var(--surface-alt);border:2px solid var(--border);border-radius:var(--radius-lg);padding:16px 12px;text-align:center;min-width:160px;">
+          <div style="font-size:12px;font-weight:700;color:var(--accent);letter-spacing:1px;margin-bottom:8px;">GATE 5</div>
+          <div style="font-weight:600;font-size:15px;margin-bottom:8px;">Rekonsiliasi & Laporan</div>
+          <div style="font-size:12px;color:var(--text-muted);">Semua Peran</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:24px;">
+        <div>
+          <h3>Prinsip Dasar</h3>
+          <ul style="border-left:4px solid var(--accent);padding-left:16px;">
+            <li style="margin-bottom:12px;font-size:16px;color:var(--text-sec);">Data dari Gate sebelumnya menjadi input Gate berikutnya</li>
+            <li style="margin-bottom:12px;font-size:16px;color:var(--text-sec);">Setiap tahap memiliki aturan validasi otomatis</li>
+            <li style="font-size:16px;color:var(--text-sec);">Tidak ada langkah yang bisa dilewati</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Pelacakan End-to-End</h3>
+          <p style="font-size:16px;color:var(--text-sec);">Setiap material yang terpasang bisa dilacak penuh: siapa yang minta → berapa harga → kapan diterima → siapa yang pasang → berapa hasilnya.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- slide 13 -->
+<div class="slide slide-content" id="slide-13">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">GATE 1</span>
+      <h2 class="slide-title">Gate 1 — Permintaan Material</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col">
+        <h3>Proses Validasi Otomatis</h3>
+        <p style="font-size:16px;color:var(--text-sec);margin-bottom:16px;">Setelah supervisor kirim permintaan, sistem menjalankan 5 pengecekan otomatis:</p>
+        <table class="sano-table">
+          <tr>
+            <th>Pengecekan</th>
+            <th>Penjelasan</th>
+          </tr>
+          <tr>
+            <td>Sisa Kebutuhan Teoritis</td>
+            <td>Material Tier 1 (presisi: beton, besi): apakah masih dalam batas BoQ dikurangi yang sudah diminta/diterima?</td>
+          </tr>
+          <tr>
+            <td>Envelope Budget</td>
+            <td>Material Tier 2 (bulk: bata, pasir): apakah total masih dalam amplop anggaran?</td>
+          </tr>
+          <tr>
+            <td>Spend Cap</td>
+            <td>Material Tier 3 (consumables: paku, kawat): apakah masih dalam batas belanja?</td>
+          </tr>
+          <tr>
+            <td>Anomali Kecepatan</td>
+            <td>Apakah laju permintaan terlalu cepat dibanding progres pekerjaan?</td>
+          </tr>
+          <tr>
+            <td>Kewajaran Jadwal</td>
+            <td>Apakah permintaan sesuai milestone yang sedang aktif?</td>
+          </tr>
+        </table>
+      </div>
+
+      <div class="col">
+        <h3>Hasil Validasi — Flag Status</h3>
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px;padding:12px;background:var(--ok-bg);border-radius:var(--radius);">
+            <span style="font-weight:700;font-size:16px;">✅</span>
+            <div>
+              <div style="font-weight:600;font-size:15px;color:var(--ok);">OK</div>
+              <div style="font-size:14px;color:var(--text-sec);">permintaan wajar, langsung diproses ke pengadaan</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px;padding:12px;background:var(--info-bg);border-radius:var(--radius);">
+            <span style="font-weight:700;font-size:16px;">ℹ</span>
+            <div>
+              <div style="font-weight:600;font-size:15px;color:var(--info);">INFO</div>
+              <div style="font-size:14px;color:var(--text-sec);">ada catatan, tidak menghalangi proses</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px;padding:12px;background:var(--warning-bg);border-radius:var(--radius);">
+            <span style="font-weight:700;font-size:16px;">⚠</span>
+            <div>
+              <div style="font-weight:600;font-size:15px;color:var(--warning);">WARNING</div>
+              <div style="font-size:14px;color:var(--text-sec);">perlu perhatian estimator sebelum lanjut</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px;padding:12px;background:var(--high-bg);border-radius:var(--radius);">
+            <span style="font-weight:700;font-size:16px;">🔴</span>
+            <div>
+              <div style="font-weight:600;font-size:15px;color:var(--high);">HIGH</div>
+              <div style="font-size:14px;color:var(--text-sec);">perlu review dan justifikasi dari estimator</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:flex-start;gap:12px;padding:12px;background:var(--critical-bg);border-radius:var(--radius);">
+            <span style="font-weight:700;font-size:16px;">🚨</span>
+            <div>
+              <div style="font-weight:600;font-size:15px;color:var(--critical);">CRITICAL</div>
+              <div style="font-size:14px;color:var(--text-sec);">harus disetujui prinsipal sebelum bisa diproses</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+        <h3>Visibilitas per Peran</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+            <div style="font-size:16px;margin-bottom:8px;">👷</div>
+            <div style="font-weight:600;font-size:14px;margin-bottom:6px;">Supervisor</div>
+            <div style="font-size:12px;color:var(--text-sec);">hanya lihat status sederhana: Terkirim / Sedang Ditinjau / Diblokir / Disetujui</div>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+            <div style="font-size:16px;margin-bottom:8px;">📊</div>
+            <div style="font-weight:600;font-size:14px;margin-bottom:6px;">Estimator/Prinsipal</div>
+            <div style="font-size:12px;color:var(--text-sec);">detail lengkap: alasan flag, perbandingan baseline, histori permintaan</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- slide 14 -->
+<div class="slide slide-content" id="slide-14">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">GATE 2</span>
+      <h2 class="slide-title">Gate 2 — Validasi Harga & Pengadaan</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col">
+        <h3>Siapa yang Terlibat</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
+          <span style="background:var(--primary);color:var(--text-inv);padding:6px 12px;border-radius:20px;font-size:14px;font-weight:600;">Admin (creates PO)</span>
+          <span style="background:var(--accent);color:var(--text-inv);padding:6px 12px;border-radius:20px;font-size:14px;font-weight:600;">Estimator (reviews)</span>
+          <span style="background:var(--accent-dk);color:var(--text-inv);padding:6px 12px;border-radius:20px;font-size:14px;font-weight:600;">Prinsipal (approves)</span>
+        </div>
+
+        <div class="divider"></div>
+        <h3>Alur Proses Pengadaan</h3>
+        <div class="steps">
+          <div class="step">
+            <div class="step-num">1</div>
+            <div>
+              <div class="step-title">Permintaan Disetujui</div>
+              <div class="step-desc">Gate 1 → admin terima notifikasi</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">2</div>
+            <div>
+              <div class="step-title">Pilih Vendor</div>
+              <div class="step-desc">input harga penawaran di tab Harga</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">3</div>
+            <div>
+              <div class="step-title">Bandingkan Harga</div>
+              <div class="step-desc">vs baseline AHS, histori harga, konsistensi vendor</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">4</div>
+            <div>
+              <div class="step-title">Tandai Deviasi</div>
+              <div class="step-desc">dengan tingkat keparahan (lihat kanan)</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">5</div>
+            <div>
+              <div class="step-title">Tulis Justifikasi</div>
+              <div class="step-desc">WAJIB jika WARNING ke atas</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">6</div>
+            <div>
+              <div class="step-title">Terbitkan PO</div>
+              <div class="step-desc">setelah disetujui → daftar menunggu penerimaan (Gate 3)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col">
+        <h3>3 Pengecekan Harga</h3>
+        <div style="display:grid;gap:12px;margin-bottom:20px;">
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;background:var(--surface-alt);">
+            <div style="font-size:18px;margin-bottom:8px;">📊</div>
+            <div style="font-weight:600;font-size:15px;margin-bottom:4px;">Deviasi Baseline</div>
+            <div style="font-size:14px;color:var(--text-sec);">seberapa jauh harga aktual dari harga baseline AHS?</div>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;background:var(--surface-alt);">
+            <div style="font-size:18px;margin-bottom:8px;">📈</div>
+            <div style="font-weight:600;font-size:15px;margin-bottom:4px;">Histori Harga</div>
+            <div style="font-size:14px;color:var(--text-sec);">bagaimana dibanding pembelian sebelumnya?</div>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:14px;background:var(--surface-alt);">
+            <div style="font-size:18px;margin-bottom:8px;">🔍</div>
+            <div style="font-weight:600;font-size:15px;margin-bottom:4px;">Konsistensi Vendor</div>
+            <div style="font-size:14px;color:var(--text-sec);">apakah ada pola harga yang mencurigakan?</div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+        <div class="accent-box">
+          Tingkat deviasi ditandai dengan flag OK → INFO → WARNING → HIGH → CRITICAL. Detail flag lihat Gate 1 (slide 13).
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- slide 15 -->
+<div class="slide slide-content" id="slide-15">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">GATE 3</span>
+      <h2 class="slide-title">Gate 3 — Verifikasi Penerimaan Barang</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col">
+        <h3>Langkah Konfirmasi Penerimaan</h3>
+        <div class="steps">
+          <div class="step">
+            <div class="step-num">1</div>
+            <div>
+              <div class="step-title">Barang Datang</div>
+              <div class="step-desc">supervisor buka tab <strong>Terima</strong></div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">2</div>
+            <div>
+              <div class="step-title">Pilih PO</div>
+              <div class="step-desc">dari daftar PO aktif</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">3</div>
+            <div>
+              <div class="step-title">Lihat Akumulasi</div>
+              <div class="step-desc">sudah diterima berapa, sisa berapa</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">4</div>
+            <div>
+              <div class="step-title">Input Kuantitas</div>
+              <div class="step-desc">yang diterima kali ini</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">5</div>
+            <div>
+              <div class="step-title">Ambil Foto Bukti</div>
+              <div class="step-desc">📸 Foto kendaraan (GPS otomatis), foto material, foto surat jalan (ready mix)</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">6</div>
+            <div>
+              <div class="step-title">Tambah Catatan</div>
+              <div class="step-desc">jika ada perbedaan dari PO</div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-num">7</div>
+            <div>
+              <div class="step-title">Simpan Status</div>
+              <div class="step-desc"><strong>Terima Parsial</strong> (masih ada sisa) atau <strong>Terima Final</strong> (semua selesai)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col">
+        <h3>Status PO — Lifecycle</h3>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div style="padding:14px 16px;background:var(--surface-alt);border:2px solid var(--border);border-radius:var(--radius);text-align:left;">
+            <div style="font-weight:600;font-size:15px;margin-bottom:4px;">OPEN</div>
+            <div style="font-size:13px;color:var(--text-sec);">belum ada penerimaan sama sekali</div>
+          </div>
+          <div style="text-align:center;color:var(--accent);font-size:16px;">↓</div>
+          <div style="padding:14px 16px;background:var(--surface-alt);border:2px solid var(--border);border-radius:var(--radius);text-align:left;">
+            <div style="font-weight:600;font-size:15px;margin-bottom:4px;">PARTIAL RECEIVED</div>
+            <div style="font-size:13px;color:var(--text-sec);">sudah diterima sebagian, masih ada sisa</div>
+          </div>
+          <div style="text-align:center;color:var(--accent);font-size:16px;">↓</div>
+          <div style="padding:14px 16px;background:var(--surface-alt);border:2px solid var(--border);border-radius:var(--radius);text-align:left;">
+            <div style="font-weight:600;font-size:15px;margin-bottom:4px;">FULLY RECEIVED</div>
+            <div style="font-size:13px;color:var(--text-sec);">semua kuantitas PO sudah terkonfirmasi</div>
+          </div>
+          <div style="text-align:center;color:var(--accent);font-size:16px;">↓</div>
+          <div style="padding:14px 16px;background:var(--surface-alt);border:2px solid var(--border);border-radius:var(--radius);text-align:left;">
+            <div style="font-weight:600;font-size:15px;margin-bottom:4px;">CLOSED</div>
+            <div style="font-size:13px;color:var(--text-sec);">PO ditutup secara manual atau otomatis</div>
+          </div>
+        </div>
+
+        <div class="divider"></div>
+        <h3>Validasi Otomatis Sistem</h3>
+        <ul style="font-size:16px;color:var(--text-sec);">
+          <li style="margin-bottom:10px;">Quantity match: total diterima tidak melebihi jumlah PO</li>
+          <li style="margin-bottom:10px;">Kelengkapan foto: minimal 2 foto sebelum bisa simpan</li>
+          <li style="margin-bottom:10px;">Akumulasi: sistem hitung otomatis per pengiriman</li>
+          <li>Audit acak: sistem berkala pilih penerimaan untuk diperiksa lebih lanjut</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- slide 16 -->
+<div class="slide slide-content" id="slide-16">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">GATE 4</span>
+      <h2 class="slide-title">Gate 4 — Progres, Mutu & Perubahan</h2>
+    </div>
+    <div class="slide-body col-2">
+      <div class="col">
+        <h3>5 Jenis Data yang Dicatat</h3>
+        <div style="display:grid;gap:12px;">
+          <div style="border:1px solid var(--border-sub);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+            <strong style="color:var(--text);">📊 Progres Pemasangan</strong>
+            <p style="margin:6px 0 0 0;font-size:14px;color:var(--text-sec);">Pilih item BoQ → input kuantitas terpasang → foto bukti → simpan. Data append-only.</p>
+          </div>
+          <div style="border:1px solid var(--border-sub);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+            <strong style="color:var(--text);">🔴 Cacat (Punch List)</strong>
+            <p style="margin:6px 0 0 0;font-size:14px;color:var(--text-sec);">Dicatat dari tab Progres, siklus OPEN → VERIFIED.</p>
+          </div>
+          <div style="border:1px solid var(--border-sub);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+            <strong style="color:var(--text);">📝 Variation Order (VO)</strong>
+            <p style="margin:6px 0 0 0;font-size:14px;color:var(--text-sec);">Perubahan dari rencana awal: permintaan owner, revisi desain, kondisi tak terduga.</p>
+          </div>
+          <div style="border:1px solid var(--border-sub);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+            <strong style="color:var(--text);">🔄 Rework</strong>
+            <p style="margin:6px 0 0 0;font-size:14px;color:var(--text-sec);">Pekerjaan diulang. Dicatat terpisah karena mempengaruhi performa & biaya internal.</p>
+          </div>
+          <div style="border:1px solid var(--border-sub);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+            <strong style="color:var(--text);">📋 Absensi Pekerja</strong>
+            <p style="margin:6px 0 0 0;font-size:14px;color:var(--text-sec);">Daftar hadir harian per mandor, jam lembur, upah otomatis.</p>
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <h3>Siklus Hidup Cacat (Punch List)</h3>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div style="background:var(--ok-bg);color:var(--ok);padding:10px 14px;border-radius:var(--radius);text-align:center;">
+            <strong>OPEN</strong>
+          </div>
+          <div style="text-align:center;color:var(--text-muted);font-size:18px;">↓</div>
+          <div style="background:var(--info-bg);color:var(--info);padding:10px 14px;border-radius:var(--radius);text-align:center;">
+            <strong>VALIDATED</strong>
+          </div>
+          <div style="text-align:center;color:var(--text-muted);font-size:18px;">↓</div>
+          <div style="background:var(--warning-bg);color:var(--warning);padding:10px 14px;border-radius:var(--radius);text-align:center;">
+            <strong>IN REPAIR</strong>
+          </div>
+          <div style="text-align:center;color:var(--text-muted);font-size:18px;">↓</div>
+          <div style="background:var(--high-bg);color:var(--high);padding:10px 14px;border-radius:var(--radius);text-align:center;">
+            <strong>RESOLVED</strong>
+          </div>
+          <div style="text-align:center;color:var(--text-muted);font-size:18px;">↓</div>
+          <div style="background:var(--ok-bg);color:var(--ok);padding:10px 14px;border-radius:var(--radius);text-align:center;">
+            <strong>VERIFIED</strong>
+          </div>
+          <div style="text-align:center;color:var(--text-muted);font-size:18px;">↓</div>
+          <div style="background:var(--accent-bg);color:var(--accent-dk);padding:10px 14px;border-radius:var(--radius);text-align:center;">
+            <strong>ACCEPTED</strong>
+          </div>
+        </div>
+
+        <div class="divider" style="margin:16px 0;"></div>
+        <h3>Tingkat Keparahan</h3>
+        <div style="display:grid;gap:10px;">
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+            <div style="font-size:18px;margin-bottom:4px;">🟡</div>
+            <div style="font-weight:600;font-size:14px;margin-bottom:2px;">Minor</div>
+            <div style="font-size:12px;color:var(--text-sec);">tidak memblokir, bisa diterima tanpa perbaikan penuh</div>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+            <div style="font-size:18px;margin-bottom:4px;">🟠</div>
+            <div style="font-weight:600;font-size:14px;margin-bottom:2px;">Major</div>
+            <div style="font-size:12px;color:var(--text-sec);">perlu perbaikan sebelum serah terima</div>
+          </div>
+          <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+            <div style="font-size:18px;margin-bottom:4px;">🔴</div>
+            <div style="font-weight:600;font-size:14px;margin-bottom:2px;">Critical</div>
+            <div style="font-size:12px;color:var(--text-sec);">memblokir serah terima, wajib diselesaikan</div>
+          </div>
+        </div>
+
+        <div class="divider" style="margin:16px 0;"></div>
+        <div class="accent-box">
+          <strong>Cacat Critical dan Major</strong> yang belum terselesaikan akan <strong>memblokir serah terima</strong> dan muncul di dashboard prinsipal.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- slide 17 -->
+<div class="slide slide-content" id="slide-17">
+  <div style="width:100%;display:grid;grid-template-rows:auto 1fr;background:var(--surface);">
+    <div class="slide-header">
+      <span class="slide-tag">GATE 5</span>
+      <h2 class="slide-title">Gate 5 — Rekonsiliasi & Laporan</h2>
+    </div>
+    <div class="slide-body col-1">
+      <p class="lead">Tahap akhir: semua data dari Gate 1-4 dikonsolidasikan, diaudit, dan disajikan dalam laporan final untuk serah terima proyek.</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:24px;">
+        <div>
+          <h3>Jenis Laporan yang Tersedia</h3>
+          <table class="sano-table">
+            <tr>
+              <th>Laporan</th>
+              <th>Isi</th>
+            </tr>
+            <tr>
+              <td>Ringkasan Eksekutif</td>
+              <td>Progres %, biaya, cacat terbuka, milestone status</td>
+            </tr>
+            <tr>
+              <td>Material & Pengadaan</td>
+              <td>Semua PO, vendor, harga, perbandingan baseline</td>
+            </tr>
+            <tr>
+              <td>Progres Harian</td>
+              <td>Pemasangan per item, foto bukti, catatan</td>
+            </tr>
+            <tr>
+              <td>Punch List</td>
+              <td>Cacat per severity, status perbaikan, foto sebelum-sesudah</td>
+            </tr>
+            <tr>
+              <td>Catatan Perubahan (VO)</td>
+              <td>Semua perubahan dari rencana, dampak biaya/jadwal</td>
+            </tr>
+            <tr>
+              <td>Keuangan Opname</td>
+              <td>Performa upah mandor, kasbon, retensi, waterfall</td>
+            </tr>
+            <tr>
+              <td>Audit Trail</td>
+              <td>Siapa, kapan, apa perubahan untuk semua data</td>
+            </tr>
+          </table>
+        </div>
+
+        <div>
+          <h3>Format Export</h3>
+          <div style="display:grid;gap:12px;">
+            <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+              <div style="font-weight:600;font-size:15px;margin-bottom:4px;">📄 PDF</div>
+              <div style="font-size:13px;color:var(--text-sec);">Laporan cetak, siap presentasi ke owner/investor</div>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+              <div style="font-weight:600;font-size:15px;margin-bottom:4px;">📊 Excel</div>
+              <div style="font-size:13px;color:var(--text-sec);">Data mentah untuk analisis lebih lanjut</div>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+              <div style="font-weight:600;font-size:15px;margin-bottom:4px;">📸 Foto Bukti</div>
+              <div style="font-size:13px;color:var(--text-sec);">Semua foto progress, penerimaan, cacat dalam 1 folder zip</div>
+            </div>
+            <div style="border:1px solid var(--border);border-radius:var(--radius);padding:12px;background:var(--surface-alt);">
+              <div style="font-weight:600;font-size:15px;margin-bottom:4px;">🔐 Arsip Digital</div>
+              <div style="font-size:13px;color:var(--text-sec);">Backup database untuk audit pasca-proyek</div>
+            </div>
+          </div>
+
+          <div class="divider" style="margin:20px 0;"></div>
+          <h3>Syarat Serah Terima</h3>
+          <ul style="font-size:15px;color:var(--text-sec);">
+            <li style="margin-bottom:8px;">Semua permintaan material harus melalui Gate 1 ✓</li>
+            <li style="margin-bottom:8px;">Semua PO harus verifikasi penerimaan (Gate 3) ✓</li>
+            <li style="margin-bottom:8px;">Cacat Critical & Major sudah resolved ✓</li>
+            <li style="margin-bottom:8px;">Opname final masuk & disetujui ✓</li>
+            <li>Laporan lengkap siap diserah ke prinsipal ✓</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- slide 18 — COMBINED Quick Reference + Closing -->
+<div class="slide" id="slide-18" style="background:var(--primary);display:flex;flex-direction:column;width:100%;height:100%;overflow:auto;">
+  <div style="flex:0 0 60%;padding:40px;display:flex;flex-direction:column;justify-content:center;">
+    <h3 style="color:var(--text-inv);font-size:24px;font-weight:700;margin:0 0 24px 0;text-align:center;">Panduan Singkat per Peran</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:20px;">
+      <!-- Supervisor -->
+      <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius);padding:16px;">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
+          <span style="font-size:22px;font-weight:700;color:var(--text-inv);">Supervisor</span>
+          <span style="font-size:20px;">📱</span>
+        </div>
+        <ul style="margin:0;padding-left:20px;font-size:14px;color:var(--text-inv-sec);line-height:1.6;">
+          <li style="margin-bottom:6px;">✅ Ajukan material</li>
+          <li style="margin-bottom:6px;">✅ Konfirmasi terima barang</li>
+          <li style="margin-bottom:6px;">✅ Catat progres harian</li>
+          <li style="margin-bottom:6px;">✅ Catat cacat/VO/rework</li>
+          <li>✅ Isi absensi</li>
+        </ul>
+        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-top:12px;padding-top:12px;">
+          <div style="font-size:12px;color:var(--text-inv-muted);margin-bottom:6px;">Tab Utama:</div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;">
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Beranda</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Permintaan</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Terima</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Progres</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Laporan</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Estimator -->
+      <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius);padding:16px;">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
+          <span style="font-size:22px;font-weight:700;color:var(--text-inv);">Estimator</span>
+          <span style="font-size:20px;">💻</span>
+        </div>
+        <ul style="margin:0;padding-left:20px;font-size:14px;color:var(--text-inv-sec);line-height:1.6;">
+          <li style="margin-bottom:6px;">✅ Setup baseline BoQ/AHS</li>
+          <li style="margin-bottom:6px;">✅ Setup kontrak mandor</li>
+          <li style="margin-bottom:6px;">✅ Validasi harga (Gate 2)</li>
+          <li style="margin-bottom:6px;">✅ Proses opname mingguan</li>
+          <li>✅ Review & approval</li>
+        </ul>
+        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-top:12px;padding-top:12px;">
+          <div style="font-size:12px;color:var(--text-inv-muted);margin-bottom:6px;">Tab Utama:</div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;">
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Home</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Approval</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Harga</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Katalog</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Laporan</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Admin -->
+      <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius);padding:16px;">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
+          <span style="font-size:22px;font-weight:700;color:var(--text-inv);">Admin</span>
+          <span style="font-size:20px;">💻</span>
+        </div>
+        <ul style="margin:0;padding-left:20px;font-size:14px;color:var(--text-inv-sec);line-height:1.6;">
+          <li style="margin-bottom:6px;">✅ Kelola proyek & tim</li>
+          <li style="margin-bottom:6px;">✅ Buat PO & pilih vendor</li>
+          <li style="margin-bottom:6px;">✅ Kelola katalog material</li>
+          <li style="margin-bottom:6px;">✅ Pantau status PO</li>
+          <li>✅ Input harga & justifikasi</li>
+        </ul>
+        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-top:12px;padding-top:12px;">
+          <div style="font-size:12px;color:var(--text-inv-muted);margin-bottom:6px;">Tab Utama:</div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;">
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Home</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Approval</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Harga</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Katalog</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Laporan</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Prinsipal -->
+      <div style="background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius);padding:16px;">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:12px;">
+          <span style="font-size:22px;font-weight:700;color:var(--text-inv);">Prinsipal</span>
+          <span style="font-size:20px;">📱</span>
+        </div>
+        <ul style="margin:0;padding-left:20px;font-size:14px;color:var(--text-inv-sec);line-height:1.6;">
+          <li style="margin-bottom:6px;">✅ Monitor dashboard</li>
+          <li style="margin-bottom:6px;">✅ Setujui/tolak perubahan</li>
+          <li style="margin-bottom:6px;">✅ Review cacat terbuka</li>
+          <li style="margin-bottom:6px;">✅ Approval permintaan HIGH/CRITICAL</li>
+          <li>✅ Export laporan</li>
+        </ul>
+        <div style="border-top:1px solid rgba(255,255,255,0.1);margin-top:12px;padding-top:12px;">
+          <div style="font-size:12px;color:var(--text-inv-muted);margin-bottom:6px;">Tab Utama:</div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap;">
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Beranda</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Approval</span>
+            <span style="background:rgba(255,255,255,0.1);color:var(--text-inv);padding:4px 8px;border-radius:4px;font-size:11px;">Laporan</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="flex:0 0 40%;background:rgba(0,0,0,0.2);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px;gap:20px;text-align:center;">
+    <svg viewBox="0 0 315.66 87.26" fill="var(--text-inv)" style="width:160px;height:auto;">
+      <path d="M242.17,68.69c-5.62-.09-10.19-4.72-10.19-10.33v-13.92l7.32,7.32v6.6c0,1.63,1.31,2.98,2.92,3.01h51.59c1.59-.03,2.9-1.38,2.91-3.01V25.74c0-.87-.38-1.7-1.04-2.27-.53-.46-1.22-.73-1.92-.74h-51.52c-.69.01-1.37.27-1.9.74-.66.57-1.04,1.4-1.04,2.27v19.34l-7.32-7.32v-12.02c0-2.99,1.3-5.84,3.56-7.8,1.83-1.59,4.17-2.49,6.59-2.53h51.74c2.44.04,4.78.94,6.61,2.53,2.26,1.96,3.56,4.81,3.56,7.8v32.62c0,5.61-4.56,10.24-10.17,10.33h-51.7Z"/>
+      <path d="M26.17,45.71c-4.05,0-7.85-1.58-10.71-4.44-2.86-2.86-4.44-6.67-4.44-10.71s1.58-7.85,4.44-10.71,6.67-4.44,10.71-4.44h52.29v7.32H26.17c-4.32,0-7.83,3.51-7.83,7.83s3.51,7.83,7.83,7.83h7.74l-7.32,7.32h-.41Z"/>
+      <path d="M9.6,68.69l7.32-7.32h56.42c2.09,0,4.06-.81,5.54-2.29l1.92-1.92,5.84,4.52-2.58,2.58c-2.86,2.86-6.67,4.44-10.71,4.44H9.6Z"/>
+      <polygon points="166.3 68.69 122.96 25.35 100.6 47.71 94.76 43.19 122.96 14.99 176.66 68.69 166.3 68.69"/>
+      <path d="M110.91,68.69c-3.34,0-6.63-1.12-9.27-3.17l-23.51-18.18c-1.36-1.05-3.06-1.64-4.79-1.64h-40.06l7.32-7.32h32.74c3.34,0,6.63,1.12,9.27,3.17l23.51,18.18c1.36,1.05,3.06,1.64,4.79,1.64h38.69v7.32h-38.69Z"/>
+      <path d="M214.33,68.69c-2.76,0-5.36-1.07-7.31-3.03l-41.96-41.96c-.57-.57-1.32-.88-2.13-.88-.4,0-.78.08-1.15.23-1.13.47-1.86,1.56-1.86,2.78v18.25l-7.32-7.32v-10.92c0-4.19,2.5-7.94,6.38-9.55,1.26-.52,2.59-.79,3.95-.79,2.76,0,5.36,1.07,7.31,3.03l41.96,41.96c.57.57,1.32.88,2.13.88.4,0,.78-.08,1.15-.23,1.13-.47,1.86-1.56,1.86-2.78V15.4h7.32v42.95c0,4.19-2.5,7.94-6.38,9.55-1.26.52-2.59.79-3.95.79Z"/>
+    </svg>
+
+    <h2 style="font-size:40px;font-weight:700;color:var(--text-inv);margin:0;">Satu Platform. Seluruh Proyek.</h2>
+
+    <p style="font-size:20px;color:var(--text-inv-sec);margin:0;">Selamat bekerja bersama SANO.</p>
+
+    <div style="border-top:1px solid rgba(255,255,255,0.2);margin-top:16px;padding-top:16px;max-width:500px;">
+      <p style="font-size:14px;color:var(--text-inv-muted);margin:0 0 8px 0;">Butuh bantuan? Gunakan tombol AI Chat ✦ atau hubungi admin proyek.</p>
+      <p style="font-size:14px;color:var(--text-inv-muted);margin:0;">Pindah proyek: klik pemilih proyek di header</p>
+    </div>
+  </div>
+</div>
+
+</div><!-- end .deck -->
+
+<nav class="nav-bar">
+  <button id="prevBtn" onclick="nav(-1)" disabled>← Sebelumnya</button>
+  <span id="counter" class="nav-counter">10 / 18</span>
+  <button id="nextBtn" onclick="nav(1)">Selanjutnya →</button>
+</nav>
+
+<script>
+let cur = 0;
+const slides = document.querySelectorAll('.slide');
+const total = slides.length;
+
+function show(n) {
+  slides[cur].classList.remove('active');
+  cur = Math.max(0, Math.min(n, total - 1));
+  slides[cur].classList.add('active');
+  document.getElementById('counter').textContent = (cur + 1) + ' / ' + total;
+  document.getElementById('prevBtn').disabled = cur === 0;
+  document.getElementById('nextBtn').disabled = cur === total - 1;
+}
+
+function nav(d) { show(cur + d); }
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown' || e.key === ' ') { e.preventDefault(); nav(1); }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); nav(-1); }
+  if (e.key === 'Home') show(0);
+  if (e.key === 'End') show(total - 1);
+});
+
+let touchStartX = 0;
+document.addEventListener('touchstart', e => { touchStartX = e.touches[0].clientX; });
+document.addEventListener('touchend', e => {
+  const dx = e.changedTouches[0].clientX - touchStartX;
+  if (Math.abs(dx) > 50) nav(dx < 0 ? 1 : -1);
+});
+
+show(0);
+</script>
+</body>
+</html>

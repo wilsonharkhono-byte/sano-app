@@ -1,0 +1,13 @@
+import * as XLSX from 'xlsx';
+import * as fs from 'fs';
+const buf = fs.readFileSync('./assets/BOQ/RAB R1 Pakuwon Indah AAL-5_normalized.xlsx');
+const wb = XLSX.read(buf, { type: 'buffer' });
+console.log('Total sheets:', wb.SheetNames.length);
+const breakdowns = wb.SheetNames.filter((n) => n.startsWith('Breakdown '));
+const unresolved = wb.SheetNames.find((n) => /unresolved/i.test(n));
+const recipeIndex = wb.SheetNames.find((n) => /recipe index/i.test(n));
+console.log('Breakdown sheets:', breakdowns.length);
+console.log('Unresolved sheet:', unresolved || '(none)');
+console.log('Recipe Index sheet:', recipeIndex || '(none)');
+console.log('\nBreakdown codes:');
+breakdowns.forEach((n) => console.log(' ', n.replace('Breakdown ', '')));

@@ -80,7 +80,9 @@ function makeRecipeIndexSheet(breakdowns: RowBreakdown[]): XLSX.WorkSheet {
       bd.components.length,
       bd.reconciliation.reconciles ? '✓' : '⚠',
       bd.reconciliation.lineTotalVariance,
-      bd.reconciliation.reconciles ? '' : 'Cost mismatch — review',
+      [bd.reconciliation.reconciles ? '' : 'Cost mismatch — review', bd.codeNote ?? '']
+        .filter(Boolean)
+        .join(' | '),
     ]);
   }
   return XLSX.utils.aoa_to_sheet(rows);

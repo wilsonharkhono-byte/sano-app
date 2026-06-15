@@ -178,6 +178,29 @@ export function flattenBlock(
 
 import { supabase } from './supabase';
 
+/**
+ * Detect BoQ codes that appear more than once across the staging rows.
+ *
+ * The publish path upserts boq_items with onConflict 'project_id,code'. If two
+ * rows carry the same code, Postgres aborts the whole statement with
+ * "ON CONFLICT DO UPDATE command cannot affect row a second time". A clean
+ * parse never produces duplicates (extractBoqRows disambiguates named subgroups
+ * and source numbering typos), so any duplicate here means the staging rows are
+ * stale — written by an older parser. Returned strings are formatted "CODE (×N)"
+ * for direct use in the user-facing error.
+ */
+export function findDuplicateBoqCodes(rows: StagingRowV2[]): string[] {
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    if (r.row_type !== 'boq') continue;
+    const code = (r.parsed_data as { code?: string }).code ?? '';
+    counts.set(code, (counts.get(code) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .filter(([, n]) => n > 1)
+    .map(([c, n]) => `${c} (×${n})`);
+}
+
 export async function publishBaselineV2(
   sessionId: string,
   projectId: string,
@@ -243,6 +266,29 @@ export async function publishBaselineV2(
   for (const block of sortedBlocks) {
     const components = componentsByBlock.get(block.row_number) ?? [];
     parentCache.set(block.row_number, flattenBlock(components, parentCache));
+  }
+
+  // Guard BEFORE any mutation. The (project_id, code) upsert further down
+  // cannot contain the same code twice in one batch — Postgres rejects it with
+  // "ON CONFLICT DO UPDATE command cannot affect row a second time". A clean
+  // parse never produces duplicate codes (extractBoqRows disambiguates named
+  // subgroups and source numbering typos), so duplicates here mean the staging
+  // rows are STALE — written by an older parser before the code derivation was
+  // fixed. Fail loud with the offending codes instead of surfacing the opaque
+  // Postgres error, and crucially do this BEFORE we demote/insert ahs_versions
+  // so a stale session can't leave the project in a half-published state.
+  // We never silently merge two distinct line items onto one code.
+  const duplicateBoqCodes = findDuplicateBoqCodes(rows);
+  if (duplicateBoqCodes.length > 0) {
+    return {
+      success: false,
+      error:
+        `Duplicate BoQ codes in this import: ${duplicateBoqCodes.join(', ')}. ` +
+        `These staging rows were parsed by an older version that collided codes ` +
+        `across named subgroups (e.g. "Sloof Elevasi -0.80" vs "Sloof & Balok ` +
+        `Lantai 1"). Re-import the workbook to regenerate unique codes, then ` +
+        `publish again.`,
+    };
   }
 
   // Demote any previously current ahs_version for this project before

@@ -127,4 +127,173 @@ describe('evaluateFormula — unknown functions (I4)', () => {
     expect(result.unknownFunctions).toContain('IFERROR');
     expect(result.confidence).toBeLessThanOrEqual(0.5);
   });
+
+  it('returns NaN (unresolved sentinel) when an unknown fn has no usable cached value', () => {
+    const lookup = mkLookup([]);
+    const result = evaluateFormula(
+      // string cached value is not a usable computed number → must not coerce to 0
+      { sheet: 'RAB (A)', address: 'X1', row: 1, col: 24, value: '#N/A', formula: '=VLOOKUP(A1,B2:C9,2,0)' },
+      lookup,
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.unknownFunctions).toContain('VLOOKUP');
+    expect(Number.isNaN(result.evaluatedValue)).toBe(true);
+  });
+
+  it('prefers a genuine cached numeric value over an unresolved unknown fn', () => {
+    const lookup = mkLookup([]);
+    const result = evaluateFormula(
+      { sheet: 'RAB (A)', address: 'X1', row: 1, col: 24, value: 42, formula: '=VLOOKUP(A1,B2:C9,2,0)' },
+      lookup,
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.unknownFunctions).toContain('VLOOKUP');
+    expect(result.evaluatedValue).toBe(42);
+  });
+});
+
+describe('evaluateFormula — SUM over ranges', () => {
+  it('sums a vertical range of cached values', () => {
+    const lookup = mkLookup([
+      { sheet: 'RAB (A)', address: 'S6', row: 6, col: 19, value: 10, formula: null },
+      { sheet: 'RAB (A)', address: 'S7', row: 7, col: 19, value: 20, formula: null },
+      { sheet: 'RAB (A)', address: 'S8', row: 8, col: 19, value: 30, formula: null },
+    ]);
+    const result = evaluateFormula(
+      { sheet: 'RAB (A)', address: 'S10', row: 10, col: 19, value: 0, formula: '=SUM(S6:S8)' },
+      lookup,
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.evaluatedValue).toBe(60);
+  });
+
+  it('sums mixed range + scalar args', () => {
+    const lookup = mkLookup([
+      { sheet: 'RAB (A)', address: 'A1', row: 1, col: 1, value: 5, formula: null },
+      { sheet: 'RAB (A)', address: 'A2', row: 2, col: 1, value: 7, formula: null },
+      { sheet: 'RAB (A)', address: 'B1', row: 1, col: 2, value: 100, formula: null },
+    ]);
+    const result = evaluateFormula(
+      { sheet: 'RAB (A)', address: 'C1', row: 1, col: 3, value: 0, formula: '=SUM(A1:A2,B1)' },
+      lookup,
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.evaluatedValue).toBe(112);
+  });
+});
+
+describe('evaluateFormula — SUMIF', () => {
+  function fixture() {
+    // B column = labels, S column = values to sum
+    return mkLookup([
+      { sheet: 'RAB (A)', address: 'B6', row: 6, col: 2, value: 'Besi', formula: null },
+      { sheet: 'RAB (A)', address: 'B7', row: 7, col: 2, value: 'Beton', formula: null },
+      { sheet: 'RAB (A)', address: 'B8', row: 8, col: 2, value: 'Besi', formula: null },
+      { sheet: 'RAB (A)', address: 'S6', row: 6, col: 19, value: 100, formula: null },
+      { sheet: 'RAB (A)', address: 'S7', row: 7, col: 19, value: 200, formula: null },
+      { sheet: 'RAB (A)', address: 'S8', row: 8, col: 19, value: 300, formula: null },
+      { sheet: 'RAB (A)', address: 'B20', row: 20, col: 2, value: 'Besi', formula: null }, // the criteria cell
+    ]);
+  }
+
+  it('sums sum_range where range matches a cell-ref criteria (default plain equality)', () => {
+    const result = evaluateFormula(
+      { sheet: 'RAB (A)', address: 'C20', row: 20, col: 3, value: 0, formula: '=SUMIF($B$6:$B$8,B20,$S$6:$S$8)' },
+      fixture(),
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.evaluatedValue).toBe(400); // 100 + 300
+  });
+
+  it('case-insensitive text match', () => {
+    const lookup = fixture();
+    lookup.set('RAB (A)!B20', { sheet: 'RAB (A)', address: 'B20', row: 20, col: 2, value: 'BESI', formula: null });
+    const result = evaluateFormula(
+      { sheet: 'RAB (A)', address: 'C20', row: 20, col: 3, value: 0, formula: '=SUMIF($B$6:$B$8,B20,$S$6:$S$8)' },
+      lookup,
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.evaluatedValue).toBe(400);
+  });
+
+  it('defaults sum_range to range when omitted', () => {
+    const lookup = mkLookup([
+      { sheet: 'RAB (A)', address: 'S6', row: 6, col: 19, value: 5, formula: null },
+      { sheet: 'RAB (A)', address: 'S7', row: 7, col: 19, value: 3, formula: null },
+      { sheet: 'RAB (A)', address: 'S8', row: 8, col: 19, value: 9, formula: null },
+    ]);
+    const result = evaluateFormula(
+      { sheet: 'RAB (A)', address: 'C1', row: 1, col: 3, value: 0, formula: '=SUMIF(S6:S8,">=5")' },
+      lookup,
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.evaluatedValue).toBe(14); // 5 + 9
+  });
+
+  it('supports operator criteria as a quoted string (<>)', () => {
+    const lookup = mkLookup([
+      { sheet: 'RAB (A)', address: 'S6', row: 6, col: 19, value: 0, formula: null },
+      { sheet: 'RAB (A)', address: 'S7', row: 7, col: 19, value: 4, formula: null },
+      { sheet: 'RAB (A)', address: 'S8', row: 8, col: 19, value: 6, formula: null },
+    ]);
+    const result = evaluateFormula(
+      { sheet: 'RAB (A)', address: 'C1', row: 1, col: 3, value: 0, formula: '=SUMIF(S6:S8,"<>0",S6:S8)' },
+      lookup,
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.evaluatedValue).toBe(10); // 4 + 6
+  });
+});
+
+describe('evaluateFormula — SUMIFS', () => {
+  it('sums where ALL criteria match (two criteria pairs)', () => {
+    // U = values; B = group label; F = type label
+    const lookup = mkLookup([
+      { sheet: 'RAB (A)', address: 'U6', row: 6, col: 21, value: 100, formula: null },
+      { sheet: 'RAB (A)', address: 'U7', row: 7, col: 21, value: 200, formula: null },
+      { sheet: 'RAB (A)', address: 'U8', row: 8, col: 21, value: 400, formula: null },
+      { sheet: 'RAB (A)', address: 'B6', row: 6, col: 2, value: 'P1', formula: null },
+      { sheet: 'RAB (A)', address: 'B7', row: 7, col: 2, value: 'P1', formula: null },
+      { sheet: 'RAB (A)', address: 'B8', row: 8, col: 2, value: 'P2', formula: null },
+      { sheet: 'RAB (A)', address: 'F6', row: 6, col: 6, value: 'D8', formula: null },
+      { sheet: 'RAB (A)', address: 'F7', row: 7, col: 6, value: 'D10', formula: null },
+      { sheet: 'RAB (A)', address: 'F8', row: 8, col: 6, value: 'D8', formula: null },
+      { sheet: 'RAB (A)', address: 'B20', row: 20, col: 2, value: 'P1', formula: null },
+      { sheet: 'RAB (A)', address: 'E19', row: 19, col: 5, value: 'D8', formula: null },
+    ]);
+    const result = evaluateFormula(
+      {
+        sheet: 'RAB (A)', address: 'C20', row: 20, col: 3, value: 0,
+        formula: '=SUMIFS($U$6:$U$8,$B$6:$B$8,B20,$F$6:$F$8,$E$19)',
+      },
+      lookup,
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.evaluatedValue).toBe(100); // only row 6 matches P1 AND D8
+  });
+
+  it('returns 0 when no rows satisfy all criteria', () => {
+    const lookup = mkLookup([
+      { sheet: 'RAB (A)', address: 'U6', row: 6, col: 21, value: 100, formula: null },
+      { sheet: 'RAB (A)', address: 'B6', row: 6, col: 2, value: 'P1', formula: null },
+      { sheet: 'RAB (A)', address: 'B20', row: 20, col: 2, value: 'P9', formula: null },
+    ]);
+    const result = evaluateFormula(
+      { sheet: 'RAB (A)', address: 'C20', row: 20, col: 3, value: 0, formula: '=SUMIFS($U$6:$U$6,$B$6:$B$6,B20)' },
+      lookup,
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.evaluatedValue).toBe(0);
+  });
+
+  it('does not zero a quantity that has a non-zero cached value (regression guard)', () => {
+    // Even with empty lookup, a cell carrying a SUMIFS formula but a valid
+    // cached numeric value must keep that value, not collapse to 0.
+    const result = evaluateFormula(
+      { sheet: 'RAB (A)', address: 'D199', row: 199, col: 4, value: 12.5, formula: '=SUMIFS(X6:X9,Y6:Y9,Z199)' },
+      mkLookup([]),
+      { targetSheet: 'Analisa' },
+    );
+    expect(result.evaluatedValue).toBe(12.5);
+  });
 });

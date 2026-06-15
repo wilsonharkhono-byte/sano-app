@@ -6,6 +6,7 @@ import type { Token } from './tokenize';
 export type AstNode =
   | { kind: 'ref'; value: string }
   | { kind: 'num'; value: number }
+  | { kind: 'str'; value: string }
   | { kind: 'binop'; op: '+' | '-' | '*' | '/'; left: AstNode; right: AstNode }
   | { kind: 'unary'; op: '-'; operand: AstNode }
   | { kind: 'fn'; name: string; args: AstNode[] };
@@ -60,6 +61,7 @@ function parsePrimary(s: State): AstNode {
 
   if (t.kind === 'num') { consume(s); return { kind: 'num', value: Number(t.value) }; }
   if (t.kind === 'ref') { consume(s); return { kind: 'ref', value: t.value }; }
+  if (t.kind === 'str') { consume(s); return { kind: 'str', value: t.value }; }
 
   if (t.kind === 'lparen') {
     consume(s);
