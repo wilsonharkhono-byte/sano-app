@@ -1,6 +1,6 @@
 jest.mock('../supabase', () => ({ supabase: {} }));
 
-import { topoSortBlocks, flattenBlock, findDuplicateBoqCodes, type FlattenedLine } from '../publishBaselineV2';
+import { topoSortBlocks, flattenBlock, findDuplicateBoqCodes, zeroPlannedBoqCodes, type FlattenedLine } from '../publishBaselineV2';
 
 describe('topoSortBlocks', () => {
   it('orders children after parents (deepest-first via reverse)', () => {
@@ -66,6 +66,50 @@ describe('findDuplicateBoqCodes', () => {
       { row_type: 'material' as const, parsed_data: { code: 'III.A.2.1' } },
     ];
     expect(findDuplicateBoqCodes(rows as never)).toEqual([]);
+  });
+});
+
+describe('zeroPlannedBoqCodes', () => {
+  const boq = (code: string, planned: unknown) => ({
+    row_type: 'boq' as const,
+    parsed_data: { code, planned },
+  });
+
+  it('returns empty when every BoQ row has a positive take-off volume', () => {
+    const rows = [boq('VII.A.1', 3540.78), boq('VII.A.3', 1215.5), boq('VII.A.6', 1)];
+    expect(zeroPlannedBoqCodes(rows as never)).toEqual([]);
+  });
+
+  it('flags rows whose planned volume is 0 (CHECK planned > 0 would reject)', () => {
+    // WF.150.75 — a steel profile listed in the RAB but with zero take-off.
+    const rows = [boq('VII.A.1', 3540.78), boq('VII.A.2', 0), boq('VII.A.3', 1215.5)];
+    expect(zeroPlannedBoqCodes(rows as never)).toEqual(['VII.A.2']);
+  });
+
+  it('treats negative / null / non-numeric planned as non-positive', () => {
+    const rows = [
+      boq('A.1', -5),
+      boq('A.2', null),
+      boq('A.3', undefined),
+      boq('A.4', 'abc'),
+      boq('A.5', 2),
+    ];
+    expect(zeroPlannedBoqCodes(rows as never)).toEqual(['A.1', 'A.2', 'A.3', 'A.4']);
+  });
+
+  it('parses Indonesian-formatted numeric strings via toNumber', () => {
+    // "1.234,56" → 1234.56 (positive) must NOT be flagged.
+    const rows = [boq('A.1', '1.234,56'), boq('A.2', '0')];
+    expect(zeroPlannedBoqCodes(rows as never)).toEqual(['A.2']);
+  });
+
+  it('ignores non-boq staging rows', () => {
+    const rows = [
+      boq('A.1', 0),
+      { row_type: 'ahs' as const, parsed_data: { code: 'X', planned: 0 } },
+      { row_type: 'material' as const, parsed_data: { code: 'Y', planned: 0 } },
+    ];
+    expect(zeroPlannedBoqCodes(rows as never)).toEqual(['A.1']);
   });
 });
 

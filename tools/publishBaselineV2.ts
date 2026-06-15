@@ -201,6 +201,27 @@ export function findDuplicateBoqCodes(rows: StagingRowV2[]): string[] {
     .map(([c, n]) => `${c} (×${n})`);
 }
 
+/**
+ * Codes of BoQ staging rows whose take-off volume is 0 (or non-positive).
+ *
+ * boq_items has a CHECK (planned > 0) constraint. A planned = 0 row is a source
+ * line the estimator listed but took off zero quantity (e.g. a steel profile in
+ * the RAB price list that this project doesn't use). It carries no baseline
+ * quantity or cost and would also break downstream ratios that divide by
+ * planned, so it is excluded from the published baseline rather than inserted
+ * with a fabricated quantity. Returned codes let the caller report the omission
+ * instead of dropping rows silently.
+ */
+export function zeroPlannedBoqCodes(rows: StagingRowV2[]): string[] {
+  const codes: string[] = [];
+  for (const r of rows) {
+    if (r.row_type !== 'boq') continue;
+    const pd = r.parsed_data as { code?: string; planned?: unknown };
+    if (!(toNumber(pd.planned) > 0)) codes.push(pd.code ?? '');
+  }
+  return codes;
+}
+
 export async function publishBaselineV2(
   sessionId: string,
   projectId: string,
@@ -210,6 +231,7 @@ export async function publishBaselineV2(
   boqCount?: number;
   ahsCount?: number;
   materialCount?: number;
+  skippedZeroPlanned?: string[];
 }> {
   const { data: stagingRowsDB, error: fetchErr } = await supabase
     .from('import_staging_rows')
@@ -316,19 +338,24 @@ export async function publishBaselineV2(
   }
   const ahsVersionId = versionRow.id as string;
 
-  // Build boq_items map (code → id) by inserting BoQ rows first
+  // Build boq_items map (code → id) by inserting BoQ rows first. Rows with a
+  // non-positive take-off volume are excluded — see zeroPlannedBoqCodes for why
+  // (CHECK (planned > 0) constraint; never fabricate a quantity). The codes are
+  // reported back so the omission is visible, never silent. Codes are unique
+  // here because the duplicate guard above already ran.
+  const skippedZeroPlanned = zeroPlannedBoqCodes(rows);
+  const skipSet = new Set(skippedZeroPlanned);
   const boqInserts = rows
     .filter(r => r.row_type === 'boq')
-    .map(r => {
-      const pd = r.parsed_data as { code: string; label: string; unit: string; planned: number };
-      return {
-        project_id: projectId,
-        code: pd.code,
-        label: pd.label,
-        unit: pd.unit,
-        planned: pd.planned,
-      };
-    });
+    .map(r => r.parsed_data as { code: string; label: string; unit: string; planned: number })
+    .filter(pd => !skipSet.has(pd.code))
+    .map(pd => ({
+      project_id: projectId,
+      code: pd.code,
+      label: pd.label,
+      unit: pd.unit,
+      planned: pd.planned,
+    }));
   const { data: boqData, error: boqErr } = await supabase
     .from('boq_items')
     .upsert(boqInserts, { onConflict: 'project_id,code' })
@@ -370,5 +397,6 @@ export async function publishBaselineV2(
     boqCount: boqInserts.length,
     ahsCount: ahsLineInserts.length,
     materialCount: rows.filter(r => r.row_type === 'material').length,
+    skippedZeroPlanned,
   };
 }
