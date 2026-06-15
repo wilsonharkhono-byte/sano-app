@@ -643,6 +643,16 @@ export default function BaselineScreen({
       toast(`Baseline published: ${result.boqCount} BoQ, ${result.ahsCount} AHS, ${result.materialCount} material`, 'ok');
       setPublishedJustNow(true);
 
+      // Surface BoQ rows excluded because their take-off volume was 0 — these
+      // are listed in the source but not part of the published baseline. Never
+      // silent: the estimator should know they were left out.
+      if (result.skippedZeroPlanned && result.skippedZeroPlanned.length > 0) {
+        const codes = result.skippedZeroPlanned;
+        const shown = codes.slice(0, 5).join(', ');
+        const more = codes.length > 5 ? ` +${codes.length - 5} lagi` : '';
+        toast(`${codes.length} baris volume 0 dilewati (tidak masuk baseline): ${shown}${more}`, 'warning');
+      }
+
       // Generate material master
       const masterResult = await generateMaterialMaster(project.id);
       if (masterResult.success) {
