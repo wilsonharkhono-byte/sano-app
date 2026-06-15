@@ -561,27 +561,43 @@ export default function BaselineScreen({
   const handleBatchReview = (ids: string[], status: 'APPROVED' | 'REJECTED') => {
     if (ids.length === 0) return;
     const verb = status === 'REJECTED' ? 'Tolak' : 'Setujui';
+
+    const runBatch = async () => {
+      setBatchReviewing(true);
+      try {
+        const res = await bulkReviewStagingRows(ids, status);
+        if (!res.success) { toast(`Gagal: ${res.error}`, 'critical'); return; }
+        const idSet = new Set(ids);
+        setStagingRows(prev => prev.map(r => (idSet.has(r.id) ? { ...r, review_status: status } : r)));
+        toast(`${res.count} blok ${status === 'REJECTED' ? 'ditolak' : 'disetujui'}`,
+          status === 'REJECTED' ? 'warning' : 'ok');
+      } finally {
+        setBatchReviewing(false);
+      }
+    };
+
+    const message = 'Tindakan ini bisa diubah lagi sebelum publish.';
+
+    // RN-Web's Alert.alert does not render multi-button dialogs nor fire the
+    // custom-button onPress, so on web the confirmation must go through the
+    // browser's window.confirm (same reason handlePublish branches on web).
+    if (Platform.OS === 'web') {
+      const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+        ? window.confirm(`${verb} ${ids.length} blok?\n\n${message}`)
+        : true;
+      if (ok) void runBatch();
+      return;
+    }
+
     Alert.alert(
       `${verb} ${ids.length} blok?`,
-      'Tindakan ini bisa diubah lagi sebelum publish.',
+      message,
       [
         { text: 'Batal', style: 'cancel' },
         {
           text: verb,
           style: status === 'REJECTED' ? 'destructive' : 'default',
-          onPress: async () => {
-            setBatchReviewing(true);
-            try {
-              const res = await bulkReviewStagingRows(ids, status);
-              if (!res.success) { toast(`Gagal: ${res.error}`, 'critical'); return; }
-              const idSet = new Set(ids);
-              setStagingRows(prev => prev.map(r => (idSet.has(r.id) ? { ...r, review_status: status } : r)));
-              toast(`${res.count} blok ${status === 'REJECTED' ? 'ditolak' : 'disetujui'}`,
-                status === 'REJECTED' ? 'warning' : 'ok');
-            } finally {
-              setBatchReviewing(false);
-            }
-          },
+          onPress: () => { void runBatch(); },
         },
       ],
     );
