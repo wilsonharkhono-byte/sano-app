@@ -665,7 +665,16 @@ export async function publishBaseline(
       .eq('id', sessionId)
       .single();
     if (session?.parser_version === 'v2') {
-      return publishBaselineV2(sessionId, projectId);
+      const result = await publishBaselineV2(sessionId, projectId);
+      // publishBaselineV2 writes the baseline rows but does not touch the
+      // session row, and this v2 branch returns before the v1 path's
+      // updateImportStatus(...'PUBLISHED') below. Without this, a successfully
+      // published v2 session stays 'REVIEW' in the UI and can be re-published,
+      // spawning duplicate ahs_versions. Mark it published on success only.
+      if (result.success) {
+        await updateImportStatus(sessionId, 'PUBLISHED');
+      }
+      return result;
     }
 
     // 1. Get all approved staging rows
