@@ -42,6 +42,18 @@ export const ROLE_LABELS: Record<string, string> = {
   principal:   'Principal',
 };
 
+/**
+ * All profiles that are NOT already on the project team — used to populate the
+ * add-member picker so already-assigned users don't show up. Matched by id.
+ */
+export function availableProfiles(
+  all: ProfileOption[],
+  team: TeamMember[],
+): ProfileOption[] {
+  const assigned = new Set(team.map(m => m.user_id));
+  return all.filter(p => !assigned.has(p.id));
+}
+
 // ─── Project CRUD ────────────────────────────────────────────────────────────
 
 export async function createProject(
