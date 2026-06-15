@@ -14,3 +14,9 @@ web-build/
 
 # Brainstorming visual companion (local mockups)
 .superpowers/
+
+# Test coverage output
+coverage/
+
+# Excel lock files (created while a workbook is open)
+~$*

@@ -1,0 +1,20 @@
+import { parseBoqV2 } from '../tools/boqParserV2/index.ts';
+import { selectAdapter } from '../tools/boqParserV2/rebarDisaggregator/selectAdapter.ts';
+import { resolveRekapRowFromBoqFormula } from '../tools/boqParserV2/rebarDisaggregator/resolveRekapRow.ts';
+import { detectDiameterHeader } from '../tools/boqParserV2/rebarDisaggregator/adapters/headerDetect.ts';
+import { platAdapter } from '../tools/boqParserV2/rebarDisaggregator/adapters/plat.ts';
+import * as fs from 'fs';
+const buf = fs.readFileSync('/sessions/optimistic-jolly-cannon/mnt/uploads/SANO Sonny Citraland Selat Golf.xlsx');
+const r = await parseBoqV2(buf, { boqSheet: 'auto' });
+const row = r.boqRows.find(x=>x.code==='(A) III.A.4.1');
+console.log('row:', row.label, '@', row.source_sheet, row.sourceRow);
+const sel = selectAdapter(row.label);
+console.log('selectAdapter ->', sel ? `${sel.adapter.name} typeCode="${sel.typeCode}"` : 'NULL');
+const hint = resolveRekapRowFromBoqFormula(r.cells, row.source_sheet, row.sourceRow, 'REKAP Plat');
+console.log('resolveRekapRow -> hint row =', hint);
+const hdr = detectDiameterHeader(r.cells, 'REKAP Plat', { rowMin:1, rowMax:30 });
+console.log('detectDiameterHeader ->', hdr ? `row ${hdr.row}, map ${[...hdr.map].map(([d,c])=>d+':'+c).join(',')}` : 'NULL');
+const bd = sel ? sel.adapter.lookupBreakdown(sel.typeCode, r.cells, hint!=null?{rekapRow:hint}:undefined) : null;
+console.log('lookupBreakdown ->', JSON.stringify(bd));
+// what does the row.recipe currently have for besi?
+console.log('recipe besi comps:', (row.recipe?.components||[]).filter(c=>/besi|pembesian/i.test(c.materialName||'')).map(c=>c.materialName));

@@ -17,16 +17,14 @@ const FLAG_COPY: Record<string, FlagExplanation> = {
   },
 };
 
-// Shown when a row is flagged but carries no recognized reason (stale rows,
-// or a future trigger that didn't stamp a code). Honest, never a wrong reason.
-const GENERIC: FlagExplanation = {
-  why: 'Baris ini ditandai untuk dicek manual.',
-  saran: 'Periksa nilainya; Setuju jika benar, Koreksi jika perlu, Tolak jika tidak relevan.',
-};
-
 /**
  * Plain-Indonesian explanation of why a flagged review row needs checking and
- * a soft suggestion. Returns null for rows that don't need review (no callout).
+ * a soft suggestion. Returns null when there's no *specific* reason to show —
+ * a row that doesn't need review, or one whose `flag_reason` is unknown/missing
+ * (e.g. stale rows imported before flag_reason existed). We deliberately do NOT
+ * render a generic "dicek manual" callout: identical text on every card is
+ * noise, not information. Fresh flagged rows always carry a real reason
+ * (orphan_ahs_block / literal_component), so they still get a specific callout.
  */
 export function flagExplanation(row: ImportStagingRow): FlagExplanation | null {
   if (!row.needs_review) return null;
@@ -35,7 +33,7 @@ export function flagExplanation(row: ImportStagingRow): FlagExplanation | null {
   if (typeof reason === 'string' && Object.prototype.hasOwnProperty.call(FLAG_COPY, reason)) {
     return FLAG_COPY[reason];
   }
-  return GENERIC;
+  return null;
 }
 
 // Static, reason-independent captions for the three review actions.

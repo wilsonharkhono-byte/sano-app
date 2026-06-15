@@ -1,0 +1,13 @@
+import * as fs from 'fs';
+import * as mod from '../tools/boqParserV2/breakdownSheetReader.ts';
+const fn = mod.readBreakdownSheets || mod.readBreakdowns || mod.parseBreakdownSheets || mod.default;
+const buf = fs.readFileSync('assets/BOQ/SANO Sonny Citraland Selat Golf - Normalized.xlsx');
+const res = await fn(buf);
+const rows = res.breakdowns || res.rows || res;
+const warns = res.warnings || [];
+console.log('breakdowns read back:', Array.isArray(rows)?rows.length:'(shape?)', '| warnings:', warns.length);
+const recon = rows.filter(r=>r.reconciliation?.reconciles).length;
+console.log('reconciles=true:', recon, '/', rows.length);
+const u = rows.flatMap(r=>r.components||[]).filter(c=>/U24|U40/.test(c.materialName||'')).length;
+console.log('U24/U40 component lines:', u);
+if(warns.length) console.log('sample warnings:', warns.slice(0,3));

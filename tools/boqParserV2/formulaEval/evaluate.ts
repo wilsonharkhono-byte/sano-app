@@ -58,6 +58,179 @@ function toNumber(v: unknown): number {
   return 0;
 }
 
+// --- Range / cell-address helpers (used by SUM / SUMIF / SUMIFS) --------------
+
+function colLettersToIndex(letters: string): number {
+  let n = 0;
+  for (const ch of letters.toUpperCase()) {
+    n = n * 26 + (ch.charCodeAt(0) - 64);
+  }
+  return n; // 1-based
+}
+
+function indexToColLetters(index: number): string {
+  let n = index;
+  let s = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+interface ParsedRange {
+  sheet: string | null;
+  cells: string[]; // ordered list of A1-style addresses (no sheet prefix, no $)
+}
+
+// Parses a raw ref string that may be a single cell ("A1") or a range
+// ("A1:B10"), optionally sheet-qualified ("'Sheet'!A1:A9"). Returns the sheet
+// (null when unqualified) and the enumerated cell addresses. For very large
+// ranges we cap enumeration to keep evaluation bounded; real RAB criteria
+// ranges are a few hundred rows.
+const MAX_RANGE_CELLS = 100_000;
+
+function parseRange(raw: string): ParsedRange {
+  // Strip optional sheet prefix.
+  let sheet: string | null = null;
+  let body = raw;
+  const sheetM = raw.match(/^(?:'([^']+)'|([A-Za-z_][A-Za-z0-9_\- .]*))!(.+)$/);
+  if (sheetM) {
+    sheet = sheetM[1] ?? sheetM[2];
+    body = sheetM[3];
+  }
+  body = body.replace(/\$/g, '');
+
+  const rangeM = body.match(/^([A-Z]+)(\d+):([A-Z]+)(\d+)$/);
+  if (!rangeM) {
+    // Single cell.
+    return { sheet, cells: [body] };
+  }
+  const c1 = colLettersToIndex(rangeM[1]);
+  const r1 = parseInt(rangeM[2], 10);
+  const c2 = colLettersToIndex(rangeM[3]);
+  const r2 = parseInt(rangeM[4], 10);
+  const colLo = Math.min(c1, c2);
+  const colHi = Math.max(c1, c2);
+  const rowLo = Math.min(r1, r2);
+  const rowHi = Math.max(r1, r2);
+  const cells: string[] = [];
+  outer: for (let r = rowLo; r <= rowHi; r++) {
+    for (let c = colLo; c <= colHi; c++) {
+      cells.push(`${indexToColLetters(c)}${r}`);
+      if (cells.length >= MAX_RANGE_CELLS) break outer;
+    }
+  }
+  return { sheet, cells };
+}
+
+// Resolves the raw cached value (number | string | null) of a single cell ref,
+// using the SAME lookup the rest of the evaluator uses. Returns undefined when
+// the cell is not present in the harvested set.
+function resolveCellRaw(
+  rawRef: string,
+  ctx: Ctx,
+): unknown {
+  const ref = parseRef(rawRef);
+  const sheet = ref.sheet ?? ctx.sourceCell.sheet;
+  const cached = ctx.lookup.get(`${sheet}!${ref.address}`);
+  return cached ? cached.value : undefined;
+}
+
+// --- SUMIF / SUMIFS criteria handling ----------------------------------------
+
+type Comparator = '=' | '<>' | '>' | '>=' | '<' | '<=';
+
+interface Criteria {
+  op: Comparator;
+  // The comparison target. When numeric, `num` is set; otherwise `text` holds
+  // the case-folded string form.
+  num: number | null;
+  text: string;
+}
+
+// Parses an Excel criteria value (already resolved to a JS primitive) into a
+// {operator, target} pair. Handles leading operators embedded in strings like
+// ">=5", "<>0", or plain values like "Besi" / 5.
+function parseCriteria(value: unknown): Criteria {
+  if (typeof value === 'number') {
+    return { op: '=', num: value, text: String(value) };
+  }
+  const s = value == null ? '' : String(value);
+  const m = s.match(/^\s*(<>|>=|<=|>|<|=)?\s*(.*)$/);
+  const op = (m?.[1] as Comparator | undefined) ?? '=';
+  const rest = (m?.[2] ?? '').trim();
+  const asNum = rest === '' ? NaN : Number(rest.replace(',', '.'));
+  if (Number.isFinite(asNum) && rest !== '') {
+    return { op, num: asNum, text: rest };
+  }
+  return { op, num: null, text: rest };
+}
+
+function criteriaMatches(crit: Criteria, cellValue: unknown): boolean {
+  // Numeric comparison when both sides are numeric.
+  const cellNum =
+    typeof cellValue === 'number'
+      ? cellValue
+      : typeof cellValue === 'string' && cellValue.trim() !== '' && Number.isFinite(Number(cellValue.replace(',', '.')))
+        ? Number(cellValue.replace(',', '.'))
+        : null;
+
+  if (crit.num !== null && cellNum !== null) {
+    switch (crit.op) {
+      case '=': return cellNum === crit.num;
+      case '<>': return cellNum !== crit.num;
+      case '>': return cellNum > crit.num;
+      case '>=': return cellNum >= crit.num;
+      case '<': return cellNum < crit.num;
+      case '<=': return cellNum <= crit.num;
+    }
+  }
+
+  // Text comparison (case-insensitive), used for BoQ-code style labels.
+  const cellText = cellValue == null ? '' : String(cellValue);
+  const a = cellText.trim().toLowerCase();
+  const b = crit.text.trim().toLowerCase();
+  switch (crit.op) {
+    case '=': return a === b;
+    case '<>': return a !== b;
+    // Ordering comparators on non-numeric values fall back to string ordering,
+    // matching Excel's lexicographic behaviour closely enough for our needs.
+    case '>': return a > b;
+    case '>=': return a >= b;
+    case '<': return a < b;
+    case '<=': return a <= b;
+  }
+}
+
+// Resolves a function-argument AST node to a criteria value WITHOUT producing
+// components. Criteria are literals or (most commonly in RAB) a cell ref that
+// resolves to a label/number.
+function evalCriteriaValue(node: AstNode, ctx: Ctx): unknown {
+  if (node.kind === 'str') return node.value;
+  if (node.kind === 'num') return node.value;
+  if (node.kind === 'ref') return resolveCellRaw(node.value, ctx);
+  // Anything more complex: fall back to numeric evaluation.
+  return walk(node, ctx).value;
+}
+
+// Resolves a range argument (e.g. $B$6:$B$264) to the ordered list of raw
+// cell values, resolved through the shared lookup. Missing cells become
+// undefined so positional alignment with sibling ranges is preserved.
+function resolveRangeValues(node: AstNode, ctx: Ctx): unknown[] {
+  if (node.kind !== 'ref') {
+    // Not a plain range/ref — evaluate as a single scalar.
+    return [walk(node, ctx).value];
+  }
+  const { sheet, cells } = parseRange(node.value);
+  const sh = sheet ?? ctx.sourceCell.sheet;
+  return cells.map(addr => {
+    const cached = ctx.lookup.get(`${sh}!${addr}`);
+    return cached ? cached.value : undefined;
+  });
+}
+
 // Module-level set to dedupe console.warn calls per process
 const WARNED_FN_NAMES = new Set<string>();
 
@@ -72,6 +245,11 @@ function walk(node: AstNode, ctx: Ctx): Branch {
   switch (node.kind) {
     case 'num':
       return { value: node.value, components: [], confidence: 1 };
+
+    case 'str':
+      // A bare string in a numeric context coerces to its numeric form (Excel
+      // does the same for things like "5"); non-numeric strings become 0.
+      return { value: toNumber(node.value), components: [], confidence: 1 };
 
     case 'ref': {
       const ref = parseRef(node.value);
@@ -187,16 +365,82 @@ function walk(node: AstNode, ctx: Ctx): Branch {
     }
 
     case 'fn': {
-      if (node.name !== 'SUM') {
-        if (!WARNED_FN_NAMES.has(node.name)) {
-          WARNED_FN_NAMES.add(node.name);
-          console.warn(`[boqParserV2/evaluate] Unknown Excel function: ${node.name}`);
+      const name = node.name.toUpperCase();
+
+      if (name === 'SUM') {
+        // SUM(arg1, arg2, ...) where each arg may be a range or scalar. We
+        // resolve ranges to their cached cell values and add them. Components
+        // are not produced for ranges (they aggregate many cells); the numeric
+        // value is what downstream quantity math needs.
+        let total = 0;
+        for (const arg of node.args) {
+          if (arg.kind === 'ref') {
+            for (const v of resolveRangeValues(arg, ctx)) total += toNumber(v);
+          } else {
+            total += walk(arg, ctx).value;
+          }
         }
-        return { value: 0, components: [], confidence: 0.5, unknownFunctions: [node.name] };
+        return { value: total, components: [], confidence: 1 };
       }
-      return { value: 0, components: [], confidence: 0.5 };
+
+      if (name === 'SUMIF') {
+        // SUMIF(range, criteria, [sum_range])
+        const rangeNode = node.args[0];
+        const critNode = node.args[1];
+        const sumNode = node.args[2] ?? rangeNode;
+        if (!rangeNode || !critNode) {
+          return unresolvedFn(node.name);
+        }
+        const critValues = resolveRangeValues(rangeNode, ctx);
+        const sumValues = resolveRangeValues(sumNode, ctx);
+        const crit = parseCriteria(evalCriteriaValue(critNode, ctx));
+        let total = 0;
+        const n = Math.min(critValues.length, sumValues.length);
+        for (let i = 0; i < n; i++) {
+          if (criteriaMatches(crit, critValues[i])) total += toNumber(sumValues[i]);
+        }
+        return { value: total, components: [], confidence: 1 };
+      }
+
+      if (name === 'SUMIFS') {
+        // SUMIFS(sum_range, criteria_range1, criteria1, [criteria_range2, criteria2, ...])
+        const sumNode = node.args[0];
+        if (!sumNode || node.args.length < 3) {
+          return unresolvedFn(node.name);
+        }
+        const sumValues = resolveRangeValues(sumNode, ctx);
+        const pairs: Array<{ range: unknown[]; crit: Criteria }> = [];
+        for (let i = 1; i + 1 < node.args.length; i += 2) {
+          const range = resolveRangeValues(node.args[i], ctx);
+          const crit = parseCriteria(evalCriteriaValue(node.args[i + 1], ctx));
+          pairs.push({ range, crit });
+        }
+        let total = 0;
+        for (let i = 0; i < sumValues.length; i++) {
+          let all = true;
+          for (const { range, crit } of pairs) {
+            if (i >= range.length || !criteriaMatches(crit, range[i])) { all = false; break; }
+          }
+          if (all) total += toNumber(sumValues[i]);
+        }
+        return { value: total, components: [], confidence: 1 };
+      }
+
+      // Any other function is unsupported: surface a NaN sentinel + the name so
+      // the caller can treat the quantity as UNRESOLVED rather than a fake 0.
+      return unresolvedFn(node.name);
     }
   }
+}
+
+// Sentinel branch for functions we cannot decompose. value is NaN so any
+// arithmetic propagates the unresolved-ness; unknownFunctions records the name.
+function unresolvedFn(name: string): Branch {
+  if (!WARNED_FN_NAMES.has(name)) {
+    WARNED_FN_NAMES.add(name);
+    console.warn(`[boqParserV2/evaluate] Unknown Excel function: ${name}`);
+  }
+  return { value: NaN, components: [], confidence: 0.5, unknownFunctions: [name] };
 }
 
 // Detects the "= X * 'REKAP RAB'!$O$Y" (or Y*X) markup wrap at the AST root.
@@ -250,15 +494,36 @@ export function evaluateFormula(
   };
   const peeled = peelMarkupAtRoot(ast, ctx);
   const branch = peeled ? walk(peeled.inner, ctx) : walk(ast, ctx);
+  const hasCached = typeof cell.value === 'number' && Number.isFinite(cell.value as number);
   const cached = toNumber(cell.value);
   const evaluated = peeled ? branch.value * peeled.markup.factor : branch.value;
+  const evaluatedResolved = Number.isFinite(evaluated);
   let conf = branch.confidence;
-  if (Math.abs(cached - evaluated) > Math.max(1, Math.abs(cached) * 1e-4)) {
+  if (evaluatedResolved && Math.abs(cached - evaluated) > Math.max(1, Math.abs(cached) * 1e-4)) {
     conf = Math.min(conf, 0.7);
   }
   const unknownFunctions = branch.unknownFunctions?.length ? branch.unknownFunctions : undefined;
+
+  // Resolution policy honoring the truth-correctness contract: never coerce an
+  // unresolvable computation to a confident 0.
+  //  - Prefer the workbook's own cached numeric value when present (exceljs has
+  //    already computed the formula result there).
+  //  - Otherwise use our symbolic evaluation when it resolved to a number.
+  //  - If neither is available (e.g. an unknown function with no cached value),
+  //    surface NaN so the caller sees an UNRESOLVED quantity, not a fake 0.
+  let evaluatedValue: number;
+  if (hasCached && cached !== 0) {
+    evaluatedValue = cached;
+  } else if (evaluatedResolved) {
+    evaluatedValue = evaluated;
+  } else if (hasCached) {
+    evaluatedValue = cached; // genuinely-cached 0
+  } else {
+    evaluatedValue = NaN; // unresolved — caller must treat as unknown, not 0
+  }
+
   return {
-    evaluatedValue: cached || evaluated,
+    evaluatedValue,
     components: branch.components,
     markup: peeled ? peeled.markup : null,
     confidence: conf,

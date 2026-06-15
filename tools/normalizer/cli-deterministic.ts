@@ -26,6 +26,7 @@ import type { AhsBlock } from '../boqParserV2/detectBlocks';
 import type { RowBreakdown, BreakdownRow } from '../boqParserV2/breakdownSheetReader.types';
 import { needsExpansion } from './needsExpansion';
 import { writeBreakdownSheets } from './writeWorkbook';
+import { detectDiameterHeader } from '../boqParserV2/rebarDisaggregator/adapters/headerDetect';
 
 const TOLERANCE_RP = 1;
 
@@ -300,6 +301,55 @@ function readDiametersForRow(row: BoqRowV2): DiameterWeight[] {
     }));
 }
 
+/**
+ * Last-resort per-diameter source for elements whose per-row REKAP sheet has no
+ * diameter columns — notably Dinding / retaining walls, whose rebar lives on
+ * the "Retaining Wall" sheet organised by reinforcement FUNCTION (vertical /
+ * horizontal / tie), not by bar diameter. The workbook's own element summary
+ * ("REKAP BETON BESI BEKISTING") DOES break every element type down by
+ * diameter, so we read the matching element's diameter PROPORTIONS there and
+ * return them as qtyPerM3 fractions (Σ = 1). buildBreakdownForRow then rescales
+ * them to the row's own Z, keeping the breakdown cost-exact while showing real
+ * diameters instead of the phantom "U24 & U40" grade lump.
+ *
+ * Returns [] when the row isn't a wall, the summary sheet is absent, or no
+ * element row matches — the caller then keeps a (relabelled) single-line besi.
+ *
+ * Proportions are aggregated across floors. For walls (uniformly D10 on every
+ * floor in the reference workbook) this is exact; a hypothetical floor-varying
+ * mix would be a floor-blend that is still cost-exact (Σ = 1 ⇒ Σ×Z = Z) but not
+ * floor-perfect.
+ */
+const REBAR_ELEMENT_SUMMARY_SHEET = 'REKAP BETON BESI BEKISTING';
+function summaryDiameterProportions(label: string, cells: HarvestedCell[]): DiameterWeight[] {
+  if (!/dinding|retaining|tembok|\bRW\b/i.test(label)) return [];
+  if (!cells.some((c) => c.sheet === REBAR_ELEMENT_SUMMARY_SHEET)) return [];
+  const sheet = REBAR_ELEMENT_SUMMARY_SHEET;
+  const header = detectDiameterHeader(cells, sheet, { rowMin: 1, rowMax: 6 });
+  if (!header) return [];
+  // Element rows whose label (cols A..D) names a retaining wall / dinding.
+  const elementRows = new Set<number>();
+  for (const c of cells) {
+    if (c.sheet !== sheet) continue;
+    const col = c.address.match(/^([A-Z]+)\d+$/)?.[1];
+    if (!col || col > 'D') continue;
+    if (/dinding|retaining|tembok/i.test(String(c.value ?? ''))) elementRows.add(c.row);
+  }
+  if (elementRows.size === 0) return [];
+  const byDiameter = new Map<string, number>();
+  for (const [diameter, col] of header.map) {
+    let kg = 0;
+    for (const r of elementRows) {
+      const cell = cells.find((c) => c.sheet === sheet && c.address === `${col}${r}`);
+      kg += Number(cell?.value ?? 0);
+    }
+    if (kg > 0) byDiameter.set(diameter, kg);
+  }
+  const total = [...byDiameter.values()].reduce((s, v) => s + v, 0);
+  if (total <= 0) return [];
+  return [...byDiameter.entries()].map(([diameter, kg]) => ({ diameter, qtyPerM3: kg / total }));
+}
+
 interface BuildResult {
   breakdown?: RowBreakdown;
   reason?: string;
@@ -449,6 +499,7 @@ function buildRolledBreakdown(args: {
         reconciles: true,
       },
       sourceSheet: `Breakdown ${row.code}`,
+      codeNote: row.code_note ?? undefined,
     },
     computedUnitCost, variance, level: 'rolled',
   };
@@ -695,6 +746,7 @@ function buildDirectReferenceBreakdown(args: {
         reconciles: true,
       },
       sourceSheet: `Breakdown ${row.code}`,
+      codeNote: row.code_note ?? undefined,
     },
     computedUnitCost,
     variance,
@@ -812,6 +864,7 @@ function buildBesiOnlyBreakdown(args: {
         reconciles: true,
       },
       sourceSheet: `Breakdown ${row.code}`,
+      codeNote: row.code_note ?? undefined,
     },
     computedUnitCost,
     variance,
@@ -931,20 +984,34 @@ function buildBreakdownForRow(args: {
   const totalDisaggregatedKgPerM3 = diameters.reduce((s, d) => s + d.qtyPerM3, 0);
   const aggregateKgPerM3 = cols.pembesianKgPerM3;
   const aggregatePrice = cols.pembesianBlendedPricePerKg;
-  const disaggregatorOK =
-    diameters.length > 0 &&
-    aggregateKgPerM3 > 0 &&
-    Math.abs(totalDisaggregatedKgPerM3 - aggregateKgPerM3) < 0.01;
-  if (disaggregatorOK && pembesian.besiUnitPrice > 0) {
-    const totalRawKgPerM3 = totalDisaggregatedKgPerM3;
+  // The disaggregator yields per-diameter weights whose PROPORTIONS are correct
+  // but whose absolute magnitude can differ from the row's total rebar Z when
+  // the REKAP reference row spans a different volume than the BoQ row (e.g. Plat
+  // rows aggregate several REKAP areas while their Z-formula cites one area's
+  // per-m³ ratio, so Σdiam = 3.86 vs Z = 109.75). The per-diameter split is
+  // still right, so rescale it to sum to Z. The rebar is then shown by actual
+  // DIAMETER (never the phantom "U24 & U40" grade lump) and stays COST-EXACT:
+  // Σ = Z ⇒ pembesian cost = Z×blended, unchanged. Rows that already sum to Z
+  // (Kolom/Balok/Poer) get scale = 1 and are byte-for-byte identical.
+  const haveDiameters =
+    diameters.length > 0 && aggregateKgPerM3 > 0 && totalDisaggregatedKgPerM3 > 0;
+  if (haveDiameters && pembesian.besiUnitPrice > 0) {
+    const scale = aggregateKgPerM3 / totalDisaggregatedKgPerM3;
+    const scaledDiameters = diameters.map((d) => ({
+      diameter: d.diameter,
+      qtyPerM3: d.qtyPerM3 * scale,
+    }));
+    const totalRawKgPerM3 = aggregateKgPerM3; // = Z by construction
     const wasteCoeff = pembesian.besiCoeff - 1; // 1.05 - 1 = 0.05
     const componentGroup = `PEMBESIAN (Material) — ratio ${totalRawKgPerM3.toFixed(2)} kg/m³`;
-    for (const d of diameters) {
+    for (const d of scaledDiameters) {
       components.push({
         group: 'material',
         componentGroup,
         materialName: `Besi beton ${d.diameter}`,
-        specNote: 'U24/U40 polos',
+        // Plain (BjTP/polos) for small bars, deformed (BjTS/ulir) for ≥D13 —
+        // the diameter is what's ordered; the steel grade is just a spec note.
+        specNote: /^D(6|8|10|12)$/i.test(d.diameter) ? 'polos (BjTP)' : 'ulir (BjTS)',
         qtyPerNativeUnit: d.qtyPerM3,
         nativeUnit: 'kg',
         nativeBasis: 'per m3 beton',
@@ -1083,6 +1150,7 @@ function buildBreakdownForRow(args: {
       reconciles: true,
     },
     sourceSheet: `Breakdown ${row.code}`,
+    codeNote: row.code_note ?? undefined,
   };
   return { breakdown, computedUnitCost, variance, level: 'itemized' };
 }
@@ -1101,6 +1169,8 @@ export interface RunDeterministicResult {
   unresolved: Array<{ code: string; label: string; reason: string }>;
   /** Max absolute variance across every written breakdown (must be ≤ 1 Rp). */
   maxAbsVariance: number;
+  /** All parsed BoQ rows (carry sub_chapter/chapter for procurement rollup labels). */
+  boqRows: BoqRowV2[];
 }
 
 export interface RunDeterministicOptions {
@@ -1142,7 +1212,14 @@ export async function runDeterministic(opts: RunDeterministicOptions): Promise<R
 
   for (const row of candidates) {
     const cols = readRowCols(lookup, row.source_sheet, row.sourceRow);
-    const diameters = readDiametersForRow(row);
+    let diameters = readDiametersForRow(row);
+    if (diameters.length === 0) {
+      // Wall/dinding rows: their per-row REKAP source carries no diameter
+      // columns. Fall back to the element summary's diameter proportions
+      // (rescaled to Z inside buildBreakdownForRow) so they itemise by real
+      // diameter instead of the "U24 & U40" grade lump.
+      diameters = summaryDiameterProportions(row.label, result.cells);
+    }
     const sourceUnitCost =
       (row.cost_split
         ? row.cost_split.material + row.cost_split.labor + row.cost_split.equipment + row.cost_split.prelim
@@ -1217,6 +1294,33 @@ export async function runDeterministic(opts: RunDeterministicOptions): Promise<R
       ];
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Unresolved');
     }
+    // Surface any auto-disambiguated source-code collisions (numbering typos)
+    // in their own sheet, independent of whether the affected rows were
+    // expanded into breakdowns. This guarantees the flag reaches the workbook
+    // even when the colliding rows are non-structural (e.g. the IX.5 / IX.5b
+    // Bioseptictank rows, which are not expansion candidates).
+    const codeIssues = result.boqRows.filter((r) => r.code_note);
+    if (codeIssues.length > 0) {
+      const rows: unknown[][] = [
+        ['SOURCE ISSUES — duplicate BoQ codes auto-disambiguated'],
+        [`Generated: ${new Date().toISOString()}`],
+        ['These codes collided in the source RAB (A) sheet and were given a'],
+        ['suffix so each line item stays uniquely addressable. Fix the source'],
+        ['numbering when convenient, then re-run.'],
+        [],
+        ['Final Code', 'Label', 'Source Row', 'Note'],
+        ...codeIssues.map((r) => [r.code, r.label, r.sourceRow, r.code_note]),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Source Issues');
+    }
+    // Some source workbooks (e.g. SPH 4 Sonny) declare phantom sheet ranges
+    // spanning ~1M rows on computation sheets (DATA BAJA, Hasil-PC) even
+    // though real data ends within a few hundred rows. SheetJS serializes the
+    // full declared range on write, turning a sub-second write into 35 s. Tighten
+    // every sheet's "!ref" to the actual populated extent before writing. This
+    // is lossless — it only shrinks the declared range to where data already
+    // is; no populated cell is ever dropped.
+    tightenSheetRanges(wb);
     const outBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
     fs.writeFileSync(opts.outputPath, outBuf);
     log(`\nWrote: ${opts.outputPath}`);
@@ -1231,7 +1335,36 @@ export async function runDeterministic(opts: RunDeterministicOptions): Promise<R
     breakdowns,
     unresolved,
     maxAbsVariance,
+    boqRows: result.boqRows,
   };
+}
+
+/**
+ * Recompute every sheet's "!ref" bound from the actual populated cell
+ * addresses. Lossless: a sheet's range is only ever shrunk to the extent that
+ * already contains data, so no populated cell is dropped. Sheets with no data
+ * cells keep their existing "!ref". This neutralizes phantom ~1M-row ranges
+ * that make XLSX.write pathologically slow.
+ */
+function tightenSheetRanges(wb: XLSX.WorkBook): void {
+  for (const name of wb.SheetNames) {
+    const ws = wb.Sheets[name];
+    if (!ws || !ws['!ref']) continue;
+    let minR = Infinity, minC = Infinity, maxR = -1, maxC = -1;
+    for (const addr in ws) {
+      if (addr.charCodeAt(0) === 33 /* '!' */) continue;
+      const cell = XLSX.utils.decode_cell(addr);
+      if (cell.r < minR) minR = cell.r;
+      if (cell.c < minC) minC = cell.c;
+      if (cell.r > maxR) maxR = cell.r;
+      if (cell.c > maxC) maxC = cell.c;
+    }
+    if (maxR < 0) continue; // no data cells — leave as-is
+    ws['!ref'] = XLSX.utils.encode_range({
+      s: { r: Math.min(minR, 0), c: Math.min(minC, 0) },
+      e: { r: maxR, c: maxC },
+    });
+  }
 }
 
 async function main() {

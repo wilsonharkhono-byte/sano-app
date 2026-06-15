@@ -16,6 +16,11 @@ describe('selectAdapter', () => {
     ['Kolom K24', 'kolom', 'K24'],
     ['Kolom KB2A', 'kolom', 'KB2A'],
     ['  - Kolom K2A5', 'kolom', 'K2A5'],
+    // Shear walls route through the kolom adapter — their rebar is computed on
+    // the Hasil-Kolom sheet (the BoQ row's Z-formula cites 'Hasil-Kolom'!W{row}).
+    ['SW1', 'kolom', '1'],
+    ['SW 2', 'kolom', '2'],
+    ['  - SW1', 'kolom', '1'],
   ])('matches %s → %s adapter, typeCode "%s"', (label, adapterName, typeCode) => {
     const result = selectAdapter(label);
     expect(result).not.toBeNull();

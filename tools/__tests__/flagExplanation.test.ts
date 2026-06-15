@@ -30,15 +30,12 @@ describe('flagExplanation', () => {
     expect(fx!.saran).toContain('Periksa angkanya');
   });
 
-  it('falls back to a generic explanation when flagged but the reason is unknown/missing', () => {
-    const fx = flagExplanation(row({ raw_data: {} }));
-    expect(fx!.why).toBe('Baris ini ditandai untuk dicek manual.');
-    expect(fx!.saran).toContain('Periksa nilainya');
+  it('returns null when flagged but the reason is unknown/missing (no redundant generic callout)', () => {
+    expect(flagExplanation(row({ raw_data: {} }))).toBeNull();
   });
 
-  it('treats prototype-inherited keys as an unknown reason (generic)', () => {
-    const fx = flagExplanation(row({ raw_data: { flag_reason: 'constructor' } }));
-    expect(fx!.why).toBe('Baris ini ditandai untuk dicek manual.');
+  it('treats prototype-inherited keys as an unknown reason (null, not a garbage value)', () => {
+    expect(flagExplanation(row({ raw_data: { flag_reason: 'constructor' } }))).toBeNull();
   });
 
   it('exposes static action captions', () => {

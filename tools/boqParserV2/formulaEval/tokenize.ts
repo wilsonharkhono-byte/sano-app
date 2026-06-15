@@ -4,7 +4,7 @@
 // ranges (A1:B2), and function calls like SUM/SUMIFS/VLOOKUP.
 
 export type TokenKind =
-  | 'ref' | 'num' | 'op' | 'lparen' | 'rparen' | 'comma' | 'fn' | 'colon';
+  | 'ref' | 'num' | 'op' | 'lparen' | 'rparen' | 'comma' | 'fn' | 'colon' | 'str';
 
 export interface Token {
   kind: TokenKind;
@@ -24,6 +24,25 @@ export function tokenize(input: string): Token[] {
 
   while (s.length > 0) {
     if (/^\s/.test(s)) { s = s.trimStart(); continue; }
+
+    // Double-quoted string literal (used as SUMIF/SUMIFS criteria, e.g. ">=5",
+    // "<>0", "Besi"). Excel escapes an embedded quote by doubling it ("").
+    if (s[0] === '"') {
+      let i = 1;
+      let lit = '';
+      while (i < s.length) {
+        if (s[i] === '"') {
+          if (s[i + 1] === '"') { lit += '"'; i += 2; continue; }
+          i += 1;
+          break;
+        }
+        lit += s[i];
+        i += 1;
+      }
+      out.push({ kind: 'str', value: lit });
+      s = s.slice(i);
+      continue;
+    }
 
     let m = s.match(SHEET_QUOTED_RE);
     if (m) {

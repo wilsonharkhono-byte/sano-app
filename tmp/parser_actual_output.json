@@ -1,0 +1,18 @@
+{
+  "counts": {
+    "materialRows": 66,
+    "ahsBlocks": 37,
+    "boqRows": 222,
+    "stagingRows": 483
+  },
+  "stagingByType": {
+    "material": 66,
+    "ahs_block": 37,
+    "ahs": 158,
+    "boq": 222
+  },
+  "validationSummary": {
+    "ok": 37,
+    "imbalanced": 0
+  }
+}
