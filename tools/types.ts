@@ -68,6 +68,21 @@ export interface BoqItem {
   internal_unit_price: number | null;
 }
 
+/**
+ * A work-group: the bulk unit a field supervisor orders against (e.g.
+ * "Struktur Pondasi", "Kolom Lantai 1"). Computed client-side from BoQ rows
+ * by tools/boqWorkGroups.ts — not persisted. `itemIds` are the member
+ * boq_items the group's envelope aggregates over.
+ */
+export interface WorkGroup {
+  key: string;
+  label: string;
+  floor: string | null;
+  itemIds: string[];
+  itemCount: number;
+  sortOrder: number;
+}
+
 export interface CompositeFactors {
   formwork_ratio: number;
   rebar_ratio: number;
@@ -281,7 +296,7 @@ export interface MaterialRequestLineAllocation {
 
 export type RequestStatus = MRStatusType;
 export type MaterialRequestBasis = 'BOQ' | 'MATERIAL';
-export type MaterialRequestAllocationBasis = 'DIRECT' | 'TIER2_ENVELOPE' | 'GENERAL_STOCK';
+export type MaterialRequestAllocationBasis = 'DIRECT' | 'TIER2_ENVELOPE' | 'GENERAL_STOCK' | 'WORKGROUP_ENVELOPE';
 
 /** @deprecated Use MaterialRequestHeader + MaterialRequestLine instead */
 export interface MaterialRequest {

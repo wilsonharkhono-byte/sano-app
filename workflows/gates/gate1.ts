@@ -72,39 +72,7 @@ export function computeGate1Flag(
 
   if (tier === 2 && materialEnvelope) {
     // ── Tier 2: Server-derived envelope check (new path) ──────────────
-    const newTotal = materialEnvelope.total_ordered + requestedQty;
-    const burnPct = materialEnvelope.total_planned > 0
-      ? (newTotal / materialEnvelope.total_planned) * 100
-      : 0;
-    const remainingEnv = materialEnvelope.total_planned - materialEnvelope.total_ordered;
-    const matName = materialEnvelope.material_name;
-    const u = materialEnvelope.unit;
-
-    if (burnPct > 120) {
-      check1a = {
-        flag: 'CRITICAL',
-        check: '1a',
-        msg: `Envelope ${matName}: ${fmtN(newTotal)} / ${fmtN(materialEnvelope.total_planned)} ${u} (${burnPct.toFixed(0)}%). Melebihi +20%. Auto-hold.`,
-      };
-    } else if (burnPct > 100) {
-      check1a = {
-        flag: 'HIGH',
-        check: '1a',
-        msg: `Envelope ${matName} melampaui batas: ${fmtN(newTotal)} / ${fmtN(materialEnvelope.total_planned)} ${u} (${burnPct.toFixed(0)}%). Eskalasi.`,
-      };
-    } else if (burnPct > 80) {
-      check1a = {
-        flag: 'WARNING',
-        check: '1a',
-        msg: `Envelope ${matName}: ${burnPct.toFixed(0)}% terpakai (sisa ~${fmtN(remainingEnv - requestedQty)} ${u}). Mendekati batas.`,
-      };
-    } else {
-      check1a = {
-        flag: 'OK',
-        check: '1a',
-        msg: `Envelope ${matName}: ${burnPct.toFixed(0)}% (${fmtN(newTotal)} / ${fmtN(materialEnvelope.total_planned)} ${u}). ${materialEnvelope.boq_item_count} item BoQ terkait.`,
-      };
-    }
+    check1a = envelopeBurnFlag(materialEnvelope, requestedQty);
   } else if (tier === 2 && !materialEnvelope) {
     // ── Tier 2 fallback: legacy envelope model ──────────────────────
     const envKey = (item.tier2_material ?? '').split('+').map(s => s.trim());
@@ -188,6 +156,52 @@ export function computeGate1Flag(
   }
 
   return check1a;
+}
+
+/**
+ * Burn-threshold flag for an aggregate envelope (Tier 2 material envelope or a
+ * work-group envelope). Shared so the two paths apply identical thresholds.
+ */
+function envelopeBurnFlag(env: MaterialEnvelopeStatus, requestedQty: number): GateResult {
+  const newTotal = env.total_ordered + requestedQty;
+  const burnPct = env.total_planned > 0 ? (newTotal / env.total_planned) * 100 : 0;
+  const remainingEnv = env.total_planned - env.total_ordered;
+  const matName = env.material_name;
+  const u = env.unit;
+
+  if (burnPct > 120) {
+    return { flag: 'CRITICAL', check: '1a', msg: `Envelope ${matName}: ${fmtN(newTotal)} / ${fmtN(env.total_planned)} ${u} (${burnPct.toFixed(0)}%). Melebihi +20%. Auto-hold.` };
+  } else if (burnPct > 100) {
+    return { flag: 'HIGH', check: '1a', msg: `Envelope ${matName} melampaui batas: ${fmtN(newTotal)} / ${fmtN(env.total_planned)} ${u} (${burnPct.toFixed(0)}%). Eskalasi.` };
+  } else if (burnPct > 80) {
+    return { flag: 'WARNING', check: '1a', msg: `Envelope ${matName}: ${burnPct.toFixed(0)}% terpakai (sisa ~${fmtN(remainingEnv - requestedQty)} ${u}). Mendekati batas.` };
+  }
+  return { flag: 'OK', check: '1a', msg: `Envelope ${matName}: ${burnPct.toFixed(0)}% (${fmtN(newTotal)} / ${fmtN(env.total_planned)} ${u}). ${env.boq_item_count} item BoQ terkait.` };
+}
+
+/**
+ * Gate 1 flag for a work-group order (Tier 1 → whole work-group). Validates the
+ * requested material against the group's aggregate planned demand using the same
+ * burn thresholds as Tier 2. Requires a catalog material to have a baseline; a
+ * group with no planned demand for the material yields a soft INFO (never a
+ * fake-correct OK).
+ */
+export function computeWorkGroupGate1Flag(
+  envelope: MaterialEnvelopeStatus | null,
+  requestedQty: number,
+  groupLabel: string,
+): GateResult {
+  if (requestedQty <= 0) {
+    return { flag: 'WARNING', check: '1a', msg: 'Masukkan jumlah permintaan lebih dari 0.' };
+  }
+  if (!envelope || envelope.total_planned <= 0) {
+    return {
+      flag: 'INFO',
+      check: '1a',
+      msg: `Belum ada baseline material untuk grup "${groupLabel}". Tidak bisa divalidasi otomatis — estimator review manual.`,
+    };
+  }
+  return envelopeBurnFlag(envelope, requestedQty);
 }
 
 function fmtN(n: number): string {
