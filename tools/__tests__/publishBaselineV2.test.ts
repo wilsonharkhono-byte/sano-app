@@ -29,6 +29,40 @@ describe('resolveCatalogId', () => {
   });
 });
 
+import { foldRebarWaste, type MasterLineDraft } from '../publishBaselineV2';
+
+describe('foldRebarWaste', () => {
+  it('distributes a waste line proportionally onto resolved rebar lines and drops the waste line', () => {
+    const drafts: MasterLineDraft[] = [
+      { material_id: 'id-d13', material_name: 'Besi beton D13', coefficient: 71.20, isRebar: true, isWaste: false },
+      { material_id: 'id-d16', material_name: 'Besi beton D16', coefficient: 40.56, isRebar: true, isWaste: false },
+      { material_id: null,     material_name: 'Besi beton — waste (5%)', coefficient: 5.588, isRebar: true, isWaste: true },
+    ];
+    const out = foldRebarWaste(drafts);
+    expect(out.find(d => d.isWaste)).toBeUndefined();
+    const d13 = out.find(d => d.material_id === 'id-d13')!;
+    const d16 = out.find(d => d.material_id === 'id-d16')!;
+    expect(d13.coefficient).toBeCloseTo(74.760, 2);
+    expect(d16.coefficient).toBeCloseTo(42.588, 2);
+    expect(d13.coefficient + d16.coefficient).toBeCloseTo(71.20 + 40.56 + 5.588, 2);
+  });
+
+  it('leaves a waste line untouched (kept) when there are no resolved rebar lines to absorb it', () => {
+    const drafts: MasterLineDraft[] = [
+      { material_id: null, material_name: 'Besi beton — waste (5%)', coefficient: 5.588, isRebar: true, isWaste: true },
+    ];
+    const out = foldRebarWaste(drafts);
+    expect(out).toHaveLength(0);
+  });
+
+  it('is a no-op for groups with no waste line', () => {
+    const drafts: MasterLineDraft[] = [
+      { material_id: 'id-d13', material_name: 'Besi beton D13', coefficient: 71.20, isRebar: true, isWaste: false },
+    ];
+    expect(foldRebarWaste(drafts)).toEqual(drafts);
+  });
+});
+
 describe('topoSortBlocks', () => {
   it('orders children after parents (deepest-first via reverse)', () => {
     // Block A references B (A is child of B).

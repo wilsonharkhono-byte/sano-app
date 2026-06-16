@@ -266,6 +266,49 @@ export function zeroPlannedBoqCodes(rows: StagingRowV2[]): string[] {
   return codes;
 }
 
+export interface MasterLineDraft {
+  material_id: string | null;
+  material_name: string;
+  coefficient: number;
+  isRebar: boolean;
+  isWaste: boolean;
+}
+
+const WASTE_RE = /waste/i;
+const REBAR_RE = /besi\s*beton|rebar|besi\s*ulir|besi\s*polos/i;
+
+/** Classify a draft line so foldRebarWaste can group rebar + waste. */
+export function classifyRebar(materialName: string): { isRebar: boolean; isWaste: boolean } {
+  const isRebar = REBAR_RE.test(materialName);
+  return { isRebar, isWaste: isRebar && WASTE_RE.test(materialName) };
+}
+
+/**
+ * Fold the aggregate "Besi beton — waste (5%)" coefficient onto the resolved
+ * rebar diameter lines of the SAME BoQ item, proportional to their
+ * coefficients, then drop the waste line. If no resolved rebar line exists to
+ * absorb it, the waste line is dropped (its material_id is null → not tracked
+ * per-material; the unresolved report still surfaces it). Total rebar mass is
+ * conserved. Operate on one BoQ item's drafts at a time.
+ */
+export function foldRebarWaste(drafts: MasterLineDraft[]): MasterLineDraft[] {
+  const waste = drafts.filter(d => d.isWaste);
+  if (waste.length === 0) return drafts;
+
+  const rebarTargets = drafts.filter(d => d.isRebar && !d.isWaste && d.material_id != null);
+  const wasteCoeff = waste.reduce((s, w) => s + w.coefficient, 0);
+  const base = rebarTargets.reduce((s, r) => s + r.coefficient, 0);
+
+  const kept = drafts.filter(d => !d.isWaste);
+  if (rebarTargets.length === 0 || base <= 0) return kept;
+
+  return kept.map(d =>
+    rebarTargets.includes(d)
+      ? { ...d, coefficient: d.coefficient + wasteCoeff * (d.coefficient / base) }
+      : d,
+  );
+}
+
 export async function publishBaselineV2(
   sessionId: string,
   projectId: string,
