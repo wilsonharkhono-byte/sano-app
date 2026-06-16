@@ -657,7 +657,7 @@ export async function resolveAnomaly(
 export async function publishBaseline(
   sessionId: string,
   projectId: string,
-): Promise<{ success: boolean; error?: string; boqCount?: number; ahsCount?: number; materialCount?: number; skippedZeroPlanned?: string[] }> {
+): Promise<{ success: boolean; error?: string; boqCount?: number; ahsCount?: number; materialCount?: number; masterLineCount?: number; unresolvedComponentCount?: number; skippedZeroPlanned?: string[] }> {
   try {
     const { data: session } = await supabase
       .from('import_sessions')
