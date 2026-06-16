@@ -31,6 +31,24 @@ describe('resolveCatalogId', () => {
 
 import { foldRebarWaste, type MasterLineDraft } from '../publishBaselineV2';
 import { buildMasterLinesV2, type MasterLineInput } from '../publishBaselineV2';
+import { classifyRebar } from '../publishBaselineV2';
+
+describe('classifyRebar', () => {
+  it('flags rebar names as rebar, non-waste', () => {
+    expect(classifyRebar('Besi beton D13')).toEqual({ isRebar: true, isWaste: false });
+    expect(classifyRebar('Besi beton ulir 16 mm')).toEqual({ isRebar: true, isWaste: false });
+  });
+
+  it('flags a rebar waste line as both rebar and waste', () => {
+    expect(classifyRebar('Besi beton — waste (5%)')).toEqual({ isRebar: true, isWaste: true });
+  });
+
+  it('does not flag non-rebar materials (even if they mention waste) as rebar or waste', () => {
+    expect(classifyRebar('Semen PC @50kg')).toEqual({ isRebar: false, isWaste: false });
+    // "waste" alone must not set isWaste without rebar — isWaste is gated on isRebar
+    expect(classifyRebar('Construction waste disposal')).toEqual({ isRebar: false, isWaste: false });
+  });
+});
 
 describe('buildMasterLinesV2', () => {
   it('computes planned = boq.planned × coefficient per resolved material line', () => {
@@ -84,7 +102,7 @@ describe('foldRebarWaste', () => {
     expect(d13.coefficient + d16.coefficient).toBeCloseTo(71.20 + 40.56 + 5.588, 2);
   });
 
-  it('leaves a waste line untouched (kept) when there are no resolved rebar lines to absorb it', () => {
+  it('drops the waste line when there are no resolved rebar lines to absorb it', () => {
     const drafts: MasterLineDraft[] = [
       { material_id: null, material_name: 'Besi beton — waste (5%)', coefficient: 5.588, isRebar: true, isWaste: true },
     ];
@@ -97,6 +115,18 @@ describe('foldRebarWaste', () => {
       { material_id: 'id-d13', material_name: 'Besi beton D13', coefficient: 71.20, isRebar: true, isWaste: false },
     ];
     expect(foldRebarWaste(drafts)).toEqual(drafts);
+  });
+
+  it('sums multiple waste lines before distributing onto rebar targets', () => {
+    const drafts: MasterLineDraft[] = [
+      { material_id: 'id-d13', material_name: 'Besi beton D13', coefficient: 60, isRebar: true, isWaste: false },
+      { material_id: null, material_name: 'Besi beton — waste (5%)', coefficient: 3, isRebar: true, isWaste: true },
+      { material_id: null, material_name: 'Besi beton — waste extra', coefficient: 2, isRebar: true, isWaste: true },
+    ];
+    const out = foldRebarWaste(drafts);
+    expect(out.filter(d => d.isWaste)).toHaveLength(0);
+    const d13 = out.find(d => d.material_id === 'id-d13')!;
+    expect(d13.coefficient).toBeCloseTo(65, 6); // 60 + (3+2) onto the only target
   });
 });
 

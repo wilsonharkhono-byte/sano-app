@@ -18,6 +18,8 @@ export interface CatalogRow {
  * null when the name does not resolve to a REAL catalog entry — callers must
  * leave material_id NULL and flag the line for review rather than invent a link
  * (CLAUDE.md §1.1: wrong numbers are worse than absent numbers).
+ * NOTE: `aliases` must be keyed by NORMALIZED names (lowercase, punctuation→spaces),
+ * matching reconcileMaterials' internal normalize(); raw-keyed aliases never match.
  */
 export function resolveCatalogId(
   name: string,
