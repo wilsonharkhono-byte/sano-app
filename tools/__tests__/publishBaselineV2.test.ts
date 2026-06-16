@@ -1,6 +1,134 @@
 jest.mock('../supabase', () => ({ supabase: {} }));
 
 import { topoSortBlocks, flattenBlock, findDuplicateBoqCodes, zeroPlannedBoqCodes, type FlattenedLine } from '../publishBaselineV2';
+import { resolveCatalogId, type CatalogRow } from '../publishBaselineV2';
+
+describe('resolveCatalogId', () => {
+  const catalog: CatalogRow[] = [
+    { id: 'id-d13', code: 'REB-DE13', name: 'Besi beton ulir 13 mm', category: 'Struktur', tier: 1, unit: 'kg' },
+    { id: 'id-pcc', code: 'CEM-PCC50', name: 'Semen PCC 50 kg', category: 'Material Beton', tier: 2, unit: 'zak' },
+    { id: 'id-bdr', code: 'KWD-BDR01', name: 'Kawat bendrat', category: 'Struktur', tier: 3, unit: 'kg' },
+  ];
+  const aliases = new Map<string, string>([
+    ['besi beton d13', 'REB-DE13'],
+    ['semen pc 50kg', 'CEM-PCC50'],
+  ]);
+
+  it('resolves an exact catalog name to its id', () => {
+    expect(resolveCatalogId('Besi beton ulir 13 mm', catalog, aliases)).toBe('id-d13');
+  });
+
+  it('resolves an aliased breakdown name to the canonical id', () => {
+    expect(resolveCatalogId('Besi beton D13', catalog, aliases)).toBe('id-d13');
+    expect(resolveCatalogId('Semen PC @50kg', catalog, aliases)).toBe('id-pcc');
+  });
+
+  it('returns null for an unresolved name rather than fabricating a link', () => {
+    expect(resolveCatalogId('Beton decking', catalog, aliases)).toBeNull();
+    expect(resolveCatalogId('Besi beton — waste (5%)', catalog, aliases)).toBeNull();
+  });
+});
+
+import { foldRebarWaste, type MasterLineDraft } from '../publishBaselineV2';
+import { buildMasterLinesV2, type MasterLineInput } from '../publishBaselineV2';
+import { classifyRebar } from '../publishBaselineV2';
+
+describe('classifyRebar', () => {
+  it('flags rebar names as rebar, non-waste', () => {
+    expect(classifyRebar('Besi beton D13')).toEqual({ isRebar: true, isWaste: false });
+    expect(classifyRebar('Besi beton ulir 16 mm')).toEqual({ isRebar: true, isWaste: false });
+  });
+
+  it('flags a rebar waste line as both rebar and waste', () => {
+    expect(classifyRebar('Besi beton — waste (5%)')).toEqual({ isRebar: true, isWaste: true });
+  });
+
+  it('does not flag non-rebar materials (even if they mention waste) as rebar or waste', () => {
+    expect(classifyRebar('Semen PC @50kg')).toEqual({ isRebar: false, isWaste: false });
+    // "waste" alone must not set isWaste without rebar — isWaste is gated on isRebar
+    expect(classifyRebar('Construction waste disposal')).toEqual({ isRebar: false, isWaste: false });
+  });
+});
+
+describe('buildMasterLinesV2', () => {
+  it('computes planned = boq.planned × coefficient per resolved material line', () => {
+    const input: MasterLineInput[] = [
+      { boq_item_id: 'poer', boq_planned: 1.65, material_id: 'id-d13', material_name: 'Besi beton D13', coefficient: 71.20, unit: 'kg', line_type: 'material' },
+      { boq_item_id: 'poer', boq_planned: 1.65, material_id: 'id-pcc', material_name: 'Semen PC @50kg', coefficient: 0.0897831, unit: 'zak', line_type: 'material' },
+    ];
+    const lines = buildMasterLinesV2(input, 'master-1');
+    const d13 = lines.find(l => l.material_id === 'id-d13')!;
+    expect(d13.master_id).toBe('master-1');
+    expect(d13.boq_item_id).toBe('poer');
+    expect(d13.planned_quantity).toBeCloseTo(117.48, 2);
+    expect(d13.unit).toBe('kg');
+  });
+
+  it('excludes labor/equipment and material lines with null material_id', () => {
+    const input: MasterLineInput[] = [
+      { boq_item_id: 'poer', boq_planned: 1.65, material_id: 'id-d13', material_name: 'Besi beton D13', coefficient: 71.20, unit: 'kg', line_type: 'material' },
+      { boq_item_id: 'poer', boq_planned: 1.65, material_id: null, material_name: 'Upah cor', coefficient: 1, unit: 'm3', line_type: 'labor' },
+      { boq_item_id: 'poer', boq_planned: 1.65, material_id: null, material_name: 'Beton decking', coefficient: 111.76, unit: 'kg', line_type: 'material' },
+    ];
+    const lines = buildMasterLinesV2(input, 'master-1');
+    expect(lines).toHaveLength(1);
+    expect(lines[0].material_id).toBe('id-d13');
+  });
+
+  it('merges duplicate (boq_item, material) pairs by summing planned', () => {
+    const input: MasterLineInput[] = [
+      { boq_item_id: 'b', boq_planned: 2, material_id: 'm', material_name: 'X', coefficient: 3, unit: 'kg', line_type: 'material' },
+      { boq_item_id: 'b', boq_planned: 2, material_id: 'm', material_name: 'X', coefficient: 4, unit: 'kg', line_type: 'material' },
+    ];
+    const lines = buildMasterLinesV2(input, 'master-1');
+    expect(lines).toHaveLength(1);
+    expect(lines[0].planned_quantity).toBeCloseTo(14, 6);
+  });
+});
+
+describe('foldRebarWaste', () => {
+  it('distributes a waste line proportionally onto resolved rebar lines and drops the waste line', () => {
+    const drafts: MasterLineDraft[] = [
+      { material_id: 'id-d13', material_name: 'Besi beton D13', coefficient: 71.20, isRebar: true, isWaste: false },
+      { material_id: 'id-d16', material_name: 'Besi beton D16', coefficient: 40.56, isRebar: true, isWaste: false },
+      { material_id: null,     material_name: 'Besi beton — waste (5%)', coefficient: 5.588, isRebar: true, isWaste: true },
+    ];
+    const out = foldRebarWaste(drafts);
+    expect(out.find(d => d.isWaste)).toBeUndefined();
+    const d13 = out.find(d => d.material_id === 'id-d13')!;
+    const d16 = out.find(d => d.material_id === 'id-d16')!;
+    expect(d13.coefficient).toBeCloseTo(74.760, 2);
+    expect(d16.coefficient).toBeCloseTo(42.588, 2);
+    expect(d13.coefficient + d16.coefficient).toBeCloseTo(71.20 + 40.56 + 5.588, 2);
+  });
+
+  it('drops the waste line when there are no resolved rebar lines to absorb it', () => {
+    const drafts: MasterLineDraft[] = [
+      { material_id: null, material_name: 'Besi beton — waste (5%)', coefficient: 5.588, isRebar: true, isWaste: true },
+    ];
+    const out = foldRebarWaste(drafts);
+    expect(out).toHaveLength(0);
+  });
+
+  it('is a no-op for groups with no waste line', () => {
+    const drafts: MasterLineDraft[] = [
+      { material_id: 'id-d13', material_name: 'Besi beton D13', coefficient: 71.20, isRebar: true, isWaste: false },
+    ];
+    expect(foldRebarWaste(drafts)).toEqual(drafts);
+  });
+
+  it('sums multiple waste lines before distributing onto rebar targets', () => {
+    const drafts: MasterLineDraft[] = [
+      { material_id: 'id-d13', material_name: 'Besi beton D13', coefficient: 60, isRebar: true, isWaste: false },
+      { material_id: null, material_name: 'Besi beton — waste (5%)', coefficient: 3, isRebar: true, isWaste: true },
+      { material_id: null, material_name: 'Besi beton — waste extra', coefficient: 2, isRebar: true, isWaste: true },
+    ];
+    const out = foldRebarWaste(drafts);
+    expect(out.filter(d => d.isWaste)).toHaveLength(0);
+    const d13 = out.find(d => d.material_id === 'id-d13')!;
+    expect(d13.coefficient).toBeCloseTo(65, 6); // 60 + (3+2) onto the only target
+  });
+});
 
 describe('topoSortBlocks', () => {
   it('orders children after parents (deepest-first via reverse)', () => {

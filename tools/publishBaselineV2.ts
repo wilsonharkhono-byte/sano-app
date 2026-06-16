@@ -1,5 +1,44 @@
 import type { StagingRowV2, CostSplit } from './boqParserV2/types';
 import { toNumber } from './boqParserV2/classifyComponent';
+import { reconcileMaterials } from './excelParser';
+import type { CatalogEntry } from './excelParser';
+
+export interface CatalogRow {
+  id: string;
+  code: string;
+  name: string;
+  category: string;
+  tier: 1 | 2 | 3;
+  unit: string;
+}
+
+/**
+ * Resolve a free-text breakdown component name to a catalog material UUID using
+ * the same exact→alias→fuzzy cascade as v1 import (reconcileMaterials). Returns
+ * null when the name does not resolve to a REAL catalog entry — callers must
+ * leave material_id NULL and flag the line for review rather than invent a link
+ * (CLAUDE.md §1.1: wrong numbers are worse than absent numbers).
+ * NOTE: `aliases` must be keyed by NORMALIZED names (lowercase, punctuation→spaces),
+ * matching reconcileMaterials' internal normalize(); raw-keyed aliases never match.
+ */
+export function resolveCatalogId(
+  name: string,
+  catalog: CatalogRow[],
+  aliases: Map<string, string>,
+): string | null {
+  const entries: CatalogEntry[] = catalog.map(c => ({
+    code: c.code, name: c.name, category: c.category, tier: c.tier, unit: c.unit, aliases: [],
+  }));
+  const { resolved } = reconcileMaterials(
+    [{ rowNumber: 0, name, spec: null, unit: '', unitPrice: 0, resolvedCode: null, matchConfidence: 0 }],
+    entries,
+    aliases,
+  );
+  const hit = resolved[0];
+  if (!hit || !hit.resolvedCode || hit.matchConfidence <= 0) return null;
+  const byCode = new Map(catalog.map(c => [c.code, c.id]));
+  return byCode.get(hit.resolvedCode) ?? null;
+}
 
 export function topoSortBlocks(stagingRows: StagingRowV2[]): StagingRowV2[] {
   const blocks = stagingRows.filter(r => r.row_type === 'ahs_block');
@@ -86,6 +125,10 @@ export interface FlattenedLine {
 function pd<T = unknown>(row: StagingRowV2, key: string, fallback: T): T {
   const v = (row.parsed_data as Record<string, unknown>)[key];
   return (v ?? fallback) as T;
+}
+
+function normalizeAlias(s: string): string {
+  return s.toLowerCase().replace(/[()@\-/\\'"]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 export function flattenBlock(
@@ -229,6 +272,99 @@ export function zeroPlannedBoqCodes(rows: StagingRowV2[]): string[] {
   return codes;
 }
 
+export interface MasterLineDraft {
+  material_id: string | null;
+  material_name: string;
+  coefficient: number;
+  isRebar: boolean;
+  isWaste: boolean;
+}
+
+const WASTE_RE = /waste/i;
+const REBAR_RE = /besi\s*beton|rebar|besi\s*ulir|besi\s*polos/i;
+
+/** Classify a draft line so foldRebarWaste can group rebar + waste. */
+export function classifyRebar(materialName: string): { isRebar: boolean; isWaste: boolean } {
+  const isRebar = REBAR_RE.test(materialName);
+  return { isRebar, isWaste: isRebar && WASTE_RE.test(materialName) };
+}
+
+/**
+ * Fold the aggregate "Besi beton — waste (5%)" coefficient onto the resolved
+ * rebar diameter lines of the SAME BoQ item, proportional to their
+ * coefficients, then drop the waste line. If no resolved rebar line exists to
+ * absorb it, the waste line is dropped (its material_id is null → not tracked
+ * per-material; the unresolved report still surfaces it). Total rebar mass is
+ * conserved. Operate on one BoQ item's drafts at a time.
+ */
+export function foldRebarWaste(drafts: MasterLineDraft[]): MasterLineDraft[] {
+  const waste = drafts.filter(d => d.isWaste);
+  if (waste.length === 0) return drafts;
+
+  const rebarTargets = drafts.filter(d => d.isRebar && !d.isWaste && d.material_id != null);
+  const wasteCoeff = waste.reduce((s, w) => s + w.coefficient, 0);
+  const base = rebarTargets.reduce((s, r) => s + r.coefficient, 0);
+
+  const kept = drafts.filter(d => !d.isWaste);
+  if (rebarTargets.length === 0 || base <= 0) return kept;
+
+  return kept.map(d =>
+    rebarTargets.includes(d)
+      ? { ...d, coefficient: d.coefficient + wasteCoeff * (d.coefficient / base) }
+      : d,
+  );
+}
+
+export interface MasterLineInput {
+  boq_item_id: string;
+  boq_planned: number;
+  material_id: string | null;
+  material_name: string;
+  coefficient: number;
+  unit: string;
+  line_type: 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
+}
+
+export interface MasterLineRecord {
+  master_id: string;
+  material_id: string;
+  boq_item_id: string;
+  planned_quantity: number;
+  unit: string;
+}
+
+/**
+ * Aggregate per-(boq_item, material) planned demand from flattened v2 lines.
+ * planned = boq.planned × coefficient (coefficient already = qty per BoQ unit).
+ * Only material lines with a resolved material_id contribute. Duplicate pairs
+ * are summed. Labor/equipment and unresolved materials are excluded so the
+ * material master never carries a fabricated or untraceable demand row.
+ */
+export function buildMasterLinesV2(
+  inputs: MasterLineInput[],
+  masterId: string,
+): MasterLineRecord[] {
+  const byPair = new Map<string, MasterLineRecord>();
+  for (const i of inputs) {
+    if (i.line_type !== 'material' || i.material_id == null) continue;
+    const key = `${i.boq_item_id}::${i.material_id}`;
+    const planned = i.boq_planned * i.coefficient;
+    const existing = byPair.get(key);
+    if (existing) {
+      existing.planned_quantity += planned;
+    } else {
+      byPair.set(key, {
+        master_id: masterId,
+        material_id: i.material_id,
+        boq_item_id: i.boq_item_id,
+        planned_quantity: planned,
+        unit: i.unit,
+      });
+    }
+  }
+  return [...byPair.values()];
+}
+
 export async function publishBaselineV2(
   sessionId: string,
   projectId: string,
@@ -238,6 +374,8 @@ export async function publishBaselineV2(
   boqCount?: number;
   ahsCount?: number;
   materialCount?: number;
+  masterLineCount?: number;
+  unresolvedComponentCount?: number;
   skippedZeroPlanned?: string[];
 }> {
   const { data: stagingRowsDB, error: fetchErr } = await supabase
@@ -251,6 +389,24 @@ export async function publishBaselineV2(
   if (!stagingRowsDB) return { success: false, error: 'No staging rows' };
 
   const rows = stagingRowsDB as unknown as StagingRowV2[];
+
+  // Load the catalog + aliases so each disaggregated component can be linked to
+  // a real material_id (powering per-material envelope/gate checks downstream).
+  const { data: catalogData, error: catErr } = await supabase
+    .from('material_catalog')
+    .select('id, code, name, category, tier, unit');
+  if (catErr) return { success: false, error: `material_catalog load failed: ${catErr.message}` };
+  const catalog: CatalogRow[] = (catalogData ?? []) as CatalogRow[];
+
+  const { data: aliasData, error: aliasErr } = await supabase
+    .from('material_aliases')
+    .select('alias, material_catalog!inner(code)');
+  if (aliasErr) return { success: false, error: `material_aliases load failed: ${aliasErr.message}` };
+  const aliasMap = new Map<string, string>();
+  for (const a of aliasData ?? []) {
+    const code = (a as unknown as { material_catalog?: { code: string } }).material_catalog?.code;
+    if (code) aliasMap.set(normalizeAlias((a as { alias: string }).alias), code);
+  }
 
   // Translate DB uuids into row_number keys for topological sort, and keep the
   // reverse map so the nested-unfold breadcrumb (stored internally as
@@ -385,6 +541,16 @@ export async function publishBaselineV2(
   // flattenBlock — so skipping the standalone insert loses nothing. tier has no
   // meaning for a disaggregated line, so we use the catalog base tier (1).
   const ahsLineInserts: Record<string, unknown>[] = [];
+  const unresolvedComponents: string[] = [];
+  const masterLineInputs: MasterLineInput[] = [];
+  // boq_item_id → planned, for master-line quantities. Built from the upserted rows.
+  const boqPlannedById = new Map<string, number>();
+  for (const r of rows) {
+    if (r.row_type !== 'boq') continue;
+    const p = r.parsed_data as { code: string; planned: number };
+    const id = boqIdByCode.get(p.code);
+    if (id) boqPlannedById.set(id, p.planned);
+  }
   for (const block of sortedBlocks) {
     const blockParsed = block.parsed_data as { title: string };
     const lines = parentCache.get(block.row_number) ?? [];
@@ -397,9 +563,17 @@ export async function publishBaselineV2(
       // block's staging uuid so it satisfies the uuid column (null otherwise).
       const m = /^block:(\d+)$/.exec(line.origin_parent_ahs_id ?? '');
       const originUuid = m ? blockUuidByRowNumber.get(Number(m[1])) ?? null : null;
+      const materialId =
+        line.line_type === 'material'
+          ? resolveCatalogId(line.material_name, catalog, aliasMap)
+          : null;
+      if (line.line_type === 'material' && materialId == null) {
+        unresolvedComponents.push(`${linkedBoqCode}: ${line.material_name}`);
+      }
       ahsLineInserts.push({
         ahs_version_id: ahsVersionId,
         boq_item_id: linkedBoqId,
+        material_id: materialId,
         tier: 1,
         unit: line.unit || '',
         material_spec: line.material_name,
@@ -410,6 +584,15 @@ export async function publishBaselineV2(
         ahs_block_title: blockParsed.title,
         origin_parent_ahs_id: originUuid,
       });
+      masterLineInputs.push({
+        boq_item_id: linkedBoqId,
+        boq_planned: boqPlannedById.get(linkedBoqId) ?? 0,
+        material_id: materialId,
+        material_name: line.material_name,
+        coefficient: line.coefficient,
+        unit: line.unit || '',
+        line_type: line.line_type,
+      });
     }
   }
   if (ahsLineInserts.length > 0) {
@@ -417,11 +600,59 @@ export async function publishBaselineV2(
     if (lineErr) return { success: false, error: lineErr.message };
   }
 
+  // Apply the besi-waste gross-up per BoQ item before aggregating master lines.
+  const foldedInputs: MasterLineInput[] = [];
+  const byBoq = new Map<string, MasterLineInput[]>();
+  for (const mi of masterLineInputs) {
+    const arr = byBoq.get(mi.boq_item_id);
+    if (arr) arr.push(mi);
+    else byBoq.set(mi.boq_item_id, [mi]);
+  }
+  for (const [, group] of byBoq) {
+    const drafts: MasterLineDraft[] = group.map(g => {
+      const cls = classifyRebar(g.material_name);
+      return { material_id: g.material_id, material_name: g.material_name, coefficient: g.coefficient, ...cls };
+    });
+    const folded = foldRebarWaste(drafts);
+    // foldRebarWaste preserves the order of the kept (non-waste) lines, so
+    // re-pair by walking the group's non-waste lines in order rather than by
+    // (material_id, material_name) — that find could mis-pair duplicate
+    // components sharing both fields.
+    const nonWasteSrc = group.filter(g => !classifyRebar(g.material_name).isWaste);
+    for (let i = 0; i < folded.length; i++) {
+      const src = nonWasteSrc[i];
+      foldedInputs.push({ ...src, coefficient: folded[i].coefficient });
+    }
+  }
+
+  // Create the material master header + lines so per-(BoQ,material) demand is
+  // queryable (v_material_envelopes → v_material_envelope_status → gate checks).
+  const { data: master, error: masterErr } = await supabase
+    .from('project_material_master')
+    .insert({ project_id: projectId, ahs_version_id: ahsVersionId })
+    .select('id')
+    .single();
+  if (masterErr || !master) return { success: false, error: `material master insert failed: ${masterErr?.message}` };
+
+  const masterLines = buildMasterLinesV2(foldedInputs, master.id as string);
+  if (masterLines.length > 0) {
+    const { error: mlErr } = await supabase.from('project_material_master_lines').insert(masterLines);
+    if (mlErr) return { success: false, error: `material master lines insert failed: ${mlErr.message}` };
+  }
+  if (unresolvedComponents.length > 0) {
+    console.warn(
+      `publishBaselineV2: ${unresolvedComponents.length} components unresolved to catalog ` +
+      `(material_id NULL, not tracked per-material):`, unresolvedComponents.slice(0, 10),
+    );
+  }
+
   return {
     success: true,
     boqCount: boqInserts.length,
     ahsCount: ahsLineInserts.length,
     materialCount: rows.filter(r => r.row_type === 'material').length,
+    masterLineCount: masterLines.length,
+    unresolvedComponentCount: unresolvedComponents.length,
     skippedZeroPlanned,
   };
 }

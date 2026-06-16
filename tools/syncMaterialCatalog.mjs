@@ -233,6 +233,9 @@ const LEGACY_CODE_OVERRIDES = new Map([
   ['besitulangan16', 'REB-DE16'],
   ['bajah300', 'STL-HB300'],
   ['bendrat', 'KWD-BDR01'],
+  // REB-WR01 (tier-1 dup of Kawat bendrat) retired → canonical KWD-BDR01.
+  // Keyed by normalized name so any legacy row resolves to the survivor.
+  ['kawatbendrat', 'KWD-BDR01'],
 ]);
 
 function normalizeMatchKey(value) {

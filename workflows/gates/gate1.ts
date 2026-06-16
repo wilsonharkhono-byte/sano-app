@@ -21,6 +21,13 @@ export function computeGate1Flag(
   materialTier?: 1 | 2 | 3,
   /** Name of the material being requested — used for composition compatibility check */
   requestedMaterialName?: string,
+  /**
+   * Per-(BoQ item, material) planned + ordered for THIS material, from
+   * get_boq_material_status. When present, the Tier-1 check measures the request
+   * against the material's own remaining instead of the BoQ row's volume — the
+   * fix for "2 kg of D13 vs a 1.65 m³ row reads as 21% over".
+   */
+  tier1MaterialPlanned?: { planned: number; ordered: number } | null,
 ): GateResult | null {
   if (requestedQty <= 0) {
     return { flag: 'WARNING', check: '1a', msg: 'Masukkan jumlah permintaan lebih dari 0.' };
@@ -124,8 +131,15 @@ export function computeGate1Flag(
     // ── Tier 3: spend cap (lightweight check) ─────────────────────
     check1a = { flag: 'OK', check: '1a', msg: `Tier 3 habis pakai — ${requestedQty} ${item.unit}. Spend cap dicek server-side.` };
   } else {
-    // ── Tier 1: direct BoQ remaining check ────────────────────────
-    const pct = remaining > 0 ? ((requestedQty - remaining) / remaining) * 100 : 999;
+    // ── Tier 1: per-material remaining when available, else BoQ volume ────
+    const useMaterial = tier1MaterialPlanned != null && tier1MaterialPlanned.planned > 0;
+    const matRemaining = useMaterial
+      ? tier1MaterialPlanned!.planned - tier1MaterialPlanned!.ordered
+      : remaining;
+    const sisaLabel = useMaterial
+      ? `sisa material: ${matRemaining.toFixed(2)}`
+      : `sisa: ${matRemaining.toFixed(2)} ${item.unit}`;
+    const pct = matRemaining > 0 ? ((requestedQty - matRemaining) / matRemaining) * 100 : 999;
 
     if (pct > 30) {
       check1a = { flag: 'CRITICAL', check: '1a', msg: `Permintaan melebihi sisa BoQ ${pct.toFixed(0)}% (>30%). Auto-hold.` };
@@ -134,7 +148,7 @@ export function computeGate1Flag(
     } else if (pct > 5) {
       check1a = { flag: 'INFO', check: '1a', msg: `Permintaan ${pct.toFixed(0)}% di atas sisa BoQ. Estimator review.` };
     } else {
-      check1a = { flag: 'OK', check: '1a', msg: `Dalam batas BoQ (sisa: ${remaining.toFixed(2)} ${item.unit}).` };
+      check1a = { flag: 'OK', check: '1a', msg: `Dalam batas BoQ (${sisaLabel}).` };
     }
   }
 

@@ -26,7 +26,7 @@ import { supabase } from '../../tools/supabase';
 import { generateReport, recordReportExport, type ReportPayload, type ReportType, type ReportFilters } from '../../tools/reports';
 import { ReportPreview } from '../components/ReportPreview';
 import { deriveMaterialBalance } from '../../tools/derivation';
-import { getProjectTeam, type TeamMember, ROLE_LABELS } from '../../tools/projectManagement';
+import { getProjectTeam, listAllProfiles, addUserToProject, removeUserFromProject, availableProfiles, type TeamMember, type ProfileOption, ROLE_LABELS } from '../../tools/projectManagement';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 type Section = 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'katalog' | 'mandor' | 'opname' | 'attendance';
@@ -76,11 +76,60 @@ export default function LaporanScreen() {
 
   // Team state
   const [projectTeam, setProjectTeam] = useState<TeamMember[]>([]);
+  const [allProfiles, setAllProfiles] = useState<ProfileOption[]>([]);
+  const [memberPickerOpen, setMemberPickerOpen] = useState(false);
+  const [teamBusy, setTeamBusy] = useState(false);
 
-  useEffect(() => {
+  const loadTeam = useCallback(() => {
     if (!project) return;
     getProjectTeam(project.id).then(setProjectTeam).catch(() => {});
   }, [project?.id]);
+
+  useEffect(() => { loadTeam(); }, [loadTeam]);
+
+  // Lazily fetch the full profile list the first time the picker is opened.
+  const toggleMemberPicker = useCallback(async () => {
+    setMemberPickerOpen(o => !o);
+    if (allProfiles.length === 0) {
+      try { setAllProfiles(await listAllProfiles()); } catch { /* leave empty */ }
+    }
+  }, [allProfiles.length]);
+
+  const handleAddMember = async (userId: string) => {
+    if (!project) return;
+    setTeamBusy(true);
+    try {
+      const { error } = await addUserToProject(project.id, userId);
+      if (error) { toast(error, 'critical'); return; }
+      toast('Anggota ditambahkan', 'ok');
+      setMemberPickerOpen(false);
+      loadTeam();
+    } finally { setTeamBusy(false); }
+  };
+
+  const handleRemoveMember = (member: TeamMember) => {
+    const msg = `Hapus ${member.full_name} dari proyek ini?`;
+    const run = async () => {
+      setTeamBusy(true);
+      try {
+        const { error } = await removeUserFromProject(member.assignment_id);
+        if (error) { toast(error, 'critical'); return; }
+        toast('Anggota dihapus', 'warning');
+        loadTeam();
+      } finally { setTeamBusy(false); }
+    };
+    // RN-Web's Alert.alert doesn't fire button callbacks; confirm via the browser.
+    if (Platform.OS === 'web') {
+      const ok = typeof window !== 'undefined' && typeof window.confirm === 'function'
+        ? window.confirm(msg) : true;
+      if (ok) void run();
+    } else {
+      Alert.alert('Hapus Anggota', msg, [
+        { text: 'Batal', style: 'cancel' },
+        { text: 'Hapus', style: 'destructive', onPress: () => { void run(); } },
+      ]);
+    }
+  };
 
   // MTN state — balance-driven
   const [mtnMaterialId, setMtnMaterialId] = useState('');
@@ -414,8 +463,53 @@ export default function LaporanScreen() {
                       <Text style={styles.teamName}>{member.full_name}</Text>
                       <Text style={styles.teamRole}>{ROLE_LABELS[member.role] ?? member.role}</Text>
                     </View>
+                    {isEstimatorOrAdmin && (
+                      <TouchableOpacity
+                        onPress={() => handleRemoveMember(member)}
+                        disabled={teamBusy}
+                        accessibilityLabel={`Hapus ${member.full_name}`}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="close-circle-outline" size={22} color={COLORS.critical} />
+                      </TouchableOpacity>
+                    )}
                   </View>
                 ))
+              )}
+
+              {isEstimatorOrAdmin && (
+                <>
+                  <TouchableOpacity
+                    style={styles.addMemberBtn}
+                    onPress={toggleMemberPicker}
+                    disabled={teamBusy}
+                  >
+                    <Ionicons name={memberPickerOpen ? 'remove' : 'add'} size={16} color={COLORS.primary} />
+                    <Text style={styles.addMemberText}>
+                      {memberPickerOpen ? 'Tutup' : 'Tambah anggota'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  {memberPickerOpen && (
+                    <View style={styles.memberPicker}>
+                      {availableProfiles(allProfiles, projectTeam).length === 0 ? (
+                        <Text style={styles.hint}>Tidak ada pengguna lain untuk ditambahkan.</Text>
+                      ) : (
+                        availableProfiles(allProfiles, projectTeam).map(p => (
+                          <TouchableOpacity
+                            key={p.id}
+                            style={styles.memberOption}
+                            onPress={() => handleAddMember(p.id)}
+                            disabled={teamBusy}
+                          >
+                            <Text style={styles.memberOptionName}>{p.full_name}</Text>
+                            <Text style={styles.memberOptionRole}>{ROLE_LABELS[p.role] ?? p.role}</Text>
+                          </TouchableOpacity>
+                        ))
+                      )}
+                    </View>
+                  )}
+                </>
               )}
             </Card>
 
@@ -816,4 +910,10 @@ const styles = StyleSheet.create({
   teamAvatarText: { fontSize: TYPE.base, fontFamily: FONTS.bold, color: COLORS.primary },
   teamName:       { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
   teamRole:       { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 2, textTransform: 'capitalize' },
+  addMemberBtn:   { flexDirection: 'row', alignItems: 'center', gap: SPACE.xs, paddingVertical: SPACE.sm, marginTop: SPACE.xs },
+  addMemberText:  { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.primary },
+  memberPicker:   { borderTopWidth: 1, borderTopColor: COLORS.borderSub, marginTop: SPACE.xs, paddingTop: SPACE.sm },
+  memberOption:   { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: SPACE.sm, paddingHorizontal: SPACE.sm, borderRadius: RADIUS, backgroundColor: COLORS.accentBg, marginBottom: SPACE.xs },
+  memberOptionName: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
+  memberOptionRole: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, textTransform: 'capitalize' },
 });
