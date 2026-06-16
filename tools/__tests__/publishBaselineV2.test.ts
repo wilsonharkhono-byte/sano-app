@@ -1,6 +1,33 @@
 jest.mock('../supabase', () => ({ supabase: {} }));
 
 import { topoSortBlocks, flattenBlock, findDuplicateBoqCodes, zeroPlannedBoqCodes, type FlattenedLine } from '../publishBaselineV2';
+import { resolveCatalogId, type CatalogRow } from '../publishBaselineV2';
+
+describe('resolveCatalogId', () => {
+  const catalog: CatalogRow[] = [
+    { id: 'id-d13', code: 'REB-DE13', name: 'Besi beton ulir 13 mm', category: 'Struktur', tier: 1, unit: 'kg' },
+    { id: 'id-pcc', code: 'CEM-PCC50', name: 'Semen PCC 50 kg', category: 'Material Beton', tier: 2, unit: 'zak' },
+    { id: 'id-bdr', code: 'KWD-BDR01', name: 'Kawat bendrat', category: 'Struktur', tier: 3, unit: 'kg' },
+  ];
+  const aliases = new Map<string, string>([
+    ['besi beton d13', 'REB-DE13'],
+    ['semen pc 50kg', 'CEM-PCC50'],
+  ]);
+
+  it('resolves an exact catalog name to its id', () => {
+    expect(resolveCatalogId('Besi beton ulir 13 mm', catalog, aliases)).toBe('id-d13');
+  });
+
+  it('resolves an aliased breakdown name to the canonical id', () => {
+    expect(resolveCatalogId('Besi beton D13', catalog, aliases)).toBe('id-d13');
+    expect(resolveCatalogId('Semen PC @50kg', catalog, aliases)).toBe('id-pcc');
+  });
+
+  it('returns null for an unresolved name rather than fabricating a link', () => {
+    expect(resolveCatalogId('Beton decking', catalog, aliases)).toBeNull();
+    expect(resolveCatalogId('Besi beton — waste (5%)', catalog, aliases)).toBeNull();
+  });
+});
 
 describe('topoSortBlocks', () => {
   it('orders children after parents (deepest-first via reverse)', () => {

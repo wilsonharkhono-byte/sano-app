@@ -1,5 +1,42 @@
 import type { StagingRowV2, CostSplit } from './boqParserV2/types';
 import { toNumber } from './boqParserV2/classifyComponent';
+import { reconcileMaterials } from './excelParser';
+import type { CatalogEntry } from './excelParser';
+
+export interface CatalogRow {
+  id: string;
+  code: string;
+  name: string;
+  category: string;
+  tier: 1 | 2 | 3;
+  unit: string;
+}
+
+/**
+ * Resolve a free-text breakdown component name to a catalog material UUID using
+ * the same exact→alias→fuzzy cascade as v1 import (reconcileMaterials). Returns
+ * null when the name does not resolve to a REAL catalog entry — callers must
+ * leave material_id NULL and flag the line for review rather than invent a link
+ * (CLAUDE.md §1.1: wrong numbers are worse than absent numbers).
+ */
+export function resolveCatalogId(
+  name: string,
+  catalog: CatalogRow[],
+  aliases: Map<string, string>,
+): string | null {
+  const entries: CatalogEntry[] = catalog.map(c => ({
+    code: c.code, name: c.name, category: c.category, tier: c.tier, unit: c.unit, aliases: [],
+  }));
+  const { resolved } = reconcileMaterials(
+    [{ rowNumber: 0, name, spec: null, unit: '', unitPrice: 0, resolvedCode: null, matchConfidence: 0 }],
+    entries,
+    aliases,
+  );
+  const hit = resolved[0];
+  if (!hit || !hit.resolvedCode || hit.matchConfidence <= 0) return null;
+  const byCode = new Map(catalog.map(c => [c.code, c.id]));
+  return byCode.get(hit.resolvedCode) ?? null;
+}
 
 export function topoSortBlocks(stagingRows: StagingRowV2[]): StagingRowV2[] {
   const blocks = stagingRows.filter(r => r.row_type === 'ahs_block');
