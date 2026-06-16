@@ -30,6 +30,43 @@ describe('resolveCatalogId', () => {
 });
 
 import { foldRebarWaste, type MasterLineDraft } from '../publishBaselineV2';
+import { buildMasterLinesV2, type MasterLineInput } from '../publishBaselineV2';
+
+describe('buildMasterLinesV2', () => {
+  it('computes planned = boq.planned × coefficient per resolved material line', () => {
+    const input: MasterLineInput[] = [
+      { boq_item_id: 'poer', boq_planned: 1.65, material_id: 'id-d13', material_name: 'Besi beton D13', coefficient: 71.20, unit: 'kg', line_type: 'material' },
+      { boq_item_id: 'poer', boq_planned: 1.65, material_id: 'id-pcc', material_name: 'Semen PC @50kg', coefficient: 0.0897831, unit: 'zak', line_type: 'material' },
+    ];
+    const lines = buildMasterLinesV2(input, 'master-1');
+    const d13 = lines.find(l => l.material_id === 'id-d13')!;
+    expect(d13.master_id).toBe('master-1');
+    expect(d13.boq_item_id).toBe('poer');
+    expect(d13.planned_quantity).toBeCloseTo(117.48, 2);
+    expect(d13.unit).toBe('kg');
+  });
+
+  it('excludes labor/equipment and material lines with null material_id', () => {
+    const input: MasterLineInput[] = [
+      { boq_item_id: 'poer', boq_planned: 1.65, material_id: 'id-d13', material_name: 'Besi beton D13', coefficient: 71.20, unit: 'kg', line_type: 'material' },
+      { boq_item_id: 'poer', boq_planned: 1.65, material_id: null, material_name: 'Upah cor', coefficient: 1, unit: 'm3', line_type: 'labor' },
+      { boq_item_id: 'poer', boq_planned: 1.65, material_id: null, material_name: 'Beton decking', coefficient: 111.76, unit: 'kg', line_type: 'material' },
+    ];
+    const lines = buildMasterLinesV2(input, 'master-1');
+    expect(lines).toHaveLength(1);
+    expect(lines[0].material_id).toBe('id-d13');
+  });
+
+  it('merges duplicate (boq_item, material) pairs by summing planned', () => {
+    const input: MasterLineInput[] = [
+      { boq_item_id: 'b', boq_planned: 2, material_id: 'm', material_name: 'X', coefficient: 3, unit: 'kg', line_type: 'material' },
+      { boq_item_id: 'b', boq_planned: 2, material_id: 'm', material_name: 'X', coefficient: 4, unit: 'kg', line_type: 'material' },
+    ];
+    const lines = buildMasterLinesV2(input, 'master-1');
+    expect(lines).toHaveLength(1);
+    expect(lines[0].planned_quantity).toBeCloseTo(14, 6);
+  });
+});
 
 describe('foldRebarWaste', () => {
   it('distributes a waste line proportionally onto resolved rebar lines and drops the waste line', () => {

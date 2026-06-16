@@ -309,6 +309,56 @@ export function foldRebarWaste(drafts: MasterLineDraft[]): MasterLineDraft[] {
   );
 }
 
+export interface MasterLineInput {
+  boq_item_id: string;
+  boq_planned: number;
+  material_id: string | null;
+  material_name: string;
+  coefficient: number;
+  unit: string;
+  line_type: 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
+}
+
+export interface MasterLineRecord {
+  master_id: string;
+  material_id: string;
+  boq_item_id: string;
+  planned_quantity: number;
+  unit: string;
+}
+
+/**
+ * Aggregate per-(boq_item, material) planned demand from flattened v2 lines.
+ * planned = boq.planned × coefficient (coefficient already = qty per BoQ unit).
+ * Only material lines with a resolved material_id contribute. Duplicate pairs
+ * are summed. Labor/equipment and unresolved materials are excluded so the
+ * material master never carries a fabricated or untraceable demand row.
+ */
+export function buildMasterLinesV2(
+  inputs: MasterLineInput[],
+  masterId: string,
+): MasterLineRecord[] {
+  const byPair = new Map<string, MasterLineRecord>();
+  for (const i of inputs) {
+    if (i.line_type !== 'material' || i.material_id == null) continue;
+    const key = `${i.boq_item_id}::${i.material_id}`;
+    const planned = i.boq_planned * i.coefficient;
+    const existing = byPair.get(key);
+    if (existing) {
+      existing.planned_quantity += planned;
+    } else {
+      byPair.set(key, {
+        master_id: masterId,
+        material_id: i.material_id,
+        boq_item_id: i.boq_item_id,
+        planned_quantity: planned,
+        unit: i.unit,
+      });
+    }
+  }
+  return [...byPair.values()];
+}
+
 export async function publishBaselineV2(
   sessionId: string,
   projectId: string,
