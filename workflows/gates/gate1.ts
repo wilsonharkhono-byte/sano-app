@@ -176,9 +176,7 @@ export function computeGate1Flag(
       check1d = { flag: 'OK', check: '1d', msg: `Permintaan sesuai jadwal milestone "${milestone.label}" (${daysOut} hari lagi).` };
     }
   } else {
-    // No milestone covers this item — there is no schedule-pace risk to flag, so
-    // this stays OK and must not mask a substantive Tier-1 (1a) result.
-    check1d = { flag: 'OK', check: '1d', msg: 'Item belum tergabung dalam milestone — review jadwal manual.' };
+    check1d = { flag: 'INFO', check: '1d', msg: 'Item belum tergabung dalam milestone — review jadwal manual.' };
   }
 
   // Return worst flag with extra

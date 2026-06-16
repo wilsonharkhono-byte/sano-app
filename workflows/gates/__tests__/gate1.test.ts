@@ -1,5 +1,5 @@
 import { computeGate1Flag } from '../gate1';
-import type { BoqItem } from '../../../tools/types';
+import type { BoqItem, GateResult } from '../../../tools/types';
 
 const poer: BoqItem = {
   id: 'poer', project_id: 'p', code: 'III.A.1.2', label: 'Poer PC.2', unit: 'm3',
@@ -8,38 +8,47 @@ const poer: BoqItem = {
   composite_factors: null, cost_breakdown: null, client_unit_price: null, internal_unit_price: null,
 };
 
+// computeGate1Flag returns the WORST of check1a/check1d with the other in `.extra`.
+// Extract the 1a (BoQ/material) sub-result wherever it landed.
+function get1a(res: GateResult | null): GateResult | null {
+  if (!res) return null;
+  if (res.check === '1a') return res;
+  if (res.extra?.check === '1a') return res.extra;
+  return null;
+}
+
 describe('computeGate1Flag — Tier 1 per-material remaining', () => {
   it('uses per-material planned (117.48 kg D13) — 2 kg is well within, OK', () => {
-    const res = computeGate1Flag(
-      poer, 2, [], [], null, 1, 'Besi beton ulir 13 mm',
-      { planned: 117.48, ordered: 0 },
-    );
-    expect(res?.check).toBe('1a');
-    expect(res?.flag).toBe('OK');
-    expect(res?.msg).toContain('117.48');
+    const res = computeGate1Flag(poer, 2, [], [], null, 1, 'Besi beton ulir 13 mm', { planned: 117.48, ordered: 0 });
+    const a = get1a(res);
+    expect(a?.flag).toBe('OK');
+    expect(a?.msg).toContain('117.48');
   });
 
   it('flags CRITICAL when the material request exceeds per-material remaining by >30%', () => {
-    const res = computeGate1Flag(
-      poer, 160, [], [], null, 1, 'Besi beton ulir 13 mm',
-      { planned: 117.48, ordered: 0 },
-    );
-    expect(res?.flag).toBe('CRITICAL');
+    const res = computeGate1Flag(poer, 160, [], [], null, 1, 'Besi beton ulir 13 mm', { planned: 117.48, ordered: 0 });
+    expect(get1a(res)?.flag).toBe('CRITICAL');
   });
 
   it('subtracts already-ordered from per-material planned', () => {
-    // planned 100, ordered 90 → remaining 10; request 12 → +20% → WARNING
-    const res = computeGate1Flag(
-      poer, 12, [], [], null, 1, 'Besi beton ulir 13 mm',
-      { planned: 100, ordered: 90 },
-    );
-    expect(res?.flag).toBe('WARNING');
+    const res = computeGate1Flag(poer, 12, [], [], null, 1, 'Besi beton ulir 13 mm', { planned: 100, ordered: 90 });
+    expect(get1a(res)?.flag).toBe('WARNING');
   });
 
   it('falls back to BoQ volume remaining when no per-material planned is provided', () => {
-    // 2 against 1.65 m³ → 21% over → WARNING (legacy behavior preserved)
     const res = computeGate1Flag(poer, 2, [], [], null, 1, undefined, null);
-    expect(res?.flag).toBe('WARNING');
-    expect(res?.msg).toContain('di atas sisa BoQ');
+    const a = get1a(res);
+    expect(a?.flag).toBe('WARNING');
+    expect(a?.msg).toContain('di atas sisa BoQ');
+  });
+
+  it('still surfaces the no-milestone schedule advisory (check 1d INFO) for a clean request', () => {
+    // Regression guard: a milestone-less item keeps its 1d INFO advisory; it is not downgraded to OK.
+    const res = computeGate1Flag(poer, 2, [], [], null, 1, 'Besi beton ulir 13 mm', { planned: 117.48, ordered: 0 });
+    // 1a is OK, 1d is INFO → INFO outranks, so top-level is the 1d advisory with 1a in extra.
+    expect(res?.check).toBe('1d');
+    expect(res?.flag).toBe('INFO');
+    expect(res?.msg).toContain('belum tergabung dalam milestone');
+    expect(get1a(res)?.flag).toBe('OK');
   });
 });
