@@ -235,6 +235,7 @@ export default function PermintaanScreen() {
   const [materialPickerLineId, setMaterialPickerLineId] = useState<string | null>(null);
   const [envelopeCache, setEnvelopeCache] = useState<Map<string, MaterialEnvelopeStatus>>(new Map());
   const [breakdownCache, setBreakdownCache] = useState<Map<string, EnvelopeBoqBreakdown[]>>(new Map());
+  const [boqMatStatusCache, setBoqMatStatusCache] = useState<Map<string, { planned: number; ordered: number }>>(new Map());
 
   const boqMap = useMemo(() => new Map(boqItems.map(item => [item.id, item])), [boqItems]);
 
@@ -307,6 +308,34 @@ export default function PermintaanScreen() {
       });
     }
   }, [project, envelopeCache, breakdownCache]);
+
+  const cacheBoqMaterialStatus = useCallback(async (boqItemId: string, materialId: string) => {
+    if (!project || !boqItemId || !materialId) return;
+    const key = `${boqItemId}::${materialId}`;
+    if (boqMatStatusCache.has(key)) return;
+    const { data } = await supabase.rpc('get_boq_material_status', {
+      p_project_id: project.id,
+      p_boq_item_id: boqItemId,
+      p_material_id: materialId,
+    });
+    const row = (data ?? [])[0] as { planned_quantity: number; ordered_quantity: number } | undefined;
+    setBoqMatStatusCache(prev => {
+      const next = new Map(prev);
+      next.set(key, { planned: row?.planned_quantity ?? 0, ordered: row?.ordered_quantity ?? 0 });
+      return next;
+    });
+  }, [project, boqMatStatusCache]);
+
+  // Warm per-material planned/ordered status for Tier-1 lines that have both a
+  // BoQ target and a resolved catalog material. Only fires when both ids exist;
+  // without a resolved materialId the gate falls back to volume-based remaining.
+  useEffect(() => {
+    for (const line of lines) {
+      if (line.tier === 1 && line.boqItemId && line.materialId) {
+        void cacheBoqMaterialStatus(line.boqItemId, line.materialId);
+      }
+    }
+  }, [lines, cacheBoqMaterialStatus]);
 
   const updateLine = (id: string, patch: Partial<RequestLine>) => {
     setLines(prev => prev.map(line => (
@@ -399,7 +428,10 @@ export default function PermintaanScreen() {
 
         return {
           ...line,
-          lineResult: computeGate1Flag(targetBoq, requestedQty, envelopes, milestones, null, 1, line.materialName),
+          lineResult: computeGate1Flag(
+            targetBoq, requestedQty, envelopes, milestones, null, 1, line.materialName,
+            line.materialId ? boqMatStatusCache.get(`${targetBoq.id}::${line.materialId}`) ?? null : null,
+          ),
           allocationPreview: [{
             boqItemId: targetBoq.id,
             boqCode: targetBoq.code,
@@ -446,7 +478,7 @@ export default function PermintaanScreen() {
         }],
       };
     });
-  }, [lines, boqMap, envelopes, milestones, envelopeCache, breakdownCache]);
+  }, [lines, boqMap, envelopes, milestones, envelopeCache, breakdownCache, boqMatStatusCache]);
 
   const overallFlag = useMemo<FlagLevel>(() => {
     let worst: FlagLevel = 'OK';
