@@ -1,6 +1,8 @@
 -- Per-(BoQ item, material) planned vs ordered, for the Gate-1 Tier-1 check.
 -- planned comes from the published material master (per-material breakdown);
 -- ordered is the sum of non-rejected request lines for this BoQ item + material.
+-- planned is scoped to the project's MOST RECENT master (re-publish inserts a new
+-- project_material_master; summing across all would double-count).
 CREATE OR REPLACE FUNCTION get_boq_material_status(
   p_project_id UUID,
   p_boq_item_id UUID,
@@ -18,8 +20,12 @@ RETURNS TABLE (
   FROM (
     SELECT SUM(pmml.planned_quantity) AS qty, MAX(pmml.unit) AS unit
     FROM project_material_master_lines pmml
-    JOIN project_material_master pmm ON pmm.id = pmml.master_id
-    WHERE pmm.project_id = p_project_id
+    WHERE pmml.master_id = (
+      SELECT id FROM project_material_master
+      WHERE project_id = p_project_id
+      ORDER BY created_at DESC
+      LIMIT 1
+    )
       AND pmml.boq_item_id = p_boq_item_id
       AND pmml.material_id = p_material_id
   ) planned
