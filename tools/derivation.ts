@@ -220,18 +220,28 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
   if (latestAhsId) {
     const { data: ahsLines } = await supabase
       .from('ahs_lines')
-      .select('material_id, usage_rate, waste_factor, unit, boq_item_id, material_catalog(name)')
+      .select('material_id, usage_rate, coefficient, waste_factor, unit, boq_item_id, material_spec, material_catalog(name)')
       .eq('ahs_version_id', latestAhsId);
 
     for (const line of ahsLines ?? []) {
       const boqPlanned = boqPlannedMap.get(line.boq_item_id) ?? 0;
       const boqInstalled = derivedInstalledMap.get(line.boq_item_id) ?? 0;
+      // The v2 publish writes the per-unit quantity to `coefficient` (waste
+      // already folded in) and leaves `usage_rate` at 0; v1 used `usage_rate` +
+      // a separate `waste_factor`. Prefer coefficient, fall back to usage_rate —
+      // without this, every v2-published project shows planned = 0.
+      const rate = Number((line as { coefficient?: number }).coefficient) || Number(line.usage_rate ?? 0);
       const multiplier = 1 + Number(line.waste_factor ?? 0);
-      const planned = boqPlanned * Number(line.usage_rate ?? 0) * multiplier;
-      const installed = boqInstalled * Number(line.usage_rate ?? 0) * multiplier;
+      const planned = boqPlanned * rate * multiplier;
+      const installed = boqInstalled * rate * multiplier;
+      // Prefer the catalog name; fall back to the line's own material_spec so an
+      // unlinked component still shows its real name (e.g. "Beton readymix K-350")
+      // instead of collapsing into a generic "Material belum dipetakan" unit bucket.
+      const catalogName = (line as unknown as { material_catalog?: { name: string } }).material_catalog?.name;
+      const specName = (line as unknown as { material_spec?: string }).material_spec;
       upsertAggregate(
         line.material_id ?? null,
-        (line as unknown as { material_catalog?: { name: string } }).material_catalog?.name ?? null,
+        catalogName ?? specName ?? null,
         line.unit ?? '',
         planned,
         installed,

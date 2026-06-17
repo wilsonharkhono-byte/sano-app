@@ -80,6 +80,56 @@ export async function getEnvelopeBreakdown(
   return (data ?? []) as EnvelopeBoqBreakdown[];
 }
 
+/**
+ * Work-group envelope: planned vs ordered for a material across a specific set
+ * of BoQ rows (the work-group). Mirrors getMaterialEnvelope but row-scoped, so
+ * burn is computed for the group only — not the whole project.
+ *
+ * Returns a MaterialEnvelopeStatus shape so the existing Tier-2 gate branch can
+ * consume it unchanged. Fields the RPC does not compute (tier, total_received,
+ * material_code) are filled with neutral defaults.
+ */
+export async function getWorkGroupEnvelope(
+  projectId: string,
+  materialId: string,
+  boqItemIds: string[],
+): Promise<MaterialEnvelopeStatus | null> {
+  if (boqItemIds.length === 0) return null;
+  const { data, error } = await supabase
+    .rpc('get_workgroup_envelope', {
+      p_project_id: projectId,
+      p_material_id: materialId,
+      p_boq_item_ids: boqItemIds,
+    })
+    .single();
+
+  if (error || !data) return null;
+  const row = data as {
+    material_id: string;
+    material_name: string;
+    unit: string;
+    total_planned: number;
+    total_ordered: number;
+    remaining_to_order: number;
+    burn_pct: number;
+    boq_item_count: number;
+  };
+  return {
+    material_id: row.material_id,
+    project_id: projectId,
+    material_code: null,
+    material_name: row.material_name,
+    tier: 1,
+    unit: row.unit,
+    total_planned: Number(row.total_planned ?? 0),
+    total_ordered: Number(row.total_ordered ?? 0),
+    total_received: 0,
+    remaining_to_order: Number(row.remaining_to_order ?? 0),
+    burn_pct: Number(row.burn_pct ?? 0),
+    boq_item_count: Number(row.boq_item_count ?? 0),
+  };
+}
+
 // ─── Tier 2 Allocation ──────────────────────────────────────────────
 
 export interface AllocationResult {

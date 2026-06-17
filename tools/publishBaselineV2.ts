@@ -2,6 +2,7 @@ import type { StagingRowV2, CostSplit } from './boqParserV2/types';
 import { toNumber } from './boqParserV2/classifyComponent';
 import { reconcileMaterials } from './excelParser';
 import type { CatalogEntry } from './excelParser';
+import { resilientWrite } from './resilientWrite';
 
 export interface CatalogRow {
   id: string;
@@ -377,6 +378,7 @@ export async function publishBaselineV2(
   masterLineCount?: number;
   unresolvedComponentCount?: number;
   skippedZeroPlanned?: string[];
+  quarantinedRows?: string[];
 }> {
   const { data: stagingRowsDB, error: fetchErr } = await supabase
     .from('import_staging_rows')
@@ -506,30 +508,51 @@ export async function publishBaselineV2(
 
   // Build boq_items map (code → id) by inserting BoQ rows first. Rows with a
   // non-positive take-off volume are excluded — see zeroPlannedBoqCodes for why
-  // (CHECK (planned > 0) constraint; never fabricate a quantity). The codes are
-  // reported back so the omission is visible, never silent. Codes are unique
-  // here because the duplicate guard above already ran.
+  // (never fabricate a quantity). The codes are reported back so the omission is
+  // visible, never silent. Codes are unique here because the duplicate guard
+  // above already ran.
+  //
+  // Rows that drop for ANY other reason (missing code/label/unit, or a DB
+  // rejection) are quarantined individually so one bad row can never reject the
+  // whole batch and leave the baseline empty.
+  const quarantined: string[] = [];
   const skippedZeroPlanned = zeroPlannedBoqCodes(rows);
   const skipSet = new Set(skippedZeroPlanned);
-  const boqInserts = rows
-    .filter(r => r.row_type === 'boq')
-    .map(r => r.parsed_data as { code: string; label: string; unit: string; planned: number })
-    .filter(pd => !skipSet.has(pd.code))
-    .map(pd => ({
-      project_id: projectId,
-      code: pd.code,
-      label: pd.label,
-      unit: pd.unit,
-      planned: pd.planned,
-    }));
-  const { data: boqData, error: boqErr } = await supabase
-    .from('boq_items')
-    .upsert(boqInserts, { onConflict: 'project_id,code' })
-    .select('id, code');
-  if (boqErr) return { success: false, error: boqErr.message };
-  const boqIdByCode = new Map<string, string>(
-    (boqData ?? []).map(b => [b.code as string, b.id as string]),
+  const boqInserts: Array<{ project_id: string; code: string; label: string; unit: string; planned: number }> = [];
+  for (const r of rows) {
+    if (r.row_type !== 'boq') continue;
+    const pd = r.parsed_data as { code?: string; label?: string; unit?: string; planned?: unknown };
+    if (skipSet.has(pd.code ?? '')) continue; // zero-planned: already reported via skippedZeroPlanned
+    const planned = toNumber(pd.planned);
+    if (!pd.code || !pd.label || !pd.unit || !(planned > 0)) {
+      quarantined.push(`BoQ "${pd.code ?? '?'}": data tidak lengkap (code/label/unit/planned) — dilewati.`);
+      continue;
+    }
+    boqInserts.push({ project_id: projectId, code: pd.code, label: pd.label, unit: pd.unit, planned });
+  }
+
+  const { inserted: boqData, failed: boqFailed } = await resilientWrite<
+    (typeof boqInserts)[number],
+    { id: string; code: string }
+  >(
+    boqInserts,
+    (batch) => supabase.from('boq_items').upsert(batch, { onConflict: 'project_id,code' }).select('id, code'),
   );
+  for (const f of boqFailed) quarantined.push(`BoQ ${f.row.code}: ${f.error}`);
+  const boqIdByCode = new Map<string, string>(boqData.map(b => [b.code, b.id]));
+
+  // Never let a hollow baseline go live. If no BoQ item landed — whatever the
+  // reason each row dropped — fail loudly instead of marking the session
+  // PUBLISHED with an empty baseline (which is what looked "published but empty").
+  const totalBoqRows = rows.filter(r => r.row_type === 'boq').length;
+  if (boqIdByCode.size === 0) {
+    return {
+      success: false,
+      error: `Tidak ada BoQ item yang berhasil dipublish (0 dari ${totalBoqRows} baris BoQ). `
+        + (quarantined.length ? `Masalah: ${quarantined.slice(0, 5).join('; ')}` : 'Periksa staging BoQ.'),
+      quarantinedRows: quarantined,
+    };
+  }
 
   // Now write ahs_lines — one batch per block.
   //
@@ -595,9 +618,16 @@ export async function publishBaselineV2(
       });
     }
   }
+  let ahsFailedCount = 0;
   if (ahsLineInserts.length > 0) {
-    const { error: lineErr } = await supabase.from('ahs_lines').insert(ahsLineInserts);
-    if (lineErr) return { success: false, error: lineErr.message };
+    const { failed: ahsFailed } = await resilientWrite(
+      ahsLineInserts,
+      (batch) => supabase.from('ahs_lines').insert(batch),
+    );
+    ahsFailedCount = ahsFailed.length;
+    for (const f of ahsFailed) {
+      quarantined.push(`AHS line "${(f.row as { material_spec?: string }).material_spec ?? '?'}": ${f.error}`);
+    }
   }
 
   // Apply the besi-waste gross-up per BoQ item before aggregating master lines.
@@ -635,9 +665,14 @@ export async function publishBaselineV2(
   if (masterErr || !master) return { success: false, error: `material master insert failed: ${masterErr?.message}` };
 
   const masterLines = buildMasterLinesV2(foldedInputs, master.id as string);
+  let masterLineFailedCount = 0;
   if (masterLines.length > 0) {
-    const { error: mlErr } = await supabase.from('project_material_master_lines').insert(masterLines);
-    if (mlErr) return { success: false, error: `material master lines insert failed: ${mlErr.message}` };
+    const { failed: mlFailed } = await resilientWrite(
+      masterLines,
+      (batch) => supabase.from('project_material_master_lines').insert(batch),
+    );
+    masterLineFailedCount = mlFailed.length;
+    for (const f of mlFailed) quarantined.push(`Master line: ${f.error}`);
   }
   if (unresolvedComponents.length > 0) {
     console.warn(
@@ -646,13 +681,18 @@ export async function publishBaselineV2(
     );
   }
 
+  if (quarantined.length > 0) {
+    console.warn(`publishBaselineV2: ${quarantined.length} row(s) quarantined:`, quarantined.slice(0, 10));
+  }
+
   return {
     success: true,
-    boqCount: boqInserts.length,
-    ahsCount: ahsLineInserts.length,
+    boqCount: boqIdByCode.size,
+    ahsCount: ahsLineInserts.length - ahsFailedCount,
     materialCount: rows.filter(r => r.row_type === 'material').length,
-    masterLineCount: masterLines.length,
+    masterLineCount: masterLines.length - masterLineFailedCount,
     unresolvedComponentCount: unresolvedComponents.length,
     skippedZeroPlanned,
+    quarantinedRows: quarantined,
   };
 }

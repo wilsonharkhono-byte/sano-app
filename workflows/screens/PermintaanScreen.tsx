@@ -12,9 +12,11 @@ import DateSelectField, { getTodayIsoDate } from '../components/DateSelectField'
 import MaterialNamingAssist from '../components/MaterialNamingAssist';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
-import { computeGate1Flag } from '../gates/gate1';
+import { computeWorkGroupGate1Flag } from '../gates/gate1';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
 import { supabase } from '../../tools/supabase';
+import { getWorkGroupEnvelope } from '../../tools/envelopes';
+import { buildWorkGroups } from '../../tools/boqWorkGroups';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, RADIUS_SM } from '../theme';
 import type {
   GateResult,
@@ -22,6 +24,7 @@ import type {
   MaterialEnvelopeStatus,
   EnvelopeBoqBreakdown,
   MaterialRequestAllocationBasis,
+  WorkGroup,
 } from '../../tools/types';
 
 type RequestBasis = 'BOQ' | 'MATERIAL';
@@ -57,6 +60,8 @@ interface RequestLine {
   unit: string;
   specRef: string;
   boqItemId: string | null;
+  /** Tier 1 work-group target (key from buildWorkGroups). */
+  workGroupKey: string | null;
   lineResult: GateResult | null;
   allocationPreview: AllocationPreview[];
 }
@@ -98,6 +103,7 @@ function makeLine(overrides: Partial<RequestLine> = {}): RequestLine {
     unit: '',
     specRef: '',
     boqItemId: null,
+    workGroupKey: null,
     lineResult: null,
     allocationPreview: [],
     ...overrides,
@@ -134,6 +140,40 @@ function buildTier2Allocations(
       allocatedQuantity,
       proportionPct: Number(row.pct_of_total ?? 0),
       allocationBasis: 'TIER2_ENVELOPE',
+    };
+  });
+}
+
+/**
+ * Allocate a work-group order proportionally across the rows IN THE GROUP that
+ * use this material. Reuses the project-wide breakdown, filtered to the group's
+ * rows and renormalized so proportions sum to 100% within the group.
+ */
+function buildWorkGroupAllocations(
+  breakdown: EnvelopeBoqBreakdown[],
+  groupItemIds: string[],
+  requestedQty: number,
+): AllocationPreview[] {
+  if (requestedQty <= 0) return [];
+  const idSet = new Set(groupItemIds);
+  const rows = breakdown.filter(r => idSet.has(r.boq_item_id));
+  const totalPlanned = rows.reduce((sum, r) => sum + Number(r.planned_quantity ?? 0), 0);
+  if (rows.length === 0 || totalPlanned <= 0) return [];
+
+  let allocatedSoFar = 0;
+  return rows.map((row, index) => {
+    const share = Number(row.planned_quantity ?? 0) / totalPlanned;
+    const allocatedQuantity = index === rows.length - 1
+      ? roundQty(requestedQty - allocatedSoFar)
+      : roundQty(requestedQty * share);
+    allocatedSoFar = roundQty(allocatedSoFar + allocatedQuantity);
+    return {
+      boqItemId: row.boq_item_id,
+      boqCode: row.boq_code,
+      boqLabel: row.boq_label,
+      allocatedQuantity,
+      proportionPct: roundQty(share * 100),
+      allocationBasis: 'WORKGROUP_ENVELOPE' as const,
     };
   });
 }
@@ -221,7 +261,7 @@ function describeAllocation(line: RequestLine, allocationCount: number) {
 }
 
 export default function PermintaanScreen() {
-  const { boqItems, envelopes, milestones, project, profile, refresh } = useProject();
+  const { boqItems, project, profile, refresh } = useProject();
   const { show: toast } = useToast();
 
   const [targetDate, setTargetDate] = useState(getTodayIsoDate());
@@ -235,9 +275,11 @@ export default function PermintaanScreen() {
   const [materialPickerLineId, setMaterialPickerLineId] = useState<string | null>(null);
   const [envelopeCache, setEnvelopeCache] = useState<Map<string, MaterialEnvelopeStatus>>(new Map());
   const [breakdownCache, setBreakdownCache] = useState<Map<string, EnvelopeBoqBreakdown[]>>(new Map());
-  const [boqMatStatusCache, setBoqMatStatusCache] = useState<Map<string, { planned: number; ordered: number }>>(new Map());
+  const [workGroupEnvCache, setWorkGroupEnvCache] = useState<Map<string, MaterialEnvelopeStatus | null>>(new Map());
 
-  const boqMap = useMemo(() => new Map(boqItems.map(item => [item.id, item])), [boqItems]);
+  // Work-groups: the bulk unit a supervisor orders against (Tier 1 target).
+  const workGroups = useMemo<WorkGroup[]>(() => buildWorkGroups(boqItems), [boqItems]);
+  const workGroupMap = useMemo(() => new Map(workGroups.map(g => [g.key, g])), [workGroups]);
 
   useEffect(() => {
     if (!project) return;
@@ -309,33 +351,33 @@ export default function PermintaanScreen() {
     }
   }, [project, envelopeCache, breakdownCache]);
 
-  const cacheBoqMaterialStatus = useCallback(async (boqItemId: string, materialId: string) => {
-    if (!project || !boqItemId || !materialId) return;
-    const key = `${boqItemId}::${materialId}`;
-    if (boqMatStatusCache.has(key)) return;
-    const { data } = await supabase.rpc('get_boq_material_status', {
-      p_project_id: project.id,
-      p_boq_item_id: boqItemId,
-      p_material_id: materialId,
-    });
-    const row = (data ?? [])[0] as { planned_quantity: number; ordered_quantity: number } | undefined;
-    setBoqMatStatusCache(prev => {
+  // Warm the work-group envelope (planned vs ordered for the material across the
+  // group's rows) + the project-wide breakdown (for proportional allocation).
+  const cacheWorkGroupEnvelope = useCallback(async (workGroupKey: string, materialId: string) => {
+    if (!project) return;
+    const key = `${workGroupKey}::${materialId}`;
+    if (workGroupEnvCache.has(key)) return;
+    const group = workGroupMap.get(workGroupKey);
+    if (!group) return;
+    const env = await getWorkGroupEnvelope(project.id, materialId, group.itemIds);
+    setWorkGroupEnvCache(prev => {
       const next = new Map(prev);
-      next.set(key, { planned: row?.planned_quantity ?? 0, ordered: row?.ordered_quantity ?? 0 });
+      next.set(key, env);
       return next;
     });
-  }, [project, boqMatStatusCache]);
+  }, [project, workGroupMap, workGroupEnvCache]);
 
-  // Warm per-material planned/ordered status for Tier-1 lines that have both a
-  // BoQ target and a resolved catalog material. Only fires when both ids exist;
-  // without a resolved materialId the gate falls back to volume-based remaining.
+  // Warm work-group envelope + breakdown for Tier-1 lines once both a group and
+  // a catalog material are chosen. Without a materialId there is no baseline to
+  // validate the bulk order against (the gate then returns a soft INFO).
   useEffect(() => {
     for (const line of lines) {
-      if (line.tier === 1 && line.boqItemId && line.materialId) {
-        void cacheBoqMaterialStatus(line.boqItemId, line.materialId);
+      if (line.tier === 1 && line.workGroupKey && line.materialId) {
+        void cacheWorkGroupEnvelope(line.workGroupKey, line.materialId);
+        void cacheTier2Context([line.materialId]);
       }
     }
-  }, [lines, cacheBoqMaterialStatus]);
+  }, [lines, cacheWorkGroupEnvelope, cacheTier2Context]);
 
   const updateLine = (id: string, patch: Partial<RequestLine>) => {
     setLines(prev => prev.map(line => (
@@ -378,6 +420,7 @@ export default function PermintaanScreen() {
       tier: material.tier,
       unit: material.supplier_unit || material.unit,
       boqItemId: null,
+      workGroupKey: null,
       lineResult: null,
       allocationPreview: [],
     });
@@ -399,47 +442,34 @@ export default function PermintaanScreen() {
       }
 
       if (line.tier === 1) {
-        if (!line.boqItemId) {
+        if (!line.workGroupKey) {
           const lineResult: GateResult = {
             flag: 'WARNING',
             check: '1a',
-            msg: 'Material Tier 1 harus dikunci ke satu item BoQ.',
+            msg: 'Material Tier 1 harus memilih grup pekerjaan tujuan.',
           };
-          return {
-            ...line,
-            lineResult,
-            allocationPreview: [],
-          };
+          return { ...line, lineResult, allocationPreview: [] };
         }
 
-        const targetBoq = boqMap.get(line.boqItemId);
-        if (!targetBoq) {
+        const group = workGroupMap.get(line.workGroupKey);
+        if (!group) {
           const lineResult: GateResult = {
             flag: 'WARNING',
             check: '1a',
-            msg: 'Item BoQ tujuan tidak ditemukan. Pilih ulang item pekerjaan.',
+            msg: 'Grup pekerjaan tujuan tidak ditemukan. Pilih ulang grup.',
           };
-          return {
-            ...line,
-            lineResult,
-            allocationPreview: [],
-          };
+          return { ...line, lineResult, allocationPreview: [] };
         }
+
+        const envelope = line.materialId
+          ? workGroupEnvCache.get(`${line.workGroupKey}::${line.materialId}`) ?? null
+          : null;
+        const breakdown = line.materialId ? breakdownCache.get(line.materialId) ?? [] : [];
 
         return {
           ...line,
-          lineResult: computeGate1Flag(
-            targetBoq, requestedQty, envelopes, milestones, null, 1, line.materialName,
-            line.materialId ? boqMatStatusCache.get(`${targetBoq.id}::${line.materialId}`) ?? null : null,
-          ),
-          allocationPreview: [{
-            boqItemId: targetBoq.id,
-            boqCode: targetBoq.code,
-            boqLabel: targetBoq.label,
-            allocatedQuantity: roundQty(requestedQty),
-            proportionPct: 100,
-            allocationBasis: 'DIRECT' as const,
-          }],
+          lineResult: computeWorkGroupGate1Flag(envelope, requestedQty, group.label),
+          allocationPreview: buildWorkGroupAllocations(breakdown, group.itemIds, requestedQty),
         };
       }
 
@@ -478,7 +508,7 @@ export default function PermintaanScreen() {
         }],
       };
     });
-  }, [lines, boqMap, envelopes, milestones, envelopeCache, breakdownCache, boqMatStatusCache]);
+  }, [lines, workGroupMap, envelopeCache, breakdownCache, workGroupEnvCache]);
 
   const overallFlag = useMemo<FlagLevel>(() => {
     let worst: FlagLevel = 'OK';
@@ -528,8 +558,12 @@ export default function PermintaanScreen() {
         toast(`Satuan untuk ${line.materialName} belum diisi`, 'critical');
         return;
       }
-      if (line.tier === 1 && !line.boqItemId) {
-        toast(`Tier 1 untuk ${line.materialName} wajib memilih satu item BoQ`, 'critical');
+      if (line.tier === 1 && !line.workGroupKey) {
+        toast(`Tier 1 untuk ${line.materialName} wajib memilih grup pekerjaan`, 'critical');
+        return;
+      }
+      if (line.tier === 1 && line.allocationPreview.length === 0) {
+        toast(`Grup untuk ${line.materialName} belum punya baseline material — tidak bisa dialokasikan`, 'critical');
         return;
       }
       if (line.tier === 2 && !line.materialId) {
@@ -575,6 +609,9 @@ export default function PermintaanScreen() {
             unit: sanitizeText(line.unit),
             line_flag: line.lineResult?.flag ?? 'OK',
             line_check_details: line.lineResult,
+            work_group_label: line.tier === 1 && line.workGroupKey
+              ? workGroupMap.get(line.workGroupKey)?.label ?? null
+              : null,
           })
           .select('id')
           .single();
@@ -770,25 +807,27 @@ export default function PermintaanScreen() {
                   {line.tier === 1 && (
                     <>
                       <Text style={styles.fieldLabel}>
-                        Item BoQ Tujuan <Text style={styles.req}>*</Text>
+                        Grup Pekerjaan Tujuan <Text style={styles.req}>*</Text>
                       </Text>
                       <View style={styles.pickerWrap}>
                         <Picker
-                          selectedValue={line.boqItemId ?? ''}
-                          onValueChange={value => updateLine(line.id, { boqItemId: value || null })}
+                          selectedValue={line.workGroupKey ?? ''}
+                          onValueChange={value => updateLine(line.id, { workGroupKey: value || null })}
                           style={{ color: COLORS.text }}
                         >
-                          <Picker.Item label="— Pilih item BoQ —" value="" />
-                          {boqItems.map(item => (
+                          <Picker.Item label="— Pilih grup pekerjaan —" value="" />
+                          {workGroups.map(group => (
                             <Picker.Item
-                              key={item.id}
-                              label={`${item.code} — ${item.label}`}
-                              value={item.id}
+                              key={group.key}
+                              label={`${group.label} (${group.itemCount} item)`}
+                              value={group.key}
                             />
                           ))}
                         </Picker>
                       </View>
-                      <Text style={styles.fieldHint}>Tier 1 selalu terkunci ke satu item pekerjaan spesifik.</Text>
+                      <Text style={styles.fieldHint}>
+                        Permintaan Tier 1 dipesan untuk seluruh grup pekerjaan (mis. semua pondasi) dan dialokasikan ke tiap item BoQ di dalamnya.
+                      </Text>
                     </>
                   )}
 
