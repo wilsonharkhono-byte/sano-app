@@ -220,8 +220,11 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
   if (latestAhsId) {
     const { data: ahsLines } = await supabase
       .from('ahs_lines')
-      .select('material_id, usage_rate, coefficient, waste_factor, unit, boq_item_id, material_spec, material_catalog(name)')
-      .eq('ahs_version_id', latestAhsId);
+      .select('material_id, usage_rate, coefficient, waste_factor, unit, boq_item_id, material_spec, line_type, material_catalog(name)')
+      .eq('ahs_version_id', latestAhsId)
+      // Material Balance is materials only — exclude labor (Upah), equipment
+      // (Sewa) and subcontractor lines, which carry cost not a material balance.
+      .eq('line_type', 'material');
 
     for (const line of ahsLines ?? []) {
       const boqPlanned = boqPlannedMap.get(line.boq_item_id) ?? 0;
