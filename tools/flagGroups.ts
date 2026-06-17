@@ -24,9 +24,12 @@ export const FLAG_GROUP_HINTS: Record<string, string> = {
   orphan_ahs_block: 'Resep harga ini ada di sheet Analisa, tapi tidak ada baris BoQ yang memakainya.',
 };
 
-// Fixed top-level order; only `orphan_ahs_block` supports batch actions.
+// Fixed top-level order. Both the orphan-block and literal-component groups
+// support batch actions (Setujui/Tolak semua) — they can hold dozens of rows
+// each and the decision is reversible before publish, so one-by-one review is
+// needless friction. `__other__` stays per-row (heterogeneous reasons).
 const GROUP_ORDER = ['orphan_ahs_block', 'literal_component', '__other__'] as const;
-const BATCHABLE = new Set<string>(['orphan_ahs_block']);
+const BATCHABLE = new Set<string>(['orphan_ahs_block', 'literal_component']);
 
 function reasonKey(row: ImportStagingRow): string {
   const raw = (row.raw_data ?? {}) as Record<string, unknown>;

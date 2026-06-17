@@ -11,13 +11,13 @@ function row(partial: Partial<ImportStagingRow>): ImportStagingRow {
 }
 
 describe('groupReviewRows', () => {
-  it('buckets by flag_reason in fixed order, only orphan group is batchable', () => {
+  it('buckets by flag_reason in fixed order; orphan and literal groups are batchable', () => {
     const orphan = row({ row_type: 'ahs_block', raw_data: { flag_reason: 'orphan_ahs_block' } });
     const literal = row({ raw_data: { flag_reason: 'literal_component', blockTitle: 'Bekisting Balok' } });
     const groups = groupReviewRows([literal, orphan]); // input order shouldn't matter
     expect(groups.map(g => g.key)).toEqual(['orphan_ahs_block', 'literal_component']);
     expect(groups[0].batchable).toBe(true);
-    expect(groups[1].batchable).toBe(false);
+    expect(groups[1].batchable).toBe(true);
     expect(groups[0].label).toBe(FLAG_GROUP_LABELS.orphan_ahs_block);
   });
 
