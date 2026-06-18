@@ -107,16 +107,20 @@ export function computeGate1Flag(
     const sisaLabel = useMaterial
       ? `sisa material: ${matRemaining.toFixed(2)}`
       : `sisa: ${matRemaining.toFixed(2)} ${item.unit}`;
+    // "sisa material" when measuring a specific material's remaining (kg/zak/…),
+    // "sisa BoQ" when falling back to the row's take-off volume — so a kg request
+    // isn't described against the BoQ's m³ allocation.
+    const sisaNoun = useMaterial ? 'sisa material' : 'sisa BoQ';
     const pct = matRemaining > 0 ? ((requestedQty - matRemaining) / matRemaining) * 100 : 999;
 
     if (pct > 30) {
-      check1a = { flag: 'CRITICAL', check: '1a', msg: `Permintaan melebihi sisa BoQ ${pct.toFixed(0)}% (>30%). Auto-hold.` };
+      check1a = { flag: 'CRITICAL', check: '1a', msg: `Permintaan melebihi ${sisaNoun} ${pct.toFixed(0)}% (>30%). Auto-hold.` };
     } else if (pct > 15) {
-      check1a = { flag: 'WARNING', check: '1a', msg: `Permintaan ${pct.toFixed(0)}% di atas sisa BoQ. Estimator harus justifikasi.` };
+      check1a = { flag: 'WARNING', check: '1a', msg: `Permintaan ${pct.toFixed(0)}% di atas ${sisaNoun}. Estimator harus justifikasi.` };
     } else if (pct > 5) {
-      check1a = { flag: 'INFO', check: '1a', msg: `Permintaan ${pct.toFixed(0)}% di atas sisa BoQ. Estimator review.` };
+      check1a = { flag: 'INFO', check: '1a', msg: `Permintaan ${pct.toFixed(0)}% di atas ${sisaNoun}. Estimator review.` };
     } else {
-      check1a = { flag: 'OK', check: '1a', msg: `Dalam batas BoQ (${sisaLabel}).` };
+      check1a = { flag: 'OK', check: '1a', msg: `Dalam batas ${useMaterial ? 'material' : 'BoQ'} (${sisaLabel}).` };
     }
   }
 
