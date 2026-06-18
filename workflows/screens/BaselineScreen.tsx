@@ -619,6 +619,11 @@ export default function BaselineScreen({
 
   const handlePublish = async () => {
     if (!activeSession || !project) return;
+    // Hard re-entry guard: `disabled={publishing}` only takes effect after the
+    // next render, so a rapid second tap (or a retry) can run this again before
+    // the button disables — producing TWO publishes → duplicate ahs_versions +
+    // a corrupt second master that the work-group envelope then reads.
+    if (publishing) return;
 
     const pending = stagingRows.filter(r => r.needs_review && r.review_status === 'PENDING');
     if (pending.length > 0) {
