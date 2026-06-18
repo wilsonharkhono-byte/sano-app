@@ -898,6 +898,22 @@ export async function generateMaterialMaster(
 
     if (!ahsVersion) return { success: false, error: 'No AHS version found for project' };
 
+    // publishBaselineV2 already builds the per-(BoQ,material) master from the
+    // normalized breakdown for v2 sessions. If a master already exists for the
+    // current AHS version, do NOT build a second one here — this function uses
+    // usage_rate (0 for v2 publishes), which would write a zeroed duplicate
+    // master that the work-group envelope then reads ("no baseline").
+    const { data: existingMaster } = await supabase
+      .from('project_material_master')
+      .select('id')
+      .eq('project_id', projectId)
+      .eq('ahs_version_id', ahsVersion.id)
+      .limit(1)
+      .maybeSingle();
+    if (existingMaster) {
+      return { success: true, lineCount: 0 };
+    }
+
     // Get AHS lines with BoQ planned quantities
     const { data: ahsLines } = await supabase
       .from('ahs_lines')
@@ -927,7 +943,7 @@ export async function generateMaterialMaster(
       master_id: master.id,
       material_id: line.material_id,
       boq_item_id: line.boq_item_id,
-      planned_quantity: (line as unknown as { boq_items: { planned: number } }).boq_items.planned * line.usage_rate * (1 + (line.waste_factor || 0)),
+      planned_quantity: (line as unknown as { boq_items: { planned: number } }).boq_items.planned * (Number((line as { coefficient?: number }).coefficient) || Number(line.usage_rate) || 0) * (1 + (line.waste_factor || 0)),
       unit: line.unit,
     }));
 
