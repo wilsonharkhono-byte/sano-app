@@ -484,6 +484,18 @@ export async function publishBaselineV2(
     };
   }
 
+  const { data: latestVersion, error: latestVersionErr } = await supabase
+    .from('ahs_versions')
+    .select('version')
+    .eq('project_id', projectId)
+    .order('version', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (latestVersionErr) {
+    return { success: false, error: `AHS version lookup failed: ${latestVersionErr.message}` };
+  }
+  const nextVersion = Number(latestVersion?.version ?? 0) + 1;
+
   // Demote any previously current ahs_version for this project before
   // inserting the new one. Supabase doesn't give us a cross-table
   // transaction from the client, so this runs as a best-effort sequence:
@@ -501,7 +513,7 @@ export async function publishBaselineV2(
   // Create new ahs_version for this session
   const { data: versionRow, error: versionErr } = await supabase
     .from('ahs_versions')
-    .insert({ project_id: projectId, import_session_id: sessionId, is_current: true })
+    .insert({ project_id: projectId, import_session_id: sessionId, version: nextVersion, is_current: true })
     .select('id')
     .single();
   if (versionErr || !versionRow) {
