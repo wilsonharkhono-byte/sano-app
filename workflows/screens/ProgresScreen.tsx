@@ -18,6 +18,7 @@ import { pickAndUploadPhoto } from '../../tools/storage';
 import { supabase } from '../../tools/supabase';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import { getSiteChangeSummary, type SiteChangeSummary } from '../../tools/siteChanges';
+import { buildWorkGroups } from '../../tools/boqWorkGroups';
 
 type SubModule = 'home' | 'progress' | 'perubahan';
 
@@ -40,6 +41,7 @@ export default function ProgresScreen() {
   const [changeSummary, setChangeSummary] = useState<SiteChangeSummary | null>(null);
 
   // ── Progress form state ──
+  const [groupKey, setGroupKey] = useState('');
   const [boqId, setBoqId] = useState('');
   const [qty, setQty] = useState('');
   const [location, setLocation] = useState('');
@@ -50,6 +52,23 @@ export default function ProgresScreen() {
   // ── Computed ──
   const inProgressItems = useMemo(() => boqItems.filter(b => b.progress < 100), [boqItems]);
   const selectedItem = useMemo(() => boqItems.find(b => b.id === boqId), [boqItems, boqId]);
+
+  // Work-group grouping for the progress picker (same classifier as the material
+  // request flow). Step 1 picks a work-group; step 2 picks a BoQ row within it.
+  const inProgressIds = useMemo(() => new Set(inProgressItems.map(b => b.id)), [inProgressItems]);
+  const workGroups = useMemo(() => buildWorkGroups(boqItems), [boqItems]);
+  const visibleGroups = useMemo(
+    () => workGroups
+      .map(g => ({ group: g, openCount: g.itemIds.filter(id => inProgressIds.has(id)).length }))
+      .filter(g => g.openCount > 0),
+    [workGroups, inProgressIds],
+  );
+  const groupRows = useMemo(() => {
+    const g = workGroups.find(x => x.key === groupKey);
+    if (!g) return [];
+    const idset = new Set(g.itemIds);
+    return inProgressItems.filter(b => idset.has(b.id));
+  }, [workGroups, groupKey, inProgressItems]);
   const gateResult = useMemo(() => {
     if (!selectedItem || !qty) return null;
     const q = parseFloat(qty);
@@ -389,11 +408,21 @@ export default function ProgresScreen() {
           <>
             <SubHeader title="Tambah Progres" />
             <Card title="Laporan Progres Baru">
+              <Text style={styles.label}>Grup Pekerjaan <Text style={styles.req}>*</Text></Text>
+              <View style={styles.pickerWrap}>
+                <Picker selectedValue={groupKey} onValueChange={v => { setGroupKey(v); setBoqId(''); setQty(''); }} style={{ color: COLORS.text }}>
+                  <Picker.Item label="-- Pilih grup pekerjaan --" value="" />
+                  {visibleGroups.map(({ group, openCount }) => (
+                    <Picker.Item key={group.key} label={`${group.label} (${openCount} item)`} value={group.key} />
+                  ))}
+                </Picker>
+              </View>
+
               <Text style={styles.label}>Item BoQ <Text style={styles.req}>*</Text></Text>
               <View style={styles.pickerWrap}>
-                <Picker selectedValue={boqId} onValueChange={v => { setBoqId(v); setQty(''); }} style={{ color: COLORS.text }}>
-                  <Picker.Item label="-- Pilih item BoQ --" value="" />
-                  {inProgressItems.map(b => (
+                <Picker selectedValue={boqId} enabled={!!groupKey} onValueChange={v => { setBoqId(v); setQty(''); }} style={{ color: COLORS.text }}>
+                  <Picker.Item label={groupKey ? '-- Pilih item BoQ --' : '-- Pilih grup dulu --'} value="" />
+                  {groupRows.map(b => (
                     <Picker.Item key={b.id} label={`${b.code} — ${b.label} (${b.progress}%)`} value={b.id} />
                   ))}
                 </Picker>
