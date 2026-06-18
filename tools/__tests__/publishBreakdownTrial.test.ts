@@ -31,6 +31,8 @@ const ROWS = [
     comp('Besi beton D13', 50), comp('Besi beton D16', 30),
     comp('Bendrat (kawat ikat)', 3), comp('Beton decking', 100),
     comp('Sewa vibrator', 1, 'equipment', 'm3'),
+    // cost-split residue with no material name — publish must skip it, not crash
+    { quantityPerUnit: 1, unitPrice: 1000, lineType: 'material', unit: 'm3', referencedBlockTitle: null },
   ] },
   { code: 'TRIAL.SLOOF.1', label: 'Sloof S1', unit: 'm3', planned: 4, components: [
     comp('Besi beton D13', 60), comp('Batako', 10, 'material', 'pcs'),
