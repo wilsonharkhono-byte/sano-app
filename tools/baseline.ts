@@ -884,12 +884,15 @@ export async function generateMaterialMaster(
   projectId: string,
 ): Promise<{ success: boolean; lineCount?: number; error?: string }> {
   try {
-    // Get latest AHS version for project
+    // Get the CURRENT AHS version for project. v2 publishes all write version=1,
+    // so ordering by version is a tie that can return a stale, demoted version —
+    // filter on is_current (maintained by publish) and break ties by recency.
     const { data: ahsVersion } = await supabase
       .from('ahs_versions')
       .select('id')
       .eq('project_id', projectId)
-      .order('version', { ascending: false })
+      .eq('is_current', true)
+      .order('published_at', { ascending: false })
       .limit(1)
       .single();
 
@@ -949,7 +952,8 @@ export async function getProjectBaseline(projectId: string) {
       .from('ahs_versions')
       .select('*, ahs_lines(*)')
       .eq('project_id', projectId)
-      .order('version', { ascending: false })
+      .eq('is_current', true)
+      .order('published_at', { ascending: false })
       .limit(1)
       .single(),
     supabase

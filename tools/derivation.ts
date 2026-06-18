@@ -139,11 +139,16 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
       .from('boq_items')
       .select('id, planned, installed, unit, tier1_material, tier2_material')
       .eq('project_id', projectId),
+    // Pick the CURRENT baseline, not "highest version" — every publish writes
+    // version=1, so ordering by version is a tie that can return a stale,
+    // demoted version. publishBaselineV2 maintains is_current (demote old →
+    // insert new), so filter on it; fall back to newest published_at.
     supabase
       .from('ahs_versions')
       .select('id')
       .eq('project_id', projectId)
-      .order('version', { ascending: false })
+      .eq('is_current', true)
+      .order('published_at', { ascending: false })
       .limit(1),
     supabase
       .from('purchase_orders')
