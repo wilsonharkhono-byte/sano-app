@@ -27,6 +27,9 @@ export function resolveCatalogId(
   catalog: CatalogRow[],
   aliases: Map<string, string>,
 ): string | null {
+  // Defensive: components without a material name (cost-split residue) must not
+  // reach reconcileMaterials' normalize(), which would throw on undefined.
+  if (typeof name !== 'string' || !name.trim()) return null;
   const entries: CatalogEntry[] = catalog.map(c => ({
     code: c.code, name: c.name, category: c.category, tier: c.tier, unit: c.unit, aliases: [],
   }));
@@ -576,12 +579,16 @@ export async function publishBaselineV2(
     if (!boqId) continue; // row skipped (zero-planned / quarantined / invalid)
     const volume = toNumber(pd.planned);
     for (const c of pd.recipe?.components ?? []) {
+      // Some components carry no material name (cost-split residue on
+      // non-breakdown rows) — nothing to track, skip them.
+      const name = typeof c.materialName === 'string' ? c.materialName.trim() : '';
+      if (!name) continue;
       const lineType = (c.lineType ?? 'material') as 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
       const materialId = lineType === 'material'
-        ? resolveCatalogId(c.materialName, catalog, aliasMap)
+        ? resolveCatalogId(name, catalog, aliasMap)
         : null;
       if (lineType === 'material' && materialId == null) {
-        unresolvedComponents.push(`${pd.code}: ${c.materialName}`);
+        unresolvedComponents.push(`${pd.code}: ${name}`);
       }
       ahsLineInserts.push({
         ahs_version_id: ahsVersionId,
@@ -589,11 +596,11 @@ export async function publishBaselineV2(
         material_id: materialId,
         tier: 1,
         unit: c.unit || '',
-        material_spec: c.materialName,
+        material_spec: name,
         coefficient: c.quantityPerUnit,
         unit_price: c.unitPrice,
         line_type: lineType,
-        description: c.materialName,
+        description: name,
         ahs_block_title: c.referencedBlockTitle ?? null,
         origin_parent_ahs_id: null,
       });
@@ -601,7 +608,7 @@ export async function publishBaselineV2(
         boq_item_id: boqId,
         boq_planned: volume,
         material_id: materialId,
-        material_name: c.materialName,
+        material_name: name,
         coefficient: c.quantityPerUnit,
         unit: c.unit || '',
         line_type: lineType,
