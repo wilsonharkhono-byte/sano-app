@@ -689,6 +689,8 @@ export interface MaterialEnvelopeStatus {
   total_planned: number;
   total_ordered: number;
   total_received: number;
+  /** Planned material already consumed by installed work (work-group envelope only). */
+  total_installed?: number;
   remaining_to_order: number;
   burn_pct: number;
   boq_item_count: number;

@@ -110,6 +110,7 @@ export async function getWorkGroupEnvelope(
     unit: string;
     total_planned: number;
     total_ordered: number;
+    total_installed: number;
     remaining_to_order: number;
     burn_pct: number;
     boq_item_count: number;
@@ -124,6 +125,7 @@ export async function getWorkGroupEnvelope(
     total_planned: Number(row.total_planned ?? 0),
     total_ordered: Number(row.total_ordered ?? 0),
     total_received: 0,
+    total_installed: Number(row.total_installed ?? 0),
     remaining_to_order: Number(row.remaining_to_order ?? 0),
     burn_pct: Number(row.burn_pct ?? 0),
     boq_item_count: Number(row.boq_item_count ?? 0),
