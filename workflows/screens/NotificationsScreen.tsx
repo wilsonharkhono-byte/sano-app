@@ -3,6 +3,7 @@ import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../../tools/supabase';
 import { NotificationList, type NotificationItem } from './components/NotificationList';
+import { COLORS } from '../theme';
 
 const NOTIFICATION_ROUTE_MAP: Record<string, string> = {
   ApprovalsScreen: 'Approvals',
@@ -78,8 +79,9 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
 
   const handlePress = useCallback(async (item: NotificationItem) => {
     if (!item.readAt) {
-      await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', item.id);
-      setItems(prev => prev.map(i => i.id === item.id ? { ...i, readAt: new Date().toISOString() } : i));
+      const readAt = new Date().toISOString();
+      setItems(prev => prev.map(i => i.id === item.id ? { ...i, readAt } : i));
+      void supabase.from('notifications').update({ read_at: readAt }).eq('id', item.id);
     }
     const target = NOTIFICATION_ROUTE_MAP[item.deeplinkScreen] ?? item.deeplinkScreen;
     try {
@@ -91,8 +93,8 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
 
   if (loading) {
     return (
-      <View style={styles.loading}>
-        <ActivityIndicator />
+      <View style={[styles.container, styles.loading]}>
+        <ActivityIndicator color={COLORS.accent} />
       </View>
     );
   }
@@ -108,6 +110,6 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FFFFFF' },
-  loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  container: { flex: 1, backgroundColor: COLORS.bg },
+  loading: { justifyContent: 'center', alignItems: 'center' },
 });
