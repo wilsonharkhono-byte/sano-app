@@ -205,7 +205,36 @@ export function computeWorkGroupGate1Flag(
       msg: `Belum ada baseline material untuk grup "${groupLabel}". Tidak bisa divalidasi otomatis — estimator review manual.`,
     };
   }
-  return envelopeBurnFlag(envelope, requestedQty);
+
+  // 1a — envelope burn (ordered vs planned).
+  const burn = envelopeBurnFlag(envelope, requestedQty);
+
+  // 1d — progress pace: is this order running ahead of physical progress?
+  // Material is ordered ahead of installation (normal), so only the GAP between
+  // ordered% and installed% is flagged — small early orders never trip it.
+  const pace = progressPaceFlag(envelope, requestedQty);
+  if (!pace) return burn;
+  const burnWorse = FLAG_ORDER.indexOf(burn.flag) >= FLAG_ORDER.indexOf(pace.flag);
+  const worst = burnWorse ? burn : pace;
+  const other = burnWorse ? pace : burn;
+  return { ...worst, extra: other };
+}
+
+/**
+ * Advisory linking material orders to physical progress: flags when the ordered
+ * share of the group's planned material runs well ahead of the installed share
+ * (progress). Returns null within a normal procurement lead so small early
+ * orders (at 0% progress) never trip it.
+ */
+function progressPaceFlag(env: MaterialEnvelopeStatus, requestedQty: number): GateResult | null {
+  if (env.total_planned <= 0) return null;
+  const installedPct = ((env.total_installed ?? 0) / env.total_planned) * 100;
+  const orderedPct = ((env.total_ordered + requestedQty) / env.total_planned) * 100;
+  const ahead = orderedPct - installedPct;
+  if (ahead <= 40) return null; // within a reasonable lead — no flag
+  const msg = `Pemesanan ${orderedPct.toFixed(0)}% dari rencana, tapi progres terpasang baru ${installedPct.toFixed(0)}% `
+    + `(memesan ${ahead.toFixed(0)}% di depan progres). Material berisiko menumpuk — pastikan sesuai jadwal.`;
+  return { flag: ahead > 70 ? 'WARNING' : 'INFO', check: '1d', msg };
 }
 
 function fmtN(n: number): string {
