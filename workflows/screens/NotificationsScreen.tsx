@@ -3,6 +3,7 @@ import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../../tools/supabase';
 import { NotificationList, type NotificationItem } from './components/NotificationList';
+import Header from '../components/Header';
 import { COLORS } from '../theme';
 
 const NOTIFICATION_ROUTE_MAP: Record<string, string> = {
@@ -91,25 +92,21 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
     }
   }, [navigation]);
 
-  if (loading) {
-    return (
-      <View style={[styles.container, styles.loading]}>
-        <ActivityIndicator color={COLORS.accent} />
-      </View>
-    );
-  }
-
   return (
     <View style={styles.container}>
-      <NotificationList
-        items={items}
-        onPress={handlePress}
-      />
+      <Header />
+      {loading ? (
+        <View style={styles.loading}>
+          <ActivityIndicator color={COLORS.accent} />
+        </View>
+      ) : (
+        <NotificationList items={items} onPress={handlePress} />
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg },
-  loading: { justifyContent: 'center', alignItems: 'center' },
+  loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
 });
