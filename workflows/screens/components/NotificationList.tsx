@@ -1,5 +1,7 @@
-import React from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { FlatList, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../../theme';
 
 export interface NotificationItem {
   id: string;
@@ -17,14 +19,30 @@ interface Props {
   onPress: (item: NotificationItem) => void;
 }
 
-const COLORS = {
-  bg: '#FFFFFF',
-  border: '#E5E7EB',
-  textPrimary: '#0F172A',
-  textSecondary: '#64748B',
-  unreadDot: '#EF4444',
-  dayHeader: '#94A3B8',
+// ── Per-type visual identity ──────────────────────────────────────────────────
+// Each notification kind gets an icon + semantic colour, so the list reads at a
+// glance and stays consistent with the rest of the app's Ionicons + flag palette.
+type TypeStyle = { icon: keyof typeof Ionicons.glyphMap; color: string; bg: string };
+
+const TYPE_STYLES: Record<string, TypeStyle> = {
+  APPROVED:         { icon: 'checkmark-circle', color: COLORS.ok,       bg: COLORS.okBg },
+  REJECTED:         { icon: 'close-circle',     color: COLORS.critical, bg: COLORS.criticalBg },
+  AUTO_HOLD:        { icon: 'pause-circle',     color: COLORS.warning,  bg: COLORS.warningBg },
+  PO_READY:         { icon: 'cube',             color: COLORS.info,     bg: COLORS.infoBg },
+  RECEIPT_MISMATCH: { icon: 'alert-circle',     color: COLORS.high,     bg: COLORS.highBg },
+  CRITICAL:         { icon: 'warning',          color: COLORS.critical, bg: COLORS.criticalBg },
+  WARNING:          { icon: 'warning',          color: COLORS.warning,  bg: COLORS.warningBg },
 };
+
+const DEFAULT_STYLE: TypeStyle = {
+  icon: 'notifications',
+  color: COLORS.accentDark,
+  bg: COLORS.accentBg,
+};
+
+function styleForType(type: string): TypeStyle {
+  return TYPE_STYLES[type] ?? DEFAULT_STYLE;
+}
 
 function relativeDay(iso: string): string {
   const created = new Date(iso);
@@ -63,73 +81,125 @@ function buildEntries(items: NotificationItem[]): ListEntry[] {
   return out;
 }
 
+// Memoised row — only re-renders when its own item or readAt changes, so a
+// realtime insert or a single mark-as-read doesn't re-render the whole list.
+const NotificationRow = React.memo(function NotificationRow({
+  item,
+  onPress,
+}: {
+  item: NotificationItem;
+  onPress: (item: NotificationItem) => void;
+}): React.ReactElement {
+  const unread = !item.readAt;
+  const ts = styleForType(item.type);
+  return (
+    <TouchableOpacity
+      style={[styles.row, unread && styles.rowUnread]}
+      activeOpacity={0.6}
+      onPress={() => onPress(item)}
+    >
+      <View style={[styles.iconBadge, { backgroundColor: ts.bg }]}>
+        <Ionicons name={ts.icon} size={18} color={ts.color} />
+      </View>
+      <View style={styles.rowContent}>
+        <View style={styles.titleRow}>
+          <Text style={[styles.title, unread && styles.titleUnread]} numberOfLines={1}>
+            {item.title}
+          </Text>
+          <Text style={styles.time}>{formatTime(item.createdAt)}</Text>
+        </View>
+        <Text style={styles.body} numberOfLines={2}>{item.body}</Text>
+      </View>
+      {unread && <View style={styles.unreadDot} />}
+    </TouchableOpacity>
+  );
+});
+
 export function NotificationList({ items, onPress }: Props): React.ReactElement {
+  const entries = useMemo(() => buildEntries(items), [items]);
+
+  const renderItem = useCallback(
+    ({ item: entry }: { item: ListEntry }) => {
+      if (entry.type === 'header') {
+        return <Text style={styles.dayHeader}>{entry.label}</Text>;
+      }
+      return <NotificationRow item={entry.item!} onPress={onPress} />;
+    },
+    [onPress],
+  );
+
   if (items.length === 0) {
     return (
       <View style={styles.emptyState}>
+        <Ionicons name="notifications-off-outline" size={40} color={COLORS.textMuted} />
         <Text style={styles.emptyText}>Belum ada notifikasi.</Text>
       </View>
     );
   }
 
-  const entries = buildEntries(items);
-
   return (
     <FlatList
       data={entries}
       keyExtractor={e => e.key}
-      renderItem={({ item: entry }) => {
-        if (entry.type === 'header') {
-          return <Text style={styles.dayHeader}>{entry.label}</Text>;
-        }
-        const n = entry.item!;
-        const unread = !n.readAt;
-        return (
-          <TouchableOpacity style={styles.row} onPress={() => onPress(n)}>
-            <View style={styles.rowContent}>
-              <View style={styles.titleRow}>
-                {unread && <View style={styles.unreadDot} />}
-                <Text style={[styles.title, unread && styles.titleUnread]}>{n.title}</Text>
-                <Text style={styles.time}>{formatTime(n.createdAt)}</Text>
-              </View>
-              <Text style={styles.body}>{n.body}</Text>
-            </View>
-          </TouchableOpacity>
-        );
-      }}
+      renderItem={renderItem}
+      contentContainerStyle={styles.listContent}
+      showsVerticalScrollIndicator={false}
+      initialNumToRender={12}
+      maxToRenderPerBatch={12}
+      windowSize={10}
+      removeClippedSubviews
     />
   );
 }
 
 const styles = StyleSheet.create({
-  emptyState: { padding: 32, alignItems: 'center' },
-  emptyText: { color: COLORS.textSecondary, fontSize: 14 },
+  listContent: { paddingBottom: SPACE.xxl },
+  emptyState: { flex: 1, padding: SPACE.xxxl, alignItems: 'center', justifyContent: 'center', gap: SPACE.md },
+  emptyText: { fontFamily: FONTS.regular, color: COLORS.textSec, fontSize: TYPE.base },
   dayHeader: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
-    paddingBottom: 8,
-    color: COLORS.dayHeader,
-    fontSize: 12,
-    fontWeight: '600',
+    paddingHorizontal: SPACE.base,
+    paddingTop: SPACE.lg,
+    paddingBottom: SPACE.sm,
+    fontFamily: FONTS.semibold,
+    color: COLORS.textMuted,
+    fontSize: TYPE.xs,
+    letterSpacing: 0.5,
     textTransform: 'uppercase',
   },
   row: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: COLORS.border,
-    backgroundColor: COLORS.bg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.md,
+    marginHorizontal: SPACE.base,
+    marginVertical: SPACE.xs,
+    paddingHorizontal: SPACE.base,
+    paddingVertical: SPACE.md,
+    borderRadius: RADIUS,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: COLORS.borderSub,
+    backgroundColor: COLORS.surface,
   },
-  rowContent: { gap: 4 },
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  rowUnread: {
+    backgroundColor: COLORS.accentBg,
+    borderColor: COLORS.accent,
+  },
+  iconBadge: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  rowContent: { flex: 1, gap: 2 },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm },
+  title: { flex: 1, fontFamily: FONTS.medium, fontSize: TYPE.base, color: COLORS.text },
+  titleUnread: { fontFamily: FONTS.semibold },
+  time: { fontFamily: FONTS.regular, fontSize: TYPE.xs, color: COLORS.textMuted },
+  body: { fontFamily: FONTS.regular, fontSize: TYPE.sm, color: COLORS.textSec },
   unreadDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: COLORS.unreadDot,
+    backgroundColor: COLORS.accentDark,
   },
-  title: { fontSize: 14, color: COLORS.textPrimary, flex: 1 },
-  titleUnread: { fontWeight: '600' },
-  time: { fontSize: 12, color: COLORS.textSecondary },
-  body: { fontSize: 13, color: COLORS.textSecondary },
 });

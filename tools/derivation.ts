@@ -256,7 +256,9 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
       );
       hasStructuredBaseline = true;
     }
-  } else {
+  }
+
+  if (!hasStructuredBaseline) {
     const { data: masterHeader } = await supabase
       .from('project_material_master')
       .select('id')
