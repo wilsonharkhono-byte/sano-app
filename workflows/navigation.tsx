@@ -7,7 +7,6 @@ import { StyleSheet, Text, useWindowDimensions } from 'react-native';
 import { COLORS, FONTS, TYPE, SPACE, BREAKPOINTS } from './theme';
 import { lazyScreen } from './components/LazyScreen';
 import { useProject } from './hooks/useProject';
-import { useUnreadCount } from './screens/hooks/useUnreadCount';
 import { navigationRef } from './App';
 import NotificationsScreen from './screens/NotificationsScreen';
 
@@ -51,7 +50,6 @@ export default function AppNavigation() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { profile } = useProject();
-  const unread = useUnreadCount(profile?.id);
 
   // Tablet/desktop: taller bar, more icon padding, always-visible labels
   const isWide     = width >= BREAKPOINTS.tablet;
@@ -73,7 +71,7 @@ export default function AppNavigation() {
             />
           ),
           tabBarLabel: ({ color }) => (
-            <Text style={[labelStyle, { color }]}>
+            <Text style={[labelStyle, { color }]} numberOfLines={1}>
               {route.name}
             </Text>
           ),
@@ -116,11 +114,15 @@ export default function AppNavigation() {
           component={LaporanScreen}
           options={{ tabBarAccessibilityLabel: 'Laporan dan ekspor' }}
         />
+        {/* Notifikasi is reached via the header bell, not the bottom bar —
+            keep it registered (deep-links + notification taps route here) but
+            hide its tab button so the bar stays at 5 roomy items. */}
         <Tab.Screen
           name="Notifikasi"
           options={{
             tabBarAccessibilityLabel: 'Notifikasi',
-            tabBarBadge: unread > 0 ? unread : undefined,
+            tabBarButton: () => null,
+            tabBarItemStyle: { display: 'none' },
           }}
         >
           {() => <NotificationsScreen profileId={profile!.id} />}

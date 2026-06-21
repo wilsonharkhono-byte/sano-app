@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, Modal, FlatList, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useProject } from '../hooks/useProject';
+import { useUnreadCount } from '../screens/hooks/useUnreadCount';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import SanoBrand from './SanoBrand';
 
@@ -15,20 +17,41 @@ const ROLE_LABELS: Record<string, string> = {
 
 export default function Header() {
   const { profile, project, projects, setActiveProject } = useProject();
+  const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const [showPicker, setShowPicker] = useState(false);
+  const unread = useUnreadCount(profile?.id);
 
   const hasMultipleProjects = projects.length > 1;
   const roleLabel = profile?.role ? ROLE_LABELS[profile.role] ?? profile.role : '';
 
+  const badge = unread > 99 ? '99+' : String(unread);
+
   return (
     <>
       <View style={[styles.container, { paddingTop: insets.top + SPACE.sm }]}>
-        {/* Top row: logo + project selector */}
+        {/* Top row: logo + notification bell + project selector */}
         <View style={styles.topRow}>
           <SanoBrand tone="light" compact />
 
-          <View style={styles.right}>
+          <View style={styles.rightCluster}>
+            <TouchableOpacity
+              style={styles.bellBtn}
+              onPress={() => navigation.navigate('Notifikasi')}
+              accessibilityRole="button"
+              accessibilityLabel={
+                unread > 0 ? `Notifikasi, ${unread} belum dibaca` : 'Notifikasi'
+              }
+            >
+              <Ionicons name="notifications-outline" size={22} color={COLORS.textInverse} />
+              {unread > 0 && (
+                <View style={styles.bellBadge}>
+                  <Text style={styles.bellBadgeText} numberOfLines={1}>{badge}</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+
+            <View style={styles.right}>
             <TouchableOpacity
               style={[styles.projectBtn, hasMultipleProjects && styles.projectBtnActive]}
               onPress={() => hasMultipleProjects && setShowPicker(true)}
@@ -51,6 +74,7 @@ export default function Header() {
                 <Ionicons name="chevron-down" size={13} color={COLORS.textInverseMuted} />
               )}
             </TouchableOpacity>
+            </View>
           </View>
         </View>
 
@@ -133,10 +157,42 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.6,
   },
+  rightCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.xs,
+    flexShrink: 1,
+    maxWidth: '64%',
+  },
+  bellBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bellBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 4,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 3,
+    backgroundColor: COLORS.critical,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: COLORS.primary,
+  },
+  bellBadgeText: {
+    color: COLORS.textInverse,
+    fontSize: 10,
+    lineHeight: 13,
+    fontFamily: FONTS.bold,
+  },
   right: {
     alignItems: 'flex-end',
     flexShrink: 1,
-    maxWidth: '55%',
   },
   projectBtn: {
     flexDirection: 'row',
