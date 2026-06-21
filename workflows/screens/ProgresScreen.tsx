@@ -209,12 +209,13 @@ export default function ProgresScreen() {
 
       await syncBoqInstalledFromDerived(project.id);
 
-      await supabase.from('activity_log').insert({
+      const { error: logError } = await supabase.from('activity_log').insert({
         project_id: project.id, user_id: profile.id,
         type: 'progres',
         label: `${item.label} — ${qty} ${item.unit} terpasang`,
         flag: 'OK',
       });
+      if (logError) throw logError;
 
       resetProgressForm();
       await refresh();

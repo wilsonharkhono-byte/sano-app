@@ -17,7 +17,10 @@ jest.mock('../supabase', () => {
 });
 
 import { publishBaselineV2 } from '../publishBaselineV2';
-import { adminClient, createTestProject, cleanupTestData, type TestProject } from './_serverGateHarness';
+import { adminClient, createTestProject, cleanupTestData, prodDbTestsEnabled, type TestProject } from './_serverGateHarness';
+
+// Prod-DB integration suite — skips by default; opt in via ALLOW_PROD_DB_TESTS=1.
+const itDb = prodDbTestsEnabled ? it : it.skip;
 
 jest.setTimeout(60000);
 
@@ -43,6 +46,7 @@ let project: TestProject;
 let boqIds: Record<string, string> = {};
 
 beforeAll(async () => {
+  if (!prodDbTestsEnabled) return;
   project = await createTestProject();
   const { data: session } = await adminClient.from('import_sessions').insert({
     project_id: project.id, uploaded_by: project.ownerProfileId,
@@ -64,9 +68,9 @@ beforeAll(async () => {
   for (const b of boqs ?? []) boqIds[b.code as string] = b.id as string;
 });
 
-afterAll(async () => { await cleanupTestData(); });
+afterAll(async () => { if (!prodDbTestsEnabled) return; await cleanupTestData(); });
 
-it('master_lines are per-diameter and equal volume × qty/unit (matches take-off math)', async () => {
+itDb('master_lines are per-diameter and equal volume × qty/unit (matches take-off math)', async () => {
   const { data: master } = await adminClient.from('project_material_master').select('id').eq('project_id', project.id).order('created_at', { ascending: false }).limit(1).single();
   const { data: lines } = await adminClient
     .from('project_material_master_lines')
@@ -87,7 +91,7 @@ it('master_lines are per-diameter and equal volume × qty/unit (matches take-off
   expect(byName.get('Batako semen 10 cm')).toBeCloseTo(40, 5);
 });
 
-it('work-group envelope for Besi 13mm across both rows returns 740 (not "no baseline")', async () => {
+itDb('work-group envelope for Besi 13mm across both rows returns 740 (not "no baseline")', async () => {
   const { data: d13 } = await adminClient.from('material_catalog').select('id').eq('code', 'REB-DE13').single();
   const { data, error } = await adminClient.rpc('get_workgroup_envelope', {
     p_project_id: project.id, p_material_id: d13!.id, p_boq_item_ids: [boqIds['TRIAL.POER.1'], boqIds['TRIAL.SLOOF.1']],

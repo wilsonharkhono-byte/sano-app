@@ -195,12 +195,13 @@ export default function TerimaScreen() {
       if (rcptErr || !receipt) throw rcptErr || new Error('Receipt insert failed');
 
       // 2. Create receipt line
-      await supabase.from('receipt_lines').insert({
+      const { error: lineErr } = await supabase.from('receipt_lines').insert({
         receipt_id: receipt.id,
         material_name: selectedPO!.material_name,
         quantity_actual: parseFloat(qtyActual),
         unit: selectedPO!.unit,
       });
+      if (lineErr) throw lineErr;
 
       // 3. Insert receipt photos
       const photoInserts = Object.entries(photos)
@@ -214,7 +215,8 @@ export default function TerimaScreen() {
         }));
 
       if (photoInserts.length > 0) {
-        await supabase.from('receipt_photos').insert(photoInserts);
+        const { error: photoErr } = await supabase.from('receipt_photos').insert(photoInserts);
+        if (photoErr) throw photoErr;
       }
 
       // 4. Update PO status (will move to backend trigger later)
@@ -225,16 +227,18 @@ export default function TerimaScreen() {
       } else {
         newPoStatus = 'PARTIAL_RECEIVED';
       }
-      await supabase.from('purchase_orders').update({ status: newPoStatus }).eq('id', poId);
+      const { error: poErr } = await supabase.from('purchase_orders').update({ status: newPoStatus }).eq('id', poId);
+      if (poErr) throw poErr;
 
       // 5. Activity log
-      await supabase.from('activity_log').insert({
+      const { error: logErr } = await supabase.from('activity_log').insert({
         project_id: project!.id,
         user_id: profile!.id,
         type: 'terima',
         label: `${selectedPO!.material_name} ${qtyActual} ${selectedPO!.unit} diterima (${isFinal ? 'Final' : 'Parsial'})`,
         flag: gateResult?.flag ?? 'OK',
       });
+      if (logErr) throw logErr;
 
       resetForm();
       await loadReceiptHistory(poId);

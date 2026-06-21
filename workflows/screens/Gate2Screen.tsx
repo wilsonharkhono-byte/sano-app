@@ -226,26 +226,29 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         const unitPrice = parseFloat(edit.price);
 
         // Update PO line price
-        await supabase.from('purchase_order_lines').update({ unit_price: unitPrice }).eq('id', line.id);
+        const { error: priceError } = await supabase.from('purchase_order_lines').update({ unit_price: unitPrice }).eq('id', line.id);
+        if (priceError) throw priceError;
 
         // Record price history
-        await supabase.from('price_history').insert({
+        const { error: histError } = await supabase.from('price_history').insert({
           project_id: project.id,
           material_id: line.material_id ?? null,
           vendor: edit.vendor || po.supplier,
           unit_price: unitPrice,
           recorded_at: new Date().toISOString(),
         });
+        if (histError) throw histError;
 
         // Store justification if provided
         if (edit.justification) {
-          await supabase.from('activity_log').insert({
+          const { error: logError } = await supabase.from('activity_log').insert({
             project_id: project.id,
             user_id: profile.id,
             type: 'permintaan',
             label: `Gate 2 justifikasi: ${line.material_name} @ Rp${unitPrice.toLocaleString('id-ID')} — ${sanitizeText(edit.justification)}`,
             flag: 'INFO',
           });
+          if (logError) throw logError;
         }
       }
 
@@ -469,7 +472,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       const { error: lineError } = await supabase.from('purchase_order_lines').insert(lineRecords);
       if (lineError) throw lineError;
 
-      await supabase.from('price_history').insert(
+      const { error: histError } = await supabase.from('price_history').insert(
         lineRecords.map(line => ({
           project_id: project.id,
           material_id: line.material_id,
@@ -478,14 +481,16 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
           recorded_at: new Date().toISOString(),
         })),
       );
+      if (histError) throw histError;
 
-      await supabase.from('activity_log').insert({
+      const { error: logError } = await supabase.from('activity_log').insert({
         project_id: project.id,
         user_id: profile.id,
         type: 'permintaan',
         label: `${poNumber} dibuat: ${sanitizeText(draftSupplier)} — ${headerMaterialName}`,
         flag: 'INFO',
       });
+      if (logError) throw logError;
 
       await refresh();
       await loadData();
@@ -506,13 +511,14 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     }
     const line = po.lines[lineIdx];
     try {
-      await supabase.from('approval_tasks').insert({
+      const { error: escalateError } = await supabase.from('approval_tasks').insert({
         project_id: project.id,
         entity_type: 'po_line',
         entity_id: line.id,
         assigned_to: principalId,
         created_at: new Date().toISOString(),
       });
+      if (escalateError) throw escalateError;
       toast(`Eskalasi ke Principal: ${line.material_name}`, 'ok');
     } catch (err: any) {
       toast(err.message, 'critical');
@@ -523,11 +529,12 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
 
   const handleApprovalAction = async (taskId: string, action: 'APPROVE' | 'REJECT' | 'HOLD' | 'OVERRIDE', reason: string) => {
     try {
-      await supabase.from('approval_tasks').update({
+      const { error: actionError } = await supabase.from('approval_tasks').update({
         action,
         reason: reason || null,
         acted_at: new Date().toISOString(),
       }).eq('id', taskId);
+      if (actionError) throw actionError;
       toast(`${action} — disimpan`, 'ok');
       setApprovals(prev => prev.filter(a => a.id !== taskId));
     } catch (err: any) {

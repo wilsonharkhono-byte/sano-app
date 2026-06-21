@@ -610,6 +610,7 @@ export async function publishBaselineV2(
         unit: c.unit || '',
         material_spec: name,
         coefficient: c.quantityPerUnit,
+        usage_rate: c.quantityPerUnit,
         unit_price: c.unitPrice,
         line_type: lineType,
         description: name,
