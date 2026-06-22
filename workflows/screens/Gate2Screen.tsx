@@ -442,26 +442,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         ? parseFloat(populatedLines[0].unit_price)
         : null;
 
-      const { data: poHeader, error: poError } = await supabase
-        .from('purchase_orders')
-        .insert({
-          project_id: project.id,
-          po_number: poNumber,
-          boq_ref: boqRef,
-          supplier: sanitizeText(draftSupplier),
-          material_name: headerMaterialName,
-          quantity: totalQuantity,
-          unit: headerUnit,
-          unit_price: headerPrice,
-          ordered_date: draftOrderedDate,
-          status: 'OPEN',
-        })
-        .select('id')
-        .single();
-      if (poError || !poHeader) throw poError ?? new Error('PO header gagal dibuat');
-
       const lineRecords = populatedLines.map(line => ({
-        po_id: poHeader.id,
         material_id: line.material_id || null,
         material_name: sanitizeText(line.material_name),
         quantity: parseFloat(line.quantity),
@@ -469,28 +450,23 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         unit_price: parseFloat(line.unit_price),
         scope_tag: draftScopePreviewByLine.get(line.id) ?? null,
       }));
-      const { error: lineError } = await supabase.from('purchase_order_lines').insert(lineRecords);
-      if (lineError) throw lineError;
 
-      const { error: histError } = await supabase.from('price_history').insert(
-        lineRecords.map(line => ({
-          project_id: project.id,
-          material_id: line.material_id,
-          vendor: sanitizeText(draftSupplier),
-          unit_price: line.unit_price,
-          recorded_at: new Date().toISOString(),
-        })),
-      );
-      if (histError) throw histError;
-
-      const { error: logError } = await supabase.from('activity_log').insert({
-        project_id: project.id,
-        user_id: profile.id,
-        type: 'permintaan',
-        label: `${poNumber} dibuat: ${sanitizeText(draftSupplier)} — ${headerMaterialName}`,
-        flag: 'INFO',
+      // Atomic: header + lines + price_history + activity_log in ONE transaction (migration 045).
+      const { data: newPoId, error: poError } = await supabase.rpc('create_purchase_order', {
+        p_project_id: project.id,
+        p_po_number: poNumber,
+        p_boq_ref: boqRef,
+        p_supplier: sanitizeText(draftSupplier),
+        p_material_name: headerMaterialName,
+        p_quantity: totalQuantity,
+        p_unit: headerUnit,
+        p_unit_price: headerPrice,
+        p_ordered_date: draftOrderedDate,
+        p_user_id: profile.id,
+        p_activity_label: `${poNumber} dibuat: ${sanitizeText(draftSupplier)} — ${headerMaterialName}`,
+        p_lines: lineRecords,
       });
-      if (logError) throw logError;
+      if (poError || !newPoId) throw poError ?? new Error('PO header gagal dibuat');
 
       await refresh();
       await loadData();

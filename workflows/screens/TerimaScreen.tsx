@@ -177,68 +177,39 @@ export default function TerimaScreen() {
 
     setSubmitting(true);
     try {
-      // 1. Create receipt header
-      const { data: receipt, error: rcptErr } = await supabase
-        .from('receipts')
-        .insert({
-          po_id: poId,
-          project_id: project!.id,
-          received_by: profile!.id,
-          vehicle_ref: vehicleRef ? sanitizeText(vehicleRef) : null,
-          gate3_flag: gateResult?.flag ?? 'OK',
-          gate3_details: gateResult,
-          notes: notes ? sanitizeText(notes) : null,
-        })
-        .select('id')
-        .single();
-
-      if (rcptErr || !receipt) throw rcptErr || new Error('Receipt insert failed');
-
-      // 2. Create receipt line
-      const { error: lineErr } = await supabase.from('receipt_lines').insert({
-        receipt_id: receipt.id,
-        material_name: selectedPO!.material_name,
-        quantity_actual: parseFloat(qtyActual),
-        unit: selectedPO!.unit,
-      });
-      if (lineErr) throw lineErr;
-
-      // 3. Insert receipt photos
-      const photoInserts = Object.entries(photos)
+      // Build the receipt-photo array (filters out tiket_timbang for non-readymix).
+      const photoRecords = Object.entries(photos)
         .filter(([key, val]) => val !== null && (key !== 'tiket_timbang' || isReadymix))
         .map(([key, val]) => ({
-          receipt_id: receipt.id,
           photo_type: key,
           storage_path: val!,
-          gps_lat: key === 'vehicle' ? vehicleGps?.lat : null,
-          gps_lon: key === 'vehicle' ? vehicleGps?.lon : null,
+          gps_lat: key === 'vehicle' ? vehicleGps?.lat ?? null : null,
+          gps_lon: key === 'vehicle' ? vehicleGps?.lon ?? null : null,
         }));
 
-      if (photoInserts.length > 0) {
-        const { error: photoErr } = await supabase.from('receipt_photos').insert(photoInserts);
-        if (photoErr) throw photoErr;
-      }
-
-      // 4. Update PO status (will move to backend trigger later)
+      // Derive new PO status (unchanged logic — moves to backend trigger later).
       const newTotal = totalReceived + parseFloat(qtyActual);
-      let newPoStatus: string;
-      if (isFinal || newTotal >= selectedPO!.quantity) {
-        newPoStatus = 'FULLY_RECEIVED';
-      } else {
-        newPoStatus = 'PARTIAL_RECEIVED';
-      }
-      const { error: poErr } = await supabase.from('purchase_orders').update({ status: newPoStatus }).eq('id', poId);
-      if (poErr) throw poErr;
+      const newPoStatus = (isFinal || newTotal >= selectedPO!.quantity)
+        ? 'FULLY_RECEIVED'
+        : 'PARTIAL_RECEIVED';
 
-      // 5. Activity log
-      const { error: logErr } = await supabase.from('activity_log').insert({
-        project_id: project!.id,
-        user_id: profile!.id,
-        type: 'terima',
-        label: `${selectedPO!.material_name} ${qtyActual} ${selectedPO!.unit} diterima (${isFinal ? 'Final' : 'Parsial'})`,
-        flag: gateResult?.flag ?? 'OK',
+      // Atomic: receipt + line + photos + PO status update + activity_log in ONE transaction (migration 045).
+      const { data: receiptId, error: rcptErr } = await supabase.rpc('submit_receipt', {
+        p_po_id: poId,
+        p_project_id: project!.id,
+        p_received_by: profile!.id,
+        p_vehicle_ref: vehicleRef ? sanitizeText(vehicleRef) : null,
+        p_gate3_flag: gateResult?.flag ?? 'OK',
+        p_gate3_details: gateResult,
+        p_notes: notes ? sanitizeText(notes) : null,
+        p_line_material_name: selectedPO!.material_name,
+        p_line_quantity: parseFloat(qtyActual),
+        p_line_unit: selectedPO!.unit,
+        p_photos: photoRecords,
+        p_new_po_status: newPoStatus,
+        p_activity_label: `${selectedPO!.material_name} ${qtyActual} ${selectedPO!.unit} diterima (${isFinal ? 'Final' : 'Parsial'})`,
       });
-      if (logErr) throw logErr;
+      if (rcptErr || !receiptId) throw rcptErr || new Error('Receipt insert failed');
 
       resetForm();
       await loadReceiptHistory(poId);
