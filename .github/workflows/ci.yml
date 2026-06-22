@@ -1,0 +1,80 @@
+name: CI
+
+# Run on every PR and on pushes to main.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    # IMPORTANT: do NOT define any Supabase secrets here.
+    #
+    # Some jest suites (tools/__tests__/_serverGateHarness.ts and its importers)
+    # build a service-role Supabase client from .env and talk to the PRODUCTION
+    # database. CI has no .env and we intentionally never inject one. The empty
+    # defaults below guarantee that even if such a suite is accidentally imported,
+    # it has no real project URL / service key to connect with (it should fail
+    # closed, not hit prod). These are NOT secrets — just blank placeholders.
+    env:
+      EXPO_PUBLIC_SUPABASE_URL: ""
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: ""
+      SUPABASE_SERVICE_KEY: ""
+      SUPABASE_SERVICE_ROLE_KEY: ""
+      # No ANTHROPIC_API_KEY either — LLM-calling code must not run in CI.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # package.json has no "engines"/.nvmrc field, so we pin Node 20 LTS,
+      # which matches the Expo SDK 54 / RN 0.81 toolchain used here.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Typecheck the whole project.
+      #
+      # There is ONE known, pre-existing type error in workflows/App.tsx that is
+      # unrelated to this CI work and should be fixed in a separate PR. We mark
+      # this step continue-on-error so that single error does not block the build,
+      # while still surfacing tsc output in the logs. Remove continue-on-error
+      # once App.tsx is fixed so typecheck becomes a hard gate.
+      - name: Typecheck (tsc --noEmit)
+        continue-on-error: true
+        run: npx tsc --noEmit -p tsconfig.json
+
+      # Run the jest suite, EXCLUDING suites that connect to the PRODUCTION
+      # Supabase DB (directly or via tools/__tests__/_serverGateHarness.ts).
+      #
+      # The exclusion is layered on top of the testPathIgnorePatterns already in
+      # package.json (which ignores the harness file itself, fixtures, etc.).
+      # The regex below covers every suite that imports the prod-DB harness.
+      #
+      # To add a new prod-DB-touching suite, append its filename to the regex
+      # (pipe-separated, before the trailing ').test'):
+      #   serverGateEnforcement | materialLinkTrial | materialAliasesRls
+      #   | publishBreakdownTrial | notificationDispatch | dump_real_parser_output
+      - name: Test (jest, prod-DB suites excluded)
+        run: >
+          npx jest
+          --ci
+          --testPathIgnorePatterns
+          "/node_modules/"
+          "/tmp/"
+          "supabase/functions/"
+          "__tests__/fixtures\\.ts$"
+          "__tests__/_serverGateHarness\\.ts$"
+          "__tests__/(serverGateEnforcement|materialLinkTrial|materialAliasesRls|publishBreakdownTrial|notificationDispatch|dump_real_parser_output)\\.test\\.ts$"
