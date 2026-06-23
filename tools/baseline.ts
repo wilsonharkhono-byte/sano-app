@@ -364,6 +364,7 @@ export function needsReview(confidence: number): boolean {
 
 import { type ParsedWorkbook } from './excelParser';
 import { parseBoqV2 } from './boqParserV2';
+import { detectBoqSheetOptionFromBuffer } from './boqParserV2/multiSheetScanner';
 import { publishBaselineV2 } from './publishBaselineV2';
 import type { ImportAnomaly } from './types';
 
@@ -410,7 +411,13 @@ export async function parseAndStageWorkbook(
       // empty ArrayBuffer, which made v2 silently parse nothing. Resolve
       // the path the same way v1 would (read local file into memory).
       const v2Buffer = await resolveFileInput(fileInput);
-      const v2Result = await parseBoqV2(v2Buffer);
+      // Default ingest is single-sheet `RAB (A)` (unchanged). Add-on rule: a
+      // multi-building workbook whose materials span `RAB (B)`…`RAB (E)`
+      // (e.g. Nusa Golf) is detected from its sheet-tagged breakdown sheets and
+      // parsed across all RAB sheets, so its materials aren't lost. See
+      // detectBoqSheetOption.
+      const boqSheet = detectBoqSheetOptionFromBuffer(v2Buffer);
+      const v2Result = await parseBoqV2(v2Buffer, { boqSheet });
       // Insert v2 staging rows with the new fields populated.
       const inserts = v2Result.stagingRows.map(r => ({
         session_id: sessionId,
