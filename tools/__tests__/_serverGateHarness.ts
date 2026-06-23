@@ -2,7 +2,32 @@
  * Integration test harness for server-side Gate 1 enforcement.
  * Loads .env, builds a service-role Supabase client, exposes fixture builders.
  *
- * IMPORTANT: This client BYPASSES RLS. Run only against test/staging projects.
+ * IMPORTANT: This client BYPASSES RLS and performs real mutations
+ * (insert/update/delete + auth user create/delete). Treat it as dangerous.
+ *
+ * SAFE-BY-DEFAULT CONTRACT (read before using this harness):
+ *
+ *   1. `harnessAvailable` — boolean, true only when both SUPABASE_URL and
+ *      SUPABASE_SERVICE_KEY are present. Importing this module NEVER throws,
+ *      even when keys are missing, so suites can gate cleanly:
+ *
+ *          import { harnessAvailable, ... } from './_serverGateHarness';
+ *          (harnessAvailable ? describe : describe.skip)('server gate', () => { ... });
+ *
+ *      Touching `adminClient` (or any fixture builder that uses it) when
+ *      `harnessAvailable` is false throws a descriptive error AT USE TIME.
+ *
+ *   2. `ALLOW_PROD_DB_TESTS` env knob — because this harness mutates whatever
+ *      database SUPABASE_URL points at (commonly the SAME project the app
+ *      deploys to via EXPO_PUBLIC_SUPABASE_URL), mutations are REFUSED by
+ *      default. To actually run against the configured database you must set
+ *      `ALLOW_PROD_DB_TESTS=1` (or `true`) explicitly. This is a conservative,
+ *      opt-in guard: we cannot reliably detect "prod" from the URL string, so
+ *      we fail closed and require the operator to acknowledge the risk. Point
+ *      SUPABASE_URL at a disposable test/staging project before enabling.
+ *
+ *      The guard fires AT USE TIME (first `adminClient` access), not at import,
+ *      so a plain import or a skipped suite never trips it.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,15 +52,73 @@ loadEnvFile(path.join(__dirname, '../../.env'));
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? '';
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY ?? '';
 
-if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  throw new Error(
-    'Missing SUPABASE_URL or SUPABASE_SERVICE_KEY for integration tests. ' +
-    'Add both to .env before running serverGateEnforcement tests.',
-  );
+/**
+ * True only when both the URL and service key are present. Suites MUST gate on
+ * this (e.g. `(harnessAvailable ? describe : describe.skip)(...)`); otherwise
+ * any access to `adminClient` throws. Importing this module never throws.
+ */
+export const harnessAvailable: boolean = Boolean(SUPABASE_URL && SUPABASE_SERVICE_KEY);
+
+/**
+ * Opt-in guard. We can't reliably know the prod URL string, so we fail closed:
+ * mutations are refused unless ALLOW_PROD_DB_TESTS is explicitly truthy. Set it
+ * only after pointing SUPABASE_URL at a disposable test/staging project.
+ */
+const ALLOW_PROD_DB_TESTS = /^(1|true|yes)$/i.test(process.env.ALLOW_PROD_DB_TESTS ?? '');
+
+/**
+ * Single flag for suites to gate on. True only when keys are present AND the
+ * operator opted in — i.e. exactly when `adminClient` use won't throw. Gate
+ * every prod-DB suite with `(prodDbTestsEnabled ? describe : describe.skip)(...)`
+ * so they skip cleanly by default instead of erroring on the use-time guard.
+ */
+export const prodDbTestsEnabled: boolean = harnessAvailable && ALLOW_PROD_DB_TESTS;
+
+let _adminClient: SupabaseClient | null = null;
+
+/**
+ * Lazily builds (and caches) the service-role client. Throws a descriptive
+ * error AT USE TIME — never at import — when keys are missing or when the
+ * prod-safety knob hasn't been set. This is what every fixture builder below
+ * reads instead of a module-level constant.
+ */
+function getAdminClient(): SupabaseClient {
+  if (!harnessAvailable) {
+    throw new Error(
+      'serverGateHarness: SUPABASE_URL / SUPABASE_SERVICE_KEY missing. ' +
+        'Add both to .env, and gate suites on `harnessAvailable` so they ' +
+        'describe.skip instead of erroring when keys are absent.',
+    );
+  }
+  if (!ALLOW_PROD_DB_TESTS) {
+    throw new Error(
+      'serverGateHarness: refusing to run mutations against ' +
+        `"${SUPABASE_URL}". This harness BYPASSES RLS and mutates real data ` +
+        '(it defaults to EXPO_PUBLIC_SUPABASE_URL — the same project the app ' +
+        'deploys to). Set ALLOW_PROD_DB_TESTS=1 to opt in, and point ' +
+        'SUPABASE_URL at a disposable test/staging project first.',
+    );
+  }
+  if (!_adminClient) {
+    _adminClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+  }
+  return _adminClient;
 }
 
-export const adminClient: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-  auth: { autoRefreshToken: false, persistSession: false },
+/**
+ * Service-role client, exposed as a Proxy so existing call sites keep using
+ * `adminClient.from(...)` unchanged. Resolving any property triggers the lazy,
+ * guarded build above — so a bare import is safe, but real use enforces both
+ * `harnessAvailable` and the ALLOW_PROD_DB_TESTS guard.
+ */
+export const adminClient: SupabaseClient = new Proxy({} as SupabaseClient, {
+  get(_target, prop, receiver) {
+    const client = getAdminClient();
+    const value = Reflect.get(client as object, prop, receiver);
+    return typeof value === 'function' ? value.bind(client) : value;
+  },
 });
 
 const TEST_PREFIX = '__SGE_TEST__';

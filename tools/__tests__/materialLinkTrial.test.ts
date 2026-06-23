@@ -12,8 +12,11 @@
  * Seeds a throwaway test project (TEST_ prefix) and cleans it up afterward.
  */
 import {
-  adminClient, createTestProject, createTestBoqItem, cleanupTestData, type TestProject,
+  adminClient, createTestProject, createTestBoqItem, cleanupTestData, prodDbTestsEnabled, type TestProject,
 } from './_serverGateHarness';
+
+// Prod-DB integration suite — skips by default; opt in via ALLOW_PROD_DB_TESTS=1.
+const itDb = prodDbTestsEnabled ? it : it.skip;
 
 const norm = (s: string | null | undefined) =>
   (s ?? '').toLowerCase().replace(/[()@\-/\\'"]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -52,6 +55,7 @@ const resolutionLog: Array<{ name: string; materialId: string | null }> = [];
 jest.setTimeout(60000);
 
 beforeAll(async () => {
+  if (!prodDbTestsEnabled) return;
   // 1. Load the LIVE catalog + aliases (exactly what resolveCatalogId reads).
   const { data: catalog } = await adminClient.from('material_catalog').select('id, code, name');
   const { data: aliases } = await adminClient.from('material_aliases').select('alias, material_id');
@@ -103,9 +107,9 @@ beforeAll(async () => {
   }
 });
 
-afterAll(async () => { await cleanupTestData(); });
+afterAll(async () => { if (!prodDbTestsEnabled) return; await cleanupTestData(); });
 
-it('OUTCOME 1 — the parser/publish understands the materials (they resolve to the catalog)', () => {
+itDb('OUTCOME 1 — the parser/publish understands the materials (they resolve to the catalog)', () => {
   const deduped = [...new Map(resolutionLog.map(r => [r.name, r.materialId])).entries()];
   const unresolved = deduped.filter(([, id]) => !id).map(([n]) => n);
   // Log a readable table so the run is self-documenting.
@@ -116,7 +120,7 @@ it('OUTCOME 1 — the parser/publish understands the materials (they resolve to 
   expect(unresolved).toEqual([]); // every foundation material links
 });
 
-it('OUTCOME 2 — supervisor can order the right material into the right work-group (real envelope, not "no baseline")', async () => {
+itDb('OUTCOME 2 — supervisor can order the right material into the right work-group (real envelope, not "no baseline")', async () => {
   const { data, error } = await adminClient.rpc('get_workgroup_envelope', {
     p_project_id: project.id,
     p_material_id: rebarD13Id,
@@ -132,7 +136,7 @@ it('OUTCOME 2 — supervisor can order the right material into the right work-gr
   expect(env.total_planned).toBeCloseTo(expected, 1);
 });
 
-it('OUTCOME 3 — the Material Balance shows ACTUAL materials (real catalog names + planned > 0)', async () => {
+itDb('OUTCOME 3 — the Material Balance shows ACTUAL materials (real catalog names + planned > 0)', async () => {
   const { data } = await adminClient
     .from('project_material_master_lines')
     .select('planned_quantity, material_catalog(name)')

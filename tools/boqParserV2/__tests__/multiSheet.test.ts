@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { resolveBoqSheets } from '../multiSheetScanner';
+import { resolveBoqSheets, detectBoqSheetOption, detectBoqSheetOptionFromBuffer } from '../multiSheetScanner';
 import { parseBoqV2 } from '..';
 import { buildFixtureBuffer } from './fixtures';
 
@@ -54,6 +54,48 @@ describe('resolveBoqSheets', () => {
     ]);
     const wb = XLSX.read(buf, { cellFormula: true });
     expect(resolveBoqSheets(wb, 'auto')).toEqual(['RAB (B)']);
+  });
+});
+
+describe('detectBoqSheetOption (additive multi-building rule)', () => {
+  // Single-building workbooks keep the unchanged `RAB (A)` default.
+  it('defaults to RAB (A) when there are no breakdown sheets', () => {
+    expect(detectBoqSheetOption(['RAB (A)', 'Analisa', 'Material'])).toBe('RAB (A)');
+  });
+
+  it('keeps RAB (A) when breakdowns are untagged (single building)', () => {
+    expect(
+      detectBoqSheetOption(['RAB (A)', 'Breakdown IV.A.2.7', 'Breakdown IV.A.2.8']),
+    ).toBe('RAB (A)');
+  });
+
+  it('keeps RAB (A) when breakdowns are tagged only to (A)', () => {
+    expect(detectBoqSheetOption(['RAB (A)', 'Breakdown (A) I.1'])).toBe('RAB (A)');
+  });
+
+  // Multi-building workbooks (e.g. Nusa Golf) whose materials live in RAB (B)…(E)
+  // must parse all sheets, or the single-sheet ingest misses every material.
+  it('switches to auto when a breakdown is tagged to a non-A sheet', () => {
+    expect(
+      detectBoqSheetOption([
+        'RAB (A)', 'RAB (B)', 'RAB (C)',
+        'Breakdown (B) II.A.1.1', 'Breakdown (C) III.1',
+      ]),
+    ).toBe('auto');
+  });
+
+  it('detects from a workbook buffer', async () => {
+    const buf = await buildFixtureBuffer([
+      { name: 'RAB (A)', cells: [{ address: 'B7', value: 'URAIAN PEKERJAAN' }] },
+      { name: 'RAB (B)', cells: [{ address: 'B7', value: 'URAIAN PEKERJAAN' }] },
+      { name: 'Breakdown (B) II.A.1.1', cells: [{ address: 'A1', value: 'No' }] },
+    ]);
+    expect(detectBoqSheetOptionFromBuffer(buf)).toBe('auto');
+
+    const single = await buildFixtureBuffer([
+      { name: 'RAB (A)', cells: [{ address: 'B7', value: 'URAIAN PEKERJAAN' }] },
+    ]);
+    expect(detectBoqSheetOptionFromBuffer(single)).toBe('RAB (A)');
   });
 });
 

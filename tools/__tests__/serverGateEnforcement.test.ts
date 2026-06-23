@@ -8,7 +8,12 @@ import {
   publishTestAhsVersion,
   submitRequest,
   readState,
+  prodDbTestsEnabled,
 } from './_serverGateHarness';
+
+// Prod-DB integration suite — skips by default; opt in via ALLOW_PROD_DB_TESTS=1
+// with SUPABASE_URL pointed at a disposable project (see harness).
+const describeDb = prodDbTestsEnabled ? describe : describe.skip;
 
 // Each fixture build does ~10 round trips to remote Supabase; the default 5s
 // jest timeout isn't enough for integration tests that exercise triggers.
@@ -21,7 +26,7 @@ afterAll(async () => {
   await cleanupTestData();
 });
 
-describe('server gate enforcement — harness smoke', () => {
+describeDb('server gate enforcement — harness smoke', () => {
   it('connects to Supabase with service role and creates a project', async () => {
     const project = await createTestProject();
     expect(project.id).toMatch(/^[0-9a-f-]{36}$/);
@@ -36,7 +41,7 @@ describe('server gate enforcement — harness smoke', () => {
   });
 });
 
-describe('server gate enforcement — Tier 2', () => {
+describeDb('server gate enforcement — Tier 2', () => {
   it('client lies about flag → server overwrites with CRITICAL when over envelope', async () => {
     const project = await createTestProject();
     const material = await createTestMaterial({ tier: 2, unit: 'kg' });
@@ -95,7 +100,7 @@ describe('server gate enforcement — Tier 2', () => {
   });
 });
 
-describe('server gate enforcement — Tier 3', () => {
+describeDb('server gate enforcement — Tier 3', () => {
   it('Tier 3 spend > Rp 5jt → WARNING, no auto-hold', async () => {
     const project = await createTestProject();
     const material = await createTestMaterial({ tier: 3, unit: 'pcs' });
@@ -157,7 +162,7 @@ describe('server gate enforcement — Tier 3', () => {
   });
 });
 
-describe('server gate enforcement — Tier 1', () => {
+describeDb('server gate enforcement — Tier 1', () => {
   it('Tier 1 within BoQ remaining → OK after allocation insert', async () => {
     const project = await createTestProject();
     const material = await createTestMaterial({ tier: 1, unit: 'kg' });
@@ -302,7 +307,7 @@ describe('server gate enforcement — Tier 1', () => {
   });
 });
 
-describe('server gate enforcement — reviewer status preservation', () => {
+describeDb('server gate enforcement — reviewer status preservation', () => {
   it('header in APPROVED status survives line UPDATE (flag updates, status stays)', async () => {
     const project = await createTestProject();
     const material = await createTestMaterial({ tier: 2, unit: 'kg' });
@@ -375,7 +380,7 @@ describe('server gate enforcement — reviewer status preservation', () => {
   });
 });
 
-describe('server gate enforcement — edge cases', () => {
+describeDb('server gate enforcement — edge cases', () => {
   it('UPDATE line quantity recomputes flag and re-aggregates header', async () => {
     const project = await createTestProject();
     const material = await createTestMaterial({ tier: 2, unit: 'kg' });

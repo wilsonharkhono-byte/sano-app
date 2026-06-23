@@ -21,26 +21,28 @@ All DEFINER, granted to `authenticated`, took a user-supplied `contract_id` with
 `assert_contract_access()` (office-role OR project-assignment; raises, not a fake 0)
 and wires it into all three. **Action:** apply 042 to Supabase.
 
-### C2 — Tests mutate the LIVE prod DB with RLS bypassed ☐
-`tools/__tests__/_serverGateHarness.ts` builds a service-role client from `.env`
-against the same `EXPO_PUBLIC_SUPABASE_URL` used in prod, and **throws at import**
-when keys are missing instead of skipping. 5 suites do real insert/update/delete;
-cleanup is best-effort `afterAll`. Any dev running `npm test` with a normal `.env`
-writes to prod. **Fix:** dedicated staging project; assert URL ≠ prod before any
-mutation; `describe.skip` when test-env vars unset; add a standalone purge script.
+### C2 — Tests mutate the LIVE prod DB with RLS bypassed ☑ (code) / ☐ (staging)
+`tools/__tests__/_serverGateHarness.ts` built a service-role client from `.env`
+against the prod URL and **threw at import** when keys were missing. **Done:**
+harness no longer throws at import (lazy `adminClient` Proxy + `harnessAvailable`);
+mutations are refused at use-time unless `ALLOW_PROD_DB_TESTS=1` is explicitly set;
+a single `prodDbTestsEnabled` flag gates all 5 suites (they now **skip cleanly** —
+verified: 30 skipped, 0 prod writes). **Still open:** stand up a disposable
+staging Supabase project and point `SUPABASE_URL` there so the suites can actually
+run in CI; add a standalone prefix-purge script (cleanup is still `afterAll`-only).
 
 ---
 
 ## 🟠 High
 
-### H1 — Swallowed Supabase write errors in money/provenance paths ☐
+### H1 — Swallowed Supabase write errors in money/provenance paths ☑ (per-write) / ☐ (atomicity)
 Failed writes flow on silently. Worst offenders:
 - [Gate2Screen.tsx](../../../workflows/screens/Gate2Screen.tsx) PO creation — 7 unchecked writes → half-committed POs.
 - [TerimaScreen.tsx](../../../workflows/screens/TerimaScreen.tsx) receipts — PO status can desync from goods received.
 - [audit.ts](../../../tools/audit.ts) — the audit trail itself can silently drop events.
 - ~34 `const { data } = await supabase…` reads drop `error`, masking RLS failures as empty results.
 
-**Fix:** a `{ data, error }` helper that throws; check `error` on every write; wrap multi-write PO flow in one RPC/transaction.
+**Done:** every flagged write in `audit.ts`, `Gate2Screen.tsx`, `TerimaScreen.tsx`, `ProgresScreen.tsx` now captures `{ error }` and surfaces it (toast / re-throw) instead of continuing silently. **Atomicity ☑ (code) / ☐ (verify+apply):** migration `045_transactional_po_and_receipt.sql` adds two SECURITY INVOKER plpgsql functions — `create_purchase_order` and `submit_receipt` — that do the full multi-write in one transaction; `Gate2Screen`/`TerimaScreen` now call them via `supabase.rpc`. All written columns verified against the schema (incl. `scope_tag` from 025, `gate3_*` from 002); logic is a 1:1 translation of the prior inserts; 643 tests green. **NOT yet verifiable here** (no DB) — must apply 045 to Supabase and smoke-test PO creation + a receipt on a real project **before merging** (the screens hard-depend on the RPCs).
 
 ### H2 — Dead v1 code path (~2,500+ lines) ☐
 UI hardcodes `parserVersion='v2'` ([BaselineScreen.tsx:221](../../../workflows/screens/BaselineScreen.tsx)),
@@ -59,12 +61,12 @@ Git LFS/external. (Untracking is low-risk; history rewrite is optional/separate.
 
 ## 🟡 Medium
 
-- **M1 — UI reimplements envelope/gate math.** [PermintaanScreen.tsx:117-249](../../../workflows/screens/PermintaanScreen.tsx) has its own Tier-2 allocation instead of calling [envelopes.ts](../../../tools/envelopes.ts). Two copies = the "double-count on re-publish" bug class. → Route the screen to the tools functions. ☐
-- **M2 — `ahs_lines` dual-column trap still loaded.** v2 writes `coefficient`, leaves `usage_rate=0`; readers fall back today, but a new reader using `usage_rate` alone silently gets 0. → Have v2 also write `usage_rate = coefficient`, or drop the column. ☐
-- **M3 — Migration drift risk.** Functions redefined across migrations (`get_workgroup_envelope` 039→041, `approve_opname` 3×) with manual apply + no checksum ledger; no CI runs tests. → Adopt `supabase db push`/ledger; add a CI job (prod-DB suites excluded). ☐
-- **M4 — 6 app-read tables never had RLS enabled.** `approval_tasks`, `audit_cases`, `anomaly_events`, `material_receipts`, `vendor_scorecards`, `performance_scores` (002). → Enable RLS + project-scoped policies. ☐
-- **M5 — `xlsx@0.18.5` is the known-vulnerable SheetJS npm build** + `exceljs` also bundled (two XLSX libs). → Consolidate on one; move off the vulnerable build. ☐
-- **M6 — No tests on `derivation.ts` or `baseline.ts`;** the ±1 Rp reconciliation integration tests `describe.skip` on a clean checkout (fixtures gitignored). → Add derivation unit tests; commit one small fixture or fail loudly in CI. ☐
+- **M1 — UI reimplements envelope/gate math.** ☑ investigated → **finding reversed.** The screen's inline functions (`buildTier2Result`/`buildTier2Allocations`/`buildWorkGroupAllocations`) are the *safe* copies: they do remainder-rounding so allocations sum exactly to the requested qty, and use this screen's Indonesian flag/message set. The "canonical" [envelopes.ts](../../../tools/envelopes.ts) `checkTier2Envelope`/`allocateTier2Order` are the **drift-prone** ones (independent per-row rounding = the double-count pattern; different 50–80% threshold band) **and are not called by any non-test code**. Routing the screen to them would *introduce* the bug — so no change was made. **Real action (separate, behavior-reviewed):** either delete the unused canonical fns or backport the screen's remainder-rounding into them. ⚠️
+- **M2 — `ahs_lines` dual-column trap.** ☑ publishBaselineV2 now writes `usage_rate = coefficient` (same value) so the columns can't disagree. **Note:** existing rows are unchanged — a re-publish backfills them; consider a one-off `UPDATE ahs_lines SET usage_rate = coefficient WHERE usage_rate = 0`.
+- **M3 — Migration drift risk / no CI.** ☑ (CI) added `.github/workflows/ci.yml` — runs typecheck + jest (prod-DB suites excluded) on PR/push. ☐ (drift) still adopt `supabase db push`/checksum ledger for migration apply order.
+- **M4 — 6 app-read tables never had RLS enabled.** ⧗ migration `043_enable_rls_unprotected_tables.sql` written — enables RLS + project-scoped + office policies on all 7 (direct `project_id` for 6; `milestone_revisions` via `milestone_id→milestones.project_id`). **Needs:** review the `milestone_revisions` linkage + manual apply (hard cutover — confirm app reads run in a project-assigned/office context).
+- **M5 — `xlsx@0.18.5` vulnerable SheetJS** + `exceljs` also bundled. ☐ deferred (needs import audit; risk of breaking the parser).
+- **M6 — No tests on `derivation.ts`.** ☑ added `tools/__tests__/derivation.test.ts` (10 tests, supabase mocked, no DB): coefficient-over-usage_rate, material_spec fallback, line_type filter, aggregation, received/on_site, tier fallbacks. ☐ `baseline.ts` still untested; the ±1 Rp integration tests still `describe.skip` without committed fixtures.
 
 ---
 

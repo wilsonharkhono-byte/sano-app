@@ -360,22 +360,11 @@ export function needsReview(confidence: number): boolean {
   return confidence < REVIEW_THRESHOLD;
 }
 
-function normalizeMaterialKey(value?: string | null): string {
-  return (value ?? '').trim().toLowerCase();
-}
-
 // ─── Excel Parse & Stage (Phase 2b) ──────────────────────────────────
 
-import {
-  parseBoqWorkbook,
-  convertToStagingRows,
-  reconcileMaterials,
-  applyBoqGrouping,
-  type ParsedWorkbook,
-  type CatalogEntry,
-} from './excelParser';
-import { applyAIBoqGrouping } from './ai-assist';
+import { type ParsedWorkbook } from './excelParser';
 import { parseBoqV2 } from './boqParserV2';
+import { detectBoqSheetOptionFromBuffer } from './boqParserV2/multiSheetScanner';
 import { publishBaselineV2 } from './publishBaselineV2';
 import type { ImportAnomaly } from './types';
 
@@ -422,7 +411,13 @@ export async function parseAndStageWorkbook(
       // empty ArrayBuffer, which made v2 silently parse nothing. Resolve
       // the path the same way v1 would (read local file into memory).
       const v2Buffer = await resolveFileInput(fileInput);
-      const v2Result = await parseBoqV2(v2Buffer);
+      // Default ingest is single-sheet `RAB (A)` (unchanged). Add-on rule: a
+      // multi-building workbook whose materials span `RAB (B)`…`RAB (E)`
+      // (e.g. Nusa Golf) is detected from its sheet-tagged breakdown sheets and
+      // parsed across all RAB sheets, so its materials aren't lost. See
+      // detectBoqSheetOption.
+      const boqSheet = detectBoqSheetOptionFromBuffer(v2Buffer);
+      const v2Result = await parseBoqV2(v2Buffer, { boqSheet });
       // Insert v2 staging rows with the new fields populated.
       const inserts = v2Result.stagingRows.map(r => ({
         session_id: sessionId,
@@ -487,120 +482,13 @@ export async function parseAndStageWorkbook(
       return { success: true };
     }
 
-    // 1. Parse the workbook
-    const parsed = parseBoqWorkbook(fileInput, fileName);
-
-    // 1b. AI-driven BoQ grouping (consolidates granular items into broader categories)
-    try {
-      await applyAIBoqGrouping(parsed);
-    } catch {
-      // If AI grouping fails entirely, apply keyword fallback
-      applyBoqGrouping(parsed);
-    }
-
-    // 2. Load material catalog for reconciliation
-    const { data: catalogData, error: catalogError } = await supabase
-      .from('material_catalog')
-      .select('id, code, name, category, tier, unit');
-    if (catalogError) {
-      throw new Error(`Gagal membaca material catalog: ${catalogError.message}`);
-    }
-
-    const catalog: CatalogEntry[] = (catalogData ?? []).map(m => ({
-      code: m.code ?? '',
-      name: m.name,
-      category: m.category ?? '',
-      tier: m.tier as 1 | 2 | 3,
-      unit: m.unit,
-      aliases: [],
-    }));
-
-    // Load aliases
-    const { data: aliasData, error: aliasError } = await supabase
-      .from('material_aliases')
-      .select('alias, material_id, material_catalog!inner(code)');
-    if (aliasError) {
-      throw new Error(`Gagal membaca material aliases: ${aliasError.message}`);
-    }
-    const aliasMap = new Map<string, string>();
-    for (const a of aliasData ?? []) {
-      const code = (a as unknown as { material_catalog?: { code: string } }).material_catalog?.code;
-      if (code) aliasMap.set(a.alias.toLowerCase().trim(), code);
-    }
-
-    // 3. Reconcile materials
-    const { resolved, unresolved } = reconcileMaterials(
-      parsed.materials,
-      catalog,
-      aliasMap,
-    );
-    parsed.materials = [...resolved, ...unresolved];
-
-    // Collapse all unresolved materials into a single summary anomaly.
-    // Each unresolved row already got a deterministic AUTO-* code from
-    // autoMaterialCode(), so publish will succeed without per-row action.
-    // We still surface the list so the estimator can sanity-check new
-    // catalog entries in one click instead of 50+.
-    if (unresolved.length > 0) {
-      const preview = unresolved.slice(0, 5).map(m => m.name).join(', ');
-      const more = unresolved.length > 5 ? `, +${unresolved.length - 5} more` : '';
-      parsed.anomalies.push({
-        type: 'unresolved_material',
-        severity: 'WARNING',
-        sourceSheet: 'Material',
-        sourceRow: unresolved[0].rowNumber,
-        description: `${unresolved.length} materi baru akan ditambahkan ke katalog dengan kode otomatis saat publish: ${preview}${more}`,
-        expectedValue: 'Known material codes',
-        actualValue: `${unresolved.length} new materials`,
-        context: {
-          count: unresolved.length,
-          materials: unresolved.map(m => ({
-            name: m.name,
-            code: m.resolvedCode,
-            unit: m.unit,
-            unitPrice: m.unitPrice,
-            rowNumber: m.rowNumber,
-          })),
-        },
-      });
-    }
-
-    // 4. Convert to staging rows
-    const stagingRows = convertToStagingRows(parsed);
-
-    // 5. Insert staging rows
-    await updateImportStatus(sessionId, 'STAGING');
-    const insertedCount = await insertStagingRows(sessionId, stagingRows);
-
-    // 6. Insert anomalies
-    if (parsed.anomalies.length > 0) {
-      const anomalyRecords = parsed.anomalies.map(a => ({
-        session_id: sessionId,
-        anomaly_type: a.type,
-        severity: a.severity,
-        source_sheet: a.sourceSheet,
-        source_row: a.sourceRow,
-        description: a.description,
-        expected_value: a.expectedValue,
-        actual_value: a.actualValue,
-        context: a.context,
-        resolution: AnomalyResolution.PENDING,
-      }));
-
-      const { error: anomalyError } = await supabase.from('import_anomalies').insert(anomalyRecords);
-      if (anomalyError) {
-        throw new Error(`Gagal menyimpan anomali parser: ${anomalyError.message}`);
-      }
-    }
-
-    // 7. Update session to REVIEW
-    await updateImportStatus(sessionId, 'REVIEW');
-
+    // Legacy v1 import path removed. All current uploads are tagged
+    // parser_version='v2' (see createImportSession default). A non-v2 session
+    // can only be abandoned legacy data, so fail loudly instead of running the
+    // deleted v1 parse+stage path.
     return {
-      success: true,
-      parsed,
-      stagingRowCount: insertedCount,
-      anomalyCount: parsed.anomalies.length,
+      success: false,
+      error: 'Legacy v1 import path removed — re-upload with the current (v2) parser.',
     };
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -677,198 +565,12 @@ export async function publishBaseline(
       return result;
     }
 
-    // 1. Get all approved staging rows
-    const rows = await getStagingRows(sessionId);
-    const approved = rows.filter(r =>
-      r.review_status === BaselineReviewStatus.APPROVED
-      || r.review_status === BaselineReviewStatus.MODIFIED
-      || (!r.needs_review && r.review_status === BaselineReviewStatus.PENDING)
-    );
-
-    if (approved.length === 0) {
-      return { success: false, error: 'No approved rows to publish' };
-    }
-
-    const boqRows = approved.filter(r => r.row_type === 'boq');
-    const ahsRows = approved.filter(r => r.row_type === 'ahs');
-    const materialRows = approved.filter(r => r.row_type === 'material');
-    const parsedMaterialRows = materialRows.map(r => r.parsed_data as ParsedMaterialRow);
-    const parsedAhsRows = ahsRows.map(r => r.parsed_data as ParsedAhsRow);
-
-    // 2. Upsert BoQ items (with extended fields from parser)
-    // This allows republishing into a seeded/existing project baseline
-    // without violating the (project_id, code) unique constraint.
-    let boqCount = 0;
-    if (boqRows.length > 0) {
-      const boqRecords = boqRows.map(r => {
-        const p = r.parsed_data as ParsedBoqRow;
-        const raw = r.raw_data as Record<string, unknown>;
-        return {
-          project_id: projectId,
-          code: p.code,
-          label: p.label,
-          unit: p.unit,
-          planned: p.planned,
-          parent_code: (raw.parentCode as string) ?? null,
-          chapter: (raw.chapter as string) ?? null,
-          sort_order: (raw.sortOrder as number) ?? 0,
-          element_code: (raw.elementCode as string) ?? null,
-          composite_factors: raw.compositeFactors ?? null,
-          cost_breakdown: raw.costBreakdown ?? null,
-          client_unit_price: (raw.clientUnitPrice as number) ?? null,
-          internal_unit_price: (raw.internalUnitPrice as number) ?? null,
-        };
-      });
-
-      const { error: boqErr } = await supabase
-        .from('boq_items')
-        .upsert(boqRecords, { onConflict: 'project_id,code' });
-      if (boqErr) return { success: false, error: `BoQ upsert failed: ${boqErr.message}` };
-      boqCount = boqRecords.length;
-    }
-
-    // 3. Insert materials
-    let materialCount = 0;
-    if (parsedMaterialRows.length > 0) {
-      const missingCodes = parsedMaterialRows.filter(p => !p.code?.trim());
-      if (missingCodes.length > 0) {
-        return { success: false, error: 'Material master import requires Kode Material on every material row' };
-      }
-
-      const matRecords = parsedMaterialRows.map(p => {
-        const supplierUnit = p.supplier_unit?.trim() || p.unit;
-        return {
-          code: p.code.trim().toUpperCase(),
-          name: p.name,
-          category: p.category,
-          tier: p.tier,
-          unit: p.unit,
-          supplier_unit: supplierUnit,
-        };
-      });
-
-      const { error: matErr } = await supabase
-        .from('material_catalog')
-        .upsert(matRecords, { onConflict: 'code' });
-      if (matErr) return { success: false, error: `Material insert failed: ${matErr.message}` };
-      materialCount = matRecords.length;
-    }
-
-    const { data: materialCatalog, error: materialLookupErr } = await supabase
-      .from('material_catalog')
-      .select('id, code, name, category, tier, unit, supplier_unit');
-
-    if (materialLookupErr) {
-      return { success: false, error: `Material lookup failed: ${materialLookupErr.message}` };
-    }
-
-    const materialByCode = new Map(
-      (materialCatalog ?? [])
-        .filter(m => m.code)
-        .map(m => [normalizeMaterialKey(m.code), m]),
-    );
-    const materialByName = new Map(
-      (materialCatalog ?? []).map(m => [normalizeMaterialKey(m.name), m]),
-    );
-
-    // 4. Create AHS version and lines
-    let ahsCount = 0;
-    if (parsedAhsRows.length > 0) {
-      const { data: latestAhsVersion, error: latestAhsVersionErr } = await supabase
-        .from('ahs_versions')
-        .select('version')
-        .eq('project_id', projectId)
-        .order('version', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (latestAhsVersionErr) {
-        return { success: false, error: `AHS version lookup failed: ${latestAhsVersionErr.message}` };
-      }
-
-      const nextAhsVersion = (latestAhsVersion?.version ?? 0) + 1;
-
-      // Create AHS version
-      const { data: ahsVersion, error: ahsVerErr } = await supabase
-        .from('ahs_versions')
-        .insert({ project_id: projectId, version: nextAhsVersion })
-        .select()
-        .single();
-
-      if (ahsVerErr || !ahsVersion) {
-        return { success: false, error: `AHS version creation failed: ${ahsVerErr?.message}` };
-      }
-
-      // Resolve BoQ IDs by code
-      const { data: projectBoqs } = await supabase
-        .from('boq_items')
-        .select('id, code')
-        .eq('project_id', projectId);
-
-      const boqCodeMap = new Map((projectBoqs ?? []).map(b => [b.code, b.id]));
-      const unresolvedMaterials: string[] = [];
-
-      // Also get raw_data for extended AHS fields
-      const ahsRawDataMap = new Map(
-        ahsRows.map(r => [r.row_number, r.raw_data as Record<string, unknown>]),
-      );
-
-      const ahsRecords = parsedAhsRows
-        .map((p, idx) => {
-          const boqItemId = boqCodeMap.get(p.boq_code);
-          if (!boqItemId) return null;
-
-          const raw = ahsRawDataMap.get(ahsRows[idx]?.row_number) ?? {};
-          const lineType = (raw.lineType as string) ?? 'material';
-
-          // For labor/equipment lines, material_id is null
-          let materialId: string | null = null;
-          if (lineType === 'material') {
-            const resolvedMaterial =
-              (p.material_code ? materialByCode.get(normalizeMaterialKey(p.material_code)) : null) ??
-              materialByName.get(normalizeMaterialKey(p.material_name));
-            if (!resolvedMaterial) {
-              unresolvedMaterials.push(`${p.boq_code}: ${p.material_code ?? p.material_name}`);
-              return null;
-            }
-            materialId = resolvedMaterial.id;
-          }
-
-          return {
-            ahs_version_id: ahsVersion.id,
-            boq_item_id: boqItemId,
-            material_id: materialId,
-            material_spec: p.material_spec,
-            tier: p.tier,
-            usage_rate: p.usage_rate,
-            unit: p.unit,
-            waste_factor: p.waste_factor,
-            line_type: lineType,
-            coefficient: (raw.coefficient as number) ?? p.usage_rate,
-            unit_price: (raw.unitPrice as number) ?? 0,
-            description: lineType !== 'material' ? p.material_name : null,
-            ahs_block_title: (raw.ahsBlockTitle as string) ?? null,
-            source_row: (raw.sourceRow as number) ?? null,
-          };
-        })
-        .filter(Boolean);
-
-      if (unresolvedMaterials.length > 0) {
-        console.warn(`AHS: ${unresolvedMaterials.length} unresolved material references (non-blocking, flagged for review):`,
-          unresolvedMaterials.slice(0, 5));
-      }
-
-      if (ahsRecords.length > 0) {
-        const { error: ahsLineErr } = await supabase.from('ahs_lines').insert(ahsRecords);
-        if (ahsLineErr) return { success: false, error: `AHS lines insert failed: ${ahsLineErr.message}` };
-        ahsCount = ahsRecords.length;
-      }
-    }
-
-    // 5. Mark session as published
-    await updateImportStatus(sessionId, 'PUBLISHED');
-
-    return { success: true, boqCount, ahsCount, materialCount };
+    // Legacy v1 publish path removed. Only v2 sessions are publishable now;
+    // a non-v2 session is abandoned legacy data, so fail loudly.
+    return {
+      success: false,
+      error: 'Legacy v1 publish path removed — re-upload with the current (v2) parser.',
+    };
   } catch (err: unknown) {
     return { success: false, error: err instanceof Error ? err.message : String(err) };
   }

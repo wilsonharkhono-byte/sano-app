@@ -9,9 +9,12 @@
  * "no baseline", Material Balance shows breakdown names). This test fails until
  * migration 040 grants authenticated SELECT on material_aliases.
  */
-import { adminClient } from './_serverGateHarness';
+import { adminClient, prodDbTestsEnabled } from './_serverGateHarness';
 import { createClient } from '@supabase/supabase-js';
 import fs from 'node:fs';
+
+// Prod-DB integration suite — skips by default; opt in via ALLOW_PROD_DB_TESTS=1.
+const itDb = prodDbTestsEnabled ? it : it.skip;
 
 for (const line of fs.readFileSync('.env', 'utf8').split('\n')) {
   const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
@@ -22,7 +25,7 @@ const ANON = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 
 jest.setTimeout(40000);
 
-it('an authenticated user can read material_aliases with the catalog-code embed (publish needs this)', async () => {
+itDb('an authenticated user can read material_aliases with the catalog-code embed (publish needs this)', async () => {
   const email = `test_aliasrls_${Date.now()}@example.com`;
   const password = `Pw_${Date.now()}_!1`;
   const { data: u, error: createErr } = await adminClient.auth.admin.createUser({

@@ -47,9 +47,14 @@ export interface AuditEvent {
 
 // ── Write Audit Event ────────────────────────────────────────────────
 
-export async function writeAuditEvent(event: AuditEvent): Promise<void> {
+export interface AuditWriteResult {
+  ok: boolean;
+  error?: string;
+}
+
+export async function writeAuditEvent(event: AuditEvent): Promise<AuditWriteResult> {
   try {
-    await supabase.from('anomaly_events').insert({
+    const { error: anomalyError } = await supabase.from('anomaly_events').insert({
       project_id: event.project_id,
       user_id: event.user_id,
       event_type: event.event_type,
@@ -61,19 +66,41 @@ export async function writeAuditEvent(event: AuditEvent): Promise<void> {
       created_at: new Date().toISOString(),
     });
 
+    if (anomalyError) {
+      // Audit trail must not drop events silently. Surface, but don't throw —
+      // audit must not block main flow; the caller inspects the result instead.
+      console.error(
+        `Audit write failed (anomaly_events, event_type=${event.event_type}, entity_id=${event.entity_id}):`,
+        anomalyError.message,
+      );
+      return { ok: false, error: anomalyError.message };
+    }
+
     // Also log to activity_log for in-app visibility
     if (event.severity === 'HIGH' || event.severity === 'CRITICAL') {
-      await supabase.from('activity_log').insert({
+      const { error: activityError } = await supabase.from('activity_log').insert({
         project_id: event.project_id,
         user_id: event.user_id,
         type: 'permintaan', // closest available type
         label: `[AUDIT] ${event.event_type}: ${event.description.slice(0, 80)}`,
         flag: event.severity,
       });
+
+      if (activityError) {
+        console.error(
+          `Audit write failed (activity_log, event_type=${event.event_type}, entity_id=${event.entity_id}):`,
+          activityError.message,
+        );
+        return { ok: false, error: activityError.message };
+      }
     }
+
+    return { ok: true };
   } catch (err: unknown) {
-    console.warn('Audit write failed:', err instanceof Error ? err.message : err);
-    // Never throw — audit must not block main flow
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('Audit write failed:', message);
+    // Never throw — audit must not block main flow; report via result instead.
+    return { ok: false, error: message };
   }
 }
 
@@ -90,8 +117,8 @@ export interface OverrideRecord {
   override_reason: string;
 }
 
-export async function logOverride(record: OverrideRecord): Promise<void> {
-  await writeAuditEvent({
+export async function logOverride(record: OverrideRecord): Promise<AuditWriteResult> {
+  return writeAuditEvent({
     project_id: record.project_id,
     user_id: record.user_id,
     event_type: record.gate === '2' ? 'gate2_override' : 'approval_override',
@@ -122,7 +149,7 @@ export async function openAuditCase(
 
   if (existing) return; // already open case for this entity
 
-  await supabase.from('audit_cases').insert({
+  const { error } = await supabase.from('audit_cases').insert({
     project_id: projectId,
     trigger_type: triggerType,
     entity_type: entityType,
@@ -131,6 +158,15 @@ export async function openAuditCase(
     notes,
     created_at: new Date().toISOString(),
   });
+
+  if (error) {
+    // Audit cases are part of the compliance trail — do not drop silently.
+    console.error(
+      `Audit case write failed (audit_cases, trigger_type=${triggerType}, entity_id=${entityId}):`,
+      error.message,
+    );
+    throw new Error(`Failed to open audit case for ${entityType} ${entityId}: ${error.message}`);
+  }
 }
 
 // ── Anomaly Detection ─────────────────────────────────────────────────

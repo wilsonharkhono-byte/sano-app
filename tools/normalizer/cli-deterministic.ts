@@ -439,7 +439,7 @@ function buildRolledBreakdown(args: {
   if (cols.pembesianKgPerM3 > 0 && cols.pembesianBlendedPricePerKg > 0) {
     pushLump('material',
       `PEMBESIAN (Material) — ratio ${cols.pembesianKgPerM3.toFixed(2)} kg/m³ (rolled)`,
-      'Pembesian U24 & U40 (lump — no per-diameter detail)',
+      'Besi beton (campuran diameter — sumber tanpa rincian per-Ø)',
       cols.pembesianKgPerM3, 'kg', cols.pembesianBlendedPricePerKg,
       'per kg finished pembesian (blended: raw besi + decking + bendrat)',
     );
@@ -928,39 +928,34 @@ function buildBreakdownForRow(args: {
   // F-side and (when X > 0) H-side sub-items separately. F-side cycle
   // = Jumlah_F / Harga_F (forms reuse); H-side cycle = Jumlah_H / Harga_H
   // (Perancah / scaffolding reuse — may differ from F-side).
-  let bekisting: BekistingTemplate | undefined;
+  // Forms (F-side) — matched by the W column.
   if (cols.bekistingHargaPerM2 > 0) {
+    let bekisting: BekistingTemplate | undefined;
     for (const b of bekistings) {
       if (Math.abs(b.hargaPerM2_F - cols.bekistingHargaPerM2) <= componentCostMatchTol) {
         bekisting = b;
         break;
       }
     }
-    if (bekisting && cols.bekistingRatioM2PerM3 > 0) {
+    if (!bekisting) {
+      return { reason: `No bekisting block matches W=${cols.bekistingHargaPerM2}` };
+    }
+    if (cols.bekistingRatioM2PerM3 > 0) {
       const elementHint = bekisting.blockTitle.replace(/.*Bekisting\s+/i, '').toUpperCase();
       const factor_F = cols.bekistingRatioM2PerM3 / bekisting.cycleFactor_F;
-      const factor_H = cols.bekistingRatioM2PerM3 / bekisting.cycleFactor_H;
       const groupTag_F = `BEKISTING ${elementHint} (Material) — ratio ${cols.bekistingRatioM2PerM3} m²/m³`;
-      const groupTag_H = `BEKISTING ${elementHint} PERALATAN (Material) — Perancah, ratio ${cols.bekistingRatioM2PerM3} m²/m³`;
       for (const s of bekisting.subItems) {
-        if (!s.includedInTotal) continue;
-        // H-side sub-items only contribute when the row's X column is
-        // populated. If X = 0 but the template's H-side has sub-items,
-        // skip them (this row used a different layout — e.g., AAL-5
-        // workbooks that put Perancah on a separate BoQ line).
-        if (s.side === 'H' && cols.bekistingPeralatanPerM2 <= 0) continue;
-        const factor = s.side === 'H' ? factor_H : factor_F;
-        const cycle = s.side === 'H' ? bekisting.cycleFactor_H : bekisting.cycleFactor_F;
-        const qtyPerBoqUnit = s.qtyPerNative * factor;
+        if (!s.includedInTotal || s.side !== 'F') continue;
+        const qtyPerBoqUnit = s.qtyPerNative * factor_F;
         const costPerBoqUnit = qtyPerBoqUnit * s.unitPrice;
         components.push({
           group: 'material',
-          componentGroup: s.side === 'H' ? groupTag_H : groupTag_F,
+          componentGroup: groupTag_F,
           materialName: s.materialName,
           specNote: null,
           qtyPerNativeUnit: s.qtyPerNative,
           nativeUnit: s.nativeUnit,
-          nativeBasis: `per m² form (cycle ${cycle.toFixed(2)})`,
+          nativeBasis: `per m² form (cycle ${bekisting.cycleFactor_F.toFixed(2)})`,
           unitPrice: s.unitPrice,
           qtyPerBoqUnit,
           costPerBoqUnit,
@@ -968,9 +963,52 @@ function buildBreakdownForRow(args: {
           totalCost: costPerBoqUnit * row.planned,
         });
       }
-    } else if (!bekisting) {
-      return { reason: `No bekisting block matches W=${cols.bekistingHargaPerM2}` };
     }
+  }
+
+  // Perancah / scaffolding (H-side) — matched INDEPENDENTLY by the X column.
+  // Some setups source the Perancah from a different Analisa block than the
+  // forms: I4-29 Sloof uses Batako forms (W) but Balok-style Perancah
+  // (X → Bekisting Balok H-side). For same-block setups (AAL-5/Sonny/PD3
+  // Balok/Plat, where X cites the very block matched on W) this resolves back
+  // to that same block, so the output is unchanged. X = 0 ⇒ no Perancah here
+  // (it sits on its own BoQ line, as in AAL-5).
+  if (cols.bekistingPeralatanPerM2 > 0 && cols.bekistingRatioM2PerM3 > 0) {
+    let perancah: BekistingTemplate | undefined;
+    for (const b of bekistings) {
+      if (b.hargaPerM2_H > 0 &&
+          Math.abs(b.hargaPerM2_H - cols.bekistingPeralatanPerM2) <= componentCostMatchTol) {
+        perancah = b;
+        break;
+      }
+    }
+    if (perancah) {
+      const hHint = perancah.blockTitle.replace(/.*Bekisting\s+/i, '').toUpperCase();
+      const factor_H = cols.bekistingRatioM2PerM3 / perancah.cycleFactor_H;
+      const groupTag_H = `BEKISTING ${hHint} PERALATAN (Material) — Perancah, ratio ${cols.bekistingRatioM2PerM3} m²/m³`;
+      for (const s of perancah.subItems) {
+        if (!s.includedInTotal || s.side !== 'H') continue;
+        const qtyPerBoqUnit = s.qtyPerNative * factor_H;
+        const costPerBoqUnit = qtyPerBoqUnit * s.unitPrice;
+        components.push({
+          group: 'material',
+          componentGroup: groupTag_H,
+          materialName: s.materialName,
+          specNote: null,
+          qtyPerNativeUnit: s.qtyPerNative,
+          nativeUnit: s.nativeUnit,
+          nativeBasis: `per m² Perancah (cycle ${perancah.cycleFactor_H.toFixed(2)})`,
+          unitPrice: s.unitPrice,
+          qtyPerBoqUnit,
+          costPerBoqUnit,
+          totalQty: qtyPerBoqUnit * row.planned,
+          totalCost: costPerBoqUnit * row.planned,
+        });
+      }
+    }
+    // If no Perancah block matches X, the X×V cost is unaccounted and the
+    // itemized total will miss reconciliation → the row falls back to rolled.
+    // Never emit a fake-reconciled breakdown.
   }
 
   // 3. Pembesian — per-diameter + waste + decking + bendrat when the
@@ -1071,7 +1109,7 @@ function buildBreakdownForRow(args: {
     components.push({
       group: 'material',
       componentGroup: `PEMBESIAN (Material) — ratio ${aggregateKgPerM3.toFixed(2)} kg/m³ (lump)`,
-      materialName: 'Pembesian U24 & U40 (lump — no per-diameter detail)',
+      materialName: 'Besi beton (campuran diameter — sumber tanpa rincian per-Ø)',
       specNote: `pembesian lump: ${reason}`,
       qtyPerNativeUnit: aggregateKgPerM3,
       nativeUnit: 'kg',

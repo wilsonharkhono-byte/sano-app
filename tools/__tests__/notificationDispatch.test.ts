@@ -8,7 +8,11 @@ import {
   createTestMaterial,
   buildTier2Envelope,
   submitRequest,
+  prodDbTestsEnabled,
 } from './_serverGateHarness';
+
+// Prod-DB integration suite — skips by default; opt in via ALLOW_PROD_DB_TESTS=1.
+const describeDb = prodDbTestsEnabled ? describe : describe.skip;
 
 jest.setTimeout(30_000);
 
@@ -16,7 +20,7 @@ afterAll(async () => {
   await cleanupTestData();
 });
 
-describe('notification dispatch — harness smoke', () => {
+describeDb('notification dispatch — harness smoke', () => {
   it('countNotifications returns 0 for a fresh project', async () => {
     const project = await createTestProject();
     const count = await countNotifications({ projectId: project.id });
@@ -36,7 +40,7 @@ describe('notification dispatch — harness smoke', () => {
   });
 });
 
-describe('notification dispatch — header status', () => {
+describeDb('notification dispatch — header status', () => {
   it('AUTO_HOLD triggered by Claim 1 enqueues for all project members', async () => {
     const project = await createTestProject();
     const material = await createTestMaterial({ tier: 2, unit: 'kg' });
@@ -204,7 +208,7 @@ describe('notification dispatch — header status', () => {
   });
 });
 
-describe('notification dispatch — PO and receipt events', () => {
+describeDb('notification dispatch — PO and receipt events', () => {
   it('PO_READY enqueues for all project members on purchase_orders insert', async () => {
     const project = await createTestProject();
     await assignToProject(project.id, project.ownerProfileId);
