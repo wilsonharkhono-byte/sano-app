@@ -1,121 +1,122 @@
 -- 044_project_fk_cascade.sql
 --
--- Bug: deleting a project fails with
+-- Bug: deleting a project fails with a foreign-key violation, e.g.
 --   "update or delete on table \"projects\" violates foreign key constraint
 --    \"report_exports_project_id_fkey\" on table \"report_exports\""
+-- and, one layer deeper, once the project_id FKs cascade:
+--   "update or delete on table \"boq_items\" violates foreign key constraint
+--    \"project_material_master_lines_boq_item_id_fkey\" ..."
 --
 -- Root cause: deleteProject() (tools/projectManagement.ts) hard-deletes a
--- project and RELIES on every FK referencing projects(id) having
--- ON DELETE CASCADE so the delete propagates to all descendants. That holds
--- for the tables in 001/002 that were authored with the cascade clause, but a
--- cluster of "operational" tables (material_receipts in 001; receipts plus the
--- audit/approval/anomaly/scoring/digest/export tables in 002) were created with
--- a bare `REFERENCES projects(id)` and NO ON DELETE action. Any project that
--- accumulated a row in any of these tables can no longer be deleted —
--- report_exports is simply the first constraint Postgres happens to check.
+-- project and RELIES on every FK in the project's data tree having an
+-- ON DELETE action so the delete propagates to all descendants. Most tables
+-- were authored that way, but a cluster (material_receipts in 001; receipts,
+-- the audit/approval/anomaly/scoring/digest/export tables, and several
+-- boq_items children in 002) were created with a bare `REFERENCES <parent>`
+-- and NO ON DELETE action. Each such FK is a wall the cascade hits — and they
+-- exist at multiple levels (projects -> boq_items -> ...), so fixing one level
+-- just surfaces the next. report_exports is merely the first wall Postgres
+-- happens to check.
 --
--- This is the same neglected cluster that 043 just brought under RLS.
+-- Fix (once, completely): compute the FULL set of tables a project delete
+-- cascades into, then repair EVERY foreign key that points into that set but
+-- lacks a delete action, choosing per FK:
+--   * ON DELETE CASCADE  when all referencing columns are NOT NULL — the child
+--     row cannot exist without its parent, so it is project-owned data and must
+--     go with it (matches receipts/opname/envelope tables authored correctly).
+--   * ON DELETE SET NULL when the FK is nullable — an optional back-pointer
+--     (e.g. defects.boq_item_id, vo_entries.boq_item_id, and the special case
+--     mtn_requests.destination_project_id, which points at a DIFFERENT project);
+--     the row survives with the pointer cleared (matches site_changes /
+--     harian_cost_allocations, authored correctly).
 --
--- Fix: convert each of those FKs to ON DELETE CASCADE so a project delete
--- propagates, matching every sibling table and deleteProject()'s contract.
+-- The deletion subtree only grows through CASCADE edges (SET NULL does NOT
+-- delete children), so the closure is computed and re-checked in a loop until
+-- no blocker remains — fixing a NOT NULL FK to CASCADE may pull a deeper table
+-- into the subtree and reveal the next layer, which the next pass handles.
 --
--- Special case: mtn_requests.destination_project_id is a NULLABLE pointer to a
--- DIFFERENT project (a material-transfer destination); the request itself
--- belongs to another project via mtn_requests.project_id. Cascading a delete
--- there would wrongly destroy another project's transfer request, so this one
--- gets ON DELETE SET NULL instead — deleting the destination project just
--- clears the pointer.
+-- Scope safety: only FKs whose REFERENCED table is reachable from projects via
+-- cascade are touched. Shared/catalog tables (materials, profiles, …) are not
+-- reachable that way, so their FKs are never altered. A NOT NULL FK into the
+-- subtree is by definition project-owned, so cascading it is correct.
 --
--- This migration is IDEMPOTENT and SAFE to re-run:
---   * The existing FK constraint is discovered from pg_constraint by the
---     (table, referenced=projects, column) shape rather than by a hardcoded
---     name, then dropped and recreated with the desired ON DELETE action.
---   * to_regclass() guards skip any table absent in a given environment.
---   * Re-running simply drops the (already-cascading) constraint and re-adds
---     an identical one.
-
--- ============================================================================
--- 1. project_id FKs that must CASCADE on project delete
--- ============================================================================
+-- IDEMPOTENT: a re-run finds every FK already CASCADE/SET NULL and changes
+-- nothing. Each change is reported via RAISE NOTICE so the SQL-editor output is
+-- a complete audit log of exactly what was altered.
 
 DO $$
 DECLARE
-  t TEXT;
-  conname_found TEXT;
-  cascade_tbls TEXT[] := ARRAY[
-    'material_receipts',   -- 001:393
-    'receipts',            -- 002:241
-    'approval_tasks',      -- 002:411
-    'audit_cases',         -- 002:423
-    'anomaly_events',      -- 002:434
-    'performance_scores',  -- 002:445
-    'vendor_scorecards',   -- 002:458
-    'weekly_digests',      -- 002:470
-    'report_exports'       -- 002:479  (the constraint in the reported error)
-  ];
+  fk            RECORD;
+  changed       INTEGER;
+  passes        INTEGER := 0;
+  all_notnull   BOOLEAN;
+  action        TEXT;
+  ref_cols      TEXT;
+  refd_cols     TEXT;
 BEGIN
-  FOREACH t IN ARRAY cascade_tbls LOOP
-    IF to_regclass('public.' || t) IS NOT NULL THEN
-      -- Find the FK on this table's project_id column that points at projects.
-      SELECT con.conname INTO conname_found
-      FROM pg_constraint con
-      WHERE con.conrelid = ('public.' || t)::regclass
-        AND con.contype = 'f'
-        AND con.confrelid = 'public.projects'::regclass
-        AND con.conkey = ARRAY[(
-          SELECT a.attnum FROM pg_attribute a
-          WHERE a.attrelid = ('public.' || t)::regclass
-            AND a.attname = 'project_id'
-            AND NOT a.attisdropped
-        )];
+  LOOP
+    changed := 0;
+    passes  := passes + 1;
 
-      IF conname_found IS NOT NULL THEN
-        EXECUTE format('ALTER TABLE public.%I DROP CONSTRAINT %I', t, conname_found);
-      END IF;
+    FOR fk IN
+      WITH RECURSIVE subtree(reloid) AS (
+        SELECT 'public.projects'::regclass::oid
+        UNION
+        SELECT c.conrelid
+        FROM pg_constraint c
+        JOIN subtree s ON c.confrelid = s.reloid
+        WHERE c.contype = 'f'
+          AND c.confdeltype = 'c'      -- only CASCADE edges delete children
+      )
+      SELECT c.oid,
+             c.conname,
+             c.conrelid,
+             c.confrelid,
+             c.conkey,
+             c.confkey,
+             c.conrelid::regclass  AS reltbl,
+             c.confrelid::regclass AS reftbl
+      FROM pg_constraint c
+      JOIN subtree s ON c.confrelid = s.reloid
+      WHERE c.contype = 'f'
+        AND c.confdeltype IN ('a', 'r')   -- NO ACTION / RESTRICT = a blocker
+    LOOP
+      -- All referencing columns NOT NULL?  -> CASCADE, else SET NULL.
+      SELECT bool_and(a.attnotnull) INTO all_notnull
+      FROM pg_attribute a
+      WHERE a.attrelid = fk.conrelid
+        AND a.attnum = ANY (fk.conkey);
 
+      action := CASE WHEN all_notnull THEN 'CASCADE' ELSE 'SET NULL' END;
+
+      -- Reconstruct the (referencing) and (referenced) column lists in order.
+      SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY u.ord)
+        INTO ref_cols
+      FROM unnest(fk.conkey) WITH ORDINALITY AS u(attnum, ord)
+      JOIN pg_attribute a ON a.attrelid = fk.conrelid AND a.attnum = u.attnum;
+
+      SELECT string_agg(quote_ident(a.attname), ', ' ORDER BY u.ord)
+        INTO refd_cols
+      FROM unnest(fk.confkey) WITH ORDINALITY AS u(attnum, ord)
+      JOIN pg_attribute a ON a.attrelid = fk.confrelid AND a.attnum = u.attnum;
+
+      EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', fk.reltbl, fk.conname);
       EXECUTE format(
-        'ALTER TABLE public.%I ADD CONSTRAINT %I '
-        || 'FOREIGN KEY (project_id) REFERENCES public.projects(id) ON DELETE CASCADE',
-        t, t || '_project_id_fkey'
+        'ALTER TABLE %s ADD CONSTRAINT %I FOREIGN KEY (%s) REFERENCES %s (%s) ON DELETE %s',
+        fk.reltbl, fk.conname, ref_cols, fk.reftbl, refd_cols, action
       );
+
+      RAISE NOTICE 'cascade-closure: %.% -> %  ON DELETE %',
+        fk.reltbl, fk.conname, fk.reftbl, action;
+      changed := changed + 1;
+    END LOOP;
+
+    EXIT WHEN changed = 0;
+
+    IF passes > 50 THEN
+      RAISE EXCEPTION 'cascade-closure did not converge after % passes', passes;
     END IF;
   END LOOP;
-END $$;
 
--- ============================================================================
--- 2. mtn_requests.destination_project_id — SET NULL (points at another project)
--- ============================================================================
-
-DO $$
-DECLARE
-  conname_found TEXT;
-BEGIN
-  IF to_regclass('public.mtn_requests') IS NOT NULL
-     AND EXISTS (
-       SELECT 1 FROM pg_attribute
-       WHERE attrelid = 'public.mtn_requests'::regclass
-         AND attname = 'destination_project_id'
-         AND NOT attisdropped
-     )
-  THEN
-    SELECT con.conname INTO conname_found
-    FROM pg_constraint con
-    WHERE con.conrelid = 'public.mtn_requests'::regclass
-      AND con.contype = 'f'
-      AND con.confrelid = 'public.projects'::regclass
-      AND con.conkey = ARRAY[(
-        SELECT a.attnum FROM pg_attribute a
-        WHERE a.attrelid = 'public.mtn_requests'::regclass
-          AND a.attname = 'destination_project_id'
-          AND NOT a.attisdropped
-      )];
-
-    IF conname_found IS NOT NULL THEN
-      EXECUTE format('ALTER TABLE public.mtn_requests DROP CONSTRAINT %I', conname_found);
-    END IF;
-
-    ALTER TABLE public.mtn_requests
-      ADD CONSTRAINT mtn_requests_destination_project_id_fkey
-      FOREIGN KEY (destination_project_id) REFERENCES public.projects(id) ON DELETE SET NULL;
-  END IF;
+  RAISE NOTICE 'cascade-closure complete in % pass(es)', passes;
 END $$;
