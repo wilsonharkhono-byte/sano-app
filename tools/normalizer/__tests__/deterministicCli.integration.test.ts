@@ -34,10 +34,15 @@ jest.setTimeout(180_000);
 // are both non-zero and reference a non-structural Analisa block, so neither
 // the zero-cost nor the structural-title branch fired. They now become
 // direct-ref candidates and the direct-ref tier expands the referenced block's
-// jumlah-row lump into itemized Semen / Pasir / Upah lines. This RAISES
-// rolledDirectCount and totalCandidates on every workbook (no existing row
-// changed tier — itemized stays exactly 778, rolled stays 41). All rows still
-// reconcile within ±1 Rp.
+// jumlah-row lump into itemized Semen / Pasir / Upah lines.
+//
+// Update (rebar-formula fallback): I4-29 has 41 structural rows whose label
+// matches no rebar adapter prefix (Dak atap, Pit lift, Overflow). They used to
+// fall through to a rolled breakdown; selectAdapterByRekapFormula now picks the
+// adapter from each row's column-Z REKAP formula, so they become per-diameter
+// itemized (I4-29 itemized 281→322, rolled 41→0; aggregate itemized 778→819,
+// rolled 41→0). The other three workbooks are unchanged. All rows still
+// reconcile within ±1 Rp (max |variance| ~4e-9 Rp).
 describeIf('deterministic CLI — field guide §13 counts (regression gate)', () => {
   it('AAL-5: 159 itemized / 0 rolled / 17 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
     const res = await runDeterministic({ inputPath: FIXTURES.aal5, silent: true });
@@ -59,10 +64,15 @@ describeIf('deterministic CLI — field guide §13 counts (regression gate)', ()
     expect(res.maxAbsVariance).toBeLessThanOrEqual(1);
   });
 
-  it('I4-29: 281 itemized / 41 rolled / 41 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
+  it('I4-29: 322 itemized / 0 rolled / 41 direct-ref / 0 unresolved, |variance| ≤ 1 Rp', async () => {
     const res = await runDeterministic({ inputPath: FIXTURES.i4, silent: true });
-    expect(res.itemizedCount).toBe(281);
-    expect(res.rolledCount).toBe(41);
+    // The rebar-formula fallback (selectAdapterByRekapFormula) now resolves the
+    // 41 oddly-named structural rows (Dak atap, Pit lift, Overflow — whose label
+    // matches no adapter prefix but whose column-Z formula cites a known REKAP
+    // sheet) into full per-diameter itemized breakdowns: itemized 281→322,
+    // rolled 41→0. All still reconcile to ~0 Rp.
+    expect(res.itemizedCount).toBe(322);
+    expect(res.rolledCount).toBe(0);
     expect(res.rolledDirectCount).toBe(41);
     expect(res.unresolvedCount).toBe(0);
     expect(res.totalCandidates).toBe(363);
@@ -90,8 +100,8 @@ describeIf('deterministic CLI — field guide §13 counts (regression gate)', ()
     const rolled       = aal5.rolledCount       + pd3.rolledCount       + i4.rolledCount       + ern.rolledCount;
     const rolledDirect = aal5.rolledDirectCount + pd3.rolledDirectCount + i4.rolledDirectCount + ern.rolledDirectCount;
     const unresolved   = aal5.unresolvedCount   + pd3.unresolvedCount   + i4.unresolvedCount   + ern.unresolvedCount;
-    expect(itemized).toBe(778);
-    expect(rolled).toBe(41);
+    expect(itemized).toBe(819);   // was 778; +41 from the I4-29 rebar-formula fallback
+    expect(rolled).toBe(0);       // was 41; those I4-29 rows are now itemized
     expect(rolledDirect).toBe(100);
     expect(unresolved).toBe(0);
   });

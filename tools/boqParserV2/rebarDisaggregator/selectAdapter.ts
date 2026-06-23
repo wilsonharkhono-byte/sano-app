@@ -26,3 +26,25 @@ export function selectAdapter(
   }
   return null;
 }
+
+/**
+ * Fallback selector for rows whose label matches no adapter prefix (e.g.
+ * "Dak atap garasi", "Pit lift", "Overflow kolam renang" in I4-29) but whose
+ * column-Z formula still cites a known REKAP sheet. We pick the adapter whose
+ * `sheetName` the formula references; the caller then resolves the exact REKAP
+ * row from that same formula, so `typeCode` is unused (returned empty). Returns
+ * null when the formula cites no adapter sheet (e.g. 'Retaining Wall', which has
+ * no per-diameter columns).
+ */
+export function selectAdapterByRekapFormula(
+  zFormula: string | null | undefined,
+): { adapter: RebarAdapter; typeCode: string } | null {
+  if (!zFormula) return null;
+  for (const adapter of ADAPTERS) {
+    const esc = adapter.sheetName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`'?${esc}'?!`, 'i').test(zFormula)) {
+      return { adapter, typeCode: '' };
+    }
+  }
+  return null;
+}
