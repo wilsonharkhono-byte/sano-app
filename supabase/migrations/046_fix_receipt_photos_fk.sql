@@ -33,6 +33,15 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Take the strongest lock on receipt_photos UP FRONT, before touching any
+  -- other table. The later DROP/ADD CONSTRAINT need AccessExclusiveLock on this
+  -- table anyway; acquiring it first (rather than escalating from the DELETE's
+  -- row lock) means concurrent app queries queue behind us instead of forming a
+  -- lock-ordering cycle → no deadlock. Fail fast if the lock can't be had
+  -- quickly (e.g. heavy live traffic) so this can simply be retried.
+  SET LOCAL lock_timeout = '8s';
+  LOCK TABLE public.receipt_photos IN ACCESS EXCLUSIVE MODE;
+
   -- Clear any orphan photos that point at neither a valid receipts row (they
   -- can't satisfy the corrected FK). These are unreachable legacy/test rows.
   DELETE FROM public.receipt_photos rp
