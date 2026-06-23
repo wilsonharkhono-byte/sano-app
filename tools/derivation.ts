@@ -4,6 +4,7 @@
 // source of truth for BoQ progress, PO receipt status, and material balances.
 
 import { supabase } from './supabase';
+import { fetchAllPaged } from './queryHelpers';
 
 function normalizeMaterialKey(value?: string | null): string {
   return (value ?? '').trim().toLowerCase();
@@ -223,15 +224,33 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
   const latestAhsId = latestAhs?.[0]?.id;
   let hasStructuredBaseline = false;
   if (latestAhsId) {
-    const { data: ahsLines } = await supabase
-      .from('ahs_lines')
-      .select('material_id, usage_rate, coefficient, waste_factor, unit, boq_item_id, material_spec, line_type, material_catalog(name)')
-      .eq('ahs_version_id', latestAhsId)
-      // Material Balance is materials only — exclude labor (Upah), equipment
-      // (Sewa) and subcontractor lines, which carry cost not a material balance.
-      .eq('line_type', 'material');
+    // ahs_lines is a per-component table — a large multi-building baseline has
+    // thousands of rows (well past Supabase's default 1000-row cap). An
+    // unpaginated fetch silently truncates, making the balance undercount every
+    // material; page through all rows. Order by id for stable, non-overlapping
+    // pages.
+    const ahsLines = await fetchAllPaged<{
+      material_id: string | null;
+      usage_rate: number | null;
+      coefficient?: number;
+      waste_factor?: number;
+      unit?: string;
+      boq_item_id: string;
+      material_spec?: string;
+      line_type?: string;
+      material_catalog?: { name: string } | null;
+    }>((from, to) =>
+      supabase
+        .from('ahs_lines')
+        .select('material_id, usage_rate, coefficient, waste_factor, unit, boq_item_id, material_spec, line_type, material_catalog(name)')
+        .eq('ahs_version_id', latestAhsId)
+        // Material Balance is materials only — exclude labor (Upah), equipment
+        // (Sewa) and subcontractor lines, which carry cost not a material balance.
+        .eq('line_type', 'material')
+        .order('id', { ascending: true })
+        .range(from, to) as unknown as PromiseLike<{ data: never[] | null; error: { message?: string } | null }>);
 
-    for (const line of ahsLines ?? []) {
+    for (const line of ahsLines) {
       const boqPlanned = boqPlannedMap.get(line.boq_item_id) ?? 0;
       const boqInstalled = derivedInstalledMap.get(line.boq_item_id) ?? 0;
       // The v2 publish writes the per-unit quantity to `coefficient` (waste
@@ -268,12 +287,21 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
 
     const masterId = masterHeader?.[0]?.id;
     if (masterId) {
-      const { data: masterLines } = await supabase
-        .from('project_material_master_lines')
-        .select('material_id, boq_item_id, planned_quantity, unit')
-        .eq('master_id', masterId);
+      // Same 1000-row cap concern as ahs_lines — page through every master line.
+      const masterLines = await fetchAllPaged<{
+        material_id: string | null;
+        boq_item_id: string;
+        planned_quantity: number | null;
+        unit?: string;
+      }>((from, to) =>
+        supabase
+          .from('project_material_master_lines')
+          .select('material_id, boq_item_id, planned_quantity, unit')
+          .eq('master_id', masterId)
+          .order('id', { ascending: true })
+          .range(from, to) as unknown as PromiseLike<{ data: never[] | null; error: { message?: string } | null }>);
 
-      for (const line of masterLines ?? []) {
+      for (const line of masterLines) {
         const boqPlanned = boqPlannedMap.get(line.boq_item_id) ?? 0;
         const boqInstalled = derivedInstalledMap.get(line.boq_item_id) ?? 0;
         const ratio = boqPlanned > 0 ? boqInstalled / boqPlanned : 0;
