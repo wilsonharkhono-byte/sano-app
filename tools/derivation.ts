@@ -5,6 +5,7 @@
 
 import { supabase } from './supabase';
 import { fetchAllPaged } from './queryHelpers';
+import type { FlagLevel, MaterialBudgetStatus } from './types';
 
 function normalizeMaterialKey(value?: string | null): string {
   return (value ?? '').trim().toLowerCase();
@@ -390,4 +391,70 @@ export async function syncBoqInstalledFromDerived(projectId: string): Promise<nu
     }
   }
   return updated;
+}
+
+// ── Control-aware Material Balance ───────────────────────────────────
+// Merges quantity balances with Rupiah budgets into one row per material.
+// control = QTY for tier 1/2, RP for tier 3, NONE for tier 4 / unpriced.
+// flag/burn are driven by the control dimension.
+
+export interface MaterialBalanceRow extends MaterialBalance {
+  tier: 1 | 2 | 3 | 4 | null;
+  control: 'QTY' | 'RP' | 'NONE';
+  benchmark_unit_price: number | null;
+  budget_total_rupiah: number | null;
+  committed_rupiah: number | null;
+  burn_pct: number | null;     // burn on the CONTROL dimension
+  flag: FlagLevel;
+}
+
+const QTY_WARN = 80, QTY_OVER = 100, RP_WARN = 80, RP_OVER = 100, RP_CRIT = 120;
+
+/**
+ * Merge quantity balances with Rupiah budgets into one row per material.
+ * control = QTY for tier 1/2, RP for tier 3, NONE for tier 4 / unpriced.
+ * flag/burn are driven by the control dimension.
+ */
+export function buildMaterialBalanceRows(
+  balances: MaterialBalance[],
+  budgets: MaterialBudgetStatus[],
+): MaterialBalanceRow[] {
+  const byId = new Map(budgets.filter(b => b.material_id).map(b => [b.material_id, b]));
+  return balances.map((b) => {
+    const bud = b.material_id ? byId.get(b.material_id) ?? null : null;
+    const tier = (bud?.tier ?? null) as MaterialBalanceRow['tier'];
+    const control: MaterialBalanceRow['control'] =
+      tier === 3 ? 'RP' : tier === 4 ? 'NONE' : tier === 1 || tier === 2 ? 'QTY' : 'QTY';
+
+    let burn: number | null = null;
+    let flag: FlagLevel = 'OK';
+    if (control === 'RP' && bud?.budget_total_rupiah) {
+      burn = bud.burn_pct;
+      flag = (burn ?? 0) > RP_CRIT ? 'CRITICAL' : (burn ?? 0) > RP_OVER ? 'HIGH' : (burn ?? 0) > RP_WARN ? 'WARNING' : 'OK';
+    } else if (control === 'QTY' && b.planned > 0) {
+      burn = Math.round((b.received / b.planned) * 1000) / 10;
+      flag = burn > QTY_OVER ? 'HIGH' : burn > QTY_WARN ? 'WARNING' : 'OK';
+    } else if (control === 'NONE') {
+      burn = null; flag = 'OK';
+    }
+
+    return {
+      ...b,
+      tier,
+      control,
+      benchmark_unit_price: bud?.benchmark_unit_price ?? null,
+      budget_total_rupiah: bud?.budget_total_rupiah ?? null,
+      committed_rupiah: bud?.committed_rupiah ?? null,
+      burn_pct: burn,
+      flag,
+    };
+  });
+}
+
+export async function deriveMaterialBalanceWithControl(projectId: string): Promise<MaterialBalanceRow[]> {
+  const [balances, { data: budgetRows }] = await Promise.all([
+    deriveMaterialBalance(projectId),
+    supabase.from('v_material_budget_status').select('*').eq('project_id', projectId),
+  ]);
+  return buildMaterialBalanceRows(balances, (budgetRows ?? []) as MaterialBudgetStatus[]);
 }

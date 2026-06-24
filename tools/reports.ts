@@ -4,7 +4,7 @@
 
 import { supabase } from './supabase';
 import { getPurchaseOrderDisplayNumber } from './purchaseOrders';
-import { deriveBoqInstalledTotals, derivePoReceivedTotals, deriveMaterialBalance } from './derivation';
+import { deriveBoqInstalledTotals, derivePoReceivedTotals, deriveMaterialBalance, deriveMaterialBalanceWithControl } from './derivation';
 import { resolvePhotoUrl } from './storage';
 import {
   CHANGE_TYPE_LABELS,
@@ -507,7 +507,7 @@ export async function generateProgressSummary(projectId: string): Promise<Report
 // ── Material Balance ────────────────────────────────────────────────
 
 export async function generateMaterialBalanceReport(projectId: string): Promise<ReportPayload> {
-  const balances = await deriveMaterialBalance(projectId);
+  const balances = await deriveMaterialBalanceWithControl(projectId);
 
   return {
     type: 'material_balance',
@@ -518,6 +518,7 @@ export async function generateMaterialBalanceReport(projectId: string): Promise<
       total_materials: balances.length,
       over_received: balances.filter(b => b.received > b.planned).length,
       under_received: balances.filter(b => b.received < b.planned * 0.8).length,
+      over_budget: balances.filter(b => b.control === 'RP' && (b.burn_pct ?? 0) > 100).length,
       balances,
     },
   };
