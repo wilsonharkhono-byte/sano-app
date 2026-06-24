@@ -428,6 +428,10 @@ export function buildMaterialBalanceRows(
 
     let burn: number | null = null;
     let flag: FlagLevel = 'OK';
+    // NOTE: report RP bands are coarser than the Tier-3 gate (tools/budgetGate.ts):
+    // the gate also has an INFO (>50%) band and evaluates PROSPECTIVE burn (committed +
+    // this order), whereas the report shows CURRENT committed burn with OK/WARNING/HIGH/
+    // CRITICAL only. A material can read OK here yet INFO at the gate — this is intended.
     if (control === 'RP' && bud?.budget_total_rupiah) {
       burn = bud.burn_pct;
       flag = (burn ?? 0) > RP_CRIT ? 'CRITICAL' : (burn ?? 0) > RP_OVER ? 'HIGH' : (burn ?? 0) > RP_WARN ? 'WARNING' : 'OK';
