@@ -18,7 +18,7 @@ export function computeGate1Flag(
   /** Tier 2 envelope status from v_material_envelope_status (if available) */
   materialEnvelope?: MaterialEnvelopeStatus | null,
   /** Tier of the specific material line being checked */
-  materialTier?: 1 | 2 | 3,
+  materialTier?: 1 | 2 | 3 | 4,
   /** Name of the material being requested — used for composition compatibility check */
   requestedMaterialName?: string,
   /**
@@ -96,8 +96,11 @@ export function computeGate1Flag(
       check1a = { flag: 'INFO', check: '1a', msg: `Material Tier 2 — belum ada envelope data. Review manual.` };
     }
   } else if (tier === 3) {
-    // ── Tier 3: spend cap (lightweight check) ─────────────────────
-    check1a = { flag: 'OK', check: '1a', msg: `Tier 3 habis pakai — ${requestedQty} ${item.unit}. Spend cap dicek server-side.` };
+    // ── Tier 3: budget envelope (checked server-side) ──────────────
+    check1a = { flag: 'OK', check: '1a', msg: `Tier 3 habis pakai — ${requestedQty} ${item.unit}. Budget envelope dicek server-side.` };
+  } else if (tier === 4) {
+    // ── Tier 4: untracked consumables — always passes ──────────────
+    check1a = { flag: 'OK', check: '1a', msg: `Tier 4 consumable — tidak dilacak anggaran.` };
   } else {
     // ── Tier 1: per-material remaining when available, else BoQ volume ────
     const useMaterial = tier1MaterialPlanned != null && tier1MaterialPlanned.planned > 0;
