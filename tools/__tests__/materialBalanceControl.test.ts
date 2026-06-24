@@ -45,4 +45,10 @@ describe('buildMaterialBalanceRows', () => {
     expect(row.control).toBe('QTY');
     expect(row.budget_total_rupiah).toBeNull();
   });
+
+  it('tier 3 → RP control, CRITICAL above 120% Rupiah burn', () => {
+    const [row] = buildMaterialBalanceRows([bal({})], [bud({ burn_pct: 125, budget_total_rupiah: 100_000 })]);
+    expect(row.control).toBe('RP');
+    expect(row.flag).toBe('CRITICAL');
+  });
 });

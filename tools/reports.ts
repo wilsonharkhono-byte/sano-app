@@ -4,7 +4,7 @@
 
 import { supabase } from './supabase';
 import { getPurchaseOrderDisplayNumber } from './purchaseOrders';
-import { deriveBoqInstalledTotals, derivePoReceivedTotals, deriveMaterialBalance, deriveMaterialBalanceWithControl } from './derivation';
+import { deriveBoqInstalledTotals, derivePoReceivedTotals, deriveMaterialBalanceWithControl } from './derivation';
 import { resolvePhotoUrl } from './storage';
 import {
   CHANGE_TYPE_LABELS,
