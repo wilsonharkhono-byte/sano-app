@@ -292,8 +292,8 @@ function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
       b.control ?? '—',
       isRp ? Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID') : '—',
       isRp ? Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID') : '—',
-      b.burn_pct == null ? '—' : b.burn_pct.toFixed(0) + '%',
-      b.flag ?? '—',
+      b.control === 'NONE' || b.burn_pct == null ? '—' : b.burn_pct.toFixed(0) + '%',
+      b.control === 'NONE' ? '—' : (b.flag ?? '—'),
     ];
   });
   const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
