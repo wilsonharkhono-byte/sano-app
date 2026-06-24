@@ -100,6 +100,8 @@ BEGIN
         RETURN 'WARNING';  -- placeholder until allocation arrives
       END IF;
 
+      -- Pass v_alloc_id so compute_tier1_flag excludes the current row from
+      -- 'already_ordered' (otherwise we'd double-count the line's own request).
       RETURN compute_tier1_flag(v_alloc_boq, v_alloc_qty, v_alloc_id);
     END;
   END IF;

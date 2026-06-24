@@ -349,7 +349,7 @@ export async function buildTier3Envelope(opts: {
   const { error: pbErr } = await adminClient.from('ahs_price_book').insert({
     project_id: opts.projectId,
     material_id: opts.materialId,
-    material_name: opts.materialId,  // placeholder; view uses material_catalog name
+    material_name: 'Test Material',   // placeholder; view uses material_catalog name
     unit: opts.unit ?? 'pcs',
     unit_price: opts.benchmarkUnitPrice,
     tier: 3,
