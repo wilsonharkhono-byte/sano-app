@@ -54,6 +54,12 @@ describe('evaluateTier3Budget', () => {
     expect(r.flag).toBe('WARNING');
     expect(r.check).toBe('tier3_no_benchmark');
   });
+
+  it('blocks (WARNING) when budget total is zero (planned qty 0) but benchmark exists', () => {
+    const r = evaluateTier3Budget(budget({ budget_total_rupiah: 0 }), 10);
+    expect(r.flag).toBe('WARNING');
+    expect(r.check).toBe('tier3_zero_budget');
+  });
 });
 
 describe('evaluateTier4Untracked', () => {
