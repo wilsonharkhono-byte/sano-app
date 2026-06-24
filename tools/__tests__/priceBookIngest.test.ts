@@ -1,5 +1,6 @@
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
-import { mapPriceBookRows } from '../priceBookIngest';
+import { mapPriceBookRows, ingestPriceBook } from '../priceBookIngest';
+import { supabase } from '../supabase';
 
 describe('mapPriceBookRows', () => {
   it('maps clean rows', () => {
@@ -20,5 +21,14 @@ describe('mapPriceBookRows', () => {
   it('routes rows with an out-of-range tier to unresolved', () => {
     const { unresolved } = mapPriceBookRows([{ material: 'Lakban', unit: 'roll', unit_price: 15000, tier: 9 }]);
     expect(unresolved[0].reason).toMatch(/tier/i);
+  });
+});
+
+describe('ingestPriceBook', () => {
+  it('returns 0 and does not touch supabase for empty input', async () => {
+    (supabase.from as jest.Mock).mockClear();
+    const result = await ingestPriceBook('proj-1', []);
+    expect(result).toBe(0);
+    expect(supabase.from as jest.Mock).not.toHaveBeenCalled();
   });
 });

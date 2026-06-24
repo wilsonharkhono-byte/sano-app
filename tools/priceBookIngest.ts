@@ -33,13 +33,20 @@ export function mapPriceBookRows(
 }
 
 /**
- * Upsert price-book records for a project. material_id resolution against
- * material_catalog (fuzzy) is intentionally left to the catalog-link step that
- * already exists for AHS lines — here we persist by name + project; material_id
- * is backfilled by that linker. Returns count inserted.
+ * Replace the project's AHS price book with these records (delete-then-insert,
+ * scoped to project_id), so re-ingesting a corrected book never appends
+ * duplicates. material_id resolution against material_catalog (fuzzy) is
+ * intentionally left to the catalog-link step that already exists for AHS
+ * lines — here we persist by name + project; material_id is backfilled by
+ * that linker. Returns count inserted.
  */
 export async function ingestPriceBook(projectId: string, records: PriceBookRecord[]): Promise<number> {
   if (records.length === 0) return 0;
+  const { error: deleteError } = await supabase
+    .from('ahs_price_book')
+    .delete()
+    .eq('project_id', projectId);
+  if (deleteError) throw deleteError;
   const { error } = await supabase
     .from('ahs_price_book')
     .insert(records.map(r => ({ project_id: projectId, ...r })));
