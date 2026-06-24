@@ -1,9 +1,9 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Platform } from 'react-native';
-import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import Card from '../components/Card';
+import SelectSheet from '../components/SelectSheet';
 import FlagPanel from '../components/FlagPanel';
 import PhotoGalleryField from '../components/PhotoGalleryField';
 import Badge from '../components/Badge';
@@ -410,24 +410,35 @@ export default function ProgresScreen() {
             <SubHeader title="Tambah Progres" />
             <Card title="Laporan Progres Baru">
               <Text style={styles.label}>Grup Pekerjaan <Text style={styles.req}>*</Text></Text>
-              <View style={styles.pickerWrap}>
-                <Picker selectedValue={groupKey} onValueChange={v => { setGroupKey(v); setBoqId(''); setQty(''); }} style={{ color: COLORS.text }}>
-                  <Picker.Item label="-- Pilih grup pekerjaan --" value="" />
-                  {visibleGroups.map(({ group, openCount }) => (
-                    <Picker.Item key={group.key} label={`${group.label} (${openCount} item)`} value={group.key} />
-                  ))}
-                </Picker>
-              </View>
+              <SelectSheet
+                title="Pilih Grup Pekerjaan"
+                placeholder="-- Pilih grup pekerjaan --"
+                accessibilityLabel="Pilih grup pekerjaan"
+                value={groupKey}
+                onChange={v => { setGroupKey(v); setBoqId(''); setQty(''); }}
+                options={visibleGroups.map(({ group, openCount }) => ({
+                  value: group.key,
+                  label: group.label,
+                  meta: `${openCount} item`,
+                }))}
+              />
 
               <Text style={styles.label}>Item BoQ <Text style={styles.req}>*</Text></Text>
-              <View style={styles.pickerWrap}>
-                <Picker selectedValue={boqId} enabled={!!groupKey} onValueChange={v => { setBoqId(v); setQty(''); }} style={{ color: COLORS.text }}>
-                  <Picker.Item label={groupKey ? '-- Pilih item BoQ --' : '-- Pilih grup dulu --'} value="" />
-                  {groupRows.map(b => (
-                    <Picker.Item key={b.id} label={`${b.code} — ${b.label} (${b.progress}%)`} value={b.id} />
-                  ))}
-                </Picker>
-              </View>
+              <SelectSheet
+                title="Pilih Item BoQ"
+                placeholder={groupKey ? '-- Pilih item BoQ --' : '-- Pilih grup dulu --'}
+                accessibilityLabel="Pilih item BoQ"
+                disabled={!groupKey}
+                value={boqId}
+                onChange={v => { setBoqId(v); setQty(''); }}
+                options={groupRows.map(b => ({
+                  value: b.id,
+                  code: b.code,
+                  label: b.label,
+                  meta: `${b.progress}%`,
+                  metaColor: b.progress === 100 ? COLORS.ok : COLORS.accent,
+                }))}
+              />
               {selectedItem && (
                 <Text style={styles.fieldHint}>{selectedItem.progress}% selesai · {selectedItem.installed.toFixed(2)} / {selectedItem.planned} {selectedItem.unit}</Text>
               )}
@@ -554,7 +565,6 @@ const styles = StyleSheet.create({
   },
   textarea:  { minHeight: 80, textAlignVertical: 'top', paddingTop: SPACE.md - 1 },
   disabled:  { backgroundColor: COLORS.surfaceAlt, color: COLORS.textSec },
-  pickerWrap:{ borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface },
   fieldHint: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs, lineHeight: 17 },
   row2:      { flexDirection: 'row', gap: SPACE.sm },
   autoStatusBox: { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: SPACE.md, backgroundColor: COLORS.surfaceAlt, marginTop: SPACE.sm },
