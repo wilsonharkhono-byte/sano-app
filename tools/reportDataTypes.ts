@@ -27,6 +27,7 @@ export interface MaterialBalanceData {
   total_materials: number;
   over_received: number;
   under_received: number;
+  over_budget?: number;
   balances: Array<{
     material_name?: string;
     name?: string;
@@ -36,6 +37,13 @@ export interface MaterialBalanceData {
     total_received?: number;
     installed?: number;
     on_site?: number;
+    tier?: 1 | 2 | 3 | 4 | null;
+    control?: 'QTY' | 'RP' | 'NONE';
+    benchmark_unit_price?: number | null;
+    budget_total_rupiah?: number | null;
+    committed_rupiah?: number | null;
+    burn_pct?: number | null;
+    flag?: string;
   }>;
 }
 

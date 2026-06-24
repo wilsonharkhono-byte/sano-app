@@ -101,16 +101,25 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <RRow label="Total Material" value={d.total_materials} />
         <RRow label="Over-Received" value={d.over_received} color={COLORS.warning} />
         <RRow label="Under-Received" value={d.under_received} color={COLORS.critical} />
+        <RRow label="Over-Budget" value={d.over_budget ?? 0} color={COLORS.critical} />
         <SLabel>Detail Material</SLabel>
         {(d.balances ?? []).map((b: any, i: number) => (
           <View key={i} style={{ marginBottom: 8, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{b.material_name ?? b.name ?? '—'}</Text>
+            <Text style={{ fontSize: 11, color: COLORS.textSec }}>
+              Tier {b.tier ?? '—'} · {b.control ?? '—'}
+            </Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
               Rencana: {b.planned ?? 0} {b.unit} · Diterima: {b.received ?? b.total_received ?? 0} {b.unit}
             </Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
               Terpasang: {b.installed ?? 0} {b.unit} · Saldo: {b.on_site ?? 0} {b.unit}
             </Text>
+            {b.control === 'RP' && (
+              <Text style={{ fontSize: 12, color: COLORS.textSec }}>
+                Anggaran: Rp {Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID')} · Terpakai: Rp {Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID')} · {b.burn_pct != null ? b.burn_pct.toFixed(0) + '%' : '—'} [{b.flag ?? '—'}]
+              </Text>
+            )}
           </View>
         ))}
         {(d.balances ?? []).length === 0 && (
