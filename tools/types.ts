@@ -684,7 +684,7 @@ export interface MaterialEnvelopeStatus {
   project_id: string;
   material_code: string | null;
   material_name: string;
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   unit: string;
   total_planned: number;
   total_ordered: number;
@@ -693,6 +693,21 @@ export interface MaterialEnvelopeStatus {
   total_installed?: number;
   remaining_to_order: number;
   burn_pct: number;
+  boq_item_count: number;
+}
+
+export interface MaterialBudgetStatus {
+  material_id: string;
+  project_id: string;
+  material_name: string;
+  tier: 1 | 2 | 3 | 4;
+  unit: string;
+  benchmark_unit_price: number | null;   // null = material has no price-book entry
+  total_planned: number;
+  budget_total_rupiah: number | null;
+  committed_rupiah: number;
+  remaining_rupiah: number | null;
+  burn_pct: number | null;
   boq_item_count: number;
 }
 

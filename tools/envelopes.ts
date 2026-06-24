@@ -6,17 +6,21 @@
 //   Tier 2 (bricks, cement, sand): order covers MULTIPLE BoQ items.
 //     Supervisor orders 10,000 bricks → system deducts from an "envelope"
 //     that aggregates all BoQ items using that material.
-//   Tier 3 (nails, oil, consumables): spend cap, no strict quantity tracking.
+//   Tier 3 (paint, adhesives, sealant): Rupiah budget envelope — order × price is
+//     compared against the material's budget; envelope depletes at order time.
+//   Tier 4 (nails, oil, consumables): untracked — never gated, always approved.
 
 import { supabase } from './supabase';
 import { MRStatus } from './constants';
 import type {
   MaterialEnvelopeStatus,
+  MaterialBudgetStatus,
   EnvelopeBoqBreakdown,
   FlagLevel,
   GateResult,
   AhsLine,
 } from './types';
+import { evaluateTier3Budget, evaluateTier4Untracked } from './budgetGate';
 import { summarizeAhsBaselinePrices } from '../workflows/gates/gate2';
 import type { MaterialBaselinePriceSummary } from '../workflows/gates/gate2';
 
@@ -42,11 +46,45 @@ export async function getMaterialEnvelope(
 }
 
 /**
+ * Tier-3 Rupiah budget status for a material (reads v_material_budget_status
+ * via RPC, mirroring getMaterialEnvelope).
+ */
+export async function getMaterialBudget(
+  projectId: string,
+  materialId: string,
+): Promise<MaterialBudgetStatus | null> {
+  const { data, error } = await supabase
+    .rpc('get_material_budget', { p_project_id: projectId, p_material_id: materialId })
+    .single();
+  if (error || !data) return null;
+  // Cast: the RPC result set does not include project_id; re-attach it from the argument.
+  const r = data as Omit<MaterialBudgetStatus, 'project_id'>;
+  return { ...r, project_id: projectId } as MaterialBudgetStatus;
+}
+
+/**
+ * Gate 1 check for Tier-3 materials: order × price vs Rupiah budget envelope.
+ * actualUnitPrice overrides the benchmark for this order when the admin enters one.
+ */
+export async function checkTier3Budget(
+  projectId: string,
+  materialId: string | null,
+  requestedQty: number,
+  actualUnitPrice?: number,
+): Promise<GateResult> {
+  if (!materialId) {
+    return { flag: 'WARNING', check: 'tier3_no_material', msg: 'Tier 3 check requires material_id for budget lookup' };
+  }
+  const budget = await getMaterialBudget(projectId, materialId);
+  return evaluateTier3Budget(budget, requestedQty, actualUnitPrice);
+}
+
+/**
  * Get all material envelopes for a project (Tier 2 overview).
  */
 export async function getProjectEnvelopes(
   projectId: string,
-  tierFilter?: 1 | 2 | 3,
+  tierFilter?: 1 | 2 | 3 | 4,
 ): Promise<MaterialEnvelopeStatus[]> {
   let query = supabase
     .from('v_material_envelope_status')
@@ -259,12 +297,12 @@ export async function checkTier2Envelope(
  *
  *   Tier 1 → check against specific BoQ item planned quantity
  *   Tier 2 → check against aggregated material envelope
- *   Tier 3 → spend cap check
+ *   Tier 3 → Rupiah budget envelope; Tier 4 → untracked
  */
 export async function checkMaterialRequest(
   projectId: string,
   materialId: string | null,
-  materialTier: 1 | 2 | 3,
+  materialTier: 1 | 2 | 3 | 4,
   boqItemId: string,
   requestedQty: number,
   /**
@@ -287,7 +325,9 @@ export async function checkMaterialRequest(
       }
       return checkTier2Envelope(projectId, materialId, requestedQty);
     case 3:
-      return checkTier3SpendCap(projectId, requestedQty, unitPrice);
+      return checkTier3Budget(projectId, materialId, requestedQty, unitPrice);
+    case 4:
+      return evaluateTier4Untracked();
     default:
       return { flag: 'OK', check: 'tier_unknown', msg: 'Unknown material tier' };
   }
@@ -363,42 +403,6 @@ async function checkTier1Direct(
     flag: 'OK',
     check: 'tier1_ok',
     msg: `${requestedQty} / ${remaining.toFixed(1)} ${boqItem.unit} remaining for "${boqItem.label}"`,
-  };
-}
-
-/**
- * Tier 3: simple spend cap check.
- *
- * IMPORTANT: `unitPrice` must be the pre-markup base price (raw material
- * cost). The cap measures actual material spend; markup/profit margin
- * is tracked separately and added at quote/billing time, not here. See
- * `checkMaterialRequest` JSDoc for valid pre-markup sources.
- */
-async function checkTier3SpendCap(
-  projectId: string,
-  requestedQty: number,
-  unitPrice?: number,
-): Promise<GateResult> {
-  const TIER3_PER_REQUEST_CAP = 5_000_000; // Rp 5 juta per request
-
-  if (!unitPrice) {
-    return { flag: 'OK', check: 'tier3_no_price', msg: 'Tier 3 — no price provided, skipping spend cap check' };
-  }
-
-  const totalSpend = requestedQty * unitPrice;
-
-  if (totalSpend > TIER3_PER_REQUEST_CAP) {
-    return {
-      flag: 'WARNING',
-      check: 'tier3_cap',
-      msg: `Tier 3 spend Rp ${totalSpend.toLocaleString('id-ID')} exceeds per-request cap of Rp ${TIER3_PER_REQUEST_CAP.toLocaleString('id-ID')}`,
-    };
-  }
-
-  return {
-    flag: 'OK',
-    check: 'tier3_ok',
-    msg: `Tier 3 spend Rp ${totalSpend.toLocaleString('id-ID')} within cap`,
   };
 }
 

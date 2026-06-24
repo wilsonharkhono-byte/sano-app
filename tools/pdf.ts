@@ -153,25 +153,33 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
     { value: String(d.total_materials ?? 0), label: 'Total Material', color: C.info },
     { value: String(d.over_received ?? 0), label: 'Over-Received', color: C.warning },
     { value: String(d.under_received ?? 0), label: 'Under-Received', color: C.critical },
+    { value: String(d.over_budget ?? 0), label: 'Over-Budget', color: C.critical },
   ]);
 
   sd.sectionTitle('Ringkasan');
   sd.metricRow('Total Material', String(d.total_materials ?? 0));
   sd.metricRow('Over-Received', String(d.over_received ?? 0), { valueColor: C.warning });
   sd.metricRow('Under-Received', String(d.under_received ?? 0), { valueColor: C.critical });
+  sd.metricRow('Over-Budget', String(d.over_budget ?? 0), { valueColor: C.critical });
 
   if ((d.balances ?? []).length > 0) {
     sd.gap(6);
     sd.sectionTitle('Detail Material');
+    // NOTE: "Terpasang" and "On-Site" columns are omitted from the PDF to
+    // make room for the five new budget/control columns while keeping
+    // fractional widths summing to ~1.0. Both columns remain in excel.ts.
     sd.table(
       [
-        { header: 'Material', width: 0.28 },
-        { header: 'Sat.', width: 0.06 },
-        { header: 'Rencana', width: 0.12, align: 'right' },
-        { header: 'Diterima', width: 0.12, align: 'right' },
-        { header: 'Terpasang', width: 0.12, align: 'right' },
-        { header: 'On-Site', width: 0.12, align: 'right' },
-        { header: 'Status', width: 0.18 },
+        { header: 'Material', width: 0.22 },
+        { header: 'Sat.', width: 0.05 },
+        { header: 'Rencana', width: 0.09, align: 'right' },
+        { header: 'Diterima', width: 0.09, align: 'right' },
+        { header: 'Status', width: 0.12 },
+        { header: 'Kontrol', width: 0.07 },
+        { header: 'Anggaran (Rp)', width: 0.13, align: 'right' },
+        { header: 'Terpakai (Rp)', width: 0.12, align: 'right' },
+        { header: 'Burn %', width: 0.06, align: 'right' },
+        { header: 'Flag', width: 0.05 },
       ],
       (d.balances ?? []).map((b) => {
         const received = b.received ?? b.total_received ?? 0;
@@ -179,14 +187,18 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
         const installed = b.installed ?? 0;
         const onSite = b.on_site ?? received - installed;
         const status = onSite < 0 ? 'Defisit' : received < planned * 0.8 ? 'Perlu Pengadaan' : 'Aman';
+        const isRp = b.control === 'RP';
         return [
           b.material_name ?? b.name ?? '—',
           b.unit ?? '—',
           String(planned),
           String(received),
-          String(installed),
-          String(onSite),
           status,
+          b.control ?? '—',
+          isRp ? Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID') : '—',
+          isRp ? Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID') : '—',
+          b.control === 'NONE' || b.burn_pct == null ? '—' : b.burn_pct.toFixed(0) + '%',
+          b.control === 'NONE' ? '—' : (b.flag ?? '—'),
         ];
       }),
     );

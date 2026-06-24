@@ -261,19 +261,25 @@ function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
     ['Total Material', String(d.total_materials)],
     ['Over-Received', String(d.over_received)],
     ['Under-Received', String(d.under_received)],
+    ['Over-Budget', String(d.over_budget ?? 0)],
   ];
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
   wsSummary['!cols'] = colWidths(summaryRows);
   applyHeaderStyle(wsSummary, 0, 2);
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan');
 
-  const header = ['Nama Material', 'Satuan', 'Volume Direncanakan', 'Volume Diterima', 'Volume Terpasang', 'Saldo On-Site', 'Status'];
+  const header = [
+    'Nama Material', 'Satuan', 'Volume Direncanakan', 'Volume Diterima',
+    'Volume Terpasang', 'Saldo On-Site', 'Status',
+    'Tier', 'Kontrol', 'Anggaran (Rp)', 'Terpakai (Rp)', 'Burn %', 'Flag',
+  ];
   const rows: string[][] = (d.balances ?? []).map((b) => {
     const received = b.received ?? b.total_received ?? 0;
     const planned = b.planned ?? 0;
     const installed = b.installed ?? 0;
     const onSite = b.on_site ?? received - installed;
     const status = onSite < 0 ? 'Defisit di Lapangan' : received < planned * 0.8 ? 'Perlu Pengadaan' : 'Aman';
+    const isRp = b.control === 'RP';
     return [
       b.material_name ?? b.name ?? '—',
       b.unit ?? '—',
@@ -282,6 +288,12 @@ function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
       String(installed),
       String(onSite),
       status,
+      b.tier == null ? '—' : String(b.tier),
+      b.control ?? '—',
+      isRp ? Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID') : '—',
+      isRp ? Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID') : '—',
+      b.control === 'NONE' || b.burn_pct == null ? '—' : b.burn_pct.toFixed(0) + '%',
+      b.control === 'NONE' ? '—' : (b.flag ?? '—'),
     ];
   });
   const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);

@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native';
-import { Picker } from '@react-native-picker/picker';
 import Header from '../components/Header';
 import Card from '../components/Card';
+import SelectSheet from '../components/SelectSheet';
 import FlagPanel from '../components/FlagPanel';
 import PhotoSlot from '../components/PhotoSlot';
 import Badge from '../components/Badge';
@@ -253,18 +253,19 @@ export default function TerimaScreen() {
         {/* PO selector */}
         <Card title="Penerimaan Baru">
           <Text style={styles.label}>Pilih PO <Text style={styles.req}>*</Text></Text>
-          <View style={styles.pickerWrap}>
-            <Picker selectedValue={poId} onValueChange={v => { setPoId(v); resetForm(); }} style={{ color: COLORS.text }}>
-              <Picker.Item label="-- Pilih PO --" value="" />
-              {purchaseOrders.map(po => (
-                <Picker.Item
-                  key={po.id}
-                  label={`${getPurchaseOrderDisplayNumber(po)} · ${po.material_name} ${po.quantity} ${po.unit}`}
-                  value={po.id}
-                />
-              ))}
-            </Picker>
-          </View>
+          <SelectSheet
+            title="Pilih PO"
+            placeholder="-- Pilih PO --"
+            accessibilityLabel="Pilih purchase order"
+            value={poId}
+            onChange={v => { setPoId(v); resetForm(); }}
+            options={purchaseOrders.map(po => ({
+              value: po.id,
+              code: getPurchaseOrderDisplayNumber(po),
+              label: po.material_name,
+              meta: `${po.quantity} ${po.unit}`,
+            }))}
+          />
 
           {selectedPO && (
             <>
@@ -406,7 +407,6 @@ const styles = StyleSheet.create({
   },
   disabled:   { backgroundColor: COLORS.surfaceAlt, color: COLORS.textSec },
   textarea:   { minHeight: 80, textAlignVertical: 'top', paddingTop: SPACE.md - 1 },
-  pickerWrap: { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface },
   hint:       { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 2, lineHeight: 17 },
   fieldHint:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs, lineHeight: 17 },
   row2:       { flexDirection: 'row', gap: SPACE.sm },

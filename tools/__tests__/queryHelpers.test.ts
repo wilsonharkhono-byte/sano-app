@@ -2,7 +2,7 @@
  * Tests for queryHelpers module
  */
 
-import { fetchAllByField, rpcNumeric, rpcWithError, fetchView } from '../queryHelpers';
+import { fetchAllByField, rpcNumeric, rpcWithError, fetchView, fetchAllPaged } from '../queryHelpers';
 import { supabase } from '../supabase';
 
 // Mock supabase module
@@ -18,6 +18,43 @@ const mockSupabase = supabase as jest.Mocked<typeof supabase>;
 describe('queryHelpers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  // ─── fetchAllPaged ──────────────────────────────────────────────────────
+
+  describe('fetchAllPaged', () => {
+    it('returns all rows across multiple pages, requesting correct ranges', async () => {
+      // 5 rows total, page size 2 → pages [0,1], [2,3], [4] (last is short → stop)
+      const rows = [{ n: 0 }, { n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }];
+      const ranges: Array<[number, number]> = [];
+      const build = (from: number, to: number) => {
+        ranges.push([from, to]);
+        return Promise.resolve({ data: rows.slice(from, to + 1), error: null });
+      };
+
+      const result = await fetchAllPaged(build, 2);
+
+      expect(result).toEqual(rows);
+      expect(ranges).toEqual([[0, 1], [2, 3], [4, 5]]);
+    });
+
+    it('stops after a full final page by issuing one more empty request', async () => {
+      // Exactly 4 rows, page size 2 → [0,1],[2,3] full, then [4,5] empty → stop.
+      const rows = [{ n: 0 }, { n: 1 }, { n: 2 }, { n: 3 }];
+      const build = (from: number, to: number) =>
+        Promise.resolve({ data: rows.slice(from, to + 1), error: null });
+      expect(await fetchAllPaged(build, 2)).toEqual(rows);
+    });
+
+    it('throws on query error rather than silently truncating', async () => {
+      const build = () => Promise.resolve({ data: null, error: { message: 'boom' } });
+      await expect(fetchAllPaged(build)).rejects.toThrow('boom');
+    });
+
+    it('returns empty array when first page is empty', async () => {
+      const build = () => Promise.resolve({ data: [], error: null });
+      expect(await fetchAllPaged(build)).toEqual([]);
+    });
   });
 
   // ─── fetchAllByField ────────────────────────────────────────────────────

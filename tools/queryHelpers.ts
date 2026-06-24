@@ -38,6 +38,37 @@ export async function fetchAllByField<T = any>(
 }
 
 /**
+ * Page through a query that may return more than Supabase's default 1000-row
+ * cap, returning ALL rows. `buildPage(from, to)` must apply `.range(from, to)`
+ * (and a stable `.order(...)`) to a fresh query each call, so pages don't
+ * overlap or drift. Stops when a page comes back short (or empty). Throws on a
+ * query error instead of silently returning a truncated set — a truncated
+ * material/cost rollup is a wrong number, which the truth contract forbids.
+ *
+ * Use this for any select whose result set can exceed 1000 rows (e.g. ahs_lines
+ * for a large baseline). `fetchAllByField` does NOT paginate, despite the name.
+ *
+ * @example
+ * const lines = await fetchAllPaged((from, to) =>
+ *   supabase.from('ahs_lines').select('*')
+ *     .eq('ahs_version_id', id).order('id', { ascending: true }).range(from, to));
+ */
+export async function fetchAllPaged<T = any>(
+  buildPage: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message?: string } | null }>,
+  pageSize = 1000,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await buildPage(from, from + pageSize - 1);
+    if (error) throw new Error(error.message ?? 'fetchAllPaged query failed');
+    if (!data || data.length === 0) break;
+    out.push(...data);
+    if (data.length < pageSize) break;
+  }
+  return out;
+}
+
+/**
  * Call a Supabase RPC and return the numeric result (0 on error/null).
  * Useful for aggregates like sums, counts, etc.
  *

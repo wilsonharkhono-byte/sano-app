@@ -32,7 +32,7 @@ const mockSupabase = supabase as jest.Mocked<typeof supabase>;
 function makeQuery(result: { data: unknown; error?: unknown }) {
   const payload = { data: result.data, error: result.error ?? null };
   const chain: Record<string, unknown> = {};
-  for (const method of ['select', 'eq', 'order', 'limit', 'in', 'neq', 'gte', 'lte']) {
+  for (const method of ['select', 'eq', 'order', 'limit', 'in', 'neq', 'gte', 'lte', 'range']) {
     chain[method] = jest.fn(() => chain);
   }
   // Make the chain awaitable.

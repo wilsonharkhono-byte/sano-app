@@ -192,13 +192,13 @@ export async function createTestBoqItem(
 export interface TestMaterial {
   id: string;
   name: string;
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   unit: string;
 }
 
 /** Creates a material_catalog row. */
 export async function createTestMaterial(opts: {
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   unit?: string;
 }): Promise<TestMaterial> {
   const name = testName('mat');
@@ -226,7 +226,7 @@ export async function createTestMaterial(opts: {
 export async function publishTestAhsVersion(opts: {
   projectId: string;
   boqItemId: string;
-  prices: Array<{ materialId: string; unitPrice: number; tier: 1 | 2 | 3; unit?: string }>;
+  prices: Array<{ materialId: string; unitPrice: number; tier: 1 | 2 | 3 | 4; unit?: string }>;
 }): Promise<{ ahsVersionId: string }> {
   // Demote any existing current version (matches publishBaselineV2 pattern).
   await adminClient
@@ -304,6 +304,62 @@ export async function buildTier2Envelope(opts: {
 }
 
 /**
+ * Builds a Tier 3 Rupiah budget envelope using ahs_price_book (benchmark price)
+ * and project_material_master_lines (planned quantity). The combination gives
+ * v_material_budget_status its budget_total_rupiah = total_planned × unit_price.
+ *
+ * Pattern: ahs_price_book supplies the benchmark; planned qty is planted via the
+ * same project_material_master / master_lines path as buildTier2Envelope. The
+ * ahs_lines row is added so v_material_envelopes has a row (it aggregates
+ * master_lines tied to an ahs_version).
+ */
+export async function buildTier3Envelope(opts: {
+  projectId: string;
+  materialId: string;
+  boqItemId: string;
+  totalPlanned: number;    // units of material (e.g. pcs)
+  benchmarkUnitPrice: number; // Rp per unit → budget_total = totalPlanned × benchmarkUnitPrice
+  unit?: string;
+}): Promise<{ masterId: string; ahsVersionId: string }> {
+  // 1. Publish an ahs_version with one ahs_line (so v_material_envelopes sees totalPlanned).
+  const { ahsVersionId } = await publishTestAhsVersion({
+    projectId: opts.projectId,
+    boqItemId: opts.boqItemId,
+    prices: [{ materialId: opts.materialId, unitPrice: opts.benchmarkUnitPrice, tier: 3, unit: opts.unit }],
+  });
+
+  // 2. project_material_master → master_lines supplies the planned quantity.
+  const { data: master, error: mErr } = await adminClient
+    .from('project_material_master')
+    .insert({ project_id: opts.projectId, ahs_version_id: ahsVersionId })
+    .select('id')
+    .single();
+  if (mErr || !master) throw mErr ?? new Error('master insert failed');
+
+  const { error: lErr } = await adminClient.from('project_material_master_lines').insert({
+    master_id: master.id,
+    material_id: opts.materialId,
+    boq_item_id: opts.boqItemId,
+    planned_quantity: opts.totalPlanned,
+    unit: opts.unit ?? 'pcs',
+  });
+  if (lErr) throw lErr;
+
+  // 3. ahs_price_book: benchmark price for v_material_budget_status.
+  const { error: pbErr } = await adminClient.from('ahs_price_book').insert({
+    project_id: opts.projectId,
+    material_id: opts.materialId,
+    material_name: 'Test Material',   // placeholder; view uses material_catalog name
+    unit: opts.unit ?? 'pcs',
+    unit_price: opts.benchmarkUnitPrice,
+    tier: 3,
+  });
+  if (pbErr) throw pbErr;
+
+  return { masterId: master.id, ahsVersionId };
+}
+
+/**
  * Inserts a request header + lines + allocations in the order the app uses.
  * Returns the header id so tests can assert on stored values.
  */
@@ -312,7 +368,7 @@ export async function submitRequest(opts: {
   requesterProfileId: string;
   primaryBoqItemId: string;
   lines: Array<{
-    tier: 1 | 2 | 3;
+    tier: 1 | 2 | 3 | 4;
     materialId: string | null;
     customName?: string;
     quantity: number;
