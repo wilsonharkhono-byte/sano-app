@@ -39,7 +39,7 @@ describe('evaluateTier3Budget', () => {
   });
 
   it('uses actual price override instead of benchmark', () => {
-    const r = evaluateTier3Budget(budget({}), 10, 1_000_000); // 10 × 1M = 10M > 8.5M
+    const r = evaluateTier3Budget(budget({}), 10, 1_100_000); // 10 × 1.1M = 11M = 129% of 8.5M > 120% → CRITICAL
     expect(r.flag).toBe('CRITICAL');
   });
 

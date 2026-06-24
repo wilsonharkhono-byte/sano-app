@@ -36,7 +36,7 @@ export function evaluateTier3Budget(
   const newBurn = (newCommitted / budget.budget_total_rupiah) * 100;
   const detail = `${rp(newCommitted)} / ${rp(budget.budget_total_rupiah)} (${newBurn.toFixed(0)}%)`;
 
-  if (newBurn > BUDGET_CRITICAL_PCT + 10) {
+  if (newBurn > BUDGET_CRITICAL_PCT + 20) {
     return { flag: 'CRITICAL', check: 'tier3_budget_exceeded', msg: `Order of ${rp(thisOrder)} pushes ${budget.material_name} to ${detail} — exceeds budget by ${(newBurn - 100).toFixed(0)}%. Requires principal override.` };
   }
   if (newBurn > BUDGET_CRITICAL_PCT) {
