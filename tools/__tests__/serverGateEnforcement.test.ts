@@ -5,6 +5,7 @@ import {
   createTestBoqItem,
   createTestMaterial,
   buildTier2Envelope,
+  buildTier3Envelope,
   publishTestAhsVersion,
   submitRequest,
   readState,
@@ -101,15 +102,21 @@ describeDb('server gate enforcement — Tier 2', () => {
 });
 
 describeDb('server gate enforcement — Tier 3', () => {
-  it('Tier 3 spend > Rp 5jt → WARNING, no auto-hold', async () => {
+  // Budget envelope: totalPlanned=100 pcs × benchmarkUnitPrice=10,000 = Rp 1,000,000 budget.
+  // burn % = (committed + qty × effective) / budget_total × 100.
+
+  it('Tier 3 order crosses >120% burn → CRITICAL, no auto-hold', async () => {
     const project = await createTestProject();
     const material = await createTestMaterial({ tier: 3, unit: 'pcs' });
     const boqItem = await createTestBoqItem(project.id, { planned: 100, installed: 0 });
-    // Unit price 1000 × qty 6000 = 6,000,000 → over Rp 5jt cap.
-    await publishTestAhsVersion({
+    // budget_total = 100 × 10,000 = 1,000,000. Request 130 pcs × 10,000 = 1,300,000 → 130% → CRITICAL.
+    await buildTier3Envelope({
       projectId: project.id,
+      materialId: material.id,
       boqItemId: boqItem.id,
-      prices: [{ materialId: material.id, unitPrice: 1000, tier: 3, unit: 'pcs' }],
+      totalPlanned: 100,
+      benchmarkUnitPrice: 10_000,
+      unit: 'pcs',
     });
 
     const { headerId, lineIds } = await submitRequest({
@@ -119,27 +126,65 @@ describeDb('server gate enforcement — Tier 3', () => {
       lines: [{
         tier: 3,
         materialId: material.id,
-        quantity: 6000,
+        quantity: 130, // 130 × 10,000 = 1,300,000 → 130% → CRITICAL
+        unit: 'pcs',
+        clientFlag: 'OK', // client lies
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 130, basis: 'GENERAL_STOCK' }],
+      }],
+    });
+
+    const state = await readState(headerId, lineIds[0]);
+    expect(state.lineFlag).toBe('CRITICAL');
+    expect(state.overallFlag).toBe('CRITICAL');
+    expect(state.overallStatus).toBe('AUTO_HOLD'); // CRITICAL does auto-hold
+  });
+
+  it('Tier 3 order crosses >80% but ≤100% burn → WARNING, no auto-hold', async () => {
+    const project = await createTestProject();
+    const material = await createTestMaterial({ tier: 3, unit: 'pcs' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 100, installed: 0 });
+    // budget_total = 100 × 10,000 = 1,000,000. Request 90 pcs × 10,000 = 900,000 → 90% → WARNING.
+    await buildTier3Envelope({
+      projectId: project.id,
+      materialId: material.id,
+      boqItemId: boqItem.id,
+      totalPlanned: 100,
+      benchmarkUnitPrice: 10_000,
+      unit: 'pcs',
+    });
+
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 3,
+        materialId: material.id,
+        quantity: 90, // 90 × 10,000 = 900,000 → 90% → WARNING
         unit: 'pcs',
         clientFlag: 'OK',
-        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 6000, basis: 'GENERAL_STOCK' }],
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 90, basis: 'GENERAL_STOCK' }],
       }],
     });
 
     const state = await readState(headerId, lineIds[0]);
     expect(state.lineFlag).toBe('WARNING');
     expect(state.overallFlag).toBe('WARNING');
-    expect(state.overallStatus).toBe('PENDING'); // Tier 3 WARNING does NOT auto-hold
+    expect(state.overallStatus).toBe('PENDING'); // WARNING does NOT auto-hold
   });
 
-  it('Tier 3 spend ≤ Rp 5jt → OK', async () => {
+  it('Tier 3 order comfortably within budget (≤50% burn) → OK', async () => {
     const project = await createTestProject();
     const material = await createTestMaterial({ tier: 3, unit: 'pcs' });
     const boqItem = await createTestBoqItem(project.id, { planned: 100, installed: 0 });
-    await publishTestAhsVersion({
+    // budget_total = 100 × 10,000 = 1,000,000. Request 40 pcs × 10,000 = 400,000 → 40% → OK.
+    await buildTier3Envelope({
       projectId: project.id,
+      materialId: material.id,
       boqItemId: boqItem.id,
-      prices: [{ materialId: material.id, unitPrice: 1000, tier: 3, unit: 'pcs' }],
+      totalPlanned: 100,
+      benchmarkUnitPrice: 10_000,
+      unit: 'pcs',
     });
 
     const { headerId, lineIds } = await submitRequest({
@@ -149,14 +194,69 @@ describeDb('server gate enforcement — Tier 3', () => {
       lines: [{
         tier: 3,
         materialId: material.id,
-        quantity: 1000, // 1000 × 1000 = 1jt → under cap
+        quantity: 40, // 40 × 10,000 = 400,000 → 40% → OK
         unit: 'pcs',
-        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 1000, basis: 'GENERAL_STOCK' }],
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 40, basis: 'GENERAL_STOCK' }],
       }],
     });
 
     const state = await readState(headerId, lineIds[0]);
     expect(state.lineFlag).toBe('OK');
+    expect(state.overallFlag).toBe('OK');
+    expect(state.overallStatus).toBe('PENDING');
+  });
+
+  it('Tier 3 material with no price-book entry → WARNING (cannot evaluate)', async () => {
+    const project = await createTestProject();
+    // Material with no ahs_price_book entry → v_material_budget_status has no row → WARNING.
+    const material = await createTestMaterial({ tier: 3, unit: 'pcs' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 100, installed: 0 });
+    // Intentionally do NOT call buildTier3Envelope — no price book, no planned demand.
+
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 3,
+        materialId: material.id,
+        quantity: 10,
+        unit: 'pcs',
+        clientFlag: 'OK', // client lies
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 10, basis: 'GENERAL_STOCK' }],
+      }],
+    });
+
+    const state = await readState(headerId, lineIds[0]);
+    expect(state.lineFlag).toBe('WARNING'); // no price-book → block (never silent pass)
+    expect(state.overallFlag).toBe('WARNING');
+    expect(state.overallStatus).toBe('PENDING'); // WARNING does NOT auto-hold
+  });
+});
+
+describeDb('server gate enforcement — Tier 4', () => {
+  it('Tier 4 untracked consumable always → OK regardless of spend', async () => {
+    const project = await createTestProject();
+    const material = await createTestMaterial({ tier: 4, unit: 'pcs' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 100, installed: 0 });
+
+    // No envelope needed — Tier 4 is explicitly untracked (mirrors evaluateTier4Untracked).
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 4,
+        materialId: material.id,
+        quantity: 999_999, // enormous quantity — must still be OK for untracked tier
+        unit: 'pcs',
+        clientFlag: 'OK',
+        allocations: [{ boqItemId: boqItem.id, allocatedQuantity: 999_999, basis: 'GENERAL_STOCK' }],
+      }],
+    });
+
+    const state = await readState(headerId, lineIds[0]);
+    expect(state.lineFlag).toBe('OK'); // dispatch_line_flag returns 'OK' for tier 4
     expect(state.overallFlag).toBe('OK');
     expect(state.overallStatus).toBe('PENDING');
   });
