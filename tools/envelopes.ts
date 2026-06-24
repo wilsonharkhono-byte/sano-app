@@ -6,7 +6,9 @@
 //   Tier 2 (bricks, cement, sand): order covers MULTIPLE BoQ items.
 //     Supervisor orders 10,000 bricks → system deducts from an "envelope"
 //     that aggregates all BoQ items using that material.
-//   Tier 3 (nails, oil, consumables): spend cap, no strict quantity tracking.
+//   Tier 3 (paint, adhesives, sealant): Rupiah budget envelope — order × price is
+//     compared against the material's budget; envelope depletes at order time.
+//   Tier 4 (nails, oil, consumables): untracked — never gated, always approved.
 
 import { supabase } from './supabase';
 import { MRStatus } from './constants';
@@ -55,6 +57,7 @@ export async function getMaterialBudget(
     .rpc('get_material_budget', { p_project_id: projectId, p_material_id: materialId })
     .single();
   if (error || !data) return null;
+  // Cast: the RPC result set does not include project_id; re-attach it from the argument.
   const r = data as Omit<MaterialBudgetStatus, 'project_id'>;
   return { ...r, project_id: projectId } as MaterialBudgetStatus;
 }
@@ -81,7 +84,7 @@ export async function checkTier3Budget(
  */
 export async function getProjectEnvelopes(
   projectId: string,
-  tierFilter?: 1 | 2 | 3,
+  tierFilter?: 1 | 2 | 3 | 4,
 ): Promise<MaterialEnvelopeStatus[]> {
   let query = supabase
     .from('v_material_envelope_status')
