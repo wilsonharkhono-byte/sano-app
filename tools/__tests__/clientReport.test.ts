@@ -112,6 +112,42 @@ describe('clientReport numbering + audit', () => {
   });
 });
 
+describe('issueClientReport', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('inserts a frozen snapshot + issued fields, records export after success, returns id', async () => {
+    const draft = {
+      kind: 'mingguan', reportNo: 7, periodStart: '2026-06-08', periodEnd: '2026-06-14',
+      projectName: 'Graha', clientName: 'Bpk', subtitle: 'Finishing', statusLabel: 'Sesuai Jadwal',
+      weather: 'Cerah', crewTotal: 8, crewBreakdown: '3 tukang', safetyIncidents: 0,
+      nextPlan: 'Lanjut', updates: [], hero: null, thumbs: [],
+    } as any;
+
+    const insertChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: { id: 'rep-1' }, error: null }),
+    };
+    const exportChain = { insert: jest.fn().mockResolvedValue({ error: null }) };
+    (mockSupabase.from as jest.Mock)
+      .mockReturnValueOnce(insertChain)   // client_progress_reports insert
+      .mockReturnValueOnce(exportChain);  // report_exports insert (recordClientProgressReportExport)
+
+    const result = await issueClientReport(draft, 'proj-1', 'user-1');
+
+    expect(result).toEqual({ id: 'rep-1' });
+    expect(mockSupabase.from).toHaveBeenNthCalledWith(1, 'client_progress_reports');
+    expect(insertChain.insert).toHaveBeenCalledWith(expect.objectContaining({
+      project_id: 'proj-1', report_no: 7, kind: 'mingguan',
+      snapshot: draft, issued_by: 'user-1', next_plan: 'Lanjut',
+    }));
+    const insertArg = (insertChain.insert as jest.Mock).mock.calls[0][0];
+    expect(typeof insertArg.issued_at).toBe('string');
+    expect(mockSupabase.from).toHaveBeenNthCalledWith(2, 'report_exports');
+    expect(exportChain.insert).toHaveBeenCalled();
+  });
+});
+
 describe('assembleClientReportDraft', () => {
   beforeEach(() => jest.clearAllMocks());
 

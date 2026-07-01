@@ -111,7 +111,11 @@ export interface AssembleParams {
   milestoneStatuses: MilestoneStatus[];
 }
 
-export interface ClientReportUpdate { date: string; area: string; note: string; }
+export interface ClientReportUpdate {
+  date: string;   // formatted display date, e.g. '14 Jun' (not ISO)
+  area: string;
+  note: string;
+}
 export interface ClientReportPhoto { url: string; caption: string; date: string; }
 
 export interface ClientReportDraft {
@@ -134,6 +138,7 @@ export interface ClientReportDraft {
 }
 
 function fmtCaptionDate(iso: string): string {
+  if (!iso) return '';
   // "2026-06-14" -> "14 Jun" (Indonesian short month)
   const months = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
   const [, m, d] = iso.split('-').map((x) => parseInt(x, 10));
