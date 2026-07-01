@@ -4,6 +4,7 @@
 // screen-only .toolbar is removed and placeholders are substituted. CSS values
 // are NOT re-authored (spec §1.2 fidelity contract).
 
+import { Platform } from 'react-native';
 import type { ClientReportDraft } from './clientReport';
 
 export function esc(s: string | number | null | undefined): string {
@@ -243,4 +244,23 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
     </div>
   </div>
 </body></html>`;
+}
+
+export async function exportClientReportPdf(draft: ClientReportDraft): Promise<void> {
+  if (Platform.OS !== 'web') {
+    throw new Error('Export PDF laporan klien hanya tersedia di versi web untuk saat ini.');
+  }
+  const html = renderClientReportHtml(draft);
+  const win = window.open('', '_blank');
+  if (!win) throw new Error('Popup diblokir. Izinkan popup untuk mencetak laporan.');
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+  // Fidelity safeguard: wait for Space Grotesk before printing (spec §1.2).
+  try {
+    // @ts-ignore - document.fonts exists in browsers
+    if (win.document.fonts?.ready) await win.document.fonts.ready;
+  } catch { /* ignore font API gaps */ }
+  win.focus();
+  win.print();
 }
