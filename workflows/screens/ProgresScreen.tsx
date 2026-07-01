@@ -140,20 +140,25 @@ export default function ProgresScreen() {
     const d = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
     const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-    const existing = await getDailyLog(project.id, iso);
-    const highlights = existing?.highlights ?? [];
-    await upsertDailyLog({
-      project_id: project.id,
-      log_date: iso,
-      weather: existing?.weather ?? null,
-      crew_total: existing?.crew_total ?? null,
-      crew_breakdown: existing?.crew_breakdown ?? null,
-      safety_incidents: existing?.safety_incidents ?? 0,
-      author_id: profile.id,
-      highlights: [...highlights, { area: item?.label ?? 'Progres', note, boq_item_id: boqId, sort_order: highlights.length }],
-      photos: existing?.photos ?? [],
-    });
-    toast('Ditambahkan ke Log Harian', 'ok');
+
+    try {
+      const existing = await getDailyLog(project.id, iso);
+      const highlights = existing?.highlights ?? [];
+      await upsertDailyLog({
+        project_id: project.id,
+        log_date: iso,
+        weather: existing?.weather ?? null,
+        crew_total: existing?.crew_total ?? null,
+        crew_breakdown: existing?.crew_breakdown ?? null,
+        safety_incidents: existing?.safety_incidents ?? 0,
+        author_id: profile.id,
+        highlights: [...highlights, { area: item?.label ?? 'Progres', note, boq_item_id: boqId, sort_order: highlights.length }],
+        photos: existing?.photos ?? [],
+      });
+      toast('Ditambahkan ke Log Harian', 'ok');
+    } catch {
+      toast('Tidak bisa menambahkan ke Log Harian', 'warning');
+    }
   }, [project, profile, boqItems, toast]);
 
   // ── Handlers ──
