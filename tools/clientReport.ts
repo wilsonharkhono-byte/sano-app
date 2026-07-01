@@ -29,3 +29,39 @@ export function deriveProjectStatusLabel(statuses: MilestoneStatus[]): string {
   }
   return 'Sesuai Jadwal';
 }
+
+export async function installedAsOf(projectId: string, isoDateEnd: string): Promise<Map<string, number>> {
+  const { data, error } = await supabase
+    .from('progress_entries')
+    .select('boq_item_id, quantity, created_at')
+    .eq('project_id', projectId)
+    .lte('created_at', isoDateEnd);
+  if (error) throw error;
+
+  const map = new Map<string, number>();
+  for (const row of data ?? []) {
+    map.set(row.boq_item_id, (map.get(row.boq_item_id) ?? 0) + (row.quantity ?? 0));
+  }
+  return map;
+}
+
+function overallProgress(boqItems: Array<{ id: string; planned: number }>, installed: Map<string, number>): number {
+  const withPlan = boqItems.filter((b) => b.planned > 0);
+  if (withPlan.length === 0) return 0;
+  const sum = withPlan.reduce((s, b) => s + Math.min(100, ((installed.get(b.id) ?? 0) / b.planned) * 100), 0);
+  return sum / withPlan.length;
+}
+
+export async function computeWeeklyProgressDelta(
+  projectId: string,
+  boqItems: Array<{ id: string; planned: number }>,
+  startIso: string,
+  endIso: string,
+): Promise<number> {
+  // "Installed as of the day BEFORE the period" vs "as of period end".
+  const [atStart, atEnd] = await Promise.all([
+    installedAsOf(projectId, `${startIso}T00:00:00`),
+    installedAsOf(projectId, `${endIso}T23:59:59`),
+  ]);
+  return overallProgress(boqItems, atEnd) - overallProgress(boqItems, atStart);
+}
