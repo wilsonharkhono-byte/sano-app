@@ -52,4 +52,10 @@ describe('renderClientReportHtml', () => {
     const body = html.slice(html.indexOf('</style>'));
     expect(body).not.toMatch(/\d+\s*%/);
   });
+
+  it('renders a cross-month weekly period unambiguously (both months shown)', () => {
+    const html = renderClientReportHtml({ ...draft, kind: 'mingguan', periodStart: '2026-06-26', periodEnd: '2026-07-02' });
+    expect(html).toContain('26 Juni – 2 Juli 2026');   // long form in the strip
+    expect(html).toContain('26 Jun–2 Jul 2026');        // short form in the masthead
+  });
 });

@@ -160,6 +160,8 @@ export function fmtPeriodLong(kind: string, start: string, end: string): string 
   const p = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return { y, m, d }; };
   const a = p(start), b = p(end);
   if (kind === 'harian' || start === end) return `${a.d} ${months[a.m - 1]} ${a.y}`;
+  if (a.y !== b.y) return `${a.d} ${months[a.m - 1]} ${a.y} – ${b.d} ${months[b.m - 1]} ${b.y}`;
+  if (a.m !== b.m) return `${a.d} ${months[a.m - 1]} – ${b.d} ${months[b.m - 1]} ${b.y}`;
   return `${a.d} – ${b.d} ${months[b.m - 1]} ${b.y}`;
 }
 
@@ -168,6 +170,8 @@ export function fmtPeriodShort(kind: string, start: string, end: string): string
   const p = (iso: string) => { const [y, m, d] = iso.split('-').map(Number); return { y, m, d }; };
   const a = p(start), b = p(end);
   if (kind === 'harian' || start === end) return `${a.d} ${months[a.m - 1]} ${a.y}`;
+  if (a.y !== b.y) return `${a.d} ${months[a.m - 1]} ${a.y}–${b.d} ${months[b.m - 1]} ${b.y}`;
+  if (a.m !== b.m) return `${a.d} ${months[a.m - 1]}–${b.d} ${months[b.m - 1]} ${b.y}`;
   return `${a.d}–${b.d} ${months[b.m - 1]} ${b.y}`;
 }
 
