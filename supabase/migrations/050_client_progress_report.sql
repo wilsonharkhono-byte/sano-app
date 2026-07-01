@@ -85,8 +85,6 @@ ALTER TABLE daily_log_photos        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE client_progress_reports ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS daily_site_logs_member_read ON daily_site_logs;
-CREATE POLICY daily_site_logs_member_read ON daily_site_logs
-  FOR SELECT USING (is_project_member(project_id));
 DROP POLICY IF EXISTS daily_site_logs_member_write ON daily_site_logs;
 CREATE POLICY daily_site_logs_member_write ON daily_site_logs
   FOR ALL USING (is_project_member(project_id)) WITH CHECK (is_project_member(project_id));
@@ -104,8 +102,6 @@ CREATE POLICY daily_log_photos_member ON daily_log_photos
   WITH CHECK (EXISTS (SELECT 1 FROM daily_site_logs l WHERE l.id = log_id AND is_project_member(l.project_id)));
 
 DROP POLICY IF EXISTS client_progress_reports_member_read ON client_progress_reports;
-CREATE POLICY client_progress_reports_member_read ON client_progress_reports
-  FOR SELECT USING (is_project_member(project_id));
 DROP POLICY IF EXISTS client_progress_reports_write ON client_progress_reports;
 CREATE POLICY client_progress_reports_write ON client_progress_reports
   FOR ALL USING (is_project_member(project_id)) WITH CHECK (is_project_member(project_id));
