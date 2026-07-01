@@ -105,21 +105,25 @@ export async function upsertDailyLog(input: DailySiteLogInput): Promise<string> 
   if (error || !log) throw error ?? new Error('Daily log upsert failed');
 
   // Replace-then-insert children (idempotent per save).
-  await supabase.from('daily_log_highlights').delete().eq('log_id', log.id);
-  await supabase.from('daily_log_highlights').insert(
+  const { error: delHlErr } = await supabase.from('daily_log_highlights').delete().eq('log_id', log.id);
+  if (delHlErr) throw delHlErr;
+  const { error: insHlErr } = await supabase.from('daily_log_highlights').insert(
     input.highlights.map((h, i) => ({
       log_id: log.id, area: h.area, note: h.note,
       boq_item_id: h.boq_item_id, sort_order: h.sort_order ?? i,
     })),
   );
+  if (insHlErr) throw insHlErr;
 
-  await supabase.from('daily_log_photos').delete().eq('log_id', log.id);
-  await supabase.from('daily_log_photos').insert(
+  const { error: delPhErr } = await supabase.from('daily_log_photos').delete().eq('log_id', log.id);
+  if (delPhErr) throw delPhErr;
+  const { error: insPhErr } = await supabase.from('daily_log_photos').insert(
     input.photos.map((p) => ({
       log_id: log.id, storage_path: p.storage_path, caption: p.caption,
       is_featured: p.is_featured, captured_at: p.captured_at,
     })),
   );
+  if (insPhErr) throw insPhErr;
 
   return log.id;
 }

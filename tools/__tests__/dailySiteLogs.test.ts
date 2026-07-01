@@ -92,5 +92,6 @@ describe('dailySiteLogs', () => {
       { onConflict: 'project_id,log_date' },
     );
     expect(insChain.insert).toHaveBeenCalledTimes(2);
+    expect(delChain.eq).toHaveBeenCalledWith('log_id', 'log-9');
   });
 });
