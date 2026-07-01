@@ -14,6 +14,7 @@ import MaterialCatalogScreen from './MaterialCatalogScreen';
 import MandorSetupScreen from './MandorSetupScreen';
 import OpnameScreen from './OpnameScreen';
 import AttendanceScreen from './AttendanceScreen';
+import ClientReportBuilderScreen from './ClientReportBuilderScreen';
 import { MilestonePanel } from './MilestoneScreen';
 import MilestoneFormScreen from './MilestoneFormScreen';
 import MilestoneAiDraftScreen from './MilestoneAiDraftScreen';
@@ -29,7 +30,7 @@ import { deriveMaterialBalance } from '../../tools/derivation';
 import { getProjectTeam, listAllProfiles, addUserToProject, removeUserFromProject, availableProfiles, type TeamMember, type ProfileOption, ROLE_LABELS } from '../../tools/projectManagement';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
-type Section = 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'katalog' | 'mandor' | 'opname' | 'attendance';
+type Section = 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'katalog' | 'mandor' | 'opname' | 'attendance' | 'client-report';
 
 // ── Report preview renderers ──────────────────────────────────────────────────
 
@@ -358,6 +359,11 @@ export default function LaporanScreen() {
     );
   }
 
+  // Show ClientReportBuilderScreen as full takeover when selected
+  if (activeSection === 'client-report') {
+    return <ClientReportBuilderScreen onBack={() => setActiveSection('overview')} />;
+  }
+
   const isEstimatorOrAdmin = profile?.role === 'estimator' || profile?.role === 'admin' || profile?.role === 'principal';
   const isSupervisor = profile?.role === 'supervisor';
 
@@ -568,6 +574,11 @@ export default function LaporanScreen() {
                   <Ionicons name="download" size={16} color={COLORS.textSec} />
                 </TouchableOpacity>
               ))}
+              <TouchableOpacity style={styles.exportRow} onPress={() => setActiveSection('client-report')}>
+                <Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />
+                <Text style={styles.exportLabel}>Laporan Progres Klien (Blueprint)</Text>
+                <Ionicons name="chevron-forward" size={16} color={COLORS.textSec} />
+              </TouchableOpacity>
             </Card>
           </>
         )}
