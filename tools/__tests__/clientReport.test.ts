@@ -66,5 +66,7 @@ describe('clientReport weekly delta', () => {
     );
 
     expect(Math.round(delta)).toBe(75);
+    expect(startChain.lte).toHaveBeenCalledWith('created_at', '2026-06-08T00:00:00');
+    expect(endChain.lte).toHaveBeenCalledWith('created_at', '2026-06-14T23:59:59');
   });
 });

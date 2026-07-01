@@ -58,7 +58,7 @@ export async function computeWeeklyProgressDelta(
   startIso: string,
   endIso: string,
 ): Promise<number> {
-  // "Installed as of the day BEFORE the period" vs "as of period end".
+  // Overall progress as of midnight opening the period start vs. end-of-day of the period end.
   const [atStart, atEnd] = await Promise.all([
     installedAsOf(projectId, `${startIso}T00:00:00`),
     installedAsOf(projectId, `${endIso}T23:59:59`),
