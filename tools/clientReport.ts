@@ -65,3 +65,32 @@ export async function computeWeeklyProgressDelta(
   ]);
   return overallProgress(boqItems, atEnd) - overallProgress(boqItems, atStart);
 }
+
+export async function assignNextReportNo(projectId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('client_progress_reports')
+    .select('report_no')
+    .eq('project_id', projectId)
+    .order('report_no', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.report_no ?? 0) + 1;
+}
+
+export async function recordClientProgressReportExport(
+  projectId: string,
+  userId: string,
+  filters: Record<string, unknown>,
+): Promise<void> {
+  // Columns mirror recordReportExport (tools/reports.ts). report_type is a plain
+  // string here (NOT the ReportType enum) — this path stays out of that union.
+  const { error } = await supabase.from('report_exports').insert({
+    project_id: projectId,
+    report_type: 'client_progress_report',
+    filters,
+    file_path: `exports/${projectId}/client_progress_report_${Date.now()}.json`,
+    generated_by: userId,
+  });
+  if (error) throw error;
+}

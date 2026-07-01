@@ -1,4 +1,4 @@
-import { mapMilestoneStatusToLabel, deriveProjectStatusLabel, installedAsOf, computeWeeklyProgressDelta } from '../clientReport';
+import { mapMilestoneStatusToLabel, deriveProjectStatusLabel, installedAsOf, computeWeeklyProgressDelta, assignNextReportNo, recordClientProgressReportExport } from '../clientReport';
 import { supabase } from '../supabase';
 
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
@@ -68,5 +68,43 @@ describe('clientReport weekly delta', () => {
     expect(Math.round(delta)).toBe(75);
     expect(startChain.lte).toHaveBeenCalledWith('created_at', '2026-06-08T00:00:00');
     expect(endChain.lte).toHaveBeenCalledWith('created_at', '2026-06-14T23:59:59');
+  });
+});
+
+describe('clientReport numbering + audit', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('assignNextReportNo returns 1 when the project has no reports', async () => {
+    const chain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+    };
+    (mockSupabase.from as jest.Mock).mockReturnValue(chain);
+    expect(await assignNextReportNo('proj-1')).toBe(1);
+  });
+
+  it('assignNextReportNo returns max+1', async () => {
+    const chain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: { report_no: 6 }, error: null }),
+    };
+    (mockSupabase.from as jest.Mock).mockReturnValue(chain);
+    expect(await assignNextReportNo('proj-1')).toBe(7);
+  });
+
+  it('recordClientProgressReportExport inserts the plain-string report_type', async () => {
+    const chain = { insert: jest.fn().mockResolvedValue({ error: null }) };
+    (mockSupabase.from as jest.Mock).mockReturnValue(chain);
+    await recordClientProgressReportExport('proj-1', 'u-1', { kind: 'mingguan' });
+    expect(mockSupabase.from).toHaveBeenCalledWith('report_exports');
+    expect(chain.insert).toHaveBeenCalledWith(expect.objectContaining({
+      project_id: 'proj-1', generated_by: 'u-1', report_type: 'client_progress_report',
+    }));
   });
 });
