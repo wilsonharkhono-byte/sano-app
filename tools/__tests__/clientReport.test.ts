@@ -1,7 +1,10 @@
-import { mapMilestoneStatusToLabel, deriveProjectStatusLabel, installedAsOf, computeWeeklyProgressDelta, assignNextReportNo, recordClientProgressReportExport } from '../clientReport';
+import { mapMilestoneStatusToLabel, deriveProjectStatusLabel, installedAsOf, computeWeeklyProgressDelta, assignNextReportNo, recordClientProgressReportExport, assembleClientReportDraft, issueClientReport } from '../clientReport';
 import { supabase } from '../supabase';
 
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
+jest.mock('../dailySiteLogs', () => ({ aggregatePeriod: jest.fn() }));
+jest.mock('../storage', () => ({ resolvePhotoUrl: jest.fn(async (p: string) => `https://cdn/${p}`) }));
+import { aggregatePeriod } from '../dailySiteLogs';
 const mockSupabase = supabase as jest.Mocked<typeof supabase>;
 
 describe('clientReport status mapping', () => {
@@ -106,5 +109,47 @@ describe('clientReport numbering + audit', () => {
     expect(chain.insert).toHaveBeenCalledWith(expect.objectContaining({
       project_id: 'proj-1', generated_by: 'u-1', report_type: 'client_progress_report',
     }));
+  });
+});
+
+describe('assembleClientReportDraft', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('builds a draft: updates from highlights, hero = first featured photo, status from milestones', async () => {
+    (aggregatePeriod as jest.Mock).mockResolvedValue({
+      highlights: [
+        { area: 'Tangga', note: 'Finishing', boq_item_id: null, sort_order: 0, log_date: '2026-06-14' },
+      ],
+      featuredPhotos: [
+        { storage_path: 'a.jpg', caption: 'Hero', is_featured: true, captured_at: null, log_date: '2026-06-14' },
+        { storage_path: 'b.jpg', caption: 'Thumb', is_featured: true, captured_at: null, log_date: '2026-06-12' },
+      ],
+      weather: 'Cerah', crewTotal: 8, crewBreakdown: '3 tukang', safetyIncidents: 0,
+    });
+
+    // Mock supabase chain for assignNextReportNo
+    const chain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+    };
+    (mockSupabase.from as jest.Mock).mockReturnValue(chain);
+
+    const draft = await assembleClientReportDraft({
+      projectId: 'proj-1', kind: 'mingguan',
+      periodStart: '2026-06-08', periodEnd: '2026-06-14',
+      projectName: 'Graha Family T-61', clientName: 'Bpk. Jason Jordy',
+      milestoneStatuses: ['ON_TRACK'],
+    });
+
+    expect(draft.statusLabel).toBe('Sesuai Jadwal');
+    expect(draft.updates).toEqual([{ date: '14 Jun', area: 'Tangga', note: 'Finishing' }]);
+    expect(draft.hero?.url).toBe('https://cdn/a.jpg');
+    expect(draft.thumbs).toHaveLength(1);
+    expect(draft.thumbs[0].url).toBe('https://cdn/b.jpg');
+    expect(draft.weather).toBe('Cerah');
+    expect(draft.subtitle).toBe(''); // curator-typed, blank by default
   });
 });
