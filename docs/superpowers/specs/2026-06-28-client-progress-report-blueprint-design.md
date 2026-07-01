@@ -215,9 +215,13 @@ A submodule/screen reached from the card. Fields:
 - Weather (free text or small chip set).
 - Crew total + crew breakdown text.
 - Safety incidents (default 0).
-- **Highlights**: repeatable `{ area, note, optional BoQ row }` rows. BoQ row
-  picked via the same work-group → row picker used in the progress form
-  (`buildWorkGroups` from `tools/boqWorkGroups`).
+- **Highlights (narrative-first)**: repeatable `{ area, note, optional BoQ row }`
+  rows. In practice **most highlights are free narrative** (site color, prep,
+  coordination, deliveries) that maps to no single BoQ row, so the BoQ link is a
+  **secondary, optional** affordance — never required to save a highlight. When
+  the work *does* map to a line item, the BoQ row is picked via the same
+  work-group → row picker used in the progress form (`buildWorkGroups` from
+  `tools/boqWorkGroups`), which is what enables the cross-prompt link (§5.4).
 - **Photos**: `PhotoGalleryField` + per-photo caption and an `is_featured`
   ("tampilkan ke klien") toggle. Upload via `pickAndUploadPhoto('daily-log/{projectId}')`.
 
@@ -227,6 +231,24 @@ A submodule/screen reached from the card. Fields:
 - `upsertDailyLog(...)`, `saveHighlights(...)`, `saveLogPhotos(...)`
 - `aggregatePeriod(projectId, start, end)` → highlights, featured photos,
   weather/crew (most-recent in range), summed safety incidents.
+
+### 5.4 Cross-prompt linkage (progress ⇄ narrative)
+
+The quantitative and narrative streams stay separate models but are **stitched at
+the input moment** so field staff keep them in sync without double work:
+
+- **Progress entry → highlight:** after a supervisor logs a `progress_entry`
+  (qty installed on a BoQ row) in the progress form, offer *"Tambahkan ke Log
+  Harian?"* — pre-filling a highlight with that BoQ row + a starter note. One tap
+  promotes a measured event into a client-facing highlight, already linked.
+- **Highlight → progress entry:** when a highlight is linked to a BoQ row, the log
+  form may optionally capture a qty, which writes a `progress_entry` (the source
+  of truth stays `progress_entries`; the highlight never stores qty).
+- **Builder verification aid (not client-rendered):** while curating the draft, a
+  linked highlight shows the row's live installed/planned beside it (e.g.
+  *"Railing tangga · 12/20 m"*) so the estimator can check the narrative against
+  the measured record. This readout is **internal to the builder**; the exported
+  PDF stays number-free per §1.2.
 
 ---
 
@@ -249,16 +271,21 @@ Klien (Blueprint)"**. Opens `ClientReportBuilderScreen` as a full takeover
    - (D) Dokumentasi ← featured `daily_log_photos` (pre-selected; first = hero).
    - (D) Keselamatan ← summed `safety_incidents`.
    - (D) Cuaca / Tenaga Kerja ← from period log (range → most recent; editable).
-   - (D) Progress % ← derived from `progress_entries` (reuse the same derivation
-     feeding `progress_summary` in `tools/reports.ts` / the `boqItems.progress`
-     average exposed by `useProject`).
+   - (D, **not rendered**) Weekly progress delta ← computed from
+     `progress_entries.created_at` (installed-as-of `period_end` minus
+     installed-as-of `period_start`, reusing the `progress_summary` derivation).
+     The template has **no percentage field**; the delta is an **internal input
+     that backs the Status label only** — never shown as a number (§1.2 fidelity).
+     Daily reports skip it entirely (a one-day % is noise).
    - (D) Project **title** ← `projects.name`; **Klien** ← `projects.client_name`
      (nullable — if null, curator types it). Both confirmed columns on `projects`.
-   - (C/D) **Status label** ← milestones, but **no `MilestoneStatus`→Indonesian
-     mapping exists today** (`MilestoneStatus` = `ON_TRACK | AT_RISK | DELAYED |
-     AHEAD | COMPLETE`; `MilestoneScreen` renders English via
-     `status.replace('_',' ')`). A mapping (e.g. `ON_TRACK → 'Sesuai Jadwal'`)
-     must be authored in `tools/clientReport.ts`; the curator can override.
+   - (C/D) **Status label** ← milestones for daily; milestones + the weekly delta
+     for weekly. **No `MilestoneStatus`→Indonesian mapping exists today**
+     (`MilestoneStatus` = `ON_TRACK | AT_RISK | DELAYED | AHEAD | COMPLETE`;
+     `MilestoneScreen` renders English via `status.replace('_',' ')`). A mapping
+     (e.g. `ON_TRACK → 'Sesuai Jadwal'`) must be authored in
+     `tools/clientReport.ts`; the curator can override. **No numeric % renders
+     anywhere.**
    - (C) **Subtitle** (template "Finishing Interior") — **`projects` has no
      subtitle/scope column**, so this is a **curator-typed field** in step 3 (a
      small optional `migration-050` column is a possible future enhancement, not MVP).
@@ -303,6 +330,17 @@ Klien (Blueprint)"**. Opens `ClientReportBuilderScreen` as a full takeover
   writes the HTML, waits for `document.fonts.ready`, calls `window.print()`.
   **Native** is out of MVP scope (would need `expo-print`, not currently a
   dependency); document as a follow-up.
+
+### 6.4 Daily vs weekly semantics
+
+Same template, two behaviors:
+
+- **Harian (daily):** narrative-first — highlights + photos + safety + a Status
+  from milestones. **No progress number** (a one-day delta is noise). Expect many
+  free-narrative highlights per day; this is the primary content, not an edge case.
+- **Mingguan (weekly):** aggregates the week's daily logs; the week-over-week
+  progress delta (§6.2) backs a more considered Status. Highlights are curated
+  down from the week's accumulation to the ~6 the template shows. Still number-free.
 
 ---
 
@@ -357,7 +395,9 @@ exhaustive switch and `exportReportToPdf`'s `default` JSON fallback are untouche
 ## 10. Scope boundaries (YAGNI)
 
 - **In:** single-page A4 Blueprint Precision (variant A), harian + mingguan,
-  curated draft, web print-to-PDF, frozen snapshot + numbering.
+  curated draft, web print-to-PDF, frozen snapshot + numbering. **Number-free
+  report** (qualitative Status backed by an internal weekly delta);
+  narrative-first highlights with optional BoQ links + cross-prompt stitching.
 - **Out (now):** variant B (Typographic Statement); multi-page reports; native
   PDF export; automatic emailing/sending to clients; the existing
   `weekly_digest` is kept as the internal digest and is **not** replaced.
@@ -380,6 +420,12 @@ exhaustive switch and `exportReportToPdf`'s `default` JSON fallback are untouche
   (confirmed), title ← `projects.name` (confirmed).
 - Print fidelity: embed Space Grotesk (no CDN reliance) and inline photos as
   base64 at issue time (signed URLs expire vs. frozen-snapshot reproducibility).
+- Progress metric: **no percentage is rendered** (template has no slot). Daily
+  skips it; weekly computes a week-over-week delta only to back the qualitative
+  Status label.
+- Highlight coupling: **narrative-first** (BoQ link optional; most highlights
+  unlinked). The two streams are stitched via cross-prompt at input time (§5.4),
+  not merged into one model.
 
 ## 12. Verification provenance
 
