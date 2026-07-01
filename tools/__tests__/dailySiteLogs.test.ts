@@ -1,4 +1,4 @@
-import { getDailyLog, upsertDailyLog } from '../dailySiteLogs';
+import { getDailyLog, upsertDailyLog, aggregatePeriod } from '../dailySiteLogs';
 import { supabase } from '../supabase';
 
 jest.mock('../supabase', () => ({
@@ -93,5 +93,53 @@ describe('dailySiteLogs', () => {
     );
     expect(insChain.insert).toHaveBeenCalledTimes(2);
     expect(delChain.eq).toHaveBeenCalledWith('log_id', 'log-9');
+  });
+
+  it('aggregatePeriod merges logs: highlights ordered, featured photos, latest weather, summed safety', async () => {
+    const logsChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      gte: jest.fn().mockReturnThis(),
+      lte: jest.fn().mockReturnThis(),
+      order: jest.fn().mockResolvedValue({
+        data: [
+          { id: 'l1', log_date: '2026-06-08', weather: 'Cerah', crew_total: 6, crew_breakdown: 'a', safety_incidents: 0 },
+          { id: 'l2', log_date: '2026-06-14', weather: 'Hujan', crew_total: 8, crew_breakdown: 'b', safety_incidents: 1 },
+        ],
+        error: null,
+      }),
+    };
+    const hlChain = {
+      select: jest.fn().mockReturnThis(),
+      in: jest.fn().mockReturnThis(),
+      order: jest.fn().mockResolvedValue({
+        data: [
+          { id: 'h2', log_id: 'l2', area: 'Tangga', note: 'n2', boq_item_id: null, sort_order: 0 },
+          { id: 'h1', log_id: 'l1', area: 'Listrik', note: 'n1', boq_item_id: null, sort_order: 0 },
+        ],
+        error: null,
+      }),
+    };
+    const phChain = {
+      select: jest.fn().mockReturnThis(),
+      in: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockResolvedValue({
+        data: [{ id: 'p1', log_id: 'l2', storage_path: 'x.jpg', caption: 'c', is_featured: true, captured_at: null }],
+        error: null,
+      }),
+    };
+    (mockSupabase.from as jest.Mock)
+      .mockReturnValueOnce(logsChain)
+      .mockReturnValueOnce(hlChain)
+      .mockReturnValueOnce(phChain);
+
+    const agg = await aggregatePeriod('proj-1', '2026-06-08', '2026-06-14');
+
+    expect(agg.weather).toBe('Hujan');           // most recent in range (l2)
+    expect(agg.crewTotal).toBe(8);
+    expect(agg.safetyIncidents).toBe(1);          // summed
+    expect(agg.highlights.map(h => h.area)).toEqual(['Listrik', 'Tangga']); // by log_date asc
+    expect(agg.highlights[0].log_date).toBe('2026-06-08');
+    expect(agg.featuredPhotos).toHaveLength(1);
   });
 });

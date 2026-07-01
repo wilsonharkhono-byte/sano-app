@@ -127,3 +127,63 @@ export async function upsertDailyLog(input: DailySiteLogInput): Promise<string> 
 
   return log.id;
 }
+
+export async function aggregatePeriod(
+  projectId: string,
+  startIso: string,
+  endIso: string,
+): Promise<PeriodAggregate> {
+  const { data: logs, error } = await supabase
+    .from('daily_site_logs')
+    .select('id, log_date, weather, crew_total, crew_breakdown, safety_incidents')
+    .eq('project_id', projectId)
+    .gte('log_date', startIso)
+    .lte('log_date', endIso)
+    .order('log_date', { ascending: true });
+  if (error) throw error;
+
+  const rows = logs ?? [];
+  if (rows.length === 0) {
+    return { highlights: [], featuredPhotos: [], weather: null, crewTotal: null, crewBreakdown: null, safetyIncidents: 0 };
+  }
+
+  const logIds = rows.map((r: any) => r.id);
+  const dateById = new Map<string, string>(rows.map((r: any) => [r.id, r.log_date]));
+  const orderIndex = new Map<string, number>(rows.map((r: any, i: number) => [r.id, i])); // by log_date asc
+  const latest = rows[rows.length - 1]; // most recent in range
+
+  const { data: highlights, error: hlErr } = await supabase
+    .from('daily_log_highlights')
+    .select('id, log_id, area, note, boq_item_id, sort_order')
+    .in('log_id', logIds)
+    .order('sort_order', { ascending: true });
+  if (hlErr) throw hlErr;
+
+  const { data: photos, error: phErr } = await supabase
+    .from('daily_log_photos')
+    .select('id, log_id, storage_path, caption, is_featured, captured_at')
+    .in('log_id', logIds)
+    .eq('is_featured', true);
+  if (phErr) throw phErr;
+
+  const sortedHighlights = (highlights ?? [])
+    .map((h: any) => ({ ...h, log_date: dateById.get(h.log_id) ?? '' }))
+    .sort((a: any, b: any) => {
+      const oa = orderIndex.get(a.log_id) ?? 0;
+      const ob = orderIndex.get(b.log_id) ?? 0;
+      return oa !== ob ? oa - ob : (a.sort_order ?? 0) - (b.sort_order ?? 0);
+    });
+
+  const featuredPhotos = (photos ?? [])
+    .map((p: any) => ({ ...p, log_date: dateById.get(p.log_id) ?? '' }))
+    .sort((a: any, b: any) => (orderIndex.get(b.log_id) ?? 0) - (orderIndex.get(a.log_id) ?? 0)); // newest first
+
+  return {
+    highlights: sortedHighlights,
+    featuredPhotos,
+    weather: latest.weather ?? null,
+    crewTotal: latest.crew_total ?? null,
+    crewBreakdown: latest.crew_breakdown ?? null,
+    safetyIncidents: rows.reduce((s: number, r: any) => s + (r.safety_incidents ?? 0), 0),
+  };
+}
