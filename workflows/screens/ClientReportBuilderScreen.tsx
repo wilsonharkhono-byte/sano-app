@@ -7,7 +7,7 @@ import SelectSheet from '../components/SelectSheet';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { sanitizeText } from '../../tools/validation';
-import { assembleClientReportDraft, issueClientReport, type ClientReportDraft } from '../../tools/clientReport';
+import { assembleClientReportDraft, issueClientReport, computeWeeklyProgressDelta, type ClientReportDraft } from '../../tools/clientReport';
 import { exportClientReportPdf } from '../../tools/clientReportHtml';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
@@ -19,11 +19,12 @@ function isoNDaysAgo(n: number): string {
 function todayIso(): string { return isoNDaysAgo(0); }
 
 export default function ClientReportBuilderScreen({ onBack }: { onBack: () => void }) {
-  const { project, profile, milestones } = useProject();
+  const { project, profile, milestones, boqItems } = useProject();
   const { show: toast } = useToast();
 
   const [kind, setKind] = useState<'harian' | 'mingguan'>('mingguan');
   const [draft, setDraft] = useState<ClientReportDraft | null>(null);
+  const [weeklyDelta, setWeeklyDelta] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
 
   const kindOptions = useMemo(() => ([
@@ -48,6 +49,21 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
       });
       setDraft(d);
       toast('Draf laporan dibuat — silakan tinjau & lengkapi', 'ok');
+      if (kind === 'mingguan') {
+        try {
+          const delta = await computeWeeklyProgressDelta(
+            project.id,
+            boqItems.map((b) => ({ id: b.id, planned: b.planned })),
+            periodStart,
+            periodEnd,
+          );
+          setWeeklyDelta(delta);
+        } catch {
+          setWeeklyDelta(null);
+        }
+      } else {
+        setWeeklyDelta(null);
+      }
     } catch (err: any) {
       toast(err.message ?? 'Gagal membuat draf', 'critical');
     } finally {
@@ -109,6 +125,11 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
               <TextInput style={styles.input} value={draft.weather ?? ''} onChangeText={(v) => patch({ weather: v })} placeholder="Cerah" />
               <Text style={styles.label}>Status</Text>
               <TextInput style={styles.input} value={draft.statusLabel} onChangeText={(v) => patch({ statusLabel: v })} />
+              {weeklyDelta !== null && (
+                <Text style={styles.deltaHint}>
+                  Progres minggu ini: {weeklyDelta >= 0 ? '+' : ''}{Math.round(weeklyDelta)}% · acuan status (tidak dicetak)
+                </Text>
+              )}
               <Text style={styles.label}>Rencana Periode Berikutnya</Text>
               <TextInput style={[styles.input, styles.textarea]} value={draft.nextPlan} onChangeText={(v) => patch({ nextPlan: v })} multiline placeholder="Rencana pekerjaan berikutnya..." />
             </Card>
@@ -165,4 +186,5 @@ const styles = StyleSheet.create({
   updArea: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
   updNote: { fontSize: TYPE.sm, fontFamily: FONTS.regular, color: COLORS.textSec },
   hint: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs },
+  deltaHint: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs },
 });
