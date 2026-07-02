@@ -11,6 +11,8 @@ import StatTile from '../components/StatTile';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import CatatanPerubahanScreen from './CatatanPerubahanScreen';
+import DailyLogScreen from './DailyLogScreen';
+import { getDailyLog, upsertDailyLog } from '../../tools/dailySiteLogs';
 import { computeGate4Info } from '../gates/gate4';
 import { syncBoqInstalledFromDerived } from '../../tools/derivation';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
@@ -20,7 +22,7 @@ import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import { getSiteChangeSummary, type SiteChangeSummary } from '../../tools/siteChanges';
 import { buildWorkGroups } from '../../tools/boqWorkGroups';
 
-type SubModule = 'home' | 'progress' | 'perubahan';
+type SubModule = 'home' | 'progress' | 'perubahan' | 'daily-log';
 
 export default function ProgresScreen() {
   const { boqItems, project, profile, refresh } = useProject();
@@ -39,6 +41,7 @@ export default function ProgresScreen() {
     created_at: string;
   }>>([]);
   const [changeSummary, setChangeSummary] = useState<SiteChangeSummary | null>(null);
+  const [todayLogExists, setTodayLogExists] = useState<boolean | null>(null);
 
   // ── Progress form state ──
   const [groupKey, setGroupKey] = useState('');
@@ -110,10 +113,53 @@ export default function ProgresScreen() {
     }
   }, [activeModule, loadHomeDetails]);
 
+  useEffect(() => {
+    if (activeModule !== 'home' || !project) return;
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    getDailyLog(project.id, iso).then((l) => setTodayLogExists(!!l)).catch(() => setTodayLogExists(null));
+  }, [activeModule, project]);
+
   const selectedProgressEntries = useMemo(
     () => recentEntries.filter(entry => entry.boq_item_id === selectedProgressItemId).slice(0, 8),
     [recentEntries, selectedProgressItemId],
   );
+
+  // ── Cross-prompt: offer to add progress to today's daily log highlight ──
+  const offerAddToDailyLog = useCallback(async (boqId: string, note: string) => {
+    if (!project || !profile) return;
+    const item = boqItems.find((b) => b.id === boqId);
+    const area = item ? `${item.code} — ${item.label}` : 'Progres';
+    const msg = `Tambahkan "${area}" ke Log Harian klien?`;
+    const ok = Platform.OS === 'web'
+      ? (typeof window !== 'undefined' && window.confirm ? window.confirm(msg) : false)
+      : false; // native: skip auto-prompt in MVP
+    if (!ok) return;
+
+    const d = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+    try {
+      const existing = await getDailyLog(project.id, iso);
+      const highlights = existing?.highlights ?? [];
+      await upsertDailyLog({
+        project_id: project.id,
+        log_date: iso,
+        weather: existing?.weather ?? null,
+        crew_total: existing?.crew_total ?? null,
+        crew_breakdown: existing?.crew_breakdown ?? null,
+        safety_incidents: existing?.safety_incidents ?? 0,
+        author_id: profile.id,
+        highlights: [...highlights, { area: item?.label ?? 'Progres', note, boq_item_id: boqId, sort_order: highlights.length }],
+        photos: existing?.photos ?? [],
+      });
+      toast('Ditambahkan ke Log Harian', 'ok');
+    } catch {
+      toast('Tidak bisa menambahkan ke Log Harian', 'warning');
+    }
+  }, [project, profile, boqItems, toast]);
 
   // ── Handlers ──
   const goBack = () => setActiveModule('home');
@@ -217,11 +263,14 @@ export default function ProgresScreen() {
       });
       if (logError) throw logError;
 
+      const submittedBoqId = boqId;
+      const submittedNote = progressNote;
       resetProgressForm();
       await refresh();
       await loadHomeDetails();
       setActiveModule('home');
       toast(`Progres dicatat: ${qty} ${item.unit}`, 'ok');
+      await offerAddToDailyLog(submittedBoqId, submittedNote ? sanitizeText(submittedNote) : 'Progres pekerjaan tercatat.');
     } catch (err: any) {
       console.warn('Progress submit failed:', err?.message ?? err);
       toast(err?.message ?? 'Gagal menyimpan progres', 'critical');
@@ -252,6 +301,10 @@ export default function ProgresScreen() {
     return <CatatanPerubahanScreen onBack={goBack} />;
   }
 
+  if (activeModule === 'daily-log') {
+    return <DailyLogScreen onBack={() => setActiveModule('home')} />;
+  }
+
   return (
     <View style={styles.flex}>
       <Header />
@@ -261,6 +314,17 @@ export default function ProgresScreen() {
         {activeModule === 'home' && (
           <>
             <Text style={styles.sectionHead}>Gate 4 — Hub Progres</Text>
+
+            <Card title="Log Harian Hari Ini" subtitle="Catatan lapangan yang mengisi laporan progres klien.">
+              <TouchableOpacity
+                style={{ backgroundColor: COLORS.primary, borderRadius: RADIUS, padding: SPACE.base, alignItems: 'center' }}
+                onPress={() => setActiveModule('daily-log')}
+              >
+                <Text style={{ color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' }}>
+                  {todayLogExists ? 'Edit Log Hari Ini' : '+ Catat Log Harian'}
+                </Text>
+              </TouchableOpacity>
+            </Card>
 
             <View style={styles.statRow}>
               <StatTile value={boqItems.filter(b => b.progress > 0 && b.progress < 100).length} label="Berjalan" color={COLORS.accent} />
