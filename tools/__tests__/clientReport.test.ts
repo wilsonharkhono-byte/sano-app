@@ -1,4 +1,4 @@
-import { mapMilestoneStatusToLabel, deriveProjectStatusLabel, installedAsOf, computeWeeklyProgressDelta, assignNextReportNo, recordClientProgressReportExport, assembleClientReportDraft, issueClientReport } from '../clientReport';
+import { mapMilestoneStatusToLabel, deriveProjectStatusLabel, installedAsOf, computeWeeklyProgressDelta, assignNextReportNo, recordClientProgressReportExport, assembleClientReportDraft, issueClientReport, listClientReports, getClientReportSnapshot } from '../clientReport';
 import { supabase } from '../supabase';
 
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
@@ -143,8 +143,87 @@ describe('issueClientReport', () => {
     }));
     const insertArg = (insertChain.insert as jest.Mock).mock.calls[0][0];
     expect(typeof insertArg.issued_at).toBe('string');
+    expect(insertArg.revision).toBe(1); // default first issue
     expect(mockSupabase.from).toHaveBeenNthCalledWith(2, 'report_exports');
     expect(exportChain.insert).toHaveBeenCalled();
+  });
+
+  it('a revision keeps the same report_no and bumps revision', async () => {
+    const draft = {
+      kind: 'harian', reportNo: 2, revision: 2, periodStart: '2026-07-02', periodEnd: '2026-07-02',
+      projectName: 'Nusa', clientName: null, subtitle: '', statusLabel: 'Sesuai Jadwal',
+      weather: null, crewTotal: null, crewBreakdown: null, safetyIncidents: 0,
+      nextPlan: '', updates: [], hero: null, thumbs: [],
+    } as any;
+    const insertChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: { id: 'rep-2r2' }, error: null }),
+    };
+    const exportChain = { insert: jest.fn().mockResolvedValue({ error: null }) };
+    (mockSupabase.from as jest.Mock)
+      .mockReturnValueOnce(insertChain)
+      .mockReturnValueOnce(exportChain);
+
+    await issueClientReport(draft, 'proj-1', 'user-1');
+
+    expect(insertChain.insert).toHaveBeenCalledWith(expect.objectContaining({
+      report_no: 2, revision: 2,
+    }));
+  });
+});
+
+describe('report archive (Riwayat Laporan)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('listClientReports maps rows newest-first with issuer name', async () => {
+    const chain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+    };
+    // The final .order resolves the promise (thenable chain): make the second
+    // order call return a resolved value.
+    chain.order
+      .mockReturnValueOnce(chain)
+      .mockResolvedValueOnce({
+        data: [
+          { id: 'r2', report_no: 2, revision: 1, kind: 'harian', period_start: '2026-07-02', period_end: '2026-07-02', issued_at: '2026-07-02T10:00:00Z', profiles: { full_name: 'Krisanto' } },
+          { id: 'r1', report_no: 1, revision: 1, kind: 'harian', period_start: '2026-07-01', period_end: '2026-07-01', issued_at: '2026-07-01T10:00:00Z', profiles: null },
+        ],
+        error: null,
+      });
+    (mockSupabase.from as jest.Mock).mockReturnValue(chain);
+
+    const rows = await listClientReports('proj-1');
+
+    expect(mockSupabase.from).toHaveBeenCalledWith('client_progress_reports');
+    expect(chain.eq).toHaveBeenCalledWith('project_id', 'proj-1');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ id: 'r2', report_no: 2, issued_by_name: 'Krisanto' });
+    expect(rows[1].issued_by_name).toBeNull();
+  });
+
+  it('getClientReportSnapshot returns the frozen snapshot (or null)', async () => {
+    const snapshot = { kind: 'harian', reportNo: 1, updates: [] };
+    const chain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: { snapshot }, error: null }),
+    };
+    (mockSupabase.from as jest.Mock).mockReturnValue(chain);
+
+    const result = await getClientReportSnapshot('r1');
+    expect(result).toEqual(snapshot);
+    expect(chain.eq).toHaveBeenCalledWith('id', 'r1');
+
+    const emptyChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+    };
+    (mockSupabase.from as jest.Mock).mockReturnValue(emptyChain);
+    expect(await getClientReportSnapshot('missing')).toBeNull();
   });
 });
 

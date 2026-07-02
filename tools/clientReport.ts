@@ -121,6 +121,7 @@ export interface ClientReportPhoto { url: string; caption: string; date: string;
 export interface ClientReportDraft {
   kind: 'harian' | 'mingguan';
   reportNo: number;
+  revision?: number;             // 1 by default; a re-issue of the same reportNo bumps this
   periodStart: string;
   periodEnd: string;
   projectName: string;
@@ -187,6 +188,7 @@ export async function issueClientReport(
     .insert({
       project_id: projectId,
       report_no: draft.reportNo,
+      revision: draft.revision ?? 1,
       kind: draft.kind,
       period_start: draft.periodStart,
       period_end: draft.periodEnd,
@@ -204,6 +206,58 @@ export async function issueClientReport(
     .single();
   if (error || !data) throw error ?? new Error('Client report issue failed');
 
-  await recordClientProgressReportExport(projectId, userId, { kind: draft.kind, report_no: draft.reportNo });
+  await recordClientProgressReportExport(projectId, userId, {
+    kind: draft.kind,
+    report_no: draft.reportNo,
+    revision: draft.revision ?? 1,
+  });
   return { id: data.id };
+}
+
+// ---------------------------------------------------------------------------
+// Issued-report archive (Riwayat Laporan)
+// ---------------------------------------------------------------------------
+// Issued reports are immutable: the UI only ever re-renders the frozen
+// `snapshot`. A correction is a NEW row with the same report_no and
+// revision + 1 — earlier revisions stay stored and viewable.
+
+export interface IssuedClientReport {
+  id: string;
+  report_no: number;
+  revision: number;
+  kind: 'harian' | 'mingguan';
+  period_start: string;
+  period_end: string;
+  issued_at: string | null;
+  issued_by_name: string | null;
+}
+
+export async function listClientReports(projectId: string): Promise<IssuedClientReport[]> {
+  const { data, error } = await supabase
+    .from('client_progress_reports')
+    .select('id, report_no, revision, kind, period_start, period_end, issued_at, profiles(full_name)')
+    .eq('project_id', projectId)
+    .order('report_no', { ascending: false })
+    .order('revision', { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((row: any) => ({
+    id: row.id,
+    report_no: row.report_no,
+    revision: row.revision ?? 1,
+    kind: row.kind,
+    period_start: row.period_start,
+    period_end: row.period_end,
+    issued_at: row.issued_at ?? null,
+    issued_by_name: row.profiles?.full_name ?? null,
+  }));
+}
+
+export async function getClientReportSnapshot(reportId: string): Promise<ClientReportDraft | null> {
+  const { data, error } = await supabase
+    .from('client_progress_reports')
+    .select('snapshot')
+    .eq('id', reportId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.snapshot as ClientReportDraft) ?? null;
 }

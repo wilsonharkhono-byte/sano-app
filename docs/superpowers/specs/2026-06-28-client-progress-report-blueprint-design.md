@@ -72,6 +72,15 @@ standard. Specifically:
 - **Reference artifacts:** the chosen design is variant **A · Blueprint Precision**
   (`daily_blueprint.pdf`), NOT variant B (Typographic Statement) shown in
   `Daily Report - TEMPLATE.pdf`.
+- **Template corrections (2026-07-02, directed by the design owner after the
+  first live print):** two deliberate amendments to the blueprint reference —
+  (1) the masthead's placeholder text wordmark is replaced with the **real SANO
+  logotype SVG** (same paths as `workflows/components/SanoBrand.tsx` /
+  `assets/LOGO SANO.svg`, filled `--ink`); (2) the running footer credits
+  **`SANcontractor © 2026 · Konfidensial`**, not WHAstudio. These supersede the
+  older reference PDFs on those two elements; everything else stays verbatim.
+  Additionally, a revision of an issued report renders its number as
+  `Laporan #NN · R{n}` (first issues stay `Laporan #NN`).
 
 **Verification:** export the populated report to PDF and visually diff it against
 `daily_blueprint.pdf` (same layout, fonts, colors, spacing, section order, A4
