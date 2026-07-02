@@ -58,4 +58,20 @@ describe('renderClientReportHtml', () => {
     expect(html).toContain('26 Juni – 2 Juli 2026');   // long form in the strip
     expect(html).toContain('26 Jun–2 Jul 2026');        // short form in the masthead
   });
+
+  it('renders the real SANO logotype SVG, not the placeholder text wordmark', () => {
+    expect(html).toContain('viewBox="0 0 315.66 87.26"');
+    expect(html).not.toContain('<span class="logo">SANO</span>');
+  });
+
+  it('credits SANcontractor in the footer, not WHAstudio', () => {
+    expect(html).toContain('SANcontractor © 2026 · Konfidensial');
+    expect(html).not.toContain('WHAstudio');
+  });
+
+  it('tags revisions in the report number (R2+), plain on first issue', () => {
+    expect(html).not.toContain('· R');
+    const rev2 = renderClientReportHtml({ ...draft, revision: 2 });
+    expect(rev2).toContain('Laporan #07 · R2');
+  });
 });
