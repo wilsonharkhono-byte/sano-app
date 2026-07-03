@@ -189,6 +189,18 @@ const SANO_LOGO_SVG = `<svg viewBox="0 0 315.66 87.26" width="76" height="21" st
   </g>
 </svg>`;
 
+// Additive print/media overrides — NOT part of the verbatim blueprint CSS block.
+// (1) photos render as covered <img>; (2) force background colours/tints/bars to
+// print (browsers skip them by default); (3) make the sheet fill the full A4 page
+// in print so the flex `margin-top:auto` pins the footer to the page bottom.
+// Sizing kept here (not inline) so no numeric % leaks into the report body.
+const REPORT_MEDIA_CSS = `
+  .heroimg{ display:block; width:100%; height:50mm; object-fit:cover; }
+  .thumbimg{ display:block; width:100%; height:26mm; object-fit:cover; border:1px solid var(--line-sub); }
+  *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  @media print{ .sheet{ min-height:100vh; } }
+`;
+
 export function renderClientReportHtml(draft: ClientReportDraft): string {
   const kicker = draft.kind === 'harian' ? 'Laporan Harian' : 'Laporan Mingguan';
   const periodeLong = fmtPeriodLong(draft.kind, draft.periodStart, draft.periodEnd);
@@ -203,16 +215,19 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
   const updateRows = draft.updates.map((u) => `
       <div class="row"><span class="date">${esc(u.date)}</span><span class="area">${esc(u.area)}</span><span class="note">${esc(u.note)}</span></div>`).join('');
 
+  // Photos render as real <img> (not CSS background-image), which prints
+  // reliably — browsers omit background images from PDF output by default.
+  // Sizing lives in REPORT_MEDIA_CSS so no inline % leaks into the body.
   const hero = draft.hero
     ? `<div class="hero">
-        <div class="ph" style="background-image:url('${esc(draft.hero.url)}');background-size:cover;background-position:center;height:50mm;"></div>
+        <img class="heroimg" src="${esc(draft.hero.url)}" alt="" />
         <div class="cap"><span class="d">${esc(draft.hero.date)}</span><span>${esc(draft.hero.caption)}</span></div>
       </div>`
     : '';
 
   const thumbs = draft.thumbs.length
     ? `<div class="thumbs">${draft.thumbs.map((t) => `
-        <figure><div class="ph" style="background-image:url('${esc(t.url)}');background-size:cover;background-position:center;height:26mm;"></div><figcaption><span class="d">${esc(t.date)}</span> · ${esc(t.caption)}</figcaption></figure>`).join('')}</div>`
+        <figure><img class="thumbimg" src="${esc(t.url)}" alt="" /><figcaption><span class="d">${esc(t.date)}</span> · ${esc(t.caption)}</figcaption></figure>`).join('')}</div>`
     : '';
 
   return `<!doctype html>
@@ -222,7 +237,8 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
-<style>${BLUEPRINT_CSS}</style></head>
+<style>${BLUEPRINT_CSS}</style>
+<style>${REPORT_MEDIA_CSS}</style></head>
 <body>
   <div class="sheet">
     <span class="mark tl"></span><span class="mark tr"></span><span class="mark bl"></span><span class="mark br"></span>
@@ -280,6 +296,13 @@ export async function exportClientReportPdf(draft: ClientReportDraft): Promise<v
     // @ts-ignore - document.fonts exists in browsers
     if (win.document.fonts?.ready) await win.document.fonts.ready;
   } catch { /* ignore font API gaps */ }
+  // Wait for photos to finish loading, else print() fires on blank <img>s.
+  try {
+    const imgs = Array.from(win.document.images);
+    await Promise.all(imgs.map((img) => (img.complete
+      ? Promise.resolve()
+      : new Promise<void>((res) => { img.addEventListener('load', () => res()); img.addEventListener('error', () => res()); }))));
+  } catch { /* ignore */ }
   win.focus();
   win.print();
 }

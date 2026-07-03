@@ -81,6 +81,15 @@ standard. Specifically:
   older reference PDFs on those two elements; everything else stays verbatim.
   Additionally, a revision of an issued report renders its number as
   `Laporan #NN · R{n}` (first issues stay `Laporan #NN`).
+- **Print-rendering corrections (2026-07-03):** (a) documentation photos render
+  as real `<img>` elements, not CSS `background-image` — browsers omit background
+  images from PDF output by default; (b) an additive `print-color-adjust: exact`
+  rule forces the sand tints / black caption bar / backgrounds to print; (c) the
+  export waits for images to finish loading before `window.print()`; (d) in print,
+  `.sheet { min-height: 100vh }` overrides the blueprint's collapsed height so the
+  flex `margin-top:auto` pins the footer to the bottom of the A4 page. These live
+  in an additive `REPORT_MEDIA_CSS` block — the verbatim `BLUEPRINT_CSS` is
+  unchanged.
 
 **Verification:** export the populated report to PDF and visually diff it against
 `daily_blueprint.pdf` (same layout, fonts, colors, spacing, section order, A4

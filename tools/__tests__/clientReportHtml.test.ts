@@ -47,9 +47,10 @@ describe('renderClientReportHtml', () => {
   });
 
   it('renders NO numeric percentage in the report body', () => {
-    // The verbatim CSS legitimately contains % (widths, saturate, etc.), so
-    // scope the check to the body — the report must show no progress percentage.
-    const body = html.slice(html.indexOf('</style>'));
+    // The CSS (both <style> blocks) legitimately contains % (widths, saturate,
+    // etc.), so scope the check to the body after the LAST </style> — the report
+    // itself must show no progress percentage.
+    const body = html.slice(html.lastIndexOf('</style>'));
     expect(body).not.toMatch(/\d+\s*%/);
   });
 
@@ -73,5 +74,16 @@ describe('renderClientReportHtml', () => {
     expect(html).not.toContain('· R');
     const rev2 = renderClientReportHtml({ ...draft, revision: 2 });
     expect(rev2).toContain('Laporan #07 · R2');
+  });
+
+  it('renders photos as <img> (print-safe), not CSS background-image', () => {
+    expect(html).toMatch(/<img[^>]+src="https:\/\/cdn\/a\.jpg"/);   // hero
+    expect(html).toMatch(/<img[^>]+src="https:\/\/cdn\/b\.jpg"/);   // thumb
+    expect(html).not.toContain("background-image:url('https://cdn"); // no bg-image for photos
+  });
+
+  it('forces backgrounds to print and pins the footer to the A4 page bottom', () => {
+    expect(html).toContain('print-color-adjust:exact');
+    expect(html).toContain('min-height:100vh');   // sheet fills the page in print
   });
 });
