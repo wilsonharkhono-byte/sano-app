@@ -79,6 +79,24 @@ CREATE TRIGGER trg_daily_site_logs_updated BEFORE UPDATE ON daily_site_logs
   FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- 6. RLS ---------------------------------------------------------------------
+-- is_project_member was introduced in 035, which may not be applied on a
+-- divergent remote. Recreate it here verbatim (CREATE OR REPLACE = idempotent,
+-- identical definition where it already exists) so this file is self-contained.
+CREATE OR REPLACE FUNCTION is_project_member(p_project_id UUID)
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public
+STABLE
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM project_assignments
+    WHERE project_id = p_project_id AND user_id = auth.uid()
+  );
+$$;
+
+GRANT EXECUTE ON FUNCTION is_project_member(UUID) TO authenticated;
+
 ALTER TABLE daily_site_logs         ENABLE ROW LEVEL SECURITY;
 ALTER TABLE daily_log_highlights    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE daily_log_photos        ENABLE ROW LEVEL SECURITY;
