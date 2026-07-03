@@ -21,6 +21,7 @@ import { formatRp } from '../../tools/opname';
 import type { MandorAttendance, KasbonAging } from '../../tools/types';
 import { generateReport, recordReportExport, type ReportPayload, type ReportType, type ReportFilters } from '../../tools/reports';
 import { ReportPreview } from '../../workflows/components/ReportPreview';
+import ClientReportBuilderScreen from '../../workflows/screens/ClientReportBuilderScreen';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE, BREAKPOINTS, MAX_CONTENT_WIDTH } from '../../workflows/theme';
 
 
@@ -28,7 +29,7 @@ function formatTs(v: string) {
   return new Date(v).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-type Section = 'overview' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review';
+type Section = 'overview' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'client-report';
 
 export default function OfficeReportsScreen() {
   const navigation = useNavigation<any>();
@@ -137,6 +138,9 @@ export default function OfficeReportsScreen() {
   }
   if (activeSection === 'jadwal-ai-review') {
     return <MilestoneAiReviewScreen onBack={() => setActiveSection('jadwal')} />;
+  }
+  if (activeSection === 'client-report') {
+    return <ClientReportBuilderScreen onBack={() => setActiveSection('overview')} />;
   }
 
   const sectionTabs: Array<{ key: Section; label: string; icon: string }> = [
@@ -523,6 +527,12 @@ export default function OfficeReportsScreen() {
               <Ionicons name="download-outline" size={16} color={COLORS.textSec} />
             </TouchableOpacity>
           ))}
+          {/* Client-facing Blueprint report — opens the shared builder/archive. */}
+          <TouchableOpacity style={styles.exportRow} onPress={() => setActiveSection('client-report')}>
+            <Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />
+            <Text style={styles.exportLabel}>Laporan Progres Klien (Blueprint)</Text>
+            <Ionicons name="chevron-forward" size={16} color={COLORS.textSec} />
+          </TouchableOpacity>
         </Card>
         </>)}
       </ScrollView>
