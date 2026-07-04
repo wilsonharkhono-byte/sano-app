@@ -35,6 +35,7 @@ const DIAMETER_BY_CODE: Record<string, number> = {
   'REB-PL06': 6,
   'REB-PL08': 8,
   'REB-DE10': 10,
+  'REB-PL10': 10,
   'REB-PL12': 12,
   'REB-DE13': 13,
   'REB-DE16': 16,

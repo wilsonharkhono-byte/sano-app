@@ -37,12 +37,13 @@ describe('rebarBatang', () => {
     expect(rebarFactorByCode(null)).toBeNull();
   });
 
-  it('exposes exactly the 10 rebar catalog rows', () => {
-    expect(REBAR_CATALOG_FACTORS).toHaveLength(10);
+  it('exposes exactly the 11 rebar catalog rows', () => {
+    expect(REBAR_CATALOG_FACTORS).toHaveLength(11);
     expect(REBAR_CATALOG_FACTORS.map((f) => f.code).sort()).toEqual([
       'REB-DE10', 'REB-DE13', 'REB-DE16', 'REB-DE19', 'REB-DE22',
-      'REB-DE25', 'REB-DE32', 'REB-PL06', 'REB-PL08', 'REB-PL12',
+      'REB-DE25', 'REB-DE32', 'REB-PL06', 'REB-PL08', 'REB-PL10', 'REB-PL12',
     ]);
+    expect(rebarFactorByCode('REB-PL10')).toBe(7.4); // polos 10 mm — same Ø10 factor
   });
 
   it('matches rebar factors from workbook component names', () => {

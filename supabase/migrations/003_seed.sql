@@ -327,8 +327,6 @@ BEGIN
     ('REB-PL10', 'Besi beton polos 10 mm', 'Struktur', 1, 'kg', 'kg'),
     ('REB-PL12', 'Besi beton polos 12 mm', 'Struktur', 1, 'kg', 'kg'),
     ('REB-WR01', 'Kawat bendrat', 'Struktur', 1, 'kg', 'kg'),
-    ('REB-CHR06', 'Chair bar 6 mm', 'Struktur', 1, 'kg', 'kg'),
-    ('REB-CHR08', 'Chair bar 8 mm', 'Struktur', 1, 'kg', 'kg'),
     ('WMS-M610', 'Wiremesh M6 lembar', 'Struktur', 3, 'lbr', 'lbr'),
     ('WMS-M810', 'Wiremesh M8 lembar', 'Struktur', 3, 'lbr', 'lbr'),
     ('WMS-M1010', 'Wiremesh M10 lembar', 'Struktur', 3, 'lbr', 'lbr'),
@@ -472,6 +470,18 @@ BEGIN
     ('KWD-BDR01', 'Kawat bendrat', 'Struktur', 3, 'kg', 'kg'),
     ('ANK-BT01', 'Angkur baut', 'Struktur', 3, 'pcs', 'pcs'),
     ('ALM-KSN4', 'Kusen aluminium 4 inch', 'Arsitektur', 2, 'unit', 'unit');
+
+  -- ── Rebar orders in batang (kept in sync with 052 + tools/rebarBatang.ts) ─
+  -- 003 runs before 052 on a fresh install, so ensure the column exists here
+  -- too (idempotent, harmless when 052 already ran).
+  ALTER TABLE material_catalog ADD COLUMN IF NOT EXISTS base_qty_per_supplier_unit NUMERIC;
+  UPDATE material_catalog SET supplier_unit = 'batang', base_qty_per_supplier_unit = v.factor
+  FROM (VALUES
+    ('REB-PL06', 2.66), ('REB-PL08', 4.74), ('REB-DE10', 7.40), ('REB-PL10', 7.40),
+    ('REB-PL12', 10.66), ('REB-DE13', 12.50), ('REB-DE16', 18.94), ('REB-DE19', 26.71),
+    ('REB-DE22', 35.81), ('REB-DE25', 46.24), ('REB-DE32', 75.76)
+  ) AS v(code, factor)
+  WHERE material_catalog.code = v.code;
 
   -- ── Material aliases (common alternative names → canonical codes) ─────────
   INSERT INTO material_aliases (alias, material_id)
