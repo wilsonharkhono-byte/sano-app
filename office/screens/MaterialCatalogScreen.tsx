@@ -8,6 +8,7 @@ import Badge from '../../workflows/components/Badge';
 import { useProject } from '../../workflows/hooks/useProject';
 import { useToast } from '../../workflows/components/Toast';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
+import { supplierUnitPrice } from '../../tools/materialUnitConversion';
 import { supabase } from '../../tools/supabase';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE, BREAKPOINTS, MAX_CONTENT_WIDTH } from '../../workflows/theme';
 
@@ -19,6 +20,8 @@ interface MaterialEntry {
   tier: 1 | 2 | 3;
   unit: string;
   supplier_unit: string;
+  /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
+  base_qty_per_supplier_unit: number | null;
   created_at: string;
 }
 
@@ -61,6 +64,8 @@ export default function MaterialCatalogScreen() {
   const [newCategory, setNewCategory] = useState('');
   const [newTier, setNewTier] = useState<string>('1');
   const [newUnit, setNewUnit] = useState('');
+  const [newSupplierUnit, setNewSupplierUnit] = useState('');
+  const [newBaseQtyPerSupplierUnit, setNewBaseQtyPerSupplierUnit] = useState('');
 
   // Add price form
   const [priceVendor, setPriceVendor] = useState('');
@@ -86,6 +91,20 @@ export default function MaterialCatalogScreen() {
     if (!newCode.trim() || !newName.trim() || !newCategory.trim() || !newUnit.trim()) {
       toast('Kode, nama, kategori, dan satuan wajib diisi', 'critical'); return;
     }
+    const cleanSupplierUnit = sanitizeText(newSupplierUnit);
+    const factorRaw = newBaseQtyPerSupplierUnit.trim();
+    let factor: number | null = null;
+    if (factorRaw) {
+      factor = parseFloat(factorRaw);
+      if (!isPositiveNumber(factorRaw)) {
+        toast('Faktor konversi harus angka positif', 'critical'); return;
+      }
+    }
+    // A different supplier unit without a factor would show numbers that
+    // don't match their label — refuse rather than guess.
+    if (cleanSupplierUnit && cleanSupplierUnit !== sanitizeText(newUnit) && factor == null) {
+      toast('Satuan supplier beda dari satuan unit — isi faktor konversi (mis. 1 batang = 7.4 kg)', 'critical'); return;
+    }
     try {
       const cleanCode = sanitizeText(newCode).toUpperCase();
       const cleanUnit = sanitizeText(newUnit);
@@ -95,11 +114,13 @@ export default function MaterialCatalogScreen() {
         category: sanitizeText(newCategory),
         tier: parseInt(newTier) as 1 | 2 | 3,
         unit: cleanUnit,
-        supplier_unit: cleanUnit,
+        supplier_unit: cleanSupplierUnit || cleanUnit,
+        base_qty_per_supplier_unit: factor,
       });
       if (error) throw error;
       toast('Material ditambahkan', 'ok');
       setNewCode(''); setNewName(''); setNewCategory(''); setNewTier('1'); setNewUnit('');
+      setNewSupplierUnit(''); setNewBaseQtyPerSupplierUnit('');
       setShowAddForm(false);
       loadMaterials();
     } catch (err: any) { toast(err.message, 'critical'); }
@@ -226,7 +247,13 @@ export default function MaterialCatalogScreen() {
 
             <Text style={styles.label}>Satuan Unit *</Text>
             <TextInput style={styles.input} value={newUnit} onChangeText={setNewUnit} placeholder="m3, kg, zak..." />
-            <Text style={styles.fieldHint}>Satuan supplier otomatis mengikuti satuan unit.</Text>
+
+            <Text style={styles.label}>Satuan Supplier</Text>
+            <TextInput style={styles.input} value={newSupplierUnit} onChangeText={setNewSupplierUnit} placeholder="Kosongkan bila sama dengan satuan unit" />
+
+            <Text style={styles.label}>Faktor Konversi</Text>
+            <TextInput style={styles.input} keyboardType="numeric" value={newBaseQtyPerSupplierUnit} onChangeText={setNewBaseQtyPerSupplierUnit} placeholder="Contoh besi Ø10: 7.4 (kg per batang)" />
+            <Text style={styles.fieldHint}>Satuan supplier boleh beda (mis. besi: kg → batang). Isi faktor = jumlah satuan unit per 1 satuan supplier.</Text>
 
             <View style={styles.formActions}>
               <TouchableOpacity style={styles.cancelBtn} onPress={() => setShowAddForm(false)}>
@@ -286,14 +313,20 @@ export default function MaterialCatalogScreen() {
                       )}
                     </View>
                   ) : null}
-                  <Text style={styles.hint}>{m.unit} · {TIER_LABELS[m.tier]}</Text>
+                  <Text style={styles.hint}>
+                    {m.supplier_unit && m.supplier_unit !== m.unit
+                      ? `${m.supplier_unit} (1 ${m.supplier_unit} = ${m.base_qty_per_supplier_unit ?? '?'} ${m.unit})`
+                      : m.unit} · {TIER_LABELS[m.tier]}
+                  </Text>
                 </View>
                 <Badge flag={TIER_FLAGS[m.tier]} label={`T${m.tier}`} />
               </View>
 
               {latestPrice && (
                 <Text style={styles.priceTag}>
-                  Rp {latestPrice.unit_price.toLocaleString('id-ID')} / {m.unit} · {latestPrice.vendor}
+                  {m.base_qty_per_supplier_unit != null
+                    ? `Rp ${supplierUnitPrice(latestPrice.unit_price, m.base_qty_per_supplier_unit).toLocaleString('id-ID')} / ${m.supplier_unit} (Rp ${latestPrice.unit_price.toLocaleString('id-ID')} / ${m.unit})`
+                    : `Rp ${latestPrice.unit_price.toLocaleString('id-ID')} / ${m.unit}`} · {latestPrice.vendor}
                 </Text>
               )}
 

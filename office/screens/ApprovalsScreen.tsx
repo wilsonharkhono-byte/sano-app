@@ -13,6 +13,7 @@ import {
   type SiteChange, type Decision,
 } from '../../tools/siteChanges';
 import { getEnvelopesByMaterialIds, type EnvelopeWithPrice } from '../../tools/envelopes';
+import { displayQty } from '../../tools/materialUnitConversion';
 import { MaterialUsagePanel } from './components/MaterialUsagePanel';
 
 type Tab = 'mtn' | 'perubahan' | 'requests';
@@ -50,15 +51,24 @@ interface MaterialRequest {
   material_request_lines?: MaterialRequestLineSummary[];
 }
 
+interface MaterialRequestLineCatalog {
+  name: string | null;
+  code: string | null;
+  unit: string | null;
+  supplier_unit: string | null;
+  base_qty_per_supplier_unit: number | null;
+}
+
 interface MaterialRequestLineSummary {
   id: string;
   material_id: string | null;
   custom_material_name: string | null;
   tier: 1 | 2 | 3;
+  /** BASE units (kg for rebar) — what triggers/envelopes compare against. */
   quantity: number;
   unit: string;
   line_flag: string;
-  material_catalog?: { name: string | null; code: string | null } | Array<{ name: string | null; code: string | null }> | null;
+  material_catalog?: MaterialRequestLineCatalog | Array<MaterialRequestLineCatalog> | null;
   material_request_line_allocations?: MaterialRequestAllocationSummary[];
 }
 
@@ -98,6 +108,20 @@ function getLineMaterialName(line: MaterialRequestLineSummary) {
   const rawMaterial = line.material_catalog;
   const material = Array.isArray(rawMaterial) ? rawMaterial[0] ?? null : rawMaterial;
   return material?.name ?? line.custom_material_name ?? 'Material';
+}
+
+/** Stored quantities are BASE-unit (kg); show batang for rebar with kg note. */
+function formatLineQty(line: MaterialRequestLineSummary) {
+  const rawMaterial = line.material_catalog;
+  const material = Array.isArray(rawMaterial) ? rawMaterial[0] ?? null : rawMaterial;
+  const d = displayQty(Number(line.quantity ?? 0), {
+    unit: material?.unit ?? line.unit ?? '',
+    supplier_unit: material?.supplier_unit,
+    base_qty_per_supplier_unit: material?.base_qty_per_supplier_unit,
+  });
+  return d.converted
+    ? `${d.qty.toLocaleString('id-ID')} ${d.unit} (≈ ${d.baseQty.toLocaleString('id-ID')} ${d.baseUnit})`
+    : `${d.qty.toLocaleString('id-ID')} ${d.unit}`;
 }
 
 function describeRequestScope(request: MaterialRequest, boqLabels: Record<string, string>) {
@@ -160,7 +184,7 @@ export default function ApprovalsScreen() {
               quantity,
               unit,
               line_flag,
-              material_catalog(name, code),
+              material_catalog(name, code, unit, supplier_unit, base_qty_per_supplier_unit),
               material_request_line_allocations(
                 boq_item_id,
                 allocated_quantity,
@@ -542,7 +566,7 @@ export default function ApprovalsScreen() {
                   return (
                     <View key={line.id} style={{ marginTop: SPACE.sm }}>
                       <Text style={styles.itemSub}>
-                        {getLineMaterialName(line)} — {line.quantity} {line.unit}{' '}
+                        {getLineMaterialName(line)} — {formatLineQty(line)}{' '}
                         <Text style={styles.meta}>(Tier {line.tier})</Text>
                       </Text>
                       <MaterialUsagePanel
