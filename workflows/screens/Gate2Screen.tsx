@@ -13,6 +13,7 @@ import { getNextPurchaseOrderNumber, getPurchaseOrderDisplayNumber } from '../..
 import { computeGate2, summarizeAhsBaselinePrices, type Gate2Result, type Gate2Input } from '../gates/gate2';
 import { buildMaterialScopeIndex, deriveAutomaticScopeTag, normalizeBoqRefToScopeTag } from '../../tools/procurementScope';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
+import { supplierToBase, displayQty } from '../../tools/materialUnitConversion';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, FLAG_COLORS, FLAG_BG } from '../theme';
 import type {
   AhsLine,
@@ -42,6 +43,9 @@ interface MaterialOption {
   id: string;
   name: string;
   unit: string;
+  supplier_unit?: string | null;
+  /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
+  base_qty_per_supplier_unit?: number | null;
   code?: string | null;
   category?: string | null;
 }
@@ -50,8 +54,14 @@ interface DraftPOLine {
   id: string;
   material_id: string;
   material_name: string;
+  /** Typed in SUPPLIER units (batang for rebar); submit converts to base. */
   quantity: string;
   unit: string;
+  /** The material's base unit ('kg' for rebar) — what the RPC and rows use. */
+  base_unit: string;
+  /** kg per batang for rebar; null = unit is already base (1:1). */
+  base_qty_per_supplier_unit: number | null;
+  /** Typed per SUPPLIER unit (Rp/batang for rebar); submit converts to Rp/base. */
   unit_price: string;
 }
 
@@ -92,7 +102,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
   const [draftBoqMode, setDraftBoqMode] = useState<DraftBoqMode>('multi');
   const [draftBoqSummary, setDraftBoqSummary] = useState('');
   const [draftLines, setDraftLines] = useState<DraftPOLine[]>([
-    { id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', unit_price: '' },
+    { id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, unit_price: '' },
   ]);
   const [materialPickerLineId, setMaterialPickerLineId] = useState<string | null>(null);
   const [materialSearch, setMaterialSearch] = useState('');
@@ -114,7 +124,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
           : Promise.resolve({ data: [] as PurchaseOrderLine[] }),
         supabase.from('price_history').select('*').eq('project_id', project.id),
         supabase.from('vendor_scorecards').select('*').eq('project_id', project.id),
-        supabase.from('material_catalog').select('id, name, unit, code, category').order('name'),
+        supabase.from('material_catalog').select('id, name, unit, supplier_unit, base_qty_per_supplier_unit, code, category').order('name'),
         supabase.from('project_assignments').select('user_id').eq('project_id', project.id),
         supabase.from('profiles').select('id, role'),
         supabase
@@ -322,6 +332,20 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     });
   }, [boqItems, materialScopeIndex]);
 
+  const materialById = useMemo(
+    () => new Map(materialOptions.map(m => [m.id, m])),
+    [materialOptions],
+  );
+
+  /** Stored PO lines are BASE-unit (kg); show batang for rebar with kg note. */
+  const formatStoredLineQty = useCallback((line: Pick<PurchaseOrderLine, 'quantity' | 'unit' | 'material_id'>) => {
+    const mat = line.material_id ? materialById.get(line.material_id) : undefined;
+    const d = displayQty(Number(line.quantity ?? 0), mat ?? { unit: line.unit ?? '' });
+    return d.converted
+      ? `${d.qty.toLocaleString('id-ID')} ${d.unit} (≈ ${d.baseQty.toLocaleString('id-ID')} ${d.baseUnit})`
+      : `${d.qty.toLocaleString('id-ID')} ${d.unit}`;
+  }, [materialById]);
+
   const closeMaterialPicker = () => {
     setMaterialPickerLineId(null);
     setMaterialSearch('');
@@ -336,13 +360,16 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     updateDraftLine(lineId, {
       material_id: material.id,
       material_name: material.name,
-      unit: material.unit,
+      // Order in SUPPLIER units (batang for rebar); base kept for the RPC/rows.
+      unit: material.supplier_unit || material.unit,
+      base_unit: material.unit,
+      base_qty_per_supplier_unit: material.base_qty_per_supplier_unit ?? null,
     });
     closeMaterialPicker();
   };
 
   const clearCatalogMaterial = (lineId: string) => {
-    updateDraftLine(lineId, { material_id: '', material_name: '', unit: '' });
+    updateDraftLine(lineId, { material_id: '', material_name: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null });
     closeMaterialPicker();
   };
 
@@ -355,7 +382,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
   const addDraftLine = () => {
     setDraftLines(prev => [
       ...prev,
-      { id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', unit_price: '' },
+      { id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, unit_price: '' },
     ]);
   };
 
@@ -369,7 +396,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     setDraftBoqId('');
     setDraftBoqMode('multi');
     setDraftBoqSummary('');
-    setDraftLines([{ id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', unit_price: '' }]);
+    setDraftLines([{ id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, unit_price: '' }]);
     setMaterialPickerLineId(null);
     setMaterialSearch('');
     setBoqPickerVisible(false);
@@ -435,19 +462,31 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
 
     try {
       const poNumber = getNextPurchaseOrderNumber(project.code, purchaseOrders);
-      const totalQuantity = populatedLines.reduce((sum, line) => sum + parseFloat(line.quantity), 0);
-      const headerMaterialName = populatedLines.length === 1 ? populatedLines[0].material_name : `${populatedLines.length} item material`;
-      const headerUnit = populatedLines.every(line => line.unit === populatedLines[0].unit) ? populatedLines[0].unit : 'mixed';
-      const headerPrice = populatedLines.length === 1
-        ? parseFloat(populatedLines[0].unit_price)
+      // BASE-unit canonical: office types batang qty × Rp/batang for rebar;
+      // rows and the Gate-2 RPC compare against per-kg benchmarks, so convert
+      // qty ×factor and price ÷factor (line total is invariant).
+      const baseLines = populatedLines.map(line => {
+        const factor = line.base_qty_per_supplier_unit;
+        return {
+          ...line,
+          baseQty: supplierToBase(parseFloat(line.quantity), factor),
+          basePrice: factor ? parseFloat(line.unit_price) / factor : parseFloat(line.unit_price),
+          baseUnit: factor ? (line.base_unit || line.unit) : line.unit,
+        };
+      });
+      const totalQuantity = baseLines.reduce((sum, line) => sum + line.baseQty, 0);
+      const headerMaterialName = baseLines.length === 1 ? baseLines[0].material_name : `${baseLines.length} item material`;
+      const headerUnit = baseLines.every(line => line.baseUnit === baseLines[0].baseUnit) ? baseLines[0].baseUnit : 'mixed';
+      const headerPrice = baseLines.length === 1
+        ? baseLines[0].basePrice
         : null;
 
-      const lineRecords = populatedLines.map(line => ({
+      const lineRecords = baseLines.map(line => ({
         material_id: line.material_id || null,
         material_name: sanitizeText(line.material_name),
-        quantity: parseFloat(line.quantity),
-        unit: line.unit,
-        unit_price: parseFloat(line.unit_price),
+        quantity: line.baseQty,
+        unit: line.baseUnit,
+        unit_price: line.basePrice,
         scope_tag: draftScopePreviewByLine.get(line.id) ?? null,
       }));
 
@@ -561,13 +600,13 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                     <Text style={styles.lineName}>{line.material_name}</Text>
                     {g2 && <Badge flag={g2.overall.flag} />}
                   </View>
-                  <Text style={styles.lineDetail}>{line.quantity} {line.unit}</Text>
+                  <Text style={styles.lineDetail}>{formatStoredLineQty(line)}</Text>
                   <View style={styles.scopeTagChip}>
                     <Ionicons name="layers-outline" size={12} color={COLORS.primary} />
                     <Text style={styles.scopeTagText}>{scopeTag}</Text>
                   </View>
 
-                  <Text style={styles.fieldLabel}>Harga Satuan (Rp)</Text>
+                  <Text style={styles.fieldLabel}>Harga Satuan (Rp per {line.unit || 'unit'})</Text>
                   <TextInput
                     style={styles.input}
                     keyboardType="numeric"
@@ -801,6 +840,12 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   </View>
                 </View>
 
+                {line.base_qty_per_supplier_unit != null && isPositiveNumber(line.quantity) && (
+                  <Text style={styles.hint}>
+                    ≈ {supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit).toFixed(1)} {line.base_unit || 'kg'} · 1 {line.unit || 'batang'} = {line.base_qty_per_supplier_unit} {line.base_unit || 'kg'} · harga diisi per {line.unit || 'batang'}
+                  </Text>
+                )}
+
                 <View style={styles.autoScopeRow}>
                   <Ionicons name="layers-outline" size={14} color={COLORS.primary} />
                   <View style={{ flex: 1 }}>
@@ -902,7 +947,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   {getPurchaseOrderDisplayNumber(task.po ?? {})} · {task.po?.supplier} — {task.po?.material_name}
                 </Text>
                 <Text style={styles.lineDetail}>
-                  {line?.quantity} {line?.unit} @ {line?.unit_price ? `Rp${line.unit_price.toLocaleString('id-ID')}` : '-'}
+                  {line ? formatStoredLineQty(line) : '-'} @ {line?.unit_price ? `Rp${line.unit_price.toLocaleString('id-ID')}/${line.unit}` : '-'}
                 </Text>
                 {line && task.po ? (
                   <View style={styles.scopeTagChip}>
