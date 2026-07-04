@@ -14,6 +14,7 @@ import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { computeWorkGroupGate1Flag } from '../gates/gate1';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
+import { supplierToBase } from '../../tools/materialUnitConversion';
 import { supabase } from '../../tools/supabase';
 import { getWorkGroupEnvelope } from '../../tools/envelopes';
 import { buildWorkGroups } from '../../tools/boqWorkGroups';
@@ -36,6 +37,8 @@ interface MaterialOption {
   name: string;
   unit: string;
   supplier_unit: string;
+  /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
+  base_qty_per_supplier_unit: number | null;
   tier: 1 | 2 | 3;
   code: string | null;
   category: string | null;
@@ -56,8 +59,13 @@ interface RequestLine {
   materialName: string;
   isCustom: boolean;
   tier: 1 | 2 | 3;
+  /** Typed in SUPPLIER units (batang for rebar); gates/persist convert to base. */
   quantity: string;
   unit: string;
+  /** The material's base unit ('kg' for rebar) — what gates and storage use. */
+  baseUnit: string;
+  /** kg per batang for rebar; null = unit is already base (1:1). */
+  base_qty_per_supplier_unit: number | null;
   specRef: string;
   boqItemId: string | null;
   /** Tier 1 work-group target (key from buildWorkGroups). */
@@ -101,6 +109,8 @@ function makeLine(overrides: Partial<RequestLine> = {}): RequestLine {
     tier: 3,
     quantity: '',
     unit: '',
+    baseUnit: '',
+    base_qty_per_supplier_unit: null,
     specRef: '',
     boqItemId: null,
     workGroupKey: null,
@@ -285,7 +295,7 @@ export default function PermintaanScreen() {
     if (!project) return;
     supabase
       .from('material_catalog')
-      .select('id, name, unit, supplier_unit, tier, code, category')
+      .select('id, name, unit, supplier_unit, tier, code, category, base_qty_per_supplier_unit')
       .order('name')
       .then(({ data, error }) => {
         if (error) {
@@ -419,6 +429,8 @@ export default function PermintaanScreen() {
       isCustom: false,
       tier: material.tier,
       unit: material.supplier_unit || material.unit,
+      baseUnit: material.unit,
+      base_qty_per_supplier_unit: material.base_qty_per_supplier_unit ?? null,
       boqItemId: null,
       workGroupKey: null,
       lineResult: null,
@@ -440,6 +452,11 @@ export default function PermintaanScreen() {
       if (isNaN(requestedQty) || requestedQty <= 0) {
         return { ...line, lineResult: null, allocationPreview: [] };
       }
+
+      // The supervisor types SUPPLIER units (batang for rebar). Every gate,
+      // envelope and allocation below is BASE-unit (kg) math — convert once
+      // here so the kg formulas stay byte-for-byte unchanged.
+      const requestedBaseQty = supplierToBase(requestedQty, line.base_qty_per_supplier_unit);
 
       if (line.tier === 1) {
         if (!line.workGroupKey) {
@@ -468,8 +485,8 @@ export default function PermintaanScreen() {
 
         return {
           ...line,
-          lineResult: computeWorkGroupGate1Flag(envelope, requestedQty, group.label),
-          allocationPreview: buildWorkGroupAllocations(breakdown, group.itemIds, requestedQty),
+          lineResult: computeWorkGroupGate1Flag(envelope, requestedBaseQty, group.label),
+          allocationPreview: buildWorkGroupAllocations(breakdown, group.itemIds, requestedBaseQty),
         };
       }
 
@@ -490,19 +507,19 @@ export default function PermintaanScreen() {
         const envelope = envelopeCache.get(line.materialId) ?? null;
         return {
           ...line,
-          lineResult: buildTier2Result(envelope, requestedQty),
-          allocationPreview: buildTier2Allocations(breakdownCache.get(line.materialId) ?? [], requestedQty),
+          lineResult: buildTier2Result(envelope, requestedBaseQty),
+          allocationPreview: buildTier2Allocations(breakdownCache.get(line.materialId) ?? [], requestedBaseQty),
         };
       }
 
       return {
         ...line,
-        lineResult: buildTier3Result(requestedQty, line.unit),
+        lineResult: buildTier3Result(requestedBaseQty, line.baseUnit || line.unit),
         allocationPreview: [{
           boqItemId: null,
           boqCode: 'STOK',
           boqLabel: 'Stok Umum',
-          allocatedQuantity: roundQty(requestedQty),
+          allocatedQuantity: roundQty(requestedBaseQty),
           proportionPct: 100,
           allocationBasis: 'GENERAL_STOCK' as const,
         }],
@@ -605,8 +622,10 @@ export default function PermintaanScreen() {
             custom_material_name: line.isCustom || !line.materialId ? sanitizeText(line.materialName) : null,
             tier: line.tier,
             material_spec_reference: line.specRef ? sanitizeText(line.specRef) : null,
-            quantity: parseFloat(line.quantity),
-            unit: sanitizeText(line.unit),
+            // BASE-unit canonical: triggers 048/049 compare quantity against
+            // per-kg benchmarks/envelopes. Batang exists only in the UI.
+            quantity: supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit),
+            unit: sanitizeText(line.base_qty_per_supplier_unit ? (line.baseUnit || line.unit) : line.unit),
             line_flag: line.lineResult?.flag ?? 'OK',
             line_check_details: line.lineResult,
             work_group_label: line.tier === 1 && line.workGroupKey
@@ -635,7 +654,12 @@ export default function PermintaanScreen() {
       }
 
       const materialSummary = validLines
-        .map(line => `${line.materialName} ×${line.quantity} ${line.unit}`.trim())
+        .map(line => {
+          const kgNote = line.base_qty_per_supplier_unit
+            ? ` (≈ ${supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit).toFixed(1)} ${line.baseUnit || 'kg'})`
+            : '';
+          return `${line.materialName} ×${line.quantity} ${line.unit}${kgNote}`.trim();
+        })
         .join(', ');
 
       await supabase.from('activity_log').insert({
@@ -729,7 +753,7 @@ export default function PermintaanScreen() {
                         </View>
                         <Ionicons name="search-outline" size={16} color={COLORS.textSec} />
                       </TouchableOpacity>
-                      <TouchableOpacity onPress={() => updateLine(line.id, { isCustom: true, materialId: null, materialName: '', tier: 3, unit: '', boqItemId: null })}>
+                      <TouchableOpacity onPress={() => updateLine(line.id, { isCustom: true, materialId: null, materialName: '', tier: 3, unit: '', baseUnit: '', base_qty_per_supplier_unit: null, boqItemId: null })}>
                         <Text style={styles.linkText}>Tidak ada di katalog? Input manual</Text>
                       </TouchableOpacity>
                     </>
@@ -792,7 +816,7 @@ export default function PermintaanScreen() {
                           );
                         })}
                       </View>
-                      <TouchableOpacity onPress={() => updateLine(line.id, { isCustom: false, tier: 3, materialName: '', unit: '', boqItemId: null })}>
+                      <TouchableOpacity onPress={() => updateLine(line.id, { isCustom: false, tier: 3, materialName: '', unit: '', baseUnit: '', base_qty_per_supplier_unit: null, boqItemId: null })}>
                         <Text style={styles.linkText}>Gunakan katalog material</Text>
                       </TouchableOpacity>
                     </>
@@ -844,6 +868,11 @@ export default function PermintaanScreen() {
                         placeholder="0"
                         placeholderTextColor={COLORS.textMuted}
                       />
+                      {line.base_qty_per_supplier_unit != null && isPositiveNumber(line.quantity) && (
+                        <Text style={styles.fieldHint}>
+                          ≈ {supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit).toFixed(1)} {line.baseUnit || 'kg'} · 1 {line.unit || 'batang'} = {line.base_qty_per_supplier_unit} {line.baseUnit || 'kg'}
+                        </Text>
+                      )}
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.fieldLabel}>Satuan</Text>
@@ -878,9 +907,13 @@ export default function PermintaanScreen() {
                       <View style={styles.row2}>
                         <Text style={styles.envelopeStat}>
                           Terpakai: {Math.round(Number(envelope.total_ordered ?? 0)).toLocaleString('id-ID')} {envelope.unit}
+                          {line.base_qty_per_supplier_unit != null &&
+                            ` (≈ ${(Number(envelope.total_ordered ?? 0) / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
                         </Text>
                         <Text style={styles.envelopeStat}>
                           Total: {Math.round(Number(envelope.total_planned ?? 0)).toLocaleString('id-ID')} {envelope.unit}
+                          {line.base_qty_per_supplier_unit != null &&
+                            ` (≈ ${(Number(envelope.total_planned ?? 0) / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
                         </Text>
                       </View>
                       <Text style={[styles.envelopePct, { color: barColor }]}>
@@ -902,7 +935,8 @@ export default function PermintaanScreen() {
                               : `${preview.boqCode} — ${preview.boqLabel}`}
                           </Text>
                           <Text style={styles.allocationQty}>
-                            {roundQty(preview.allocatedQuantity).toLocaleString('id-ID')} {line.unit}
+                            {/* Allocations are BASE-unit (kg) values — label them so. */}
+                            {roundQty(preview.allocatedQuantity).toLocaleString('id-ID')} {line.baseUnit || line.unit}
                           </Text>
                         </View>
                       ))}
