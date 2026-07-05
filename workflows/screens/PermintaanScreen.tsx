@@ -12,7 +12,7 @@ import DateSelectField, { getTodayIsoDate } from '../components/DateSelectField'
 import MaterialNamingAssist from '../components/MaterialNamingAssist';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
-import { computeWorkGroupGate1Flag } from '../gates/gate1';
+import { computeWorkGroupGate1Flag, type EnvelopeUnitDisplay } from '../gates/gate1';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
 import { supplierToBase } from '../../tools/materialUnitConversion';
 import { supabase } from '../../tools/supabase';
@@ -188,9 +188,19 @@ function buildWorkGroupAllocations(
   });
 }
 
+/** "a / b batang (a / b kg)" when a rebar factor exists, else "a / b kg". */
+function fmtEnvPairDisplay(a: number, b: number, baseUnit: string, display?: EnvelopeUnitDisplay | null): string {
+  if (display?.factor && display.factor > 0) {
+    const toBtg = (n: number) => (n / display.factor!).toLocaleString('id-ID', { maximumFractionDigits: 2 });
+    return `${toBtg(a)} / ${toBtg(b)} ${display.supplierUnit} (${Math.round(a).toLocaleString('id-ID')} / ${Math.round(b).toLocaleString('id-ID')} ${baseUnit})`;
+  }
+  return `${Math.round(a).toLocaleString('id-ID')} / ${Math.round(b).toLocaleString('id-ID')} ${baseUnit}`;
+}
+
 function buildTier2Result(
   envelope: MaterialEnvelopeStatus | null,
   requestedQty: number,
+  display?: EnvelopeUnitDisplay | null,
 ): GateResult {
   if (!envelope) {
     return {
@@ -222,7 +232,7 @@ function buildTier2Result(
     return {
       flag: 'HIGH',
       check: '1a',
-      msg: `${envelope.material_name} melampaui envelope: ${burnPct.toFixed(0)}% (${Math.round(newTotal).toLocaleString('id-ID')} / ${Math.round(Number(envelope.total_planned ?? 0)).toLocaleString('id-ID')} ${envelope.unit}).`,
+      msg: `${envelope.material_name} melampaui envelope: ${burnPct.toFixed(0)}% (${fmtEnvPairDisplay(newTotal, Number(envelope.total_planned ?? 0), envelope.unit, display)}).`,
       extra: {
         flag: 'INFO',
         check: 'scope',
@@ -457,6 +467,10 @@ export default function PermintaanScreen() {
       // envelope and allocation below is BASE-unit (kg) math — convert once
       // here so the kg formulas stay byte-for-byte unchanged.
       const requestedBaseQty = supplierToBase(requestedQty, line.base_qty_per_supplier_unit);
+      // Show the envelope check in batang (front-facing) while it computes in kg.
+      const envDisplay: EnvelopeUnitDisplay | null = line.base_qty_per_supplier_unit
+        ? { factor: line.base_qty_per_supplier_unit, supplierUnit: line.unit }
+        : null;
 
       if (line.tier === 1) {
         if (!line.workGroupKey) {
@@ -485,7 +499,7 @@ export default function PermintaanScreen() {
 
         return {
           ...line,
-          lineResult: computeWorkGroupGate1Flag(envelope, requestedBaseQty, group.label),
+          lineResult: computeWorkGroupGate1Flag(envelope, requestedBaseQty, group.label, envDisplay),
           allocationPreview: buildWorkGroupAllocations(breakdown, group.itemIds, requestedBaseQty),
         };
       }
@@ -507,7 +521,7 @@ export default function PermintaanScreen() {
         const envelope = envelopeCache.get(line.materialId) ?? null;
         return {
           ...line,
-          lineResult: buildTier2Result(envelope, requestedBaseQty),
+          lineResult: buildTier2Result(envelope, requestedBaseQty, envDisplay),
           allocationPreview: buildTier2Allocations(breakdownCache.get(line.materialId) ?? [], requestedBaseQty),
         };
       }
