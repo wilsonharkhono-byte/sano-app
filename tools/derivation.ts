@@ -158,13 +158,19 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
       .eq('project_id', projectId),
     supabase
       .from('receipts')
-      .select('id, po_id, receipt_lines(material_name, quantity_actual)')
+      .select('id, po_id, receipt_lines(material_id, material_name, quantity_actual)')
       .eq('project_id', projectId),
   ]);
 
   const boqPlannedMap = new Map((boqItems ?? []).map((item) => [item.id, Number(item.planned ?? 0)]));
   const derivedInstalledMap = new Map(boqTotals.map(total => [total.boq_item_id, Number(total.total_installed ?? 0)]));
   const poMaterialMap = new Map((purchaseOrders ?? []).map((po) => [po.id, po.material_name]));
+  // Received quantities are aggregated into TWO maps: by catalog material_id
+  // (the reliable join, populated once receipt_lines carry material_id — mig 055)
+  // and by normalized material_name (the legacy fallback for lines with no id).
+  // The lookup site tries id first, then name, so a receipt whose free-text name
+  // differs from the catalog name still reconciles via its material_id.
+  const receivedById = new Map<string, number>();
   const receivedByName = new Map<string, number>();
 
   for (const receipt of receipts ?? []) {
@@ -181,9 +187,15 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
     }
 
     for (const line of receiptLines) {
+      const qty = Number(line.quantity_actual ?? 0);
+      const materialId = (line as { material_id?: string | null }).material_id ?? null;
+      if (materialId) {
+        receivedById.set(materialId, (receivedById.get(materialId) ?? 0) + qty);
+        continue;
+      }
       const key = normalizeMaterialKey(line.material_name || poMaterialMap.get(receipt.po_id));
       if (!key) continue;
-      receivedByName.set(key, (receivedByName.get(key) ?? 0) + Number(line.quantity_actual ?? 0));
+      receivedByName.set(key, (receivedByName.get(key) ?? 0) + qty);
     }
   }
 
@@ -342,7 +354,11 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
   const balances: MaterialBalance[] = Array.from(aggregate.values()).map((bucket) => {
     const material = bucket.material_id ? materialMap.get(bucket.material_id) : null;
     const materialName = material?.name ?? bucket.material_name ?? bucket.material_id ?? 'Material belum dipetakan';
-    const received = receivedByName.get(normalizeMaterialKey(materialName)) ?? 0;
+    // Prefer the id link (a receipt keyed to this material_id counts even when
+    // its free-text name differs from the catalog name); fall back to the name
+    // key for legacy/unlinked receipt lines.
+    const receivedForId = bucket.material_id ? receivedById.get(bucket.material_id) : undefined;
+    const received = receivedForId ?? receivedByName.get(normalizeMaterialKey(materialName)) ?? 0;
     const unit = bucket.unit || material?.unit || '—';
 
     return {

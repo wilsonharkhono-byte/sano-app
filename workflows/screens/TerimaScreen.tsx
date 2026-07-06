@@ -58,17 +58,19 @@ export default function TerimaScreen() {
   // Inbound MTN — approved transfers targeting this project
   const [inboundMtns, setInboundMtns] = useState<InboundMTN[]>([]);
 
-  // Catalog factor lookup by EXACT material name (PO headers carry no
-  // material_id). Rebar receives in batang; anything unmatched stays as-is.
-  const [catalogByName, setCatalogByName] = useState<Map<string, { unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>>(new Map());
+  // Catalog lookup by EXACT material name (PO headers carry no material_id).
+  // Carries the catalog `id` so receipts can link to the catalog row (the
+  // received-vs-planned join key, migration 055). Rebar receives in batang;
+  // anything unmatched stays as-is.
+  const [catalogByName, setCatalogByName] = useState<Map<string, { id: string; unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>>(new Map());
 
   useEffect(() => {
     supabase
       .from('material_catalog')
-      .select('name, unit, supplier_unit, base_qty_per_supplier_unit')
+      .select('id, name, unit, supplier_unit, base_qty_per_supplier_unit')
       .then(({ data }) => {
-        const map = new Map<string, { unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>();
-        for (const row of (data as Array<{ name: string; unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>) ?? []) {
+        const map = new Map<string, { id: string; unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>();
+        for (const row of (data as Array<{ id: string; name: string; unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>) ?? []) {
           if (row.name) map.set(row.name.trim().toLowerCase(), row);
         }
         setCatalogByName(map);
@@ -221,7 +223,10 @@ export default function TerimaScreen() {
           gps_lon: key === 'vehicle' ? vehicleGps?.lon ?? null : null,
         }));
 
-      // Derive new PO status (unchanged logic — moves to backend trigger later).
+      // Optimistic-UI PO status only. As of migration 055 the server recomputes
+      // status authoritatively inside submit_receipt (summing all receipt_lines +
+      // legacy material_receipts under a row lock), so p_new_po_status below is
+      // ignored server-side — we still send it so pre-055 databases keep working.
       // qtyActual is typed in SUPPLIER units (batang for rebar); PO totals are base (kg).
       const newTotal = totalReceived + qtyActualBase;
       const newPoStatus = (isFinal || newTotal >= selectedPO!.quantity)
@@ -242,6 +247,7 @@ export default function TerimaScreen() {
         p_line_unit: selectedPO!.unit,
         p_photos: photoRecords,
         p_new_po_status: newPoStatus,
+        p_line_material_id: poCatalog?.id ?? null,
         p_activity_label: `${selectedPO!.material_name} ${qtyActual} ${poInputUnit}${poFactor != null ? ` (≈ ${qtyActualBase.toFixed(1)} ${selectedPO!.unit})` : ''} diterima (${isFinal ? 'Final' : 'Parsial'})`,
       });
       if (rcptErr || !receiptId) throw rcptErr || new Error('Receipt insert failed');

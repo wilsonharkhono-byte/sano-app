@@ -367,6 +367,50 @@ describe('deriveMaterialBalance — received & on_site', () => {
     // "  BESI D8 " normalizes to the same key as "Besi D8".
     expect(balances[0].received).toBe(4);
   });
+
+  it('joins an id-keyed receipt to a balance row whose name differs (the 055 fix)', async () => {
+    // The receipt line carries material_id='mat-1' but a FREE-TEXT name
+    // ("Besi Ulir 8mm") that does NOT match the catalog name ("Besi D8").
+    // The old name-only join silently dropped this (received=0); the id join
+    // must reconcile it.
+    wireSupabase({
+      rpc: { derive_boq_installed: { data: [] } },
+      tables: {
+        boq_items: {
+          data: [{ id: 'boq-1', planned: 5, installed: 0, unit: 'kg', tier1_material: null, tier2_material: null }],
+        },
+        ahs_versions: { data: [{ id: 'ahs-v1' }] },
+        purchase_orders: { data: [] },
+        receipts: {
+          data: [
+            {
+              id: 'r-1',
+              po_id: 'po-1',
+              receipt_lines: [{ material_id: 'mat-1', material_name: 'Besi Ulir 8mm', quantity_actual: 6 }],
+            },
+          ],
+        },
+        ahs_lines: {
+          data: [
+            {
+              material_id: 'mat-1', usage_rate: 0, coefficient: 1, waste_factor: 0,
+              unit: 'kg', boq_item_id: 'boq-1', material_spec: 'Besi beton',
+              line_type: 'material', material_catalog: { name: 'Besi D8' },
+            },
+          ],
+        },
+        material_catalog: { data: [{ id: 'mat-1', name: 'Besi D8', unit: 'kg' }] },
+      },
+    });
+
+    const balances = await deriveMaterialBalance('proj-1');
+
+    expect(balances).toHaveLength(1);
+    // Balance row is named 'Besi D8' (catalog), receipt says 'Besi Ulir 8mm' —
+    // only the material_id link can bridge them.
+    expect(balances[0].material_name).toBe('Besi D8');
+    expect(balances[0].received).toBe(6);
+  });
 });
 
 describe('deriveMaterialBalance — fallbacks when no structured baseline', () => {
