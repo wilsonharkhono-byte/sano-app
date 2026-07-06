@@ -168,6 +168,12 @@ export function computeGate1Flag(
 /**
  * Burn-threshold flag for an aggregate envelope (Tier 2 material envelope or a
  * work-group envelope). Shared so the two paths apply identical thresholds.
+ *
+ * SERVER TWIN — the work-group burn thresholds below
+ * (> 120 CRITICAL, > 100 HIGH, > 80 WARNING, else OK — deliberately NO > 50 INFO
+ * tier) are mirrored verbatim in compute_tier1_workgroup_flag in
+ * supabase/migrations/056_server_gate_tier1_workgroup.sql. Change the two in
+ * lockstep, or a modified client bypasses the server-side Tier-1 gate.
  */
 function envelopeBurnFlag(
   env: MaterialEnvelopeStatus,
@@ -196,6 +202,16 @@ function envelopeBurnFlag(
  * burn thresholds as Tier 2. Requires a catalog material to have a baseline; a
  * group with no planned demand for the material yields a soft INFO (never a
  * fake-correct OK).
+ *
+ * SERVER TWIN — enforced server-side by compute_tier1_workgroup_flag in
+ * supabase/migrations/056_server_gate_tier1_workgroup.sql. Both the burn
+ * thresholds (via envelopeBurnFlag) AND the INFO-on-missing-baseline rule (no /
+ * zero planned demand → soft INFO, never a fake OK / false hold) must change
+ * together in TS and SQL. NOTE: the progressPaceFlag advisory (1d) below is
+ * CLIENT-ONLY — it yields at most INFO/WARNING and so can never trigger
+ * AUTO_HOLD (which needs HIGH/CRITICAL), so migration 056 intentionally enforces
+ * only the burn check. Nothing is lost server-side: a pace advisory cannot hold
+ * a request, so there is nothing there for the server to enforce.
  */
 export function computeWorkGroupGate1Flag(
   envelope: MaterialEnvelopeStatus | null,

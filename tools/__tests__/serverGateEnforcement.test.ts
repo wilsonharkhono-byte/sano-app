@@ -407,6 +407,136 @@ describeDb('server gate enforcement — Tier 1', () => {
   });
 });
 
+describeDb('server gate enforcement — Tier 1 work-group envelope', () => {
+  // PermintaanScreen writes Tier-1 allocations with basis 'WORKGROUP_ENVELOPE'
+  // (not 'DIRECT'). These exercise the server twin compute_tier1_workgroup_flag
+  // added in migration 056. Allocations are inserted directly via adminClient —
+  // the harness's submitRequest basis union predates WORKGROUP_ENVELOPE — which
+  // also matches the placeholder→real DIRECT transition test above.
+  //
+  // Baseline planned demand is planted with buildTier2Envelope: it creates a
+  // project_material_master + master_line with planned_quantity for
+  // (material, boqItem), exactly the "latest master" source
+  // compute_tier1_workgroup_flag sums. Single-BoQ groups are used for fixture
+  // simplicity; the SQL aggregates with boq_item_id = ANY(v_boq_ids).
+
+  it('over work-group envelope (>120% burn) → CRITICAL + AUTO_HOLD after allocation insert', async () => {
+    const project = await createTestProject();
+    const material = await createTestMaterial({ tier: 1, unit: 'kg' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 1000, installed: 0 });
+    // Group planned baseline for this material = 100 kg.
+    await buildTier2Envelope({
+      projectId: project.id, materialId: material.id, boqItemId: boqItem.id, totalPlanned: 100,
+    });
+
+    // Line quantity 200 → burn (0 + 200)/100 = 200% > 120 → CRITICAL.
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 1,
+        materialId: material.id,
+        quantity: 200,
+        unit: 'kg',
+        clientFlag: 'OK', // client lies
+        allocations: [], // WORKGROUP_ENVELOPE inserted below (not in submitRequest union)
+      }],
+    });
+
+    // Before allocations: WARNING placeholder (no BoQ group yet).
+    const before = await readState(headerId, lineIds[0]);
+    expect(before.lineFlag).toBe('WARNING');
+
+    // Insert the WORKGROUP_ENVELOPE allocation → Trigger 3 recomputes the line.
+    const { error } = await adminClient.from('material_request_line_allocations').insert({
+      request_line_id: lineIds[0],
+      boq_item_id: boqItem.id,
+      allocated_quantity: 200,
+      proportion_pct: 100,
+      allocation_basis: 'WORKGROUP_ENVELOPE',
+    });
+    expect(error).toBeNull();
+
+    const after = await readState(headerId, lineIds[0]);
+    expect(after.lineFlag).toBe('CRITICAL');
+    expect(after.overallFlag).toBe('CRITICAL');
+    expect(after.overallStatus).toBe('AUTO_HOLD');
+  });
+
+  it('within work-group envelope (≤80% burn) → OK, status stays PENDING', async () => {
+    const project = await createTestProject();
+    const material = await createTestMaterial({ tier: 1, unit: 'kg' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 1000, installed: 0 });
+    await buildTier2Envelope({
+      projectId: project.id, materialId: material.id, boqItemId: boqItem.id, totalPlanned: 100,
+    });
+
+    // Line quantity 50 → burn (0 + 50)/100 = 50% ≤ 80 → OK (no >50 INFO tier here).
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 1,
+        materialId: material.id,
+        quantity: 50,
+        unit: 'kg',
+        allocations: [],
+      }],
+    });
+
+    const { error } = await adminClient.from('material_request_line_allocations').insert({
+      request_line_id: lineIds[0],
+      boq_item_id: boqItem.id,
+      allocated_quantity: 50,
+      proportion_pct: 100,
+      allocation_basis: 'WORKGROUP_ENVELOPE',
+    });
+    expect(error).toBeNull();
+
+    const after = await readState(headerId, lineIds[0]);
+    expect(after.lineFlag).toBe('OK');
+    expect(after.overallFlag).toBe('OK');
+    expect(after.overallStatus).toBe('PENDING');
+  });
+
+  it('work-group order with no baseline for the material → INFO (never a fake OK)', async () => {
+    const project = await createTestProject();
+    const material = await createTestMaterial({ tier: 1, unit: 'kg' });
+    const boqItem = await createTestBoqItem(project.id, { planned: 1000, installed: 0 });
+    // Intentionally NO buildTier2Envelope → no project_material_master_lines row →
+    // v_planned NULL → INFO (soft flag: cannot evaluate, estimator reviews manually).
+
+    const { headerId, lineIds } = await submitRequest({
+      projectId: project.id,
+      requesterProfileId: project.ownerProfileId,
+      primaryBoqItemId: boqItem.id,
+      lines: [{
+        tier: 1,
+        materialId: material.id,
+        quantity: 200,
+        unit: 'kg',
+        clientFlag: 'OK', // client lies
+        allocations: [],
+      }],
+    });
+
+    const { error } = await adminClient.from('material_request_line_allocations').insert({
+      request_line_id: lineIds[0],
+      boq_item_id: boqItem.id,
+      allocated_quantity: 200,
+      proportion_pct: 100,
+      allocation_basis: 'WORKGROUP_ENVELOPE',
+    });
+    expect(error).toBeNull();
+
+    const after = await readState(headerId, lineIds[0]);
+    expect(after.lineFlag).toBe('INFO'); // cannot evaluate → soft flag, not a fake OK
+    expect(after.overallStatus).toBe('PENDING'); // INFO does not auto-hold
+  });
+});
+
 describeDb('server gate enforcement — reviewer status preservation', () => {
   it('header in APPROVED status survives line UPDATE (flag updates, status stays)', async () => {
     const project = await createTestProject();
