@@ -1,5 +1,7 @@
 -- SANO — Scope v_material_envelopes to the latest project_material_master.
 --
+-- Assumes all lower-numbered migrations (001-053) are applied.
+--
 -- Bug: publishBaselineV2 (tools/publishBaselineV2.ts:699-704) inserts a NEW
 -- project_material_master header on every publish and keeps prior generations
 -- around (no delete/supersede). Before this fix, v_material_envelopes summed
