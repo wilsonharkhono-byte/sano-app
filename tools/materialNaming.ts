@@ -6,6 +6,8 @@ export interface MaterialNamingCatalogEntry {
   category?: string | null;
   tier?: 1 | 2 | 3 | null;
   supplier_unit?: string | null;
+  /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
+  base_qty_per_supplier_unit?: number | null;
 }
 
 export interface MaterialCatalogSuggestion {

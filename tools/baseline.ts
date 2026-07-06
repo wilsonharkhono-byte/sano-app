@@ -336,6 +336,8 @@ export interface ParsedMaterialRow {
   tier: 1 | 2 | 3;
   unit: string;
   supplier_unit?: string;
+  /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
+  base_qty_per_supplier_unit?: number | null;
   reference_unit_price?: number | null;
   aliases?: string[];
 }

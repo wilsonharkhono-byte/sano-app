@@ -13,6 +13,7 @@ import { sanitizeText, isPositiveNumber } from '../../tools/validation';
 import { pickAndUploadPhoto } from '../../tools/storage';
 import { requestGps } from '../../tools/gps';
 import { getPurchaseOrderDisplayNumber } from '../../tools/purchaseOrders';
+import { supplierToBase, displayQty } from '../../tools/materialUnitConversion';
 import { supabase } from '../../tools/supabase';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import type { GateResult, PurchaseOrder } from '../../tools/types';
@@ -57,6 +58,23 @@ export default function TerimaScreen() {
   // Inbound MTN — approved transfers targeting this project
   const [inboundMtns, setInboundMtns] = useState<InboundMTN[]>([]);
 
+  // Catalog factor lookup by EXACT material name (PO headers carry no
+  // material_id). Rebar receives in batang; anything unmatched stays as-is.
+  const [catalogByName, setCatalogByName] = useState<Map<string, { unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>>(new Map());
+
+  useEffect(() => {
+    supabase
+      .from('material_catalog')
+      .select('name, unit, supplier_unit, base_qty_per_supplier_unit')
+      .then(({ data }) => {
+        const map = new Map<string, { unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>();
+        for (const row of (data as Array<{ name: string; unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>) ?? []) {
+          if (row.name) map.set(row.name.trim().toLowerCase(), row);
+        }
+        setCatalogByName(map);
+      });
+  }, []);
+
   useEffect(() => {
     if (!project) return;
     supabase
@@ -69,6 +87,22 @@ export default function TerimaScreen() {
   }, [project]);
 
   const selectedPO = useMemo(() => purchaseOrders.find(p => p.id === poId), [purchaseOrders, poId]);
+
+  // Factor for the selected PO's material (null → 1:1, everything stays base).
+  const poCatalog = selectedPO ? catalogByName.get(selectedPO.material_name.trim().toLowerCase()) ?? null : null;
+  const poFactor = poCatalog?.base_qty_per_supplier_unit ?? null;
+  const poInputUnit = poFactor != null ? (poCatalog?.supplier_unit || 'batang') : selectedPO?.unit ?? '';
+  /** Format a BASE-unit (kg) PO quantity for display — batang for rebar. */
+  const formatPoQty = (qtyBase: number) => {
+    const d = displayQty(qtyBase, poCatalog ?? { unit: selectedPO?.unit ?? '' });
+    return d.converted
+      ? `${d.qty.toLocaleString('id-ID')} ${d.unit} (≈ ${d.baseQty.toLocaleString('id-ID')} ${d.baseUnit})`
+      : `${d.qty.toLocaleString('id-ID')} ${d.unit}`;
+  };
+  // The supervisor types SUPPLIER units (batang for rebar); receipts, gate
+  // checks and PO totals are BASE-unit (kg) math.
+  const qtyActualBase = supplierToBase(parseFloat(qtyActual), poFactor);
+
   const isReadymix = selectedPO?.material_name.toLowerCase().includes('readymix') ?? false;
   const requiredPhotos = isReadymix ? 4 : 3;
 
@@ -132,14 +166,14 @@ export default function TerimaScreen() {
 
   const gateResult: GateResult | null = useMemo(() => {
     if (!selectedPO || !qtyActual) return null;
-    const q = parseFloat(qtyActual);
+    const q = supplierToBase(parseFloat(qtyActual), poFactor);
     if (isNaN(q) || q <= 0) return null;
     return computeGate3Flag(selectedPO, q, null, {
       total_received: totalReceived,
       total_planned: selectedPO.quantity,
       unit: selectedPO.unit,
     });
-  }, [selectedPO, qtyActual, totalReceived]);
+  }, [selectedPO, qtyActual, totalReceived, poFactor]);
 
   const handlePhoto = async (type: string) => {
     try {
@@ -188,7 +222,8 @@ export default function TerimaScreen() {
         }));
 
       // Derive new PO status (unchanged logic — moves to backend trigger later).
-      const newTotal = totalReceived + parseFloat(qtyActual);
+      // qtyActual is typed in SUPPLIER units (batang for rebar); PO totals are base (kg).
+      const newTotal = totalReceived + qtyActualBase;
       const newPoStatus = (isFinal || newTotal >= selectedPO!.quantity)
         ? 'FULLY_RECEIVED'
         : 'PARTIAL_RECEIVED';
@@ -203,18 +238,18 @@ export default function TerimaScreen() {
         p_gate3_details: gateResult,
         p_notes: notes ? sanitizeText(notes) : null,
         p_line_material_name: selectedPO!.material_name,
-        p_line_quantity: parseFloat(qtyActual),
+        p_line_quantity: qtyActualBase,
         p_line_unit: selectedPO!.unit,
         p_photos: photoRecords,
         p_new_po_status: newPoStatus,
-        p_activity_label: `${selectedPO!.material_name} ${qtyActual} ${selectedPO!.unit} diterima (${isFinal ? 'Final' : 'Parsial'})`,
+        p_activity_label: `${selectedPO!.material_name} ${qtyActual} ${poInputUnit}${poFactor != null ? ` (≈ ${qtyActualBase.toFixed(1)} ${selectedPO!.unit})` : ''} diterima (${isFinal ? 'Final' : 'Parsial'})`,
       });
       if (rcptErr || !receiptId) throw rcptErr || new Error('Receipt insert failed');
 
       resetForm();
       await loadReceiptHistory(poId);
       await refresh();
-      toast(`${isFinal ? 'Penerimaan final' : 'Penerimaan parsial'} dicatat — ${qtyActual} ${selectedPO!.unit}`, 'ok');
+      toast(`${isFinal ? 'Penerimaan final' : 'Penerimaan parsial'} dicatat — ${qtyActual} ${poInputUnit}`, 'ok');
     } catch (err: any) {
       console.warn('Receipt submit failed:', err?.message ?? err);
       toast(err?.message ?? 'Gagal menyimpan penerimaan', 'critical');
@@ -279,15 +314,15 @@ export default function TerimaScreen() {
 
                 <View style={styles.poMetrics}>
                   <View style={styles.poMetric}>
-                    <Text style={styles.poMetricValue}>{selectedPO.quantity}</Text>
+                    <Text style={styles.poMetricValue}>{formatPoQty(selectedPO.quantity)}</Text>
                     <Text style={styles.hint}>Dipesan</Text>
                   </View>
                   <View style={styles.poMetric}>
-                    <Text style={[styles.poMetricValue, { color: COLORS.ok }]}>{totalReceived.toFixed(1)}</Text>
+                    <Text style={[styles.poMetricValue, { color: COLORS.ok }]}>{formatPoQty(totalReceived)}</Text>
                     <Text style={styles.hint}>Diterima</Text>
                   </View>
                   <View style={styles.poMetric}>
-                    <Text style={[styles.poMetricValue, { color: remainingQty > 0 ? COLORS.warning : COLORS.ok }]}>{remainingQty.toFixed(1)}</Text>
+                    <Text style={[styles.poMetricValue, { color: remainingQty > 0 ? COLORS.warning : COLORS.ok }]}>{formatPoQty(remainingQty)}</Text>
                     <Text style={styles.hint}>Sisa</Text>
                   </View>
                 </View>
@@ -310,7 +345,7 @@ export default function TerimaScreen() {
                     <View key={r.id} style={styles.historyRow}>
                       <Text style={styles.historyNum}>#{idx + 1}</Text>
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.historyQty}>{r.quantity_actual} {selectedPO.unit}</Text>
+                        <Text style={styles.historyQty}>{formatPoQty(r.quantity_actual)}</Text>
                         {r.vehicle_ref && <Text style={styles.hint}>{r.vehicle_ref}</Text>}
                       </View>
                       <Text style={styles.hint}>{new Date(r.created_at).toLocaleDateString('id-ID')}</Text>
@@ -325,9 +360,14 @@ export default function TerimaScreen() {
                   <Text style={styles.label}>Jumlah Diterima <Text style={styles.req}>*</Text></Text>
                   <View style={styles.row2}>
                     <TextInput style={[styles.input, { flex: 1 }]} keyboardType="numeric" value={qtyActual} onChangeText={setQtyActual} placeholder="0" />
-                    <TextInput style={[styles.input, styles.disabled, { flex: 1 }]} value={selectedPO.unit} editable={false} />
+                    <TextInput style={[styles.input, styles.disabled, { flex: 1 }]} value={poInputUnit} editable={false} />
                   </View>
-                  <Text style={styles.fieldHint}>Sisa yang harus diterima: {remainingQty.toFixed(1)} {selectedPO.unit}</Text>
+                  {poFactor != null && isPositiveNumber(qtyActual) && (
+                    <Text style={styles.fieldHint}>
+                      ≈ {qtyActualBase.toFixed(1)} {selectedPO.unit} · 1 {poInputUnit} = {poFactor} {selectedPO.unit}
+                    </Text>
+                  )}
+                  <Text style={styles.fieldHint}>Sisa yang harus diterima: {formatPoQty(remainingQty)}</Text>
 
                   <Text style={styles.label}>Referensi Kendaraan</Text>
                   <TextInput style={styles.input} value={vehicleRef} onChangeText={setVehicleRef} placeholder="Plat nomor / ID shipment" />

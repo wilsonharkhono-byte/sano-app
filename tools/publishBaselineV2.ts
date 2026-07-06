@@ -3,6 +3,7 @@ import { toNumber } from './boqParserV2/classifyComponent';
 import { reconcileMaterials } from './excelParser';
 import type { CatalogEntry } from './excelParser';
 import { resilientWrite } from './resilientWrite';
+import { normalizeUnit, toBaseQty } from './materialUnitConversion';
 
 export interface CatalogRow {
   id: string;
@@ -11,6 +12,40 @@ export interface CatalogRow {
   category: string;
   tier: 1 | 2 | 3;
   unit: string;
+  supplier_unit?: string | null;
+  base_qty_per_supplier_unit?: number | null;
+}
+
+/**
+ * Normalize a parsed component's quantity to the linked material's BASE unit.
+ * Handles batang-denominated workbooks (future RABs may state rebar in batang
+ * instead of kg): 'btg/batang/lonjor' × factor → kg. If the material's own
+ * base unit IS batang (e.g. kayu usuk), the qty is already base — pass
+ * through. Batang input with no resolvable factor returns an error string;
+ * the caller routes the line to review, never treats it as kg (CLAUDE.md
+ * §1.1: wrong numbers are worse than absent numbers).
+ */
+export function normalizeComponentQty(
+  component: { quantityPerUnit: number; unit?: string },
+  mat: { unit: string; supplier_unit?: string | null; base_qty_per_supplier_unit?: number | null } | null,
+): { coefficient: number; unit: string; error: string | null } {
+  const rawUnit = component.unit || '';
+  if (normalizeUnit(rawUnit) !== 'batang') {
+    return { coefficient: component.quantityPerUnit, unit: rawUnit, error: null };
+  }
+  if (mat == null) {
+    return {
+      coefficient: component.quantityPerUnit,
+      unit: rawUnit,
+      error: 'qty dalam batang tapi material tidak dikenali di katalog — perlu review manual',
+    };
+  }
+  if (normalizeUnit(mat.unit) === 'batang') {
+    return { coefficient: component.quantityPerUnit, unit: rawUnit, error: null };
+  }
+  const res = toBaseQty(component.quantityPerUnit, rawUnit, mat);
+  if (!res.ok) return { coefficient: component.quantityPerUnit, unit: rawUnit, error: res.error };
+  return { coefficient: res.qtyBase, unit: mat.unit, error: null };
 }
 
 /**
@@ -399,9 +434,10 @@ export async function publishBaselineV2(
   // a real material_id (powering per-material envelope/gate checks downstream).
   const { data: catalogData, error: catErr } = await supabase
     .from('material_catalog')
-    .select('id, code, name, category, tier, unit');
+    .select('id, code, name, category, tier, unit, supplier_unit, base_qty_per_supplier_unit');
   if (catErr) return { success: false, error: `material_catalog load failed: ${catErr.message}` };
   const catalog: CatalogRow[] = (catalogData ?? []) as CatalogRow[];
+  const catalogById = new Map(catalog.map(c => [c.id, c]));
 
   const { data: aliasData, error: aliasErr } = await supabase
     .from('material_aliases')
@@ -602,16 +638,29 @@ export async function publishBaselineV2(
       if (lineType === 'material' && materialId == null) {
         unresolvedComponents.push(`${pd.code}: ${name}`);
       }
+      // Batang-denominated components normalize to the material's base unit
+      // (kg) before anything is stored; failures go to review, never guessed.
+      const matRow = materialId != null ? catalogById.get(materialId) ?? null : null;
+      const norm = normalizeComponentQty({ quantityPerUnit: c.quantityPerUnit, unit: c.unit }, matRow);
+      if (norm.error) {
+        unresolvedComponents.push(`${pd.code}: ${name} — ${norm.error}`);
+        continue;
+      }
+      // If the qty converted (batang → kg), the price is per-batang; convert
+      // to per-kg so the line total stays invariant.
+      const unitPrice = norm.unit !== (c.unit || '') && norm.coefficient > 0
+        ? c.unitPrice * (c.quantityPerUnit / norm.coefficient)
+        : c.unitPrice;
       ahsLineInserts.push({
         ahs_version_id: ahsVersionId,
         boq_item_id: boqId,
         material_id: materialId,
         tier: 1,
-        unit: c.unit || '',
+        unit: norm.unit,
         material_spec: name,
-        coefficient: c.quantityPerUnit,
-        usage_rate: c.quantityPerUnit,
-        unit_price: c.unitPrice,
+        coefficient: norm.coefficient,
+        usage_rate: norm.coefficient,
+        unit_price: unitPrice,
         line_type: lineType,
         description: name,
         ahs_block_title: c.referencedBlockTitle ?? null,
@@ -622,8 +671,8 @@ export async function publishBaselineV2(
         boq_planned: volume,
         material_id: materialId,
         material_name: name,
-        coefficient: c.quantityPerUnit,
-        unit: c.unit || '',
+        coefficient: norm.coefficient,
+        unit: norm.unit,
         line_type: lineType,
       });
     }

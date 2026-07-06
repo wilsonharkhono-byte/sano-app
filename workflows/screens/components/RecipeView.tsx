@@ -21,6 +21,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import type { BoqRowRecipe, RecipeComponent } from '../../../tools/boqParserV2/types';
 import { formatRupiah, formatQuantity } from '../../../tools/auditPivot';
+import { rebarFactorByName } from '../../../tools/rebarBatang';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../../theme';
 
 if (
@@ -68,6 +69,10 @@ function ComponentRow({ comp }: { comp: RecipeComponent }) {
     ?? comp.referencedBlockTitle
     ?? `${comp.referencedCell.sheet}!${comp.referencedCell.address}`;
 
+  // Rebar coefficients are kg/m³ in the workbook; show the batang equivalent
+  // (front-facing order unit) with the kg value kept alongside. Only explicit
+  // diameter tokens ("Besi D8") match — derived lines (waste/decking) stay kg.
+  const batangFactor = rebarFactorByName(comp.materialName);
   const coeffFormatted = formatQuantity(comp.quantityPerUnit, 4);
   const priceFormatted = formatRupiah(comp.unitPrice);
   const contribFormatted = formatRupiah(comp.costContribution);
@@ -77,7 +82,9 @@ function ComponentRow({ comp }: { comp: RecipeComponent }) {
       <View style={{ flex: 1 }}>
         <Text style={styles.componentLabel} numberOfLines={2}>{label}</Text>
         <Text style={styles.componentMath}>
-          {coeffFormatted} × {priceFormatted} = {contribFormatted}
+          {batangFactor != null
+            ? `${formatQuantity(comp.quantityPerUnit, 2)} kg × ${priceFormatted} = ${contribFormatted} (≈ ${formatQuantity(comp.quantityPerUnit / batangFactor, 2)} btg)`
+            : `${coeffFormatted} × ${priceFormatted} = ${contribFormatted}`}
         </Text>
         <Text style={styles.componentSource}>
           {comp.sourceCell.sheet}!{comp.sourceCell.address}

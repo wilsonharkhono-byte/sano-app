@@ -169,7 +169,11 @@ export function computeGate1Flag(
  * Burn-threshold flag for an aggregate envelope (Tier 2 material envelope or a
  * work-group envelope). Shared so the two paths apply identical thresholds.
  */
-function envelopeBurnFlag(env: MaterialEnvelopeStatus, requestedQty: number): GateResult {
+function envelopeBurnFlag(
+  env: MaterialEnvelopeStatus,
+  requestedQty: number,
+  display?: EnvelopeUnitDisplay | null,
+): GateResult {
   const newTotal = env.total_ordered + requestedQty;
   const burnPct = env.total_planned > 0 ? (newTotal / env.total_planned) * 100 : 0;
   const remainingEnv = env.total_planned - env.total_ordered;
@@ -177,13 +181,13 @@ function envelopeBurnFlag(env: MaterialEnvelopeStatus, requestedQty: number): Ga
   const u = env.unit;
 
   if (burnPct > 120) {
-    return { flag: 'CRITICAL', check: '1a', msg: `Envelope ${matName}: ${fmtN(newTotal)} / ${fmtN(env.total_planned)} ${u} (${burnPct.toFixed(0)}%). Melebihi +20%. Auto-hold.` };
+    return { flag: 'CRITICAL', check: '1a', msg: `Envelope ${matName}: ${fmtEnvPair(newTotal, env.total_planned, u, display)} (${burnPct.toFixed(0)}%). Melebihi +20%. Auto-hold.` };
   } else if (burnPct > 100) {
-    return { flag: 'HIGH', check: '1a', msg: `Envelope ${matName} melampaui batas: ${fmtN(newTotal)} / ${fmtN(env.total_planned)} ${u} (${burnPct.toFixed(0)}%). Eskalasi.` };
+    return { flag: 'HIGH', check: '1a', msg: `Envelope ${matName} melampaui batas: ${fmtEnvPair(newTotal, env.total_planned, u, display)} (${burnPct.toFixed(0)}%). Eskalasi.` };
   } else if (burnPct > 80) {
-    return { flag: 'WARNING', check: '1a', msg: `Envelope ${matName}: ${burnPct.toFixed(0)}% terpakai (sisa ~${fmtN(remainingEnv - requestedQty)} ${u}). Mendekati batas.` };
+    return { flag: 'WARNING', check: '1a', msg: `Envelope ${matName}: ${burnPct.toFixed(0)}% terpakai (sisa ~${fmtEnvOne(remainingEnv - requestedQty, u, display)}). Mendekati batas.` };
   }
-  return { flag: 'OK', check: '1a', msg: `Envelope ${matName}: ${burnPct.toFixed(0)}% (${fmtN(newTotal)} / ${fmtN(env.total_planned)} ${u}). ${env.boq_item_count} item BoQ terkait.` };
+  return { flag: 'OK', check: '1a', msg: `Envelope ${matName}: ${burnPct.toFixed(0)}% (${fmtEnvPair(newTotal, env.total_planned, u, display)}). ${env.boq_item_count} item BoQ terkait.` };
 }
 
 /**
@@ -197,6 +201,7 @@ export function computeWorkGroupGate1Flag(
   envelope: MaterialEnvelopeStatus | null,
   requestedQty: number,
   groupLabel: string,
+  display?: EnvelopeUnitDisplay | null,
 ): GateResult {
   if (requestedQty <= 0) {
     return { flag: 'WARNING', check: '1a', msg: 'Masukkan jumlah permintaan lebih dari 0.' };
@@ -210,7 +215,7 @@ export function computeWorkGroupGate1Flag(
   }
 
   // 1a — envelope burn (ordered vs planned).
-  const burn = envelopeBurnFlag(envelope, requestedQty);
+  const burn = envelopeBurnFlag(envelope, requestedQty, display);
 
   // 1d — progress pace: is this order running ahead of physical progress?
   // Material is ordered ahead of installation (normal), so only the GAP between
@@ -242,4 +247,37 @@ function progressPaceFlag(env: MaterialEnvelopeStatus, requestedQty: number): Ga
 
 function fmtN(n: number): string {
   return Math.round(n).toLocaleString('id-ID');
+}
+
+/**
+ * Display descriptor for showing an envelope (stored in base units, e.g. kg for
+ * rebar) in the SUPPLIER unit the user orders in (batang). The burn math stays
+ * base-unit — percentages are unit-invariant — this only reformats the shown
+ * numbers. `factor` = base units per one supplier unit (kg per batang).
+ */
+export interface EnvelopeUnitDisplay {
+  factor: number | null;
+  supplierUnit: string;
+}
+
+function fmtBatang(kg: number, display?: EnvelopeUnitDisplay | null): string {
+  return display?.factor && display.factor > 0
+    ? (kg / display.factor).toLocaleString('id-ID', { maximumFractionDigits: 2 })
+    : fmtN(kg);
+}
+
+/** "X / Y batang (X / Y kg)" when a factor exists, else "X / Y kg". */
+function fmtEnvPair(a: number, b: number, baseUnit: string, display?: EnvelopeUnitDisplay | null): string {
+  if (display?.factor && display.factor > 0) {
+    return `${fmtBatang(a, display)} / ${fmtBatang(b, display)} ${display.supplierUnit} (${fmtN(a)} / ${fmtN(b)} ${baseUnit})`;
+  }
+  return `${fmtN(a)} / ${fmtN(b)} ${baseUnit}`;
+}
+
+/** "~X batang (X kg)" when a factor exists, else "~X kg". */
+function fmtEnvOne(kg: number, baseUnit: string, display?: EnvelopeUnitDisplay | null): string {
+  if (display?.factor && display.factor > 0) {
+    return `${fmtBatang(kg, display)} ${display.supplierUnit} (${fmtN(kg)} ${baseUnit})`;
+  }
+  return `${fmtN(kg)} ${baseUnit}`;
 }

@@ -178,6 +178,7 @@ function readMaterialRows() {
   const tierIndex = findHeaderIndex(map, ['Tier']);
   const unitIndex = findHeaderIndex(map, ['Satuan Unit', 'unit']);
   const supplierUnitIndex = findHeaderIndex(map, ['Supplier Unit', 'supplier_unit']);
+  const baseQtyIndex = findHeaderIndex(map, ['Base Qty per Supplier Unit', 'base_qty_per_supplier_unit']);
 
   return rows.map((row, rowOffset) => {
     try {
@@ -186,6 +187,15 @@ function readMaterialRows() {
       const category = optionalValue(row, categoryIndex) || null;
       const unit = requiredValue(row, unitIndex, 'Satuan Unit');
       const supplierUnit = optionalValue(row, supplierUnitIndex) || unit;
+      const baseQtyRaw = optionalValue(row, baseQtyIndex);
+      let baseQtyPerSupplierUnit = null;
+      if (baseQtyRaw) {
+        const parsed = Number(baseQtyRaw);
+        if (!isFinite(parsed) || parsed <= 0) {
+          throw new Error(`Base Qty per Supplier Unit tidak valid: "${baseQtyRaw}"`);
+        }
+        baseQtyPerSupplierUnit = parsed;
+      }
       return {
         code,
         name,
@@ -193,6 +203,7 @@ function readMaterialRows() {
         tier: parseTier(requiredValue(row, tierIndex, 'Tier')),
         unit,
         supplier_unit: supplierUnit,
+        base_qty_per_supplier_unit: baseQtyPerSupplierUnit,
       };
     } catch (error) {
       throw new Error(`material_master.csv row ${rowOffset + 2}: ${error.message}`);
@@ -411,7 +422,7 @@ async function syncOnce() {
 
   const { data: existingMaterials, error: fetchMaterialsError } = await supabase
     .from('material_catalog')
-    .select('id, code, name, category, tier, unit, supplier_unit');
+    .select('id, code, name, category, tier, unit, supplier_unit, base_qty_per_supplier_unit');
 
   if (fetchMaterialsError) {
     throw new Error(`Failed to fetch existing materials: ${fetchMaterialsError.message}`);
@@ -439,7 +450,9 @@ async function syncOnce() {
       (existing.category ?? null) !== material.category ||
       Number(existing.tier) !== material.tier ||
       existing.unit !== material.unit ||
-      (existing.supplier_unit ?? '') !== material.supplier_unit;
+      (existing.supplier_unit ?? '') !== material.supplier_unit ||
+      (existing.base_qty_per_supplier_unit == null ? null : Number(existing.base_qty_per_supplier_unit)) !==
+        material.base_qty_per_supplier_unit;
 
     if (changed) {
       toUpdate.push({ id: existing.id, ...material });
@@ -474,7 +487,7 @@ async function syncOnce() {
 
   const { data: catalogRows, error: refetchError } = await supabase
     .from('material_catalog')
-    .select('id, code, name, category, tier, unit, supplier_unit');
+    .select('id, code, name, category, tier, unit, supplier_unit, base_qty_per_supplier_unit');
 
   if (refetchError) {
     throw new Error(`Failed to refetch materials: ${refetchError.message}`);

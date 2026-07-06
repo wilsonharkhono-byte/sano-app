@@ -22,6 +22,8 @@ interface CatalogMaterial {
   tier: 1 | 2 | 3;
   unit: string;
   supplier_unit: string;
+  /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
+  base_qty_per_supplier_unit?: number | null;
 }
 
 interface MaterialAlias {
@@ -214,6 +216,11 @@ export default function MaterialCatalogScreen({ onBack }: { onBack: () => void }
               {selectedMaterial.supplier_unit && selectedMaterial.supplier_unit !== selectedMaterial.unit && (
                 <Text style={styles.detailMetaItem}>Satuan supplier: {selectedMaterial.supplier_unit}</Text>
               )}
+              {selectedMaterial.base_qty_per_supplier_unit != null && (
+                <Text style={styles.detailMetaItem}>
+                  1 {selectedMaterial.supplier_unit} = {selectedMaterial.base_qty_per_supplier_unit} {selectedMaterial.unit}
+                </Text>
+              )}
               {selectedMaterial.category && (
                 <Text style={styles.detailMetaItem}>Kategori: {selectedMaterial.category}</Text>
               )}
@@ -345,7 +352,7 @@ export default function MaterialCatalogScreen({ onBack }: { onBack: () => void }
                 <Ionicons name="chevron-forward" size={16} color={COLORS.textMuted} style={styles.chevron} />
               </View>
               <Text style={styles.matName} numberOfLines={1}>{mat.name}</Text>
-              <Text style={styles.matUnit}>{mat.unit}</Text>
+              <Text style={styles.matUnit}>{mat.supplier_unit || mat.unit}</Text>
             </TouchableOpacity>
           );
         }}

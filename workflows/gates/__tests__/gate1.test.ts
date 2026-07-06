@@ -1,5 +1,5 @@
-import { computeGate1Flag } from '../gate1';
-import type { BoqItem, GateResult } from '../../../tools/types';
+import { computeGate1Flag, computeWorkGroupGate1Flag } from '../gate1';
+import type { BoqItem, GateResult, MaterialEnvelopeStatus } from '../../../tools/types';
 
 const poer: BoqItem = {
   id: 'poer', project_id: 'p', code: 'III.A.1.2', label: 'Poer PC.2', unit: 'm3',
@@ -50,5 +50,32 @@ describe('computeGate1Flag — Tier 1 per-material remaining', () => {
     expect(res?.flag).toBe('INFO');
     expect(res?.msg).toContain('belum tergabung dalam milestone');
     expect(get1a(res)?.flag).toBe('OK');
+  });
+});
+
+describe('computeWorkGroupGate1Flag — batang display', () => {
+  const rebarEnv: MaterialEnvelopeStatus = {
+    material_id: 'reb-de13', project_id: 'p', material_code: 'REB-DE13',
+    material_name: 'Besi beton ulir 13 mm', tier: 1, unit: 'kg',
+    total_planned: 4452, total_ordered: 0, total_received: 0, total_installed: 0,
+    remaining_to_order: 4452, burn_pct: 0, boq_item_count: 26,
+  };
+
+  it('shows the envelope in batang (front-facing) with kg kept in parens', () => {
+    // 10 batang typed → 125 kg passed in; 125 / 4452 = 2.8% → OK.
+    const res = computeWorkGroupGate1Flag(rebarEnv, 125, 'Struktur Pondasi', {
+      factor: 12.5, supplierUnit: 'batang',
+    });
+    expect(res.flag).toBe('OK');
+    // 125/12.5 = 10 batang ordered; 4452/12.5 = 356.16 batang planned.
+    expect(res.msg).toContain('10 / 356,16 batang');
+    expect(res.msg).toContain('(125 / 4.452 kg)'); // truth kept visible
+    expect(res.msg).toContain('3%'); // percentage is unit-invariant
+  });
+
+  it('falls back to kg when no factor is supplied (non-rebar)', () => {
+    const res = computeWorkGroupGate1Flag(rebarEnv, 125, 'Struktur Pondasi', null);
+    expect(res.msg).toContain('125 / 4.452 kg');
+    expect(res.msg).not.toContain('batang');
   });
 });
