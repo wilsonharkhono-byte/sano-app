@@ -277,7 +277,7 @@ export interface MaterialRequestLine {
   request_header_id: string;
   material_id: string | null;
   custom_material_name: string | null;
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   material_spec_reference: string | null;
   quantity: number;
   unit: string;

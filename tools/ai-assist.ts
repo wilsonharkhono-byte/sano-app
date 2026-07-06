@@ -113,7 +113,7 @@ interface MaterialNamingAIInput {
     name: string;
     unit: string;
     category: string | null;
-    tier: 1 | 2 | 3 | null;
+    tier: 1 | 2 | 3 | 4 | null;
     score: number;
   }>;
 }

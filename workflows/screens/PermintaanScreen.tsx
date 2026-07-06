@@ -17,6 +17,7 @@ import { sanitizeText, isPositiveNumber } from '../../tools/validation';
 import { supplierToBase } from '../../tools/materialUnitConversion';
 import { supabase } from '../../tools/supabase';
 import { getWorkGroupEnvelope } from '../../tools/envelopes';
+import { evaluateTier4Untracked } from '../../tools/budgetGate';
 import { buildWorkGroups } from '../../tools/boqWorkGroups';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, RADIUS_SM } from '../theme';
 import type {
@@ -39,7 +40,7 @@ interface MaterialOption {
   supplier_unit: string;
   /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
   base_qty_per_supplier_unit: number | null;
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   code: string | null;
   category: string | null;
 }
@@ -58,7 +59,7 @@ interface RequestLine {
   materialId: string | null;
   materialName: string;
   isCustom: boolean;
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   /** Typed in SUPPLIER units (batang for rebar); gates/persist convert to base. */
   quantity: string;
   unit: string;
@@ -82,16 +83,18 @@ const URGENCY_OPTIONS = [
   { key: 'CRITICAL', label: 'Kritis', color: COLORS.critical },
 ] as const;
 
-const TIER_LABELS: Record<1 | 2 | 3, string> = {
+const TIER_LABELS: Record<1 | 2 | 3 | 4, string> = {
   1: 'Tier 1 — Presisi',
   2: 'Tier 2 — Bulk',
   3: 'Tier 3 — Habis Pakai',
+  4: 'Tier 4 — Consumable',
 };
 
-const TIER_COLORS: Record<1 | 2 | 3, string> = {
+const TIER_COLORS: Record<1 | 2 | 3 | 4, string> = {
   1: COLORS.primary,
   2: COLORS.accent,
   3: COLORS.textSec,
+  4: COLORS.textMuted,
 };
 
 let lineCounter = 0;
@@ -272,6 +275,19 @@ function buildTier3Result(requestedQty: number, unit: string): GateResult {
     check: '1a',
     msg: `Tier 3 dicatat sebagai stok umum: ${roundQty(requestedQty)} ${unit || 'unit'}.`,
   };
+}
+
+/** Tier 3 (Rupiah budget) and Tier 4 (untracked consumable) both post as a
+ * single general-stock allocation — no BoQ item to deduct against. */
+function buildGeneralStockAllocation(requestedQty: number): AllocationPreview[] {
+  return [{
+    boqItemId: null,
+    boqCode: 'STOK',
+    boqLabel: 'Stok Umum',
+    allocatedQuantity: roundQty(requestedQty),
+    proportionPct: 100,
+    allocationBasis: 'GENERAL_STOCK' as const,
+  }];
 }
 
 function describeAllocation(line: RequestLine, allocationCount: number) {
@@ -526,17 +542,20 @@ export default function PermintaanScreen() {
         };
       }
 
+      if (line.tier === 4) {
+        // Untracked consumable — never gated (mirrors tools/budgetGate.ts
+        // evaluateTier4Untracked / the server's dispatch_line_flag tier=4 branch).
+        return {
+          ...line,
+          lineResult: evaluateTier4Untracked(),
+          allocationPreview: buildGeneralStockAllocation(requestedBaseQty),
+        };
+      }
+
       return {
         ...line,
         lineResult: buildTier3Result(requestedBaseQty, line.baseUnit || line.unit),
-        allocationPreview: [{
-          boqItemId: null,
-          boqCode: 'STOK',
-          boqLabel: 'Stok Umum',
-          allocatedQuantity: roundQty(requestedBaseQty),
-          proportionPct: 100,
-          allocationBasis: 'GENERAL_STOCK' as const,
-        }],
+        allocationPreview: buildGeneralStockAllocation(requestedBaseQty),
       };
     });
   }, [lines, workGroupMap, envelopeCache, breakdownCache, workGroupEnvCache]);
@@ -795,7 +814,7 @@ export default function PermintaanScreen() {
                             materialId: material.id,
                             materialName: material.name,
                             isCustom: false,
-                            tier: (material.tier as 1 | 2 | 3) ?? 3,
+                            tier: (material.tier as 1 | 2 | 3 | 4) ?? 3,
                             unit: material.supplier_unit || material.unit,
                             boqItemId: null,
                             lineResult: null,
@@ -963,6 +982,12 @@ export default function PermintaanScreen() {
                   {line.tier === 3 && (
                     <Text style={styles.fieldHint}>
                       Tier 3 tidak mengurangi satu BoQ spesifik. Material dicatat sebagai stok umum.
+                    </Text>
+                  )}
+
+                  {line.tier === 4 && (
+                    <Text style={styles.fieldHint}>
+                      Tier 4 consumable — tidak dilacak anggaran, dicatat sebagai stok umum.
                     </Text>
                   )}
 
