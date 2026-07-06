@@ -164,7 +164,7 @@ DROP FUNCTION IF EXISTS submit_receipt(
   UUID, UUID, UUID, TEXT, TEXT, JSONB, TEXT, TEXT, NUMERIC, TEXT, JSONB, TEXT, TEXT
 );
 
-CREATE FUNCTION submit_receipt(
+CREATE OR REPLACE FUNCTION submit_receipt(
   p_po_id              UUID,
   p_project_id         UUID,
   p_received_by        UUID,
