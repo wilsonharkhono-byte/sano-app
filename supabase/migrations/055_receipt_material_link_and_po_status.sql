@@ -63,7 +63,9 @@ CREATE INDEX IF NOT EXISTS idx_po_lines_request_line
 UPDATE receipt_lines rl
 SET material_id = uniq.id
 FROM (
-  SELECT lower(trim(name)) AS norm_name, MIN(id) AS id
+  -- HAVING COUNT(*) = 1 guarantees a single row per group; (array_agg(id))[1]
+  -- returns that one id. (Postgres has no min()/max() aggregate for uuid.)
+  SELECT lower(trim(name)) AS norm_name, (array_agg(id))[1] AS id
   FROM material_catalog
   WHERE name IS NOT NULL AND trim(name) <> ''
   GROUP BY lower(trim(name))
