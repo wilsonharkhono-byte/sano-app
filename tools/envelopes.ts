@@ -162,6 +162,12 @@ export async function getWorkGroupEnvelope(
     unit: row.unit,
     total_planned: Number(row.total_planned ?? 0),
     total_ordered: Number(row.total_ordered ?? 0),
+    // The work-group RPC (get_workgroup_envelope) still derives total_ordered from
+    // request allocations — it has no PO-scoped split yet (that lands in Task 2.4).
+    // So at work-group grain the RPC's "ordered" IS the requested demand; mirror it
+    // into total_requested to keep the field coherent (never displayed via the
+    // di-PO / permintaan-berjalan split, which is project-grain only).
+    total_requested: Number(row.total_ordered ?? 0),
     total_received: 0,
     total_installed: Number(row.total_installed ?? 0),
     remaining_to_order: Number(row.remaining_to_order ?? 0),
@@ -240,7 +246,12 @@ export async function checkTier2Envelope(
     };
   }
 
-  const newTotal = envelope.total_ordered + requestedQty;
+  // Burn on total_requested (request demand), NOT total_ordered (SANO PO qty).
+  // This keeps the client Tier-2 soft gate numerically identical to the server
+  // gate compute_tier2_flag (033), which migration 068 re-points to
+  // total_requested. HANDOFF → Task 2.4 (069): re-derive as planned − PO − other
+  // requests once the PO-based soft gate lands.
+  const newTotal = envelope.total_requested + requestedQty;
   const newBurnPct = envelope.total_planned > 0
     ? (newTotal / envelope.total_planned) * 100
     : 0;

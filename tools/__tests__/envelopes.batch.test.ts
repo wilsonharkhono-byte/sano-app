@@ -20,6 +20,7 @@ describe('mergeEnvelopeWithBaselinePrice', () => {
     unit: 'pcs',
     total_planned: 5000,
     total_ordered: 200,
+    total_requested: 350,
     total_received: 0,
     remaining_to_order: 4800,
     burn_pct: 4,
@@ -59,10 +60,19 @@ describe('mergeEnvelopeWithBaselinePrice', () => {
   });
 
   it('preserves all envelope fields verbatim', () => {
-    const e = env({ total_ordered: 999, burn_pct: 19.98 });
+    const e = env({ total_ordered: 999, total_requested: 1234, burn_pct: 19.98 });
     const merged = mergeEnvelopeWithBaselinePrice(e, null);
     expect(merged.total_ordered).toBe(999);
+    expect(merged.total_requested).toBe(1234);
     expect(merged.burn_pct).toBe(19.98);
     expect(merged.material_name).toBe('Bata ringan 7.5 cm');
+  });
+
+  it('Rupiah "used" tracks di-PO (total_ordered), not requested demand', () => {
+    // total_ordered = 200 (SANO PO qty), total_requested = 350 (running demand).
+    // envelope_used_rupiah must reflect what has actually been ordered, so it
+    // multiplies total_ordered — never total_requested.
+    const merged = mergeEnvelopeWithBaselinePrice(env({}), price({ baseline_unit_price: 6000 }));
+    expect(merged.envelope_used_rupiah).toBe(1_200_000); // 200 × 6000, NOT 350 × 6000
   });
 });

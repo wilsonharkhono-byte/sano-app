@@ -690,7 +690,13 @@ export interface MaterialEnvelopeStatus {
   tier: 1 | 2 | 3 | 4;
   unit: string;
   total_planned: number;
+  /** SANO purchase-order quantity for this material (base units). NOT requests.
+   *  Non-cancelled PO lines only; see migration 068. UI copy: "di-PO". */
   total_ordered: number;
+  /** Demand from non-rejected material requests awaiting/through approval (base
+   *  units). Separate signal from total_ordered. UI copy: "permintaan berjalan".
+   *  Added in migration 068 / Task 2.3. */
+  total_requested: number;
   total_received: number;
   /** Planned material already consumed by installed work (work-group envelope only). */
   total_installed?: number;

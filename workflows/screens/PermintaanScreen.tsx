@@ -214,7 +214,13 @@ function buildTier2Result(
     };
   }
 
-  const newTotal = Number(envelope.total_ordered ?? 0) + requestedQty;
+  // Gate math burns on total_requested (running request demand), NOT total_ordered
+  // (which now means SANO-PO qty). This keeps the client soft gate numerically in
+  // step with the server gate compute_tier2_flag (033), which migration 068
+  // re-points to total_requested. The DISPLAY below splits di-PO vs permintaan.
+  // HANDOFF → Task 2.4 (069): re-derive as planned − PO − other requests when the
+  // full PO-aware soft gate lands.
+  const newTotal = Number(envelope.total_requested ?? 0) + requestedQty;
   const burnPct = Number(envelope.total_planned ?? 0) > 0
     ? (newTotal / Number(envelope.total_planned)) * 100
     : 0;
@@ -726,7 +732,13 @@ export default function PermintaanScreen() {
             {linesWithResults.map((line, idx) => {
               const tierColor = TIER_COLORS[line.tier];
               const envelope = line.materialId ? envelopeCache.get(line.materialId) ?? null : null;
-              const burnPct = Number(envelope?.burn_pct ?? 0);
+              // Bar tracks running request demand (permintaan berjalan) vs plan, so
+              // it agrees with the Tier-2 gate result on the same card. The view's
+              // own burn_pct is now PO-based (di-PO) and shown as its own figure.
+              const plannedQty = Number(envelope?.total_planned ?? 0);
+              const requestedQtyEnv = Number(envelope?.total_requested ?? 0);
+              const orderedQtyEnv = Number(envelope?.total_ordered ?? 0);
+              const burnPct = plannedQty > 0 ? (requestedQtyEnv / plannedQty) * 100 : 0;
               const barColor = burnPct > 100 ? COLORS.critical : burnPct > 80 ? COLORS.warning : COLORS.ok;
 
               return (
@@ -919,18 +931,23 @@ export default function PermintaanScreen() {
                       </View>
                       <View style={styles.row2}>
                         <Text style={styles.envelopeStat}>
-                          Terpakai: {Math.round(Number(envelope.total_ordered ?? 0)).toLocaleString('id-ID')} {envelope.unit}
+                          Permintaan berjalan: {Math.round(requestedQtyEnv).toLocaleString('id-ID')} {envelope.unit}
                           {line.base_qty_per_supplier_unit != null &&
-                            ` (≈ ${(Number(envelope.total_ordered ?? 0) / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
+                            ` (≈ ${(requestedQtyEnv / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
                         </Text>
                         <Text style={styles.envelopeStat}>
-                          Total: {Math.round(Number(envelope.total_planned ?? 0)).toLocaleString('id-ID')} {envelope.unit}
+                          Rencana: {Math.round(plannedQty).toLocaleString('id-ID')} {envelope.unit}
                           {line.base_qty_per_supplier_unit != null &&
-                            ` (≈ ${(Number(envelope.total_planned ?? 0) / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
+                            ` (≈ ${(plannedQty / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
                         </Text>
                       </View>
+                      <Text style={styles.envelopeStat}>
+                        Sudah di-PO: {Math.round(orderedQtyEnv).toLocaleString('id-ID')} {envelope.unit}
+                        {line.base_qty_per_supplier_unit != null &&
+                          ` (≈ ${(orderedQtyEnv / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
+                      </Text>
                       <Text style={[styles.envelopePct, { color: barColor }]}>
-                        {burnPct.toFixed(0)}% terpakai
+                        {burnPct.toFixed(0)}% dari rencana (permintaan)
                       </Text>
                     </View>
                   )}

@@ -57,7 +57,7 @@ describe('computeWorkGroupGate1Flag — batang display', () => {
   const rebarEnv: MaterialEnvelopeStatus = {
     material_id: 'reb-de13', project_id: 'p', material_code: 'REB-DE13',
     material_name: 'Besi beton ulir 13 mm', tier: 1, unit: 'kg',
-    total_planned: 4452, total_ordered: 0, total_received: 0, total_installed: 0,
+    total_planned: 4452, total_ordered: 0, total_requested: 0, total_received: 0, total_installed: 0,
     remaining_to_order: 4452, burn_pct: 0, boq_item_count: 26,
   };
 

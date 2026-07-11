@@ -20,6 +20,7 @@ describe('Material usage data flow', () => {
     unit: 'pcs',
     total_planned: 5000,
     total_ordered: 200,
+    total_requested: 350,
     total_received: 0,
     remaining_to_order: 4800,
     burn_pct: 4,

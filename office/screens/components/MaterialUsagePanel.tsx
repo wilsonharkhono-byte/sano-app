@@ -43,9 +43,10 @@ function renderTier2Like(env: EnvelopeWithPrice): React.ReactElement {
     <View style={[styles.panel, overBudget && styles.panelCritical]}>
       <Text style={styles.sectionLabel}>Envelope kuantitas</Text>
       <Text style={[styles.lineMain, { color: burnTextColor }]}>
-        Terpakai: {fmtNum(env.total_ordered)} / {fmtNum(env.total_planned)} {env.unit} ({env.burn_pct.toFixed(0)}%)
+        Di-PO: {fmtNum(env.total_ordered)} / {fmtNum(env.total_planned)} {env.unit} ({env.burn_pct.toFixed(0)}%)
       </Text>
-      <Text style={styles.lineSub}>Sisa: {fmtNum(env.remaining_to_order)} {env.unit}</Text>
+      <Text style={styles.lineSub}>Permintaan berjalan: {fmtNum(env.total_requested)} {env.unit}</Text>
+      <Text style={styles.lineSub}>Sisa untuk di-PO: {fmtNum(env.remaining_to_order)} {env.unit}</Text>
       {env.baseline_unit_price != null && env.envelope_total_rupiah != null ? (
         <>
           <Text style={[styles.sectionLabel, { marginTop: SPACE.sm }]}>Anggaran</Text>

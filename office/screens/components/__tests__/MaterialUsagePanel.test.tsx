@@ -28,6 +28,7 @@ const tier2Envelope = (m: Partial<EnvelopeWithPrice> = {}): EnvelopeWithPrice =>
   unit: 'pcs',
   total_planned: 5000,
   total_ordered: 200,
+  total_requested: 350,
   total_received: 0,
   remaining_to_order: 4800,
   burn_pct: 4,
@@ -50,9 +51,12 @@ describe('MaterialUsagePanel — Tier 2', () => {
         envelope={tier2Envelope()}
       />,
     );
-    expect(getByText(/200 \/ 5\.000 pcs/)).toBeTruthy();
+    // "Di-PO" surfaces the SANO PO qty (total_ordered); "Permintaan berjalan"
+    // is the separate request-demand figure (total_requested).
+    expect(getByText(/Di-PO: 200 \/ 5\.000 pcs/)).toBeTruthy();
     expect(getByText(/4%/)).toBeTruthy();
-    expect(getByText(/Sisa: 4\.800 pcs/)).toBeTruthy();
+    expect(getByText(/Permintaan berjalan: 350 pcs/)).toBeTruthy();
+    expect(getByText(/Sisa untuk di-PO: 4\.800 pcs/)).toBeTruthy();
   });
 
   it('renders Rupiah envelope when baseline_unit_price is present', () => {

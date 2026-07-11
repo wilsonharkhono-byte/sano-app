@@ -3,7 +3,7 @@ import type { MaterialEnvelopeStatus } from '../../tools/types';
 
 const env = (o: Partial<MaterialEnvelopeStatus>): MaterialEnvelopeStatus => ({
   material_id: 'm', project_id: 'p', material_code: null, material_name: 'Besi D16', tier: 1, unit: 'kg',
-  total_planned: 1000, total_ordered: 0, total_received: 0, total_installed: 0,
+  total_planned: 1000, total_ordered: 0, total_requested: 0, total_received: 0, total_installed: 0,
   remaining_to_order: 1000, burn_pct: 0, boq_item_count: 10, ...o,
 });
 
