@@ -271,8 +271,9 @@ $$;
 GRANT EXECUTE ON FUNCTION is_principal() TO authenticated;
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- 4. approval_tasks — assigned read; office+assigned insert; principal+assigned
---    update. Replaces BOTH of 043's FOR ALL policies for this table only.
+-- 4. approval_tasks — assigned+office read; office+assigned insert;
+--    principal+assigned update. Replaces BOTH of 043's FOR ALL policies for
+--    this table only.
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 043's loop created two FOR ALL policies for approval_tasks:
 --   approval_tasks_assigned    (assignment-scoped) — the supervisor hole (G5)
@@ -281,6 +282,10 @@ GRANT EXECUTE ON FUNCTION is_principal() TO authenticated;
 -- Both are dropped; the six sibling tables in that loop are untouched. The
 -- replacement matches the app's real writers (Gate2Screen.tsx):
 --   • :195 SELECT — principal reads pending tasks           → approval_tasks_read
+--                   (assigned only)
+--   • :195 SELECT — office users read cross-project tasks  → approval_tasks_office_read
+--                   (for reports/scoring on unassigned projects, matches 036
+--                   office-global model)
 --   • :529 INSERT — admin/estimator escalate to principal   → approval_tasks_office_insert
 --   • :547 UPDATE — principal records APPROVE/REJECT/etc.    → approval_tasks_principal_update
 -- The UI already renders the verdict buttons principal-only (Gate2Screen:193);
@@ -299,6 +304,15 @@ CREATE POLICY "approval_tasks_read" ON approval_tasks
       SELECT project_id FROM project_assignments WHERE user_id = auth.uid()
     )
   );
+
+-- Office-global read restored (matches 036's office model, used by reports/scoring
+-- on unassigned projects); WRITE stays narrowed (INSERT office+assigned, UPDATE
+-- principal-only).
+DROP POLICY IF EXISTS "approval_tasks_office_read" ON approval_tasks;
+CREATE POLICY "approval_tasks_office_read" ON approval_tasks
+  FOR SELECT
+  TO authenticated
+  USING (is_office_role());
 
 DROP POLICY IF EXISTS "approval_tasks_office_insert" ON approval_tasks;
 CREATE POLICY "approval_tasks_office_insert" ON approval_tasks
