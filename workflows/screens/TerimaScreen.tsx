@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import Header from '../components/Header';
 import Card from '../components/Card';
@@ -14,6 +14,7 @@ import { pickAndUploadPhoto } from '../../tools/storage';
 import { requestGps } from '../../tools/gps';
 import { getPurchaseOrderDisplayNumber } from '../../tools/purchaseOrders';
 import { supplierToBase, displayQty } from '../../tools/materialUnitConversion';
+import { generateClientReceiptId } from '../../tools/receiptIdempotency';
 import { supabase } from '../../tools/supabase';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import type { GateResult, PurchaseOrder } from '../../tools/types';
@@ -50,6 +51,14 @@ export default function TerimaScreen() {
     surat_jalan: null, material_site: null, vehicle: null, tiket_timbang: null,
   });
   const [vehicleGps, setVehicleGps] = useState<{ lat: number; lon: number } | null>(null);
+
+  // Idempotency key for this receive-form session (migration 062). Generated
+  // ONCE on the first submit tap and reused across retries (a timeout-then-
+  // resubmit must carry the SAME id so the server dedups instead of double-
+  // booking). Cleared in resetForm, so a confirmed success or a PO switch
+  // starts the next delivery with a fresh id. Stays null on runtimes with no
+  // CSPRNG (native Hermes) → server sees NULL → legacy non-idempotent path.
+  const clientReceiptIdRef = useRef<string | null>(null);
 
   // Receipt history for selected PO
   const [receiptHistory, setReceiptHistory] = useState<ReceiptRecord[]>([]);
@@ -198,6 +207,9 @@ export default function TerimaScreen() {
     setQtyActual(''); setVehicleRef(''); setNotes('');
     setPhotos({ surat_jalan: null, material_site: null, vehicle: null, tiket_timbang: null });
     setVehicleGps(null);
+    // End the idempotency session: the next receipt is a distinct delivery and
+    // must get its own key. NOT cleared on submit error, so a retry reuses it.
+    clientReceiptIdRef.current = null;
   };
 
   const handleSubmit = async (isFinal: boolean) => {
@@ -233,6 +245,14 @@ export default function TerimaScreen() {
         ? 'FULLY_RECEIVED'
         : 'PARTIAL_RECEIVED';
 
+      // Mint the idempotency key once per session (migration 062): a retry after
+      // a timeout reuses the ref, so submit_receipt returns the already-created
+      // receipt instead of double-booking. Null on runtimes without a CSPRNG →
+      // server falls back to its legacy non-idempotent path.
+      if (!clientReceiptIdRef.current) {
+        clientReceiptIdRef.current = generateClientReceiptId();
+      }
+
       // Atomic: receipt + line + photos + PO status update + activity_log in ONE transaction (migration 045).
       const { data: receiptId, error: rcptErr } = await supabase.rpc('submit_receipt', {
         p_po_id: poId,
@@ -248,6 +268,7 @@ export default function TerimaScreen() {
         p_photos: photoRecords,
         p_new_po_status: newPoStatus,
         p_line_material_id: poCatalog?.id ?? null,
+        p_client_receipt_id: clientReceiptIdRef.current,
         p_activity_label: `${selectedPO!.material_name} ${qtyActual} ${poInputUnit}${poFactor != null ? ` (≈ ${qtyActualBase.toFixed(1)} ${selectedPO!.unit})` : ''} diterima (${isFinal ? 'Final' : 'Parsial'})`,
       });
       if (rcptErr || !receiptId) throw rcptErr || new Error('Receipt insert failed');
