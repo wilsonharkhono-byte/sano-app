@@ -15,6 +15,7 @@ import { useToast } from '../components/Toast';
 import { computeWorkGroupGate1Flag, type EnvelopeUnitDisplay } from '../gates/gate1';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
 import { supplierToBase } from '../../tools/materialUnitConversion';
+import { applyCatalogMaterialToLine } from '../../tools/materialSelection';
 import { supabase } from '../../tools/supabase';
 import { getWorkGroupEnvelope } from '../../tools/envelopes';
 import { evaluateTier4Untracked } from '../../tools/budgetGate';
@@ -449,19 +450,7 @@ export default function PermintaanScreen() {
   const applyMaterialSelection = async (material: MaterialOption) => {
     if (!materialPickerLineId) return;
 
-    updateLine(materialPickerLineId, {
-      materialId: material.id,
-      materialName: material.name,
-      isCustom: false,
-      tier: material.tier,
-      unit: material.supplier_unit || material.unit,
-      baseUnit: material.unit,
-      base_qty_per_supplier_unit: material.base_qty_per_supplier_unit ?? null,
-      boqItemId: null,
-      workGroupKey: null,
-      lineResult: null,
-      allocationPreview: [],
-    });
+    updateLine(materialPickerLineId, applyCatalogMaterialToLine(material));
 
     if (material.tier === 2) {
       await cacheTier2Context([material.id]);
@@ -810,16 +799,7 @@ export default function PermintaanScreen() {
                         userId={profile?.id}
                         userRole={profile?.role}
                         onSelectCatalogMaterial={async (material) => {
-                          updateLine(line.id, {
-                            materialId: material.id,
-                            materialName: material.name,
-                            isCustom: false,
-                            tier: (material.tier as 1 | 2 | 3 | 4) ?? 3,
-                            unit: material.supplier_unit || material.unit,
-                            boqItemId: null,
-                            lineResult: null,
-                            allocationPreview: [],
-                          });
+                          updateLine(line.id, applyCatalogMaterialToLine(material));
 
                           if (material.tier === 2) {
                             await cacheTier2Context([material.id]);
