@@ -54,6 +54,9 @@
 -- Idempotent / re-paste-safe throughout: ADD COLUMN IF NOT EXISTS, CREATE
 --   UNIQUE INDEX IF NOT EXISTS, DROP FUNCTION IF EXISTS + CREATE OR REPLACE.
 --   Safe to paste into the Supabase Dashboard SQL editor more than once.
+--
+-- ⚠ Paste this migration BEFORE deploying the app build that sends
+--   p_client_receipt_id — PostgREST rejects unknown named params.
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 1. receipts.client_receipt_id — the dedup key + its UNIQUE backstop
@@ -169,14 +172,25 @@ BEGIN
 
   -- ── Idempotency short-circuit (Task 1.2) ───────────────────────────────────
   -- Runs AFTER the guards (so a retry is still authorized) but while the PO row
-  -- lock above is held. If a receipt already exists for this client id, the
-  -- first call already inserted the row AND recomputed the PO status — return
-  -- that receipt id verbatim and do nothing else. See the header for the full
-  -- race argument. NULL id → skip entirely (legacy path).
+  -- lock above is held. If a receipt already exists for this client id AGAINST
+  -- THIS PO, the first call already inserted the row AND recomputed the PO
+  -- status — return that receipt id verbatim and do nothing else. See the
+  -- header for the full race argument. NULL id → skip entirely (legacy path).
+  --
+  -- The lookup is scoped with `AND po_id = p_po_id` — deliberately NOT a global
+  -- lookup by client_receipt_id alone. A stale/replayed key that arrives
+  -- attached to a DIFFERENT PO must never short-circuit into returning a
+  -- foreign receipt's id (that would silently skip recording the current
+  -- delivery — a fail-closed hazard, and it would hand the caller a receipt id
+  -- it was never authorized against). With the PO scope, cross-PO key reuse
+  -- instead falls through to the INSERT below and fails LOUD on the partial
+  -- UNIQUE index (idx_receipts_client_receipt_id) rather than swallowing the
+  -- delivery silently.
   IF p_client_receipt_id IS NOT NULL THEN
     SELECT id INTO v_receipt_id
     FROM receipts
-    WHERE client_receipt_id = p_client_receipt_id;
+    WHERE client_receipt_id = p_client_receipt_id
+      AND po_id = p_po_id;
 
     IF v_receipt_id IS NOT NULL THEN
       RETURN v_receipt_id;
