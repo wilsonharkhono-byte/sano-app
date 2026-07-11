@@ -6,8 +6,10 @@
 -- tools/boqParserV2/index.ts), but the v2 publish upsert
 -- (tools/publishBaselineV2.ts) only ever wrote {project_id, code, label,
 -- unit, planned} into boq_items. `chapter` already exists as a column
--- (004_boq_parser_extensions.sql:16) and IS populated today; `sub_chapter`
--- was never added, so it was silently dropped on every publish.
+-- (004_boq_parser_extensions.sql:16) but was NEVER written by the v2
+-- publish either — pre-064 v2 rows have chapter = NULL; `sub_chapter` did
+-- not exist at all. Both were silently dropped on every publish, so a
+-- RE-PUBLISH is required to populate BOTH columns on existing projects.
 --
 -- This starves the work-group classifier (tools/boqWorkGroups.ts) of
 -- sub-chapter context for component-level workbooks (rows like "- Beton"
@@ -33,5 +35,10 @@
 --
 -- Idempotent / re-paste-safe: ADD COLUMN IF NOT EXISTS. Safe to paste into
 -- the Supabase Dashboard SQL editor more than once.
+--
+-- DEPLOY ORDER: paste this migration BEFORE deploying the app build that
+-- writes sub_chapter — otherwise every boq upsert fails ("column
+-- sub_chapter does not exist") and resilientWrite quarantines all rows,
+-- producing an empty baseline on publish.
 
 ALTER TABLE boq_items ADD COLUMN IF NOT EXISTS sub_chapter TEXT;
