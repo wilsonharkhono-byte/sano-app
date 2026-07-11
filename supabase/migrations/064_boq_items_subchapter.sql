@@ -1,0 +1,37 @@
+-- 064 — Persist sub_chapter on boq_items (Task 1.5, work-group classifier fix)
+--
+-- Problem: the parser extracts chapter AND sub_chapter per BoQ row
+-- (tools/boqParserV2/extractTakeoffs.ts BoqRowV2.chapter / .sub_chapter,
+-- staged into StagingRowV2.raw_data.chapter / .subChapter — see
+-- tools/boqParserV2/index.ts), but the v2 publish upsert
+-- (tools/publishBaselineV2.ts) only ever wrote {project_id, code, label,
+-- unit, planned} into boq_items. `chapter` already exists as a column
+-- (004_boq_parser_extensions.sql:16) and IS populated today; `sub_chapter`
+-- was never added, so it was silently dropped on every publish.
+--
+-- This starves the work-group classifier (tools/boqWorkGroups.ts) of
+-- sub-chapter context for component-level workbooks (rows like "- Beton"
+-- under a "Poer PC.1" sub-chapter, e.g. Ernawati/Nusa Golf) — the classifier
+-- accepts sub_chapter as an OPTIONAL field precisely for this case, but with
+-- no column to read it from, v2-published projects always classify
+-- label-only and those rows fall through to "Lainnya" or a generic
+-- chapter-name group instead of the correct element-type group.
+--
+-- Fix: add the missing column. tools/publishBaselineV2.ts (separate change,
+-- same task) now writes both chapter and sub_chapter into the upsert.
+--
+-- RLS / write-gating: no policy change needed here. The supervisor
+-- column-guard trigger installed by 059_boq_items_write_split.sql
+-- (guard_boq_items_supervisor_cols) is a WHITELIST, not a blacklist — it
+-- only allows `installed`/`progress` through for non-office actors and
+-- rejects a diff on every other column via
+-- `(to_jsonb(NEW) - 'installed' - 'progress') IS DISTINCT FROM (to_jsonb(OLD) - 'installed' - 'progress')`.
+-- A brand-new column is therefore automatically protected from supervisor
+-- writes with no follow-up migration required — this is the exact design
+-- goal 059's header calls out ("any column a future migration adds to
+-- boq_items is protected by default").
+--
+-- Idempotent / re-paste-safe: ADD COLUMN IF NOT EXISTS. Safe to paste into
+-- the Supabase Dashboard SQL editor more than once.
+
+ALTER TABLE boq_items ADD COLUMN IF NOT EXISTS sub_chapter TEXT;

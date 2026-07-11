@@ -355,6 +355,45 @@ export function zeroPlannedBoqCodes(rows: StagingRowV2[]): string[] {
   return codes;
 }
 
+export interface BoqItemInsert {
+  project_id: string;
+  code: string;
+  label: string;
+  unit: string;
+  planned: number;
+  chapter: string | null;
+  sub_chapter: string | null;
+}
+
+/**
+ * Build the boq_items upsert record for one staged BoQ row, or null if the
+ * row is missing a required field (code/label/unit/planned) and must be
+ * quarantined instead. chapter/sub_chapter come from the parser's raw_data
+ * (tools/boqParserV2/extractTakeoffs.ts BoqRowV2.chapter / .sub_chapter,
+ * staged as raw_data.chapter / raw_data.subChapter — see
+ * tools/boqParserV2/index.ts). Both are read defensively (typeof === string)
+ * and default to null so an absent/malformed value never becomes `undefined`
+ * on the upsert record — an explicit null overwrites a stale value from a
+ * prior publish; an omitted key would not.
+ */
+export function buildBoqItemInsert(row: StagingRowV2, projectId: string): BoqItemInsert | null {
+  const pd = row.parsed_data as { code?: string; label?: string; unit?: string; planned?: unknown };
+  const planned = toNumber(pd.planned);
+  if (!pd.code || !pd.label || !pd.unit || !(planned > 0)) return null;
+  const raw = (row.raw_data ?? {}) as { chapter?: unknown; subChapter?: unknown };
+  const chapter = typeof raw.chapter === 'string' ? raw.chapter : null;
+  const sub_chapter = typeof raw.subChapter === 'string' ? raw.subChapter : null;
+  return {
+    project_id: projectId,
+    code: pd.code,
+    label: pd.label,
+    unit: pd.unit,
+    planned,
+    chapter,
+    sub_chapter,
+  };
+}
+
 export interface MasterLineDraft {
   material_id: string | null;
   material_name: string;
@@ -611,17 +650,17 @@ export async function publishBaselineV2(
   const quarantined: string[] = [];
   const skippedZeroPlanned = zeroPlannedBoqCodes(rows);
   const skipSet = new Set(skippedZeroPlanned);
-  const boqInserts: Array<{ project_id: string; code: string; label: string; unit: string; planned: number }> = [];
+  const boqInserts: BoqItemInsert[] = [];
   for (const r of rows) {
     if (r.row_type !== 'boq') continue;
-    const pd = r.parsed_data as { code?: string; label?: string; unit?: string; planned?: unknown };
+    const pd = r.parsed_data as { code?: string; planned?: unknown };
     if (skipSet.has(pd.code ?? '')) continue; // zero-planned: already reported via skippedZeroPlanned
-    const planned = toNumber(pd.planned);
-    if (!pd.code || !pd.label || !pd.unit || !(planned > 0)) {
+    const insert = buildBoqItemInsert(r, projectId);
+    if (!insert) {
       quarantined.push(`BoQ "${pd.code ?? '?'}": data tidak lengkap (code/label/unit/planned) — dilewati.`);
       continue;
     }
-    boqInserts.push({ project_id: projectId, code: pd.code, label: pd.label, unit: pd.unit, planned });
+    boqInserts.push(insert);
   }
 
   const { inserted: boqData, failed: boqFailed } = await resilientWrite<

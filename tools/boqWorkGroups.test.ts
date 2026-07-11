@@ -17,6 +17,7 @@ function item(label: string, chapter: string | null = null, overrides: Partial<B
     installed: 0,
     parent_code: null,
     chapter,
+    sub_chapter: null,
     sort_order: overrides.sort_order ?? idc,
     element_code: null,
     composite_factors: null,

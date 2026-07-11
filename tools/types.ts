@@ -60,6 +60,7 @@ export interface BoqItem {
   installed: number;
   parent_code: string | null;
   chapter: string | null;
+  sub_chapter: string | null;
   sort_order: number;
   element_code: string | null;
   composite_factors: CompositeFactors | null;

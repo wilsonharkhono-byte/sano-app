@@ -4,7 +4,7 @@ import type { BoqItem, GateResult, MaterialEnvelopeStatus } from '../../../tools
 const poer: BoqItem = {
   id: 'poer', project_id: 'p', code: 'III.A.1.2', label: 'Poer PC.2', unit: 'm3',
   tier1_material: null, tier2_material: null, progress: 0, planned: 1.65, installed: 0,
-  parent_code: null, chapter: null, sort_order: 0, element_code: null,
+  parent_code: null, chapter: null, sub_chapter: null, sort_order: 0, element_code: null,
   composite_factors: null, cost_breakdown: null, client_unit_price: null, internal_unit_price: null,
 };
 

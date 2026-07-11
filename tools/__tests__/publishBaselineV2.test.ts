@@ -1,6 +1,6 @@
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
 
-import { topoSortBlocks, flattenBlock, findDuplicateBoqCodes, zeroPlannedBoqCodes, type FlattenedLine } from '../publishBaselineV2';
+import { topoSortBlocks, flattenBlock, findDuplicateBoqCodes, zeroPlannedBoqCodes, buildBoqItemInsert, type FlattenedLine } from '../publishBaselineV2';
 import { resolveCatalogId, type CatalogRow } from '../publishBaselineV2';
 
 describe('resolveCatalogId', () => {
@@ -238,6 +238,49 @@ describe('zeroPlannedBoqCodes', () => {
       { row_type: 'material' as const, parsed_data: { code: 'Y', planned: 0 } },
     ];
     expect(zeroPlannedBoqCodes(rows as never)).toEqual(['A.1']);
+  });
+});
+
+describe('buildBoqItemInsert', () => {
+  const boqRow = (raw: Record<string, unknown>, pd: Record<string, unknown> = {}) => ({
+    row_type: 'boq' as const,
+    raw_data: raw,
+    parsed_data: { code: 'III.A.1.2', label: 'Poer PC.2', unit: 'm3', planned: 1.65, ...pd },
+  });
+
+  it('carries chapter and sub_chapter through onto the upsert record', () => {
+    const row = boqRow({ chapter: 'PEKERJAAN FISIK LANTAI 1', subChapter: '- Poer PC.1' });
+    const insert = buildBoqItemInsert(row as never, 'proj-1');
+    expect(insert).toEqual({
+      project_id: 'proj-1',
+      code: 'III.A.1.2',
+      label: 'Poer PC.2',
+      unit: 'm3',
+      planned: 1.65,
+      chapter: 'PEKERJAAN FISIK LANTAI 1',
+      sub_chapter: '- Poer PC.1',
+    });
+  });
+
+  it('defaults chapter/sub_chapter to null when raw_data omits them (never undefined)', () => {
+    const row = boqRow({});
+    const insert = buildBoqItemInsert(row as never, 'proj-1');
+    expect(insert?.chapter).toBeNull();
+    expect(insert?.sub_chapter).toBeNull();
+    expect('chapter' in (insert as object)).toBe(true);
+    expect('sub_chapter' in (insert as object)).toBe(true);
+  });
+
+  it('defaults chapter/sub_chapter to null when raw_data is missing entirely', () => {
+    const row = { row_type: 'boq' as const, parsed_data: { code: 'A.1', label: 'X', unit: 'm3', planned: 1 } };
+    const insert = buildBoqItemInsert(row as never, 'proj-1');
+    expect(insert?.chapter).toBeNull();
+    expect(insert?.sub_chapter).toBeNull();
+  });
+
+  it('returns null (quarantine candidate) when a required field is missing, regardless of chapter data', () => {
+    const row = boqRow({ chapter: 'X', subChapter: 'Y' }, { label: undefined });
+    expect(buildBoqItemInsert(row as never, 'proj-1')).toBeNull();
   });
 });
 
