@@ -3,6 +3,7 @@
 
 import { supabase } from './supabase';
 import { BaselineReviewStatus, AnomalyResolution } from './constants';
+import { fetchAllPaged } from './queryHelpers';
 
 /**
  * Resolve a file input to an ArrayBuffer for parsers that can't read paths.
@@ -187,22 +188,29 @@ export async function getStagingRows(
   sessionId: string,
   options?: { needsReview?: boolean; rowType?: string },
 ): Promise<ImportStagingRow[]> {
-  let query = supabase
-    .from('import_staging_rows')
-    .select('*')
-    .eq('session_id', sessionId)
-    .order('row_number');
+  // A single unpaginated select silently truncates at Supabase's 1000-row
+  // cap — for a large multi-building baseline the Audit Trace pivot would
+  // undercount without any error. Page through all rows instead. fetchAllPaged
+  // throws on a query error rather than swallowing it as an empty session
+  // (see below — this used to `if (error) return []`).
+  return fetchAllPaged<ImportStagingRow>((from, to) => {
+    let query = supabase
+      .from('import_staging_rows')
+      .select('*')
+      .eq('session_id', sessionId);
 
-  if (options?.needsReview !== undefined) {
-    query = query.eq('needs_review', options.needsReview);
-  }
-  if (options?.rowType) {
-    query = query.eq('row_type', options.rowType);
-  }
+    if (options?.needsReview !== undefined) {
+      query = query.eq('needs_review', options.needsReview);
+    }
+    if (options?.rowType) {
+      query = query.eq('row_type', options.rowType);
+    }
 
-  const { data, error } = await query;
-  if (error) return [];
-  return data ?? [];
+    return query.order('row_number').range(from, to) as unknown as PromiseLike<{
+      data: ImportStagingRow[] | null;
+      error: { message?: string } | null;
+    }>;
+  });
 }
 
 export async function reviewStagingRow(

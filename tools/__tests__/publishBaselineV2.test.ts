@@ -1,4 +1,4 @@
-jest.mock('../supabase', () => ({ supabase: {} }));
+jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
 
 import { topoSortBlocks, flattenBlock, findDuplicateBoqCodes, zeroPlannedBoqCodes, type FlattenedLine } from '../publishBaselineV2';
 import { resolveCatalogId, type CatalogRow } from '../publishBaselineV2';
@@ -348,5 +348,120 @@ describe('flattenBlock', () => {
     expect(lines.length).toBe(1);
     expect(lines[0].material_name).toBe('Semen');
     expect(lines[0].origin_parent_ahs_id).toBe('block:99');
+  });
+});
+
+// ─── loadCatalogAndAliases ─────────────────────────────────────────────
+//
+// publishBaselineV2 links each disaggregated breakdown component to a real
+// material_catalog row. Both material_catalog and material_aliases can
+// exceed Supabase's 1000-row cap on a mature catalog; an unpaginated select
+// silently drops rows past page 1, so components whose material happens to
+// live past row 1000 fail to link with no visible error — exactly the
+// "confident-looking wrong number" CLAUDE.md forbids (here: a wrong/absent
+// material_id, not a wrong Rp figure, but the same silent-truncation shape).
+
+import { loadCatalogAndAliases } from '../publishBaselineV2';
+import { supabase } from '../supabase';
+
+const mockSupabase = supabase as unknown as { from: jest.Mock };
+
+/**
+ * Range-aware `.from(table)` stub. Mirrors real PostgREST behavior: with no
+ * explicit `.range()` call the server still caps results at 1000 rows from
+ * 0, which is what makes an unpaginated select truncate. A fresh chain is
+ * returned per `.from()` call (fetchAllPaged calls it once per page).
+ */
+function makeTableMock(tables: Record<string, unknown[] | { error: string }>) {
+  return jest.fn((table: string) => {
+    const fixture = tables[table];
+    if (!fixture) throw new Error(`Unexpected supabase.from('${table}') in test — add a fixture`);
+    const chain: Record<string, unknown> = {};
+    let range: [number, number] = [0, 999];
+    for (const method of ['select', 'eq', 'order']) {
+      chain[method] = jest.fn(() => chain);
+    }
+    chain.range = jest.fn((from: number, to: number) => {
+      range = [from, to];
+      return chain;
+    });
+    (chain as { then: unknown }).then = (resolve: (v: unknown) => unknown) => {
+      if (!Array.isArray(fixture)) {
+        return Promise.resolve({ data: null, error: { message: fixture.error } }).then(resolve);
+      }
+      const [from, to] = range;
+      return Promise.resolve({ data: fixture.slice(from, to + 1), error: null }).then(resolve);
+    };
+    return chain;
+  });
+}
+
+const makeCatalogRow = (n: number): CatalogRow => ({
+  id: `mat-${n}`,
+  code: `CODE-${n}`,
+  name: `Material ${n}`,
+  category: 'Struktur',
+  tier: 2,
+  unit: 'kg',
+});
+
+describe('loadCatalogAndAliases', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('returns ALL catalog rows across more than one page (past the 1000-row cap)', async () => {
+    const catalog = Array.from({ length: 1200 }, (_, i) => makeCatalogRow(i + 1));
+    mockSupabase.from.mockImplementation(
+      makeTableMock({
+        material_catalog: catalog,
+        material_aliases: [{ alias: 'semen pc', material_catalog: { code: 'CODE-1' } }],
+      }),
+    );
+
+    const { catalog: result, aliasMap } = await loadCatalogAndAliases();
+
+    expect(result).toHaveLength(1200);
+    expect(aliasMap.get('semen pc')).toBe('CODE-1');
+  });
+
+  it('paginates material_aliases past the 1000-row cap too', async () => {
+    const aliases = Array.from({ length: 1050 }, (_, i) => ({
+      alias: `alias ${i + 1}`,
+      material_catalog: { code: `CODE-${i + 1}` },
+    }));
+    mockSupabase.from.mockImplementation(
+      makeTableMock({
+        material_catalog: [makeCatalogRow(1)],
+        material_aliases: aliases,
+      }),
+    );
+
+    const { aliasMap } = await loadCatalogAndAliases();
+
+    expect(aliasMap.size).toBe(1050);
+    expect(aliasMap.get('alias 1050')).toBe('CODE-1050');
+  });
+
+  it('throws on a material_catalog query error instead of proceeding with a partial catalog', async () => {
+    mockSupabase.from.mockImplementation(
+      makeTableMock({
+        material_catalog: { error: 'connection reset' },
+        material_aliases: [],
+      }),
+    );
+
+    await expect(loadCatalogAndAliases()).rejects.toThrow('connection reset');
+  });
+
+  it('throws on a material_aliases query error', async () => {
+    mockSupabase.from.mockImplementation(
+      makeTableMock({
+        material_catalog: [makeCatalogRow(1)],
+        material_aliases: { error: 'alias table unavailable' },
+      }),
+    );
+
+    await expect(loadCatalogAndAliases()).rejects.toThrow('alias table unavailable');
   });
 });

@@ -376,15 +376,23 @@ export default function BaselineScreen({
   const openReview = async (session: ImportSession) => {
     setActiveSession(session);
     setLoading(true);
-    const [rows, anomalyData] = await Promise.all([
-      getStagingRows(session.id),
-      getImportAnomalies(session.id),
-    ]);
-    setStagingRows(rows);
-    setCollapsedGroups({});
-    setAnomalies(anomalyData);
-    setLoading(false);
-    setView('review');
+    try {
+      // getStagingRows now throws on a query error (instead of silently
+      // returning []), so a failed load surfaces here rather than opening
+      // review on a session that looks empty.
+      const [rows, anomalyData] = await Promise.all([
+        getStagingRows(session.id),
+        getImportAnomalies(session.id),
+      ]);
+      setStagingRows(rows);
+      setCollapsedGroups({});
+      setAnomalies(anomalyData);
+      setView('review');
+    } catch (err: any) {
+      toast(`Gagal memuat staging rows: ${err.message}`, 'critical');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleResolveAnomaly = async (id: string, resolution: 'ACCEPTED' | 'CORRECTED' | 'DISMISSED') => {

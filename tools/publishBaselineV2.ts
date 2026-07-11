@@ -266,6 +266,50 @@ export function flattenBlock(
 }
 
 import { supabase } from './supabase';
+import { fetchAllPaged } from './queryHelpers';
+
+/**
+ * Load material_catalog + material_aliases, paginated. Both tables can exceed
+ * Supabase's 1000-row cap on a mature catalog; an unpaginated select silently
+ * drops rows past page 1, so components whose material happens to live past
+ * row 1000 fail to link at publish with no visible symptom other than a
+ * growing "unresolved" count — a wrong/absent link is exactly the kind of
+ * confident-looking-but-wrong outcome CLAUDE.md forbids. Throws on a query
+ * error instead of returning a partial catalog; the caller must fail the
+ * publish loudly rather than proceed with incomplete linking data.
+ */
+export async function loadCatalogAndAliases(): Promise<{
+  catalog: CatalogRow[];
+  aliasMap: Map<string, string>;
+}> {
+  const catalog = await fetchAllPaged<CatalogRow>((from, to) =>
+    supabase
+      .from('material_catalog')
+      .select('id, code, name, category, tier, unit, supplier_unit, base_qty_per_supplier_unit')
+      .order('id', { ascending: true })
+      .range(from, to) as unknown as PromiseLike<{
+        data: CatalogRow[] | null;
+        error: { message?: string } | null;
+      }>);
+
+  const aliasRows = await fetchAllPaged<{ alias: string; material_catalog?: { code: string } }>((from, to) =>
+    supabase
+      .from('material_aliases')
+      .select('alias, material_catalog!inner(code)')
+      .order('id', { ascending: true })
+      .range(from, to) as unknown as PromiseLike<{
+        data: { alias: string; material_catalog?: { code: string } }[] | null;
+        error: { message?: string } | null;
+      }>);
+
+  const aliasMap = new Map<string, string>();
+  for (const a of aliasRows) {
+    const code = a.material_catalog?.code;
+    if (code) aliasMap.set(normalizeAlias(a.alias), code);
+  }
+
+  return { catalog, aliasMap };
+}
 
 /**
  * Detect BoQ codes that appear more than once across the staging rows.
@@ -432,22 +476,20 @@ export async function publishBaselineV2(
 
   // Load the catalog + aliases so each disaggregated component can be linked to
   // a real material_id (powering per-material envelope/gate checks downstream).
-  const { data: catalogData, error: catErr } = await supabase
-    .from('material_catalog')
-    .select('id, code, name, category, tier, unit, supplier_unit, base_qty_per_supplier_unit');
-  if (catErr) return { success: false, error: `material_catalog load failed: ${catErr.message}` };
-  const catalog: CatalogRow[] = (catalogData ?? []) as CatalogRow[];
-  const catalogById = new Map(catalog.map(c => [c.id, c]));
-
-  const { data: aliasData, error: aliasErr } = await supabase
-    .from('material_aliases')
-    .select('alias, material_catalog!inner(code)');
-  if (aliasErr) return { success: false, error: `material_aliases load failed: ${aliasErr.message}` };
-  const aliasMap = new Map<string, string>();
-  for (const a of aliasData ?? []) {
-    const code = (a as unknown as { material_catalog?: { code: string } }).material_catalog?.code;
-    if (code) aliasMap.set(normalizeAlias((a as { alias: string }).alias), code);
+  // Both tables are paginated past Supabase's 1000-row cap (see
+  // loadCatalogAndAliases) — a query error here must fail the publish loudly
+  // rather than proceed with a partial catalog.
+  let catalog: CatalogRow[];
+  let aliasMap: Map<string, string>;
+  try {
+    ({ catalog, aliasMap } = await loadCatalogAndAliases());
+  } catch (err) {
+    return {
+      success: false,
+      error: `material_catalog/material_aliases load failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
+  const catalogById = new Map(catalog.map(c => [c.id, c]));
 
   // Translate DB uuids into row_number keys for topological sort, and keep the
   // reverse map so the nested-unfold breadcrumb (stored internally as
