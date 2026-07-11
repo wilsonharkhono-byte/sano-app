@@ -15,6 +15,7 @@ import {
 import { getEnvelopesByMaterialIds, type EnvelopeWithPrice } from '../../tools/envelopes';
 import { displayQty } from '../../tools/materialUnitConversion';
 import { MaterialUsagePanel } from './components/MaterialUsagePanel';
+import type { OverageReason } from '../../tools/types';
 
 type Tab = 'mtn' | 'perubahan' | 'requests';
 type MTNFilter = 'ALL' | 'AWAITING' | 'APPROVED' | 'REJECTED' | 'RECEIVED';
@@ -68,6 +69,9 @@ interface MaterialRequestLineSummary {
   quantity: number;
   unit: string;
   line_flag: string;
+  /** Signal-1 reason capture (migration 076); shown as evidence on the card. */
+  overage_reason: OverageReason | null;
+  overage_note: string | null;
   material_catalog?: MaterialRequestLineCatalog | Array<MaterialRequestLineCatalog> | null;
   material_request_line_allocations?: MaterialRequestAllocationSummary[];
 }
@@ -184,6 +188,8 @@ export default function ApprovalsScreen() {
               quantity,
               unit,
               line_flag,
+              overage_reason,
+              overage_note,
               material_catalog(name, code, unit, supplier_unit, base_qty_per_supplier_unit),
               material_request_line_allocations(
                 boq_item_id,
@@ -578,6 +584,8 @@ export default function ApprovalsScreen() {
                         boqItemId={firstAllocation?.boq_item_id ?? null}
                         envelope={envelope}
                         boqItem={boqItem}
+                        overageReason={line.overage_reason}
+                        overageNote={line.overage_note}
                       />
                     </View>
                   );

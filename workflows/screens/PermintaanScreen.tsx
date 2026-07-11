@@ -12,21 +12,26 @@ import DateSelectField, { getTodayIsoDate } from '../components/DateSelectField'
 import MaterialNamingAssist from '../components/MaterialNamingAssist';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
-import { computeWorkGroupGate1Flag, type EnvelopeUnitDisplay } from '../gates/gate1';
+import { computeWorkGroupGate1Flag, buildProjectEnvelopeOverageResult, type EnvelopeUnitDisplay } from '../gates/gate1';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
 import { supplierToBase } from '../../tools/materialUnitConversion';
 import { applyCatalogMaterialToLine } from '../../tools/materialSelection';
 import { supabase } from '../../tools/supabase';
-import { getWorkGroupEnvelope } from '../../tools/envelopes';
-import { evaluateTier4Untracked } from '../../tools/budgetGate';
+import { getWorkGroupEnvelope, getMaterialBudget } from '../../tools/envelopes';
+import { evaluateTier4Untracked, evaluateTier3BudgetSoft } from '../../tools/budgetGate';
+import {
+  requiresOverageReason, OVERAGE_REASONS, OVERAGE_REASON_LABELS,
+} from '../../tools/requestOverage';
 import { buildWorkGroups } from '../../tools/boqWorkGroups';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, RADIUS_SM } from '../theme';
 import type {
   GateResult,
   FlagLevel,
   MaterialEnvelopeStatus,
+  MaterialBudgetStatus,
   EnvelopeBoqBreakdown,
   MaterialRequestAllocationBasis,
+  OverageReason,
   WorkGroup,
 } from '../../tools/types';
 
@@ -74,6 +79,10 @@ interface RequestLine {
   workGroupKey: string | null;
   lineResult: GateResult | null;
   allocationPreview: AllocationPreview[];
+  /** Signal-1 reason capture (spec §3) — required before submit when the line's
+   *  projected cumulative crosses 100% of plan. */
+  overageReason: OverageReason | null;
+  overageNote: string;
 }
 
 const FLAG_ORDER: FlagLevel[] = ['OK', 'INFO', 'WARNING', 'HIGH', 'CRITICAL'];
@@ -120,6 +129,8 @@ function makeLine(overrides: Partial<RequestLine> = {}): RequestLine {
     workGroupKey: null,
     lineResult: null,
     allocationPreview: [],
+    overageReason: null,
+    overageNote: '',
     ...overrides,
   };
 }
@@ -192,96 +203,41 @@ function buildWorkGroupAllocations(
   });
 }
 
-/** "a / b batang (a / b kg)" when a rebar factor exists, else "a / b kg". */
-function fmtEnvPairDisplay(a: number, b: number, baseUnit: string, display?: EnvelopeUnitDisplay | null): string {
-  if (display?.factor && display.factor > 0) {
-    const toBtg = (n: number) => (n / display.factor!).toLocaleString('id-ID', { maximumFractionDigits: 2 });
-    return `${toBtg(a)} / ${toBtg(b)} ${display.supplierUnit} (${Math.round(a).toLocaleString('id-ID')} / ${Math.round(b).toLocaleString('id-ID')} ${baseUnit})`;
-  }
-  return `${Math.round(a).toLocaleString('id-ID')} / ${Math.round(b).toLocaleString('id-ID')} ${baseUnit}`;
-}
-
+/**
+ * Tier-2 soft heads-up (Task 2.4). Delegates to the shared project-grain overage
+ * builder: projected = di-PO (total_ordered) + permintaan berjalan
+ * (total_requested) + permintaan ini, capped at WARNING with running-total copy.
+ * No envelope → "Tidak ada alokasi pembanding" (INFO), never a silent OK.
+ * SERVER TWIN: migration 069 compute_tier2_flag.
+ */
 function buildTier2Result(
   envelope: MaterialEnvelopeStatus | null,
   requestedQty: number,
   display?: EnvelopeUnitDisplay | null,
 ): GateResult {
-  if (!envelope) {
-    return {
-      flag: 'INFO',
-      check: '1a',
-      msg: 'Envelope material belum tersedia di baseline. Tetap boleh diajukan, tetapi estimator harus review manual.',
-    };
-  }
-
-  // Gate math burns on total_requested (running request demand), NOT total_ordered
-  // (which now means SANO-PO qty). This keeps the client soft gate numerically in
-  // step with the server gate compute_tier2_flag (033), which migration 068
-  // re-points to total_requested. The DISPLAY below splits di-PO vs permintaan.
-  // HANDOFF → Task 2.4 (069): re-derive as planned − PO − other requests when the
-  // full PO-aware soft gate lands.
-  const newTotal = Number(envelope.total_requested ?? 0) + requestedQty;
-  const burnPct = Number(envelope.total_planned ?? 0) > 0
-    ? (newTotal / Number(envelope.total_planned)) * 100
-    : 0;
-
-  if (burnPct > 120) {
-    return {
-      flag: 'CRITICAL',
-      check: '1a',
-      msg: `${envelope.material_name} akan melewati envelope hingga ${burnPct.toFixed(0)}%. Auto-hold dan perlu override prinsipal.`,
-      extra: {
-        flag: 'INFO',
-        check: 'scope',
-        msg: `${envelope.boq_item_count} item BoQ akan terkena alokasi bulk.`,
-      },
-    };
-  }
-
-  if (burnPct > 100) {
-    return {
-      flag: 'HIGH',
-      check: '1a',
-      msg: `${envelope.material_name} melampaui envelope: ${burnPct.toFixed(0)}% (${fmtEnvPairDisplay(newTotal, Number(envelope.total_planned ?? 0), envelope.unit, display)}).`,
-      extra: {
-        flag: 'INFO',
-        check: 'scope',
-        msg: `${envelope.boq_item_count} item BoQ akan dihitung proporsional.`,
-      },
-    };
-  }
-
-  if (burnPct > 80) {
-    return {
-      flag: 'WARNING',
-      check: '1a',
-      msg: `${envelope.material_name} mendekati batas envelope: ${burnPct.toFixed(0)}%.`,
-      extra: {
-        flag: 'INFO',
-        check: 'scope',
-        msg: `${envelope.boq_item_count} item BoQ akan menerima alokasi bulk.`,
-      },
-    };
-  }
-
-  return {
-    flag: 'OK',
-    check: '1a',
-    msg: `${envelope.material_name} masih aman di ${burnPct.toFixed(0)}% envelope.`,
-    extra: {
-      flag: 'INFO',
-      check: 'scope',
-      msg: `${envelope.boq_item_count} item BoQ akan dihitung proporsional.`,
-    },
-  };
+  return buildProjectEnvelopeOverageResult(envelope, requestedQty, display);
 }
 
-function buildTier3Result(requestedQty: number, unit: string): GateResult {
-  return {
-    flag: 'OK',
-    check: '1a',
-    msg: `Tier 3 dicatat sebagai stok umum: ${roundQty(requestedQty)} ${unit || 'unit'}.`,
-  };
+/**
+ * Tier-3 soft heads-up (Task 2.4). Replaces the old unconditional-OK stub with
+ * the real Rupiah budget evaluation, capped at WARNING for the request-time
+ * context (evaluateTier3BudgetSoft). A catalog-unlinked / free-text line has no
+ * budget baseline → "Tidak ada alokasi pembanding" (INFO), never OK.
+ * SERVER TWIN: migration 069 compute_tier3_flag.
+ */
+function buildTier3Result(
+  budget: MaterialBudgetStatus | null,
+  requestedQty: number,
+  hasMaterial: boolean,
+): GateResult {
+  if (!hasMaterial) {
+    return {
+      flag: 'INFO',
+      check: '1a',
+      msg: 'Tidak ada alokasi pembanding — material bebas-teks tidak terhubung ke katalog. Estimator review manual.',
+    };
+  }
+  return evaluateTier3BudgetSoft(budget, requestedQty);
 }
 
 /** Tier 3 (Rupiah budget) and Tier 4 (untracked consumable) both post as a
@@ -319,6 +275,8 @@ export default function PermintaanScreen() {
   const [envelopeCache, setEnvelopeCache] = useState<Map<string, MaterialEnvelopeStatus>>(new Map());
   const [breakdownCache, setBreakdownCache] = useState<Map<string, EnvelopeBoqBreakdown[]>>(new Map());
   const [workGroupEnvCache, setWorkGroupEnvCache] = useState<Map<string, MaterialEnvelopeStatus | null>>(new Map());
+  // Tier-3 Rupiah budget envelope per material (null = fetched, no baseline).
+  const [budgetCache, setBudgetCache] = useState<Map<string, MaterialBudgetStatus | null>>(new Map());
 
   // Work-groups: the bulk unit a supervisor orders against (Tier 1 target).
   const workGroups = useMemo<WorkGroup[]>(() => buildWorkGroups(boqItems), [boqItems]);
@@ -410,17 +368,33 @@ export default function PermintaanScreen() {
     });
   }, [project, workGroupMap, workGroupEnvCache]);
 
+  // Warm the Tier-3 Rupiah budget envelope for a catalog material (soft gate).
+  const cacheMaterialBudget = useCallback(async (materialId: string) => {
+    if (!project) return;
+    if (budgetCache.has(materialId)) return;
+    const budget = await getMaterialBudget(project.id, materialId);
+    setBudgetCache(prev => {
+      const next = new Map(prev);
+      next.set(materialId, budget);
+      return next;
+    });
+  }, [project, budgetCache]);
+
   // Warm work-group envelope + breakdown for Tier-1 lines once both a group and
   // a catalog material are chosen. Without a materialId there is no baseline to
   // validate the bulk order against (the gate then returns a soft INFO).
+  // Tier-3 catalog lines warm their Rupiah budget envelope for the soft gate.
   useEffect(() => {
     for (const line of lines) {
       if (line.tier === 1 && line.workGroupKey && line.materialId) {
         void cacheWorkGroupEnvelope(line.workGroupKey, line.materialId);
         void cacheTier2Context([line.materialId]);
       }
+      if (line.tier === 3 && line.materialId) {
+        void cacheMaterialBudget(line.materialId);
+      }
     }
-  }, [lines, cacheWorkGroupEnvelope, cacheTier2Context]);
+  }, [lines, cacheWorkGroupEnvelope, cacheTier2Context, cacheMaterialBudget]);
 
   const updateLine = (id: string, patch: Partial<RequestLine>) => {
     setLines(prev => prev.map(line => (
@@ -507,10 +481,13 @@ export default function PermintaanScreen() {
           ? workGroupEnvCache.get(`${line.workGroupKey}::${line.materialId}`) ?? null
           : null;
         const breakdown = line.materialId ? breakdownCache.get(line.materialId) ?? [] : [];
+        // Project envelope (PO-based total_ordered) — shown alongside as PO
+        // context only; the group grain has no PO dimension of its own.
+        const projectEnvelope = line.materialId ? envelopeCache.get(line.materialId) ?? null : null;
 
         return {
           ...line,
-          lineResult: computeWorkGroupGate1Flag(envelope, requestedBaseQty, group.label, envDisplay),
+          lineResult: computeWorkGroupGate1Flag(envelope, requestedBaseQty, group.label, envDisplay, projectEnvelope),
           allocationPreview: buildWorkGroupAllocations(breakdown, group.itemIds, requestedBaseQty),
         };
       }
@@ -547,13 +524,16 @@ export default function PermintaanScreen() {
         };
       }
 
+      // Tier 3 — Rupiah budget soft gate. A catalog-linked material burns
+      // against its budget envelope; a free-text line has no baseline.
+      const budget = line.materialId ? budgetCache.get(line.materialId) ?? null : null;
       return {
         ...line,
-        lineResult: buildTier3Result(requestedBaseQty, line.baseUnit || line.unit),
+        lineResult: buildTier3Result(budget, requestedBaseQty, !!line.materialId),
         allocationPreview: buildGeneralStockAllocation(requestedBaseQty),
       };
     });
-  }, [lines, workGroupMap, envelopeCache, breakdownCache, workGroupEnvCache]);
+  }, [lines, workGroupMap, envelopeCache, breakdownCache, workGroupEnvCache, budgetCache]);
 
   const overallFlag = useMemo<FlagLevel>(() => {
     let worst: FlagLevel = 'OK';
@@ -565,13 +545,26 @@ export default function PermintaanScreen() {
     return worst;
   }, [linesWithResults]);
 
-  const isAutoHold = overallFlag === 'CRITICAL';
+  // Lines whose projected cumulative crosses 100% must carry an overage reason
+  // before submit (spec §3). Request time never hard-blocks on quantity/budget —
+  // the ONLY submit blocker now is a missing reason on an over-total line.
+  const missingReasonLineIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const line of linesWithResults) {
+      if (isPositiveNumber(line.quantity) && requiresOverageReason(line.lineResult) && !line.overageReason) {
+        ids.add(line.id);
+      }
+    }
+    return ids;
+  }, [linesWithResults]);
+  const hasMissingReason = missingReasonLineIds.size > 0;
+
   const hasValidLines = linesWithResults.some(line => isPositiveNumber(line.quantity));
 
-  const statusLabel = isAutoHold
-    ? 'Ditahan — Menunggu Override Prinsipal'
+  const statusLabel = hasMissingReason
+    ? 'Lengkapi alasan kelebihan alokasi'
     : overallFlag === 'WARNING' || overallFlag === 'HIGH'
-      ? 'Dalam Review'
+      ? 'Perlu Review Estimator'
       : 'Siap Dikirim';
 
   const shouldShowLines = lines.length > 0;
@@ -586,8 +579,10 @@ export default function PermintaanScreen() {
       toast('Masukkan jumlah untuk minimal 1 material', 'critical');
       return;
     }
-    if (isAutoHold) {
-      toast('Permintaan ditahan — Prinsipal harus override', 'critical');
+    // Soft heads-up: an over-total line submits, but only after the supervisor
+    // picks a reason (spec §3). No principal hard-hold at request time.
+    if (hasMissingReason) {
+      toast('Pilih alasan untuk material yang melebihi alokasi sebelum mengirim', 'critical');
       return;
     }
 
@@ -634,7 +629,10 @@ export default function PermintaanScreen() {
           urgency,
           common_note: commonNote ? sanitizeText(commonNote) : null,
           overall_flag: overallFlag,
-          overall_status: isAutoHold ? 'AUTO_HOLD' : 'PENDING',
+          // Request time never hard-holds on quantity/budget (spec §3) — the
+          // header opens PENDING. Any server-side promotion (033 Trigger 2) is
+          // now unreachable for quantity/budget flags (they cap at WARNING).
+          overall_status: 'PENDING',
         })
         .select('id')
         .single();
@@ -655,7 +653,18 @@ export default function PermintaanScreen() {
             quantity: supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit),
             unit: sanitizeText(line.base_qty_per_supplier_unit ? (line.baseUnit || line.unit) : line.unit),
             line_flag: line.lineResult?.flag ?? 'OK',
+            // line_check_details is the supervisor's evidence-of-then snapshot
+            // (spec §3) — it now carries the overage running-total components via
+            // lineResult.overage. Office/approval panels RECOMPUTE live and never
+            // trust this stored value as current numbers.
             line_check_details: line.lineResult,
+            // Signal-1 reason capture: persisted only for a line that is
+            // actually over-total at submit (a reason left over from an earlier,
+            // higher quantity is dropped if the line fell back under 100%).
+            overage_reason: requiresOverageReason(line.lineResult) ? line.overageReason : null,
+            overage_note: requiresOverageReason(line.lineResult) && line.overageReason && line.overageNote
+              ? sanitizeText(line.overageNote)
+              : null,
             work_group_label: line.tier === 1 && line.workGroupKey
               ? workGroupMap.get(line.workGroupKey)?.label ?? null
               : null,
@@ -991,6 +1000,49 @@ export default function PermintaanScreen() {
                   {line.lineResult && (
                     <FlagPanel result={line.lineResult} gateLabel="Gate 1" />
                   )}
+
+                  {requiresOverageReason(line.lineResult) && (
+                    <View style={[
+                      styles.reasonBox,
+                      !line.overageReason && styles.reasonBoxMissing,
+                    ]}>
+                      <Text style={styles.reasonLabel}>
+                        Alasan kelebihan alokasi <Text style={styles.req}>*</Text>
+                      </Text>
+                      <Text style={styles.reasonHint}>
+                        Permintaan ini membuat total melebihi rencana. Pilih alasan agar estimator bisa menindaklanjuti.
+                      </Text>
+                      <View style={styles.reasonChips}>
+                        {OVERAGE_REASONS.map(reason => {
+                          const selected = line.overageReason === reason;
+                          return (
+                            <TouchableOpacity
+                              key={reason}
+                              style={[styles.reasonChip, selected && styles.reasonChipActive]}
+                              onPress={() => updateLine(line.id, { overageReason: selected ? null : reason })}
+                              accessibilityRole="radio"
+                              accessibilityState={{ checked: selected }}
+                              accessibilityLabel={OVERAGE_REASON_LABELS[reason]}
+                            >
+                              <Text style={[styles.reasonChipText, selected && styles.reasonChipTextActive]}>
+                                {OVERAGE_REASON_LABELS[reason]}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                      {line.overageReason && (
+                        <TextInput
+                          style={[styles.input, styles.reasonNote]}
+                          value={line.overageNote}
+                          onChangeText={(text) => updateLine(line.id, { overageNote: text })}
+                          placeholder="Catatan tambahan (opsional)…"
+                          placeholderTextColor={COLORS.textMuted}
+                          multiline
+                        />
+                      )}
+                    </View>
+                  )}
                 </Card>
               );
             })}
@@ -1070,9 +1122,9 @@ export default function PermintaanScreen() {
 
             <View style={[
               styles.statusBox,
-              { backgroundColor: isAutoHold ? COLORS.criticalBg : COLORS.okBg },
+              { backgroundColor: hasMissingReason ? COLORS.criticalBg : COLORS.okBg },
             ]}>
-              <Text style={[styles.statusLabel, { color: isAutoHold ? COLORS.critical : COLORS.ok }]}>
+              <Text style={[styles.statusLabel, { color: hasMissingReason ? COLORS.critical : COLORS.ok }]}>
                 {statusLabel}
               </Text>
               <Text style={styles.statusSub}>
@@ -1081,18 +1133,18 @@ export default function PermintaanScreen() {
             </View>
 
             <TouchableOpacity
-              style={[styles.submitBtn, (isAutoHold || submitting) && styles.submitBtnDisabled]}
+              style={[styles.submitBtn, (hasMissingReason || submitting) && styles.submitBtnDisabled]}
               onPress={handleSubmit}
-              disabled={submitting || isAutoHold}
-              accessibilityLabel={isAutoHold ? 'Permintaan ditahan, tidak dapat dikirim' : 'Ajukan permintaan material'}
+              disabled={submitting || hasMissingReason}
+              accessibilityLabel={hasMissingReason ? 'Lengkapi alasan kelebihan sebelum mengirim' : 'Ajukan permintaan material'}
               accessibilityRole="button"
-              accessibilityState={{ disabled: isAutoHold || submitting, busy: submitting }}
+              accessibilityState={{ disabled: hasMissingReason || submitting, busy: submitting }}
             >
               {submitting ? (
                 <ActivityIndicator size="small" color={COLORS.textInverse} />
               ) : (
                 <Text style={styles.submitBtnText}>
-                  {isAutoHold ? 'Ditahan — Override Diperlukan' : 'Ajukan Permintaan'}
+                  {hasMissingReason ? 'Lengkapi Alasan Kelebihan' : 'Ajukan Permintaan'}
                 </Text>
               )}
             </TouchableOpacity>
@@ -1185,6 +1237,60 @@ const styles = StyleSheet.create({
     marginTop: SPACE.md,
   },
   req: { color: COLORS.critical },
+
+  reasonBox: {
+    marginTop: SPACE.sm,
+    padding: SPACE.md,
+    borderRadius: RADIUS_SM,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surfaceAlt,
+  },
+  reasonBoxMissing: {
+    borderColor: COLORS.critical,
+    backgroundColor: COLORS.criticalBg,
+  },
+  reasonLabel: {
+    fontSize: TYPE.sm,
+    fontFamily: FONTS.bold,
+    color: COLORS.text,
+  },
+  reasonHint: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.regular,
+    color: COLORS.textSec,
+    marginTop: 2,
+    marginBottom: SPACE.sm,
+    lineHeight: 17,
+  },
+  reasonChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: SPACE.sm,
+  },
+  reasonChip: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 999,
+    paddingHorizontal: SPACE.md - 2,
+    paddingVertical: SPACE.sm - 1,
+    backgroundColor: COLORS.surface,
+  },
+  reasonChipActive: {
+    borderColor: COLORS.primary,
+    backgroundColor: `${COLORS.primary}15`,
+  },
+  reasonChipText: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.semibold,
+    color: COLORS.textSec,
+  },
+  reasonChipTextActive: { color: COLORS.primary },
+  reasonNote: {
+    marginTop: SPACE.sm,
+    minHeight: 44,
+    textAlignVertical: 'top',
+  },
 
   fieldHint: {
     fontSize: TYPE.xs,

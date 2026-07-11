@@ -766,12 +766,43 @@ export interface ImportAnomaly {
 
 export type FlagLevel = 'OK' | 'INFO' | 'WARNING' | 'HIGH' | 'CRITICAL';
 
+/**
+ * Signal-1 request-time overage components (Task 2.4 / spec §3). The cumulative
+ * running total behind a soft heads-up, carried on the GateResult so the client
+ * can (a) render the running-total copy, (b) decide whether a reason is required
+ * (projectedPct > 100), and (c) persist it into line_check_details as the
+ * supervisor's evidence-of-then snapshot. All quantities are BASE units (kg).
+ * `poOrdered` is null at a grain with no PO dimension (Tier-1 work-group).
+ */
+export interface OverageComponents {
+  /** Named envelope grain: "Grup: <label>" (Tier-1) or "Proyek" (Tier-2/3). */
+  grainLabel: string;
+  poOrdered: number | null;
+  otherOpen: number;
+  thisRequest: number;
+  planned: number;
+  projectedPct: number;
+  unit: string;
+}
+
 export interface GateResult {
   flag: FlagLevel;
   check: string;
   msg: string;
   extra?: GateResult;
+  /** Present when this result was produced by the Signal-1 overage evaluation. */
+  overage?: OverageComponents;
 }
+
+/** Reason a supervisor gives when a request's projected cumulative crosses 100%
+ * (spec §3 reason capture). Mirrors material_request_lines.overage_reason CHECK
+ * (migration 076). */
+export type OverageReason =
+  | 'WASTE'
+  | 'REWORK'
+  | 'PLAN_UNDERESTIMATE'
+  | 'VARIATION'
+  | 'OTHER';
 
 // ─── Kasbon Ledger ───────────────────────────────────────────────────
 

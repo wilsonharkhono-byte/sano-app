@@ -4,7 +4,7 @@ import { MaterialUsagePanel } from '../MaterialUsagePanel';
 import type { EnvelopeWithPrice } from '../../../../tools/envelopes';
 
 describe('MaterialUsagePanel', () => {
-  it('renders unlinked-material warning when materialId is null', () => {
+  it('renders "Tidak ada alokasi pembanding" for an unlinked/free-text line', () => {
     const { getByText } = render(
       <MaterialUsagePanel
         materialId={null}
@@ -15,7 +15,7 @@ describe('MaterialUsagePanel', () => {
         envelope={null}
       />,
     );
-    expect(getByText(/tidak terdaftar di katalog/i)).toBeTruthy();
+    expect(getByText(/Tidak ada alokasi pembanding/i)).toBeTruthy();
   });
 });
 
@@ -100,7 +100,7 @@ describe('MaterialUsagePanel — Tier 2', () => {
     expect(getByText(/⚠ Envelope sudah terlampaui/i)).toBeTruthy();
   });
 
-  it('shows envelope-empty state when envelope is null', () => {
+  it('shows "Tidak ada alokasi pembanding" when the envelope is null', () => {
     const { getByText } = render(
       <MaterialUsagePanel
         materialId="mat-bata"
@@ -110,7 +110,30 @@ describe('MaterialUsagePanel — Tier 2', () => {
         envelope={null}
       />,
     );
-    expect(getByText(/Envelope belum ada di baseline/i)).toBeTruthy();
+    expect(getByText(/Tidak ada alokasi pembanding/i)).toBeTruthy();
+  });
+
+  it('renders the recomputed Signal-1 overage running total (planned/di-PO/berjalan/ini/proyeksi) + reason', () => {
+    // planned 1000, di-PO 900, total_requested 110 (incl. this 50) → other-open
+    // 60; projected 900+60+50 = 1010 = 101%.
+    const { getByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-bata"
+        tier={2}
+        requestedQuantity={50}
+        requestedUnit="kg"
+        envelope={tier2Envelope({ unit: 'kg', total_planned: 1000, total_ordered: 900, total_requested: 110 })}
+        overageReason="PLAN_UNDERESTIMATE"
+        overageNote="RAB kurang di zona B"
+      />,
+    );
+    expect(getByText(/Rencana: 1\.000 kg/)).toBeTruthy();
+    expect(getByText(/Sudah di-PO: 900 kg/)).toBeTruthy();
+    expect(getByText(/Permintaan berjalan lain: 60 kg/)).toBeTruthy();
+    expect(getByText(/Permintaan ini: 50 kg/)).toBeTruthy();
+    expect(getByText(/Proyeksi: 1\.010 kg \(101%\)/)).toBeTruthy();
+    expect(getByText(/Melebihi total alokasi/i)).toBeTruthy();
+    expect(getByText(/Alasan pengaju: Volume RAB kurang — RAB kurang di zona B/)).toBeTruthy();
   });
 
   it('renders boq_item_count when present', () => {

@@ -2,6 +2,9 @@ import type {
   BoqItem, Envelope, Milestone, GateResult, FlagLevel,
   MaterialEnvelopeStatus,
 } from '../../tools/types';
+import {
+  buildOverageResult, makeOverageComponents, type QtyFormatter,
+} from '../../tools/requestOverage';
 
 const FLAG_ORDER: FlagLevel[] = ['OK', 'INFO', 'WARNING', 'HIGH', 'CRITICAL'];
 
@@ -72,7 +75,7 @@ export function computeGate1Flag(
 
   if (tier === 2 && materialEnvelope) {
     // ── Tier 2: Server-derived envelope check (new path) ──────────────
-    check1a = envelopeBurnFlag(materialEnvelope, requestedQty);
+    check1a = buildProjectEnvelopeOverageResult(materialEnvelope, requestedQty);
   } else if (tier === 2 && !materialEnvelope) {
     // ── Tier 2 fallback: legacy envelope model ──────────────────────
     const envKey = (item.tier2_material ?? '').split('+').map(s => s.trim());
@@ -165,59 +168,74 @@ export function computeGate1Flag(
   return check1a;
 }
 
-/**
- * Burn-threshold flag for an aggregate envelope (Tier 2 material envelope or a
- * work-group envelope). Shared so the two paths apply identical thresholds.
- *
- * SERVER TWIN — the work-group burn thresholds below
- * (> 120 CRITICAL, > 100 HIGH, > 80 WARNING, else OK — deliberately NO > 50 INFO
- * tier) are mirrored verbatim in compute_tier1_workgroup_flag in
- * supabase/migrations/056_server_gate_tier1_workgroup.sql. Change the two in
- * lockstep, or a modified client bypasses the server-side Tier-1 gate.
- */
-function envelopeBurnFlag(
-  env: MaterialEnvelopeStatus,
-  requestedQty: number,
-  display?: EnvelopeUnitDisplay | null,
-): GateResult {
-  const newTotal = env.total_ordered + requestedQty;
-  const burnPct = env.total_planned > 0 ? (newTotal / env.total_planned) * 100 : 0;
-  const remainingEnv = env.total_planned - env.total_ordered;
-  const matName = env.material_name;
-  const u = env.unit;
-
-  if (burnPct > 120) {
-    return { flag: 'CRITICAL', check: '1a', msg: `Envelope ${matName}: ${fmtEnvPair(newTotal, env.total_planned, u, display)} (${burnPct.toFixed(0)}%). Melebihi +20%. Auto-hold.` };
-  } else if (burnPct > 100) {
-    return { flag: 'HIGH', check: '1a', msg: `Envelope ${matName} melampaui batas: ${fmtEnvPair(newTotal, env.total_planned, u, display)} (${burnPct.toFixed(0)}%). Eskalasi.` };
-  } else if (burnPct > 80) {
-    return { flag: 'WARNING', check: '1a', msg: `Envelope ${matName}: ${burnPct.toFixed(0)}% terpakai (sisa ~${fmtEnvOne(remainingEnv - requestedQty, u, display)}). Mendekati batas.` };
-  }
-  return { flag: 'OK', check: '1a', msg: `Envelope ${matName}: ${burnPct.toFixed(0)}% (${fmtEnvPair(newTotal, env.total_planned, u, display)}). ${env.boq_item_count} item BoQ terkait.` };
+/** Wrap the gate1 EnvelopeUnitDisplay formatting into the requestOverage
+ * QtyFormatter shape so the running-total copy keeps its "X batang (Y kg)"
+ * rendering for rebar while the burn math stays base-unit. */
+function displayFmt(display?: EnvelopeUnitDisplay | null): QtyFormatter {
+  return (n, unit) => fmtEnvOne(n, unit, display);
 }
 
 /**
- * Gate 1 flag for a work-group order (Tier 1 → whole work-group). Validates the
- * requested material against the group's aggregate planned demand using the same
- * burn thresholds as Tier 2. Requires a catalog material to have a baseline; a
- * group with no planned demand for the material yields a soft INFO (never a
- * fake-correct OK).
+ * Signal-1 soft heads-up for the PROJECT envelope (Tier 2 / Tier 3 quantity
+ * grain). projected = di-PO (total_ordered) + permintaan berjalan
+ * (total_requested) + permintaan ini. Severity caps at WARNING (spec §3); copy
+ * is the running total. No baseline → explicit "Tidak ada alokasi pembanding".
  *
- * SERVER TWIN — enforced server-side by compute_tier1_workgroup_flag in
- * supabase/migrations/056_server_gate_tier1_workgroup.sql. Both the burn
- * thresholds (via envelopeBurnFlag) AND the INFO-on-missing-baseline rule (no /
- * zero planned demand → soft INFO, never a fake OK / false hold) must change
- * together in TS and SQL. NOTE: the progressPaceFlag advisory (1d) below is
- * CLIENT-ONLY — it yields at most INFO/WARNING and so can never trigger
- * AUTO_HOLD (which needs HIGH/CRITICAL), so migration 056 intentionally enforces
- * only the burn check. Nothing is lost server-side: a pace advisory cannot hold
- * a request, so there is nothing there for the server to enforce.
+ * SERVER TWIN — compute_tier2_flag in migration 069 (which reads
+ * v_material_envelope_status.total_ordered (PO) + a re-derived other-open-
+ * requests leg). Both cap at WARNING; keep the two in lockstep.
+ */
+export function buildProjectEnvelopeOverageResult(
+  envelope: MaterialEnvelopeStatus | null,
+  requestedQty: number,
+  display?: EnvelopeUnitDisplay | null,
+): GateResult {
+  if (!envelope || Number(envelope.total_planned ?? 0) <= 0) {
+    return {
+      flag: 'INFO',
+      check: '1a',
+      msg: 'Tidak ada alokasi pembanding — material belum punya rencana (envelope) di proyek. Estimator review manual.',
+    };
+  }
+  const c = makeOverageComponents({
+    grainLabel: 'Proyek',
+    poOrdered: Number(envelope.total_ordered ?? 0),
+    otherOpen: Number(envelope.total_requested ?? 0),
+    thisRequest: requestedQty,
+    planned: Number(envelope.total_planned ?? 0),
+    unit: envelope.unit,
+  });
+  const extra: GateResult | undefined = envelope.boq_item_count > 0
+    ? { flag: 'INFO', check: 'scope', msg: `${envelope.boq_item_count} item BoQ dihitung proporsional.` }
+    : undefined;
+  return buildOverageResult(c, '1a', { infoBand: true, extra, fmt: displayFmt(display) });
+}
+
+/**
+ * Gate 1 soft heads-up for a work-group order (Tier 1 → whole work-group).
+ * Validates the requested material against the group's aggregate planned demand.
+ * Severity caps at WARNING (spec §3 — request time never hard-blocks on
+ * quantity); copy is the running total, grain named ("Grup: <label>"). A group
+ * with no planned demand yields a soft INFO (never a fake-correct OK).
+ *
+ * TIER-1 GRAIN SIMPLIFICATION (Task 2.4, mirrored in migration 069 header):
+ * POs carry no work-group dimension, so at group grain the burn stays on
+ * request allocations (env.total_ordered here is request-based — see
+ * getWorkGroupEnvelope) with the PO leg omitted (poOrdered = null). When the
+ * PROJECT envelope is available it is shown alongside for PO context only — it
+ * does NOT change the group-grain severity.
+ *
+ * SERVER TWIN — compute_tier1_workgroup_flag in migration 069 keeps the same
+ * request-based burn and the INFO-on-missing-baseline rule, capped at WARNING.
+ * The progressPaceFlag advisory (1d) below is CLIENT-ONLY (never HIGH/CRITICAL,
+ * so it never promotes AUTO_HOLD) — the server enforces only the burn check.
  */
 export function computeWorkGroupGate1Flag(
   envelope: MaterialEnvelopeStatus | null,
   requestedQty: number,
   groupLabel: string,
   display?: EnvelopeUnitDisplay | null,
+  projectEnvelope?: MaterialEnvelopeStatus | null,
 ): GateResult {
   if (requestedQty <= 0) {
     return { flag: 'WARNING', check: '1a', msg: 'Masukkan jumlah permintaan lebih dari 0.' };
@@ -226,12 +244,28 @@ export function computeWorkGroupGate1Flag(
     return {
       flag: 'INFO',
       check: '1a',
-      msg: `Belum ada baseline material untuk grup "${groupLabel}". Tidak bisa divalidasi otomatis — estimator review manual.`,
+      msg: `Tidak ada alokasi pembanding untuk grup "${groupLabel}". Belum ada baseline material — estimator review manual.`,
     };
   }
 
-  // 1a — envelope burn (ordered vs planned).
-  const burn = envelopeBurnFlag(envelope, requestedQty, display);
+  // 1a — group envelope burn (request allocations vs planned; no PO leg at this
+  // grain). projected = permintaan berjalan (group) + permintaan ini.
+  const c = makeOverageComponents({
+    grainLabel: `Grup: ${groupLabel}`,
+    poOrdered: null,
+    otherOpen: Number(envelope.total_ordered ?? 0),
+    thisRequest: requestedQty,
+    planned: Number(envelope.total_planned ?? 0),
+    unit: envelope.unit,
+  });
+  const burn = buildOverageResult(c, '1a', { infoBand: false, fmt: displayFmt(display) });
+
+  // Project-wide PO context (display only) — the group grain cannot see PO qty.
+  if (projectEnvelope && Number(projectEnvelope.total_planned ?? 0) > 0) {
+    const projPo = Number(projectEnvelope.total_ordered ?? 0);
+    const projPlanned = Number(projectEnvelope.total_planned ?? 0);
+    burn.msg += ` (Proyek: sudah di-PO ${fmtEnvOne(projPo, projectEnvelope.unit, display)} dari rencana ${fmtEnvOne(projPlanned, projectEnvelope.unit, display)}).`;
+  }
 
   // 1d — progress pace: is this order running ahead of physical progress?
   // Material is ordered ahead of installation (normal), so only the GAP between
@@ -241,7 +275,9 @@ export function computeWorkGroupGate1Flag(
   const burnWorse = FLAG_ORDER.indexOf(burn.flag) >= FLAG_ORDER.indexOf(pace.flag);
   const worst = burnWorse ? burn : pace;
   const other = burnWorse ? pace : burn;
-  return { ...worst, extra: other };
+  // Preserve the overage components on the returned result regardless of which
+  // sub-result ranks worst, so the reason-required predicate still sees them.
+  return { ...worst, extra: other, overage: burn.overage };
 }
 
 /**
@@ -282,15 +318,7 @@ function fmtBatang(kg: number, display?: EnvelopeUnitDisplay | null): string {
     : fmtN(kg);
 }
 
-/** "X / Y batang (X / Y kg)" when a factor exists, else "X / Y kg". */
-function fmtEnvPair(a: number, b: number, baseUnit: string, display?: EnvelopeUnitDisplay | null): string {
-  if (display?.factor && display.factor > 0) {
-    return `${fmtBatang(a, display)} / ${fmtBatang(b, display)} ${display.supplierUnit} (${fmtN(a)} / ${fmtN(b)} ${baseUnit})`;
-  }
-  return `${fmtN(a)} / ${fmtN(b)} ${baseUnit}`;
-}
-
-/** "~X batang (X kg)" when a factor exists, else "~X kg". */
+/** "X batang (X kg)" when a factor exists, else "X kg". */
 function fmtEnvOne(kg: number, baseUnit: string, display?: EnvelopeUnitDisplay | null): string {
   if (display?.factor && display.factor > 0) {
     return `${fmtBatang(kg, display)} ${display.supplierUnit} (${fmtN(kg)} ${baseUnit})`;
