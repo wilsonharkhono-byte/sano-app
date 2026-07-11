@@ -20,7 +20,7 @@ import { supabase } from '../../tools/supabase';
 import { getWorkGroupEnvelope, getMaterialBudget } from '../../tools/envelopes';
 import { evaluateTier4Untracked, evaluateTier3BudgetSoft } from '../../tools/budgetGate';
 import {
-  requiresOverageReason, OVERAGE_REASONS, OVERAGE_REASON_LABELS,
+  requiresOverageReason, requiresOverageNote, OVERAGE_REASONS, OVERAGE_REASON_LABELS,
 } from '../../tools/requestOverage';
 import { buildWorkGroups } from '../../tools/boqWorkGroups';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, RADIUS_SM } from '../theme';
@@ -559,13 +559,35 @@ export default function PermintaanScreen() {
   }, [linesWithResults]);
   const hasMissingReason = missingReasonLineIds.size > 0;
 
+  // Reason 'OTHER' ("Lainnya") requires a free-text note before submit (spec §3
+  // "OTHER + free text") — same blocking pattern as the reason-required check
+  // above, just one predicate deeper.
+  const missingOtherNoteLineIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const line of linesWithResults) {
+      if (
+        isPositiveNumber(line.quantity)
+        && requiresOverageReason(line.lineResult)
+        && requiresOverageNote(line.overageReason, line.overageNote)
+      ) {
+        ids.add(line.id);
+      }
+    }
+    return ids;
+  }, [linesWithResults]);
+  const hasMissingOtherNote = missingOtherNoteLineIds.size > 0;
+
   const hasValidLines = linesWithResults.some(line => isPositiveNumber(line.quantity));
+
+  const hasBlockingReasonIssue = hasMissingReason || hasMissingOtherNote;
 
   const statusLabel = hasMissingReason
     ? 'Lengkapi alasan kelebihan alokasi'
-    : overallFlag === 'WARNING' || overallFlag === 'HIGH'
-      ? 'Perlu Review Estimator'
-      : 'Siap Dikirim';
+    : hasMissingOtherNote
+      ? "Lengkapi keterangan alasan 'Lainnya'"
+      : overallFlag === 'WARNING' || overallFlag === 'HIGH'
+        ? 'Perlu Review Estimator'
+        : 'Siap Dikirim';
 
   const shouldShowLines = lines.length > 0;
 
@@ -583,6 +605,10 @@ export default function PermintaanScreen() {
     // picks a reason (spec §3). No principal hard-hold at request time.
     if (hasMissingReason) {
       toast('Pilih alasan untuk material yang melebihi alokasi sebelum mengirim', 'critical');
+      return;
+    }
+    if (hasMissingOtherNote) {
+      toast("Alasan 'Lainnya' butuh keterangan", 'critical');
       return;
     }
 
@@ -1031,16 +1057,39 @@ export default function PermintaanScreen() {
                           );
                         })}
                       </View>
-                      {line.overageReason && (
-                        <TextInput
-                          style={[styles.input, styles.reasonNote]}
-                          value={line.overageNote}
-                          onChangeText={(text) => updateLine(line.id, { overageNote: text })}
-                          placeholder="Catatan tambahan (opsional)…"
-                          placeholderTextColor={COLORS.textMuted}
-                          multiline
-                        />
-                      )}
+                      {line.overageReason && (() => {
+                        const otherNoteMissing = requiresOverageNote(line.overageReason, line.overageNote);
+                        return (
+                          <>
+                            {line.overageReason === 'OTHER' && (
+                              <Text style={styles.reasonLabel}>
+                                Keterangan <Text style={styles.req}>*</Text>
+                              </Text>
+                            )}
+                            <TextInput
+                              style={[
+                                styles.input,
+                                styles.reasonNote,
+                                otherNoteMissing && styles.reasonNoteMissing,
+                              ]}
+                              value={line.overageNote}
+                              onChangeText={(text) => updateLine(line.id, { overageNote: text })}
+                              placeholder={
+                                line.overageReason === 'OTHER'
+                                  ? "Jelaskan alasan 'Lainnya'…"
+                                  : 'Catatan tambahan (opsional)…'
+                              }
+                              placeholderTextColor={COLORS.textMuted}
+                              multiline
+                            />
+                            {otherNoteMissing && (
+                              <Text style={styles.reasonNoteError}>
+                                Alasan &apos;Lainnya&apos; butuh keterangan
+                              </Text>
+                            )}
+                          </>
+                        );
+                      })()}
                     </View>
                   )}
                 </Card>
@@ -1122,9 +1171,9 @@ export default function PermintaanScreen() {
 
             <View style={[
               styles.statusBox,
-              { backgroundColor: hasMissingReason ? COLORS.criticalBg : COLORS.okBg },
+              { backgroundColor: hasBlockingReasonIssue ? COLORS.criticalBg : COLORS.okBg },
             ]}>
-              <Text style={[styles.statusLabel, { color: hasMissingReason ? COLORS.critical : COLORS.ok }]}>
+              <Text style={[styles.statusLabel, { color: hasBlockingReasonIssue ? COLORS.critical : COLORS.ok }]}>
                 {statusLabel}
               </Text>
               <Text style={styles.statusSub}>
@@ -1133,18 +1182,28 @@ export default function PermintaanScreen() {
             </View>
 
             <TouchableOpacity
-              style={[styles.submitBtn, (hasMissingReason || submitting) && styles.submitBtnDisabled]}
+              style={[styles.submitBtn, (hasBlockingReasonIssue || submitting) && styles.submitBtnDisabled]}
               onPress={handleSubmit}
-              disabled={submitting || hasMissingReason}
-              accessibilityLabel={hasMissingReason ? 'Lengkapi alasan kelebihan sebelum mengirim' : 'Ajukan permintaan material'}
+              disabled={submitting || hasBlockingReasonIssue}
+              accessibilityLabel={
+                hasMissingReason
+                  ? 'Lengkapi alasan kelebihan sebelum mengirim'
+                  : hasMissingOtherNote
+                    ? "Lengkapi keterangan alasan Lainnya sebelum mengirim"
+                    : 'Ajukan permintaan material'
+              }
               accessibilityRole="button"
-              accessibilityState={{ disabled: hasMissingReason || submitting, busy: submitting }}
+              accessibilityState={{ disabled: hasBlockingReasonIssue || submitting, busy: submitting }}
             >
               {submitting ? (
                 <ActivityIndicator size="small" color={COLORS.textInverse} />
               ) : (
                 <Text style={styles.submitBtnText}>
-                  {hasMissingReason ? 'Lengkapi Alasan Kelebihan' : 'Ajukan Permintaan'}
+                  {hasMissingReason
+                    ? 'Lengkapi Alasan Kelebihan'
+                    : hasMissingOtherNote
+                      ? 'Lengkapi Keterangan'
+                      : 'Ajukan Permintaan'}
                 </Text>
               )}
             </TouchableOpacity>
@@ -1290,6 +1349,15 @@ const styles = StyleSheet.create({
     marginTop: SPACE.sm,
     minHeight: 44,
     textAlignVertical: 'top',
+  },
+  reasonNoteMissing: {
+    borderColor: COLORS.critical,
+  },
+  reasonNoteError: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.regular,
+    color: COLORS.critical,
+    marginTop: 4,
   },
 
   fieldHint: {

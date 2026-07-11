@@ -5,6 +5,7 @@ import {
   capFlagAtWarning,
   buildOverageResult,
   requiresOverageReason,
+  requiresOverageNote,
   projectedTotal,
   OVERAGE_REASONS,
   OVERAGE_REASON_LABELS,
@@ -144,6 +145,27 @@ describe('requiresOverageReason — >100% crossing predicate', () => {
   it('false when the result carries no overage components', () => {
     expect(requiresOverageReason({ flag: 'OK', check: 'x', msg: 'no overage' })).toBe(false);
     expect(requiresOverageReason(null)).toBe(false);
+  });
+});
+
+describe('requiresOverageNote — spec §3 "OTHER + free text"', () => {
+  it('true when reason is OTHER and note is empty', () => {
+    expect(requiresOverageNote('OTHER', '')).toBe(true);
+  });
+  it('true when reason is OTHER and note is whitespace-only', () => {
+    expect(requiresOverageNote('OTHER', '   ')).toBe(true);
+  });
+  it('false when reason is OTHER and note has content', () => {
+    expect(requiresOverageNote('OTHER', 'Kabel tambahan untuk jalur baru')).toBe(false);
+  });
+  it('false for non-OTHER reasons regardless of note', () => {
+    expect(requiresOverageNote('WASTE', '')).toBe(false);
+    expect(requiresOverageNote('REWORK', '')).toBe(false);
+    expect(requiresOverageNote('PLAN_UNDERESTIMATE', '')).toBe(false);
+    expect(requiresOverageNote('VARIATION', '')).toBe(false);
+  });
+  it('false when no reason is picked yet', () => {
+    expect(requiresOverageNote(null, '')).toBe(false);
   });
 });
 

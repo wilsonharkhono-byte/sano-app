@@ -220,6 +220,13 @@ const ENVELOPE_WARNING_PCT = 80;
 const ENVELOPE_CRITICAL_PCT = 100;
 
 /**
+ * LEGACY / DEAD — no production callers. NOT the server twin since 069
+ * (uncapped severities, pre-069 formula). Do not resurrect without
+ * re-deriving from compute_tier*_flag. Live client gates:
+ * workflows/gates/gate1.ts, PermintaanScreen buildTier2Result /
+ * buildProjectEnvelopeOverageResult, tools/budgetGate.ts
+ * evaluateTier3BudgetSoft.
+ *
  * Gate 1 check for Tier 2 materials.
  * Instead of checking against a single BoQ item, checks against
  * the aggregated envelope across all BoQ items using this material.
@@ -247,10 +254,9 @@ export async function checkTier2Envelope(
   }
 
   // Burn on total_requested (request demand), NOT total_ordered (SANO PO qty).
-  // This keeps the client Tier-2 soft gate numerically identical to the server
-  // gate compute_tier2_flag (033), which migration 068 re-points to
-  // total_requested. HANDOFF → Task 2.4 (069): re-derive as planned − PO − other
-  // requests once the PO-based soft gate lands.
+  // Pre-069 formula, frozen — see the dead-code warning above. The live server
+  // twin is compute_tier2_flag (069), which burns PO-ordered + other-open +
+  // this request against total_planned, capped at WARNING.
   const newTotal = envelope.total_requested + requestedQty;
   const newBurnPct = envelope.total_planned > 0
     ? (newTotal / envelope.total_planned) * 100
@@ -304,6 +310,13 @@ export async function checkTier2Envelope(
 // ─── Tier-Aware Gate 1 Dispatcher ────────────────────────────────────
 
 /**
+ * LEGACY / DEAD — no production callers. NOT the server twin since 069
+ * (uncapped severities, pre-069 formula). Do not resurrect without
+ * re-deriving from compute_tier*_flag. Live client gates:
+ * workflows/gates/gate1.ts, PermintaanScreen buildTier2Result /
+ * buildProjectEnvelopeOverageResult, tools/budgetGate.ts
+ * evaluateTier3BudgetSoft.
+ *
  * Unified Gate 1 material check that branches by tier.
  *
  *   Tier 1 → check against specific BoQ item planned quantity
@@ -345,6 +358,13 @@ export async function checkMaterialRequest(
 }
 
 /**
+ * LEGACY / DEAD — no production callers. NOT the server twin since 069
+ * (uncapped severities, pre-069 formula). Do not resurrect without
+ * re-deriving from compute_tier*_flag. Live client gates:
+ * workflows/gates/gate1.ts, PermintaanScreen buildTier2Result /
+ * buildProjectEnvelopeOverageResult, tools/budgetGate.ts
+ * evaluateTier3BudgetSoft.
+ *
  * Tier 1: direct quantity check against a specific BoQ item.
  * Order maps 1:1 to the planned quantity.
  */

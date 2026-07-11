@@ -26,6 +26,13 @@
 --   request-time quantity/budget overage can no longer AUTO_HOLD. This is
 --   intentional (spec §2.2 / §3): the hard quantity gate lives at PO creation
 --   (Gate-2, migration TBD Task 2.5), not at request time.
+--   CARVE-OUT: this claim covers only the three functions this migration touches.
+--   The legacy compute_tier1_flag (033, single-BoQ DIRECT-allocation path) is NOT
+--   one of them — dispatch_line_flag (056:184-196) still calls it whenever a
+--   DIRECT allocation exists, and it still returns HIGH/CRITICAL uncapped. So a
+--   DIRECT-allocation Tier-1 request (including one written via direct REST
+--   insert, bypassing the app's WORKGROUP_ENVELOPE path) CAN still AUTO_HOLD.
+--   Left as-is: recapping compute_tier1_flag is out of scope for this migration.
 --
 -- ⚠ TIER-1 GRAIN SIMPLIFICATION: SANO POs carry no work-group dimension, so at the
 --   work-group grain there is no honest way to subtract PO qty. compute_tier1_
@@ -63,6 +70,14 @@
 --   as admins link POs. The current line self-excludes naturally at BEFORE INSERT
 --   (it is not yet in material_request_lines); conservative overcount is ACCEPTED
 --   (safer for a heads-up).
+--   ⚠ PRE-EXISTING DEFECT (inherited from 033/068, not introduced here): on
+--   BEFORE UPDATE OF quantity (Trigger 1, 033:253), the line already exists in
+--   material_request_lines with its OLD quantity, and a BEFORE trigger's SELECT
+--   still sees that pre-update row — so the line's own OLD quantity is counted
+--   a second time inside "other open requests" alongside p_requested_qty (the
+--   NEW value). Fixing this needs the functions to accept and exclude the
+--   current line's id (a signature change across the TS/SQL twin lockstep
+--   above), so it is deferred rather than fixed in this migration.
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- 1. Tier 1 (work-group). Body from 056:68-150 — request-based burn KEPT; only

@@ -132,3 +132,13 @@ export function buildOverageResult(
 export function requiresOverageReason(result: GateResult | null | undefined): boolean {
   return !!result?.overage && result.overage.projectedPct > REASON_THRESHOLD_PCT;
 }
+
+/**
+ * True when the picked overage_reason is 'OTHER' but the free-text note is
+ * blank — spec §3 requires "OTHER + free text" (a bare "Lainnya" with no
+ * explanation gives the estimator nothing to act on). The other four reasons
+ * are self-explanatory categories, so their note stays optional.
+ */
+export function requiresOverageNote(reason: OverageReason | null, note: string): boolean {
+  return reason === 'OTHER' && note.trim().length === 0;
+}
