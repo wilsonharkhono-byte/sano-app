@@ -115,7 +115,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
               Terpasang: {b.installed ?? 0} {b.unit} · Saldo: {b.on_site ?? 0} {b.unit}
             </Text>
-            {b.control === 'RP' && (
+            {d.show_costs && b.control === 'RP' && (
               <Text style={{ fontSize: 12, color: COLORS.textSec }}>
                 Anggaran: Rp {Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID')} · Terpakai: Rp {Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID')} · {b.burn_pct != null ? b.burn_pct.toFixed(0) + '%' : '—'} [{b.flag ?? '—'}]
               </Text>

@@ -28,6 +28,12 @@ export interface MaterialBalanceData {
   over_received: number;
   under_received: number;
   over_budget?: number;
+  // Single decision point (set once, in tools/reports.ts) for whether Rp
+  // budget fields are present on `balances` rows. Exporters (excel/pdf) and
+  // ReportPreview react to this flag rather than re-deriving viewerRole
+  // logic themselves. false for supervisor viewers (and fails closed when
+  // viewerRole is missing).
+  show_costs: boolean;
   balances: Array<{
     material_name?: string;
     name?: string;
@@ -51,6 +57,10 @@ export interface MaterialBalanceData {
 export interface ReceiptLogData {
   total_pos: number;
   fully_received: number;
+  // See MaterialBalanceData.show_costs — same single-decision-point pattern.
+  // false for supervisor viewers; `unit_price` is omitted from entries (not
+  // nulled) when this is false.
+  show_costs: boolean;
   entries: Array<{
     po_number: string;
     po_ref: string | null;
@@ -60,7 +70,7 @@ export interface ReceiptLogData {
     received_qty: number;
     receipt_count: number;
     unit: string;
-    unit_price: number | null;
+    unit_price?: number | null;
     status: string;
     ordered_date: string;
     last_receipt: string | null;

@@ -506,8 +506,17 @@ export async function generateProgressSummary(projectId: string): Promise<Report
 
 // ── Material Balance ────────────────────────────────────────────────
 
-export async function generateMaterialBalanceReport(projectId: string): Promise<ReportPayload> {
+export async function generateMaterialBalanceReport(
+  projectId: string,
+  options: ReportGenerationOptions = {},
+): Promise<ReportPayload> {
   const balances = await deriveMaterialBalanceWithControl(projectId);
+
+  // Fail closed: missing/null viewerRole is treated as supervisor.
+  const showCosts = options.viewerRole != null && options.viewerRole !== 'supervisor';
+  const rows = showCosts
+    ? balances
+    : balances.map(({ budget_total_rupiah, committed_rupiah, benchmark_unit_price, ...rest }) => rest);
 
   return {
     type: 'material_balance',
@@ -515,18 +524,25 @@ export async function generateMaterialBalanceReport(projectId: string): Promise<
     generated_at: new Date().toISOString(),
     project_id: projectId,
     data: {
+      show_costs: showCosts,
       total_materials: balances.length,
       over_received: balances.filter(b => b.received > b.planned).length,
       under_received: balances.filter(b => b.received < b.planned * 0.8).length,
       over_budget: balances.filter(b => b.control === 'RP' && (b.burn_pct ?? 0) > 100).length,
-      balances,
+      balances: rows,
     },
   };
 }
 
 // ── Receipt Log ─────────────────────────────────────────────────────
 
-export async function generateReceiptLog(projectId: string): Promise<ReportPayload> {
+export async function generateReceiptLog(
+  projectId: string,
+  options: ReportGenerationOptions = {},
+): Promise<ReportPayload> {
+  // Fail closed: missing/null viewerRole is treated as supervisor.
+  const showCosts = options.viewerRole != null && options.viewerRole !== 'supervisor';
+
   const [poTotals, { data: pos }, { data: receipts }] = await Promise.all([
     derivePoReceivedTotals(projectId),
     supabase
@@ -552,7 +568,7 @@ export async function generateReceiptLog(projectId: string): Promise<ReportPaylo
       received_qty: received?.total_received ?? 0,
       receipt_count: received?.receipt_count ?? 0,
       unit: po.unit,
-      unit_price: po.unit_price ?? null,
+      ...(showCosts ? { unit_price: po.unit_price ?? null } : {}),
       status: po.status,
       ordered_date: po.ordered_date,
       last_receipt: received?.last_receipt_at ?? null,
@@ -565,6 +581,7 @@ export async function generateReceiptLog(projectId: string): Promise<ReportPaylo
     generated_at: new Date().toISOString(),
     project_id: projectId,
     data: {
+      show_costs: showCosts,
       total_pos: entries.length,
       fully_received: entries.filter(e => e.status === 'FULLY_RECEIVED').length,
       entries,
@@ -2005,8 +2022,8 @@ export async function generateReport(
 ): Promise<ReportPayload> {
   switch (type) {
     case 'progress_summary':      return generateProgressSummary(projectId);
-    case 'material_balance':      return generateMaterialBalanceReport(projectId);
-    case 'receipt_log':           return generateReceiptLog(projectId);
+    case 'material_balance':      return generateMaterialBalanceReport(projectId, options);
+    case 'receipt_log':           return generateReceiptLog(projectId, options);
     case 'site_change_log':       return generateSiteChangeLog(projectId, filters, options);
     case 'weekly_digest':         return generateWeeklyDigest(projectId);
     case 'schedule_variance':     return generateScheduleVariance(projectId);

@@ -168,16 +168,19 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
     // NOTE: "Terpasang" and "On-Site" columns are omitted from the PDF to
     // make room for the five new budget/control columns while keeping
     // fractional widths summing to ~1.0. Both columns remain in excel.ts.
+    const showCosts = d.show_costs === true;
     sd.table(
       [
-        { header: 'Material', width: 0.22 },
+        { header: 'Material', width: showCosts ? 0.22 : 0.47 },
         { header: 'Sat.', width: 0.05 },
         { header: 'Rencana', width: 0.09, align: 'right' },
         { header: 'Diterima', width: 0.09, align: 'right' },
         { header: 'Status', width: 0.12 },
         { header: 'Kontrol', width: 0.07 },
-        { header: 'Anggaran (Rp)', width: 0.13, align: 'right' },
-        { header: 'Terpakai (Rp)', width: 0.12, align: 'right' },
+        ...(showCosts ? [
+          { header: 'Anggaran (Rp)', width: 0.13, align: 'right' as const },
+          { header: 'Terpakai (Rp)', width: 0.12, align: 'right' as const },
+        ] : []),
         { header: 'Burn %', width: 0.06, align: 'right' },
         { header: 'Flag', width: 0.05 },
       ],
@@ -195,8 +198,10 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
           String(received),
           status,
           b.control ?? '—',
-          isRp ? Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID') : '—',
-          isRp ? Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID') : '—',
+          ...(showCosts ? [
+            isRp ? Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID') : '—',
+            isRp ? Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID') : '—',
+          ] : []),
           b.control === 'NONE' || b.burn_pct == null ? '—' : b.burn_pct.toFixed(0) + '%',
           b.control === 'NONE' ? '—' : (b.flag ?? '—'),
         ];
@@ -220,15 +225,16 @@ async function buildReceiptLog(sd: SanoDoc, d: ReceiptLogData): Promise<void> {
   if ((d.entries ?? []).length > 0) {
     sd.gap(6);
     sd.sectionTitle('Log Penerimaan');
+    const showCosts = d.show_costs === true;
     sd.table(
       [
         { header: 'No. PO', width: 0.10 },
-        { header: 'Material', width: 0.22 },
+        { header: 'Material', width: showCosts ? 0.22 : 0.36 },
         { header: 'Supplier', width: 0.16 },
         { header: 'Pesan', width: 0.08, align: 'right' },
         { header: 'Terima', width: 0.08, align: 'right' },
         { header: 'Sat.', width: 0.06 },
-        { header: 'Harga/Unit', width: 0.14, align: 'right' },
+        ...(showCosts ? [{ header: 'Harga/Unit', width: 0.14, align: 'right' as const }] : []),
         { header: 'Status', width: 0.16 },
       ],
       (d.entries ?? []).map((e) => [
@@ -238,7 +244,7 @@ async function buildReceiptLog(sd: SanoDoc, d: ReceiptLogData): Promise<void> {
         String(e.ordered_qty ?? 0),
         String(e.received_qty ?? 0),
         e.unit ?? '—',
-        e.unit_price != null ? fmtRp(e.unit_price) : '—',
+        ...(showCosts ? [e.unit_price != null ? fmtRp(e.unit_price) : '—'] : []),
         (e.status ?? '—').replace(/_/g, ' '),
       ]),
     );

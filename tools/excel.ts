@@ -255,7 +255,8 @@ function buildProgressSummary(wb: XLSX.WorkBook, d: ProgressSummaryData) {
   appendSheet(wb, 'Lampiran Foto Progres', photoHeader, photoRows);
 }
 
-function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
+export function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
+  const showCosts = d.show_costs === true;
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Total Material', String(d.total_materials)],
@@ -271,7 +272,9 @@ function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
   const header = [
     'Nama Material', 'Satuan', 'Volume Direncanakan', 'Volume Diterima',
     'Volume Terpasang', 'Saldo On-Site', 'Status',
-    'Tier', 'Kontrol', 'Anggaran (Rp)', 'Terpakai (Rp)', 'Burn %', 'Flag',
+    'Tier', 'Kontrol',
+    ...(showCosts ? ['Anggaran (Rp)', 'Terpakai (Rp)'] : []),
+    'Burn %', 'Flag',
   ];
   const rows: string[][] = (d.balances ?? []).map((b) => {
     const received = b.received ?? b.total_received ?? 0;
@@ -290,8 +293,10 @@ function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
       status,
       b.tier == null ? '—' : String(b.tier),
       b.control ?? '—',
-      isRp ? Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID') : '—',
-      isRp ? Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID') : '—',
+      ...(showCosts ? [
+        isRp ? Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID') : '—',
+        isRp ? Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID') : '—',
+      ] : []),
       b.control === 'NONE' || b.burn_pct == null ? '—' : b.burn_pct.toFixed(0) + '%',
       b.control === 'NONE' ? '—' : (b.flag ?? '—'),
     ];
@@ -302,7 +307,8 @@ function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
   XLSX.utils.book_append_sheet(wb, ws, 'Detail Material');
 }
 
-function buildReceiptLog(wb: XLSX.WorkBook, d: ReceiptLogData) {
+export function buildReceiptLog(wb: XLSX.WorkBook, d: ReceiptLogData) {
+  const showCosts = d.show_costs === true;
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Total PO', String(d.total_pos)],
@@ -314,7 +320,11 @@ function buildReceiptLog(wb: XLSX.WorkBook, d: ReceiptLogData) {
   applyHeaderStyle(wsSummary, 0, 2);
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan');
 
-  const header = ['No. PO', 'Material', 'Supplier', 'Qty Dipesan', 'Qty Diterima', 'Satuan', 'Harga Satuan (Rp)', 'Total Nilai (Rp)', 'Status'];
+  const header = [
+    'No. PO', 'Material', 'Supplier', 'Qty Dipesan', 'Qty Diterima', 'Satuan',
+    ...(showCosts ? ['Harga Satuan (Rp)', 'Total Nilai (Rp)'] : []),
+    'Status',
+  ];
   const rows: SheetRow[] = (d.entries ?? []).map((e) => [
     e.po_number ?? e.po_ref ?? '—',
     e.material ?? '—',
@@ -322,8 +332,10 @@ function buildReceiptLog(wb: XLSX.WorkBook, d: ReceiptLogData) {
     String(e.ordered_qty ?? 0),
     String(e.received_qty ?? 0),
     e.unit ?? '—',
-    e.unit_price != null ? String(e.unit_price) : '—',
-    e.unit_price != null ? String((e.ordered_qty ?? 0) * e.unit_price) : '—',
+    ...(showCosts ? [
+      e.unit_price != null ? String(e.unit_price) : '—',
+      e.unit_price != null ? String((e.ordered_qty ?? 0) * e.unit_price) : '—',
+    ] : []),
     (e.status ?? '—').replace(/_/g, ' '),
   ]);
   appendSheet(wb, 'Log Penerimaan', header, rows);
