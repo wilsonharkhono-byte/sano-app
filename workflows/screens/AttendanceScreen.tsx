@@ -4,9 +4,10 @@
  * Weekly timesheet for harian/campuran mandor contracts.
  *
  * Views:
- *   entry   — weekly grid: workers as rows, Mon–Sat as tappable columns
- *             tap cell = toggle hadir/absen; tap OT input = set jam lembur
- *             saves all 6 days at once via recordWorkerAttendanceBatch per date
+ *   entry   — weekly grid: workers as rows, Mon–Sat as tappable columns (R19)
+ *             tap cell cycles belum-ditandai → hadir → absen (U2: presence is
+ *             never assumed); tap OT input = set jam lembur
+ *             saves marked days via recordWorkerAttendanceBatch per date
  *   history — compact 1-line-per-week-per-worker summary (read-only)
  *
  * Supervisor fills by date range → estimator's opname picks week_start/week_end
@@ -34,8 +35,12 @@ import {
 import {
   getAttendanceByWeek, getWeeklySummary, confirmWeeklyAttendance,
   recordWorkerAttendanceBatch,
-  getWeekStart, getWeekEnd,
-  type WorkerAttendanceWeekly,
+  getWeekStart, getWeekEnd, getWeekDates,
+  buildInitialGrid, reconcileGridAfterSave, buildSavePayloads, buildPersistedMap,
+  computeWorkerWeekTotal, countUnmarkedCells, countDirtyCells, countDraftEntries,
+  canConfirmWeek, cyclePresence, isCellLocked,
+  type WorkerAttendanceWeekly, type WorkerAttendanceEntry,
+  type PresenceGrid, type CellPresence,
 } from '../../tools/workerAttendance';
 import { parseAndImportAttendance } from '../../tools/excelAttendanceImport';
 import { encode } from 'base64-arraybuffer';
@@ -46,34 +51,16 @@ import { COLORS, FONTS, TYPE, SPACE, RADIUS, RADIUS_SM } from '../theme';
 
 type ViewMode = 'entry' | 'history';
 
-interface DayEntry {
-  isPresent: boolean;
-  overtimeHours: number;
-  existingId?: string;
-  status?: string;
-}
-
-// weekGrid[workerId][dateISO] = DayEntry
-type WeekGrid = Record<string, Record<string, DayEntry>>;
+// weekGrid[workerId][dateISO] = GridCell (tri-state presence: unmarked | present | absent)
+type WeekGrid = PresenceGrid;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const DAY_LABELS = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
+// R19: Mon–Sat, Sunday excluded.
+const DAY_LABELS = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
 
 function localISO(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-/** Returns ISO strings for Mon–Sun of the week containing `anchor` */
-function getWeekDates(weekStartISO: string): string[] {
-  const dates: string[] = [];
-  const base = new Date(weekStartISO + 'T00:00:00');
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(base);
-    d.setDate(base.getDate() + i);
-    dates.push(localISO(d));
-  }
-  return dates;
 }
 
 function prevWeek(iso: string): string {
@@ -136,7 +123,9 @@ export default function AttendanceScreen({
 
   // The editable grid
   const [weekGrid, setWeekGrid] = useState<WeekGrid>({});
-  const [dirty, setDirty] = useState(false); // any unsaved changes
+  // Persisted DB truth for the current week — source for per-cell dirty
+  // reconciliation (F4) and the Konfirmasi badge (persisted DRAFT count).
+  const [persistedEntries, setPersistedEntries] = useState<WorkerAttendanceEntry[]>([]);
 
   // History (read-only summary)
   const [weeklySummary, setWeeklySummary] = useState<WorkerAttendanceWeekly[]>([]);
@@ -179,26 +168,10 @@ export default function AttendanceScreen({
     setContractOtTier2(contractOt?.tier2_hourly_rate ?? 0);
     setContractOtThreshold(contractOt?.tier2_threshold_hours ?? 10);
 
-    // Build grid from existing entries
-    const grid: WeekGrid = {};
-    for (const w of workerList) {
-      grid[w.id] = {};
-      for (const date of weekDates) {
-        grid[w.id][date] = { isPresent: true, overtimeHours: 0 };
-      }
-    }
-    for (const e of entries) {
-      if (grid[e.worker_id]) {
-        grid[e.worker_id][e.attendance_date] = {
-          isPresent: e.is_present,
-          overtimeHours: e.overtime_hours,
-          existingId: e.id,
-          status: e.status,
-        };
-      }
-    }
-    setWeekGrid(grid);
-    setDirty(false);
+    // Build grid from existing entries — cells with no persisted entry start UNMARKED
+    // (U2: presence is never assumed; an unmarked cell pays zero and blocks Konfirmasi).
+    setWeekGrid(buildInitialGrid(workerList.map((w) => w.id), weekDates, entries));
+    setPersistedEntries(entries);
     setLoading(false);
   }, [selectedContract, weekStart, weekEnd, weekDates]);
 
@@ -218,24 +191,31 @@ export default function AttendanceScreen({
 
   // ── Grid mutations ────────────────────────────────────────────────────
 
+  // Tap cycles: unmarked → present → absent → present … (F3, keeps U1 tap speed).
   const togglePresence = (workerId: string, date: string) => {
-    const locked = weekGrid[workerId]?.[date]?.status === 'SETTLED';
-    if (locked) return;
-    setWeekGrid(prev => ({
-      ...prev,
-      [workerId]: {
-        ...prev[workerId],
-        [date]: {
-          ...prev[workerId][date],
-          isPresent: !prev[workerId][date].isPresent,
-          overtimeHours: prev[workerId][date].isPresent ? 0 : prev[workerId][date].overtimeHours,
+    if (isCellLocked(weekGrid[workerId]?.[date]?.status)) {
+      toast('Terkunci — koreksi lewat kantor', 'warning');
+      return;
+    }
+    setWeekGrid(prev => {
+      const current = prev[workerId][date];
+      const next = cyclePresence(current.presence);
+      return {
+        ...prev,
+        [workerId]: {
+          ...prev[workerId],
+          [date]: {
+            ...current,
+            presence: next,
+            overtimeHours: next === 'present' ? current.overtimeHours : 0,
+          },
         },
-      },
-    }));
-    setDirty(true);
+      };
+    });
   };
 
   const setOT = (workerId: string, date: string, val: string) => {
+    if (isCellLocked(weekGrid[workerId]?.[date]?.status)) return;
     const hours = Math.max(0, parseFloat(val) || 0);
     setWeekGrid(prev => ({
       ...prev,
@@ -244,24 +224,24 @@ export default function AttendanceScreen({
         [date]: { ...prev[workerId][date], overtimeHours: hours },
       },
     }));
-    setDirty(true);
   };
 
+  // Explicit blanket assertion: mark every UNMARKED cell present (U2). Leaves
+  // explicit absent marks and locked cells untouched.
   const markAllPresent = () => {
     setWeekGrid(prev => {
       const next: WeekGrid = {};
       for (const wId of Object.keys(prev)) {
         next[wId] = {};
         for (const date of weekDates) {
-          const locked = prev[wId]?.[date]?.status === 'SETTLED';
-          next[wId][date] = locked
-            ? prev[wId][date]
-            : { ...prev[wId][date], isPresent: true };
+          const cell = prev[wId][date];
+          next[wId][date] = cell.presence === 'unmarked' && !isCellLocked(cell.status)
+            ? { ...cell, presence: 'present' }
+            : cell;
         }
       }
       return next;
     });
-    setDirty(true);
   };
 
   // ── Save ──────────────────────────────────────────────────────────────
@@ -269,31 +249,38 @@ export default function AttendanceScreen({
   const handleSaveAll = async () => {
     if (!selectedContract || !project) return;
     setSaving(true);
-    let totalSaved = 0;
-    let errors = 0;
 
-    for (const date of weekDates) {
-      const entries = workers.map(w => ({
-        worker_id: w.id,
-        is_present: weekGrid[w.id]?.[date]?.isPresent ?? true,
-        overtime_hours: weekGrid[w.id]?.[date]?.overtimeHours ?? 0,
-      }));
+    const workerIds = workers.map((w) => w.id);
+    // Only marked, editable, changed cells are sent; unmarked cells are excluded
+    // and a date with nothing to save gets no RPC call at all (U2 / F3).
+    const payloads = buildSavePayloads(weekDates, workerIds, weekGrid, persistedMap);
+    const failedDates: string[] = [];
+    let totalSaved = 0;
+
+    for (const { attendanceDate, entries } of payloads) {
       const { count, error } = await recordWorkerAttendanceBatch({
         contractId: selectedContract.id,
-        attendanceDate: date,
+        attendanceDate,
         entries,
       });
-      if (error) errors++;
+      if (error) failedDates.push(attendanceDate);
       else totalSaved += count ?? 0;
     }
 
+    // F4: re-fetch and reconcile per-cell against what actually persisted.
+    // Saved days go clean; failed days keep the user's marks (stay dirty).
+    const fresh = await getAttendanceByWeek(selectedContract.id, weekStart, weekEnd);
+    setPersistedEntries(fresh);
+    setWeekGrid((prev) => reconcileGridAfterSave(prev, workerIds, weekDates, fresh, failedDates));
     setSaving(false);
-    if (errors > 0) {
-      toast(`${errors} hari gagal disimpan`, 'warning');
+
+    if (failedDates.length > 0) {
+      const names = failedDates
+        .map((d) => DAY_LABELS[weekDates.indexOf(d)] ?? d)
+        .join(', ');
+      toast(`Gagal disimpan: ${names} — coba lagi`, 'warning');
     } else {
       toast(`${totalSaved} entri disimpan`, 'ok');
-      setDirty(false);
-      loadWeekEntry();
     }
   };
 
@@ -331,11 +318,12 @@ export default function AttendanceScreen({
 
       const wsData: unknown[][] = [headerRow];
 
-      // One data row per worker, default all present with 0 OT
+      // One data row per worker — BLANK presence + OT (U2: never default-present;
+      // the mandor must mark Y/N explicitly, blank cells are skipped on import).
       for (const w of workers) {
         const row: unknown[] = [w.worker_name];
         for (const _ of weekDates) {
-          row.push('Y', 0);
+          row.push('', '');
         }
         row.push('');
         wsData.push(row);
@@ -418,35 +406,31 @@ export default function AttendanceScreen({
 
   // ── Computed ──────────────────────────────────────────────────────────
 
-  const weekTotals = workers.map(w => {
-    const days = weekDates.filter(d => weekGrid[w.id]?.[d]?.isPresent).length;
-    const dailyRate = w.current_daily_rate ?? 0;
-    const t1 = w.ot_tier1_rate ?? contractOtTier1;
-    const t2 = w.ot_tier2_rate ?? contractOtTier2;
-    const thresh = w.ot_tier2_threshold ?? contractOtThreshold;
-    let otPay = 0;
-    for (const date of weekDates) {
-      const ot = weekGrid[w.id]?.[date]?.overtimeHours ?? 0;
-      if (ot > 0 && weekGrid[w.id]?.[date]?.isPresent) {
-        const tier1Cap = thresh - 7;
-        const t1h = Math.min(ot, tier1Cap);
-        const t2h = Math.max(0, ot - tier1Cap);
-        otPay += (t1h * t1) + (t2h * t2);
-      }
-    }
-    const totalOT = weekDates.reduce((s, d) =>
-      s + (weekGrid[w.id]?.[d]?.isPresent ? (weekGrid[w.id]?.[d]?.overtimeHours ?? 0) : 0), 0);
-    return { workerId: w.id, days, totalOT, weekPay: days * dailyRate + otPay };
+  const workerIds = workers.map((w) => w.id);
+  const persistedMap = useMemo(() => buildPersistedMap(persistedEntries), [persistedEntries]);
+
+  // Pay preview: only 'present' cells pay; 'unmarked' and 'absent' contribute zero (U2).
+  const weekTotals = workers.map((w) => {
+    const cells = weekDates.map((d) =>
+      weekGrid[w.id]?.[d] ?? { presence: 'unmarked' as CellPresence, overtimeHours: 0 },
+    );
+    const t = computeWorkerWeekTotal(cells, {
+      dailyRate: w.current_daily_rate ?? 0,
+      tier1Rate: w.ot_tier1_rate ?? contractOtTier1,
+      tier2Rate: w.ot_tier2_rate ?? contractOtTier2,
+      tier2Threshold: w.ot_tier2_threshold ?? contractOtThreshold,
+    });
+    return { workerId: w.id, ...t };
   });
 
   const grandTotal = weekTotals.reduce((s, t) => s + t.weekPay, 0);
   const grandDays = weekTotals.reduce((s, t) => s + t.days, 0);
 
-  // Draft count: entries that can still be confirmed
-  const allEntries = workers.flatMap(w =>
-    weekDates.map(d => weekGrid[w.id]?.[d]),
-  ).filter(Boolean) as DayEntry[];
-  const draftCount = allEntries.filter(e => !e.status || e.status === 'DRAFT').length;
+  // Konfirmasi gating (F3/F4): unmarked cells block; badge = persisted DRAFT rows.
+  const unmarkedCount = countUnmarkedCells(weekDates, workerIds, weekGrid);
+  const hasUnsavedEdits = countDirtyCells(weekDates, workerIds, weekGrid, persistedMap) > 0;
+  const persistedDraftCount = countDraftEntries(persistedEntries);
+  const canConfirm = canConfirmWeek({ persistedDraftCount, hasUnsavedEdits, unmarkedCount });
 
   // ── Render ────────────────────────────────────────────────────────────
 
@@ -590,27 +574,39 @@ export default function AttendanceScreen({
                               </Text>
                             </View>
 
-                            {/* Day cells */}
+                            {/* Day cells — tri-state: unmarked (grey –) / present (✓) / absent (✗) */}
                             {weekDates.map((date) => {
                               const cell = weekGrid[w.id]?.[date];
-                              const locked = cell?.status === 'SETTLED';
-                              const isPresent = cell?.isPresent ?? true;
+                              const presence: CellPresence = cell?.presence ?? 'unmarked';
+                              const locked = isCellLocked(cell?.status);
                               const ot = cell?.overtimeHours ?? 0;
+                              const pillStyle =
+                                presence === 'present' ? styles.presencePresent
+                                : presence === 'absent' ? styles.presenceAbsent
+                                : styles.presenceUnmarked;
+                              const symbol =
+                                presence === 'present' ? '✓' : presence === 'absent' ? '✗' : '–';
 
                               return (
                                 <View key={date} style={styles.dayCell}>
                                   <TouchableOpacity
-                                    style={[
-                                      styles.presenceToggle,
-                                      isPresent ? styles.presencePresent : styles.presenceAbsent,
-                                      locked && styles.presenceLocked,
-                                    ]}
+                                    style={[styles.presenceToggle, pillStyle, locked && styles.presenceLocked]}
                                     onPress={() => togglePresence(w.id, date)}
-                                    disabled={locked}
+                                    activeOpacity={locked ? 1 : 0.2}
                                   >
-                                    <Text style={styles.presenceSymbol}>{isPresent ? '✓' : '✗'}</Text>
+                                    <Text style={[
+                                      styles.presenceSymbol,
+                                      presence === 'unmarked' && styles.presenceSymbolMuted,
+                                    ]}>{symbol}</Text>
                                   </TouchableOpacity>
-                                  {isPresent ? (
+                                  {locked ? (
+                                    <View style={styles.lockRow}>
+                                      <Ionicons name="lock-closed" size={9} color={COLORS.textMuted} />
+                                      {presence === 'present' && ot > 0 && (
+                                        <Text style={styles.lockOt}>{ot}j</Text>
+                                      )}
+                                    </View>
+                                  ) : presence === 'present' ? (
                                     <TextInput
                                       style={styles.otInput}
                                       keyboardType="decimal-pad"
@@ -618,7 +614,6 @@ export default function AttendanceScreen({
                                       onChangeText={(val) => setOT(w.id, date, val)}
                                       placeholder="0"
                                       placeholderTextColor={COLORS.textMuted}
-                                      editable={!locked}
                                       selectTextOnFocus
                                     />
                                   ) : (
@@ -650,7 +645,7 @@ export default function AttendanceScreen({
                         <Text style={styles.gridFooterText}>Total</Text>
                       </View>
                       {weekDates.map(date => {
-                        const present = workers.filter(w => weekGrid[w.id]?.[date]?.isPresent).length;
+                        const present = workers.filter(w => weekGrid[w.id]?.[date]?.presence === 'present').length;
                         return (
                           <View key={date} style={styles.dayCell}>
                             <Text style={styles.footerDayCount}>{String(present)}</Text>
@@ -680,33 +675,42 @@ export default function AttendanceScreen({
 
               {/* Save + Confirm buttons */}
               {workers.length > 0 && (
-                <View style={styles.actionRow}>
-                  <TouchableOpacity
-                    style={[styles.saveBtn, (!dirty || saving) && styles.saveBtnDisabled]}
-                    onPress={handleSaveAll}
-                    disabled={!dirty || saving}
-                  >
-                    {saving
-                      ? <ActivityIndicator size="small" color="#fff" />
-                      : <Text style={styles.saveBtnText}>
-                          {dirty ? 'Simpan Draft' : 'Tersimpan'}
-                        </Text>
-                    }
-                  </TouchableOpacity>
-                  {draftCount > 0 && !dirty && (
+                <>
+                  <View style={styles.actionRow}>
                     <TouchableOpacity
-                      style={[styles.confirmBtn, saving && styles.saveBtnDisabled]}
-                      onPress={handleConfirmWeek}
-                      disabled={saving}
+                      style={[styles.saveBtn, (!hasUnsavedEdits || saving) && styles.saveBtnDisabled]}
+                      onPress={handleSaveAll}
+                      disabled={!hasUnsavedEdits || saving}
                     >
-                      <Text style={styles.confirmBtnText}>Konfirmasi ({draftCount})</Text>
+                      {saving
+                        ? <ActivityIndicator size="small" color="#fff" />
+                        : <Text style={styles.saveBtnText}>
+                            {hasUnsavedEdits ? 'Simpan Draft' : 'Tersimpan'}
+                          </Text>
+                      }
                     </TouchableOpacity>
+                    {persistedDraftCount > 0 && (
+                      <TouchableOpacity
+                        style={[styles.confirmBtn, (!canConfirm || saving) && styles.saveBtnDisabled]}
+                        onPress={handleConfirmWeek}
+                        disabled={!canConfirm || saving}
+                      >
+                        <Text style={styles.confirmBtnText}>Konfirmasi ({persistedDraftCount})</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
+                  {/* Konfirmasi is blocked while any cell is still unmarked (U2/U3) */}
+                  {unmarkedCount > 0 && (
+                    <Text style={[styles.hint, styles.warnHint, { marginTop: SPACE.sm }]}>
+                      Tandai dulu {unmarkedCount} sel yang belum ditandai sebelum Konfirmasi
+                    </Text>
                   )}
-                </View>
+                </>
               )}
 
               <Text style={[styles.hint, { marginTop: SPACE.md }]}>
-                Ketuk sel untuk toggle hadir/absen · Isi kolom OT untuk jam lembur
+                Ketuk sel: belum ditandai → hadir → absen · Isi kolom OT untuk jam lembur
               </Text>
             </>
           )}
@@ -817,6 +821,7 @@ const styles = StyleSheet.create({
 
   sectionHead: { fontSize: TYPE.xs, fontFamily: FONTS.bold, letterSpacing: 0.8, textTransform: 'uppercase', color: COLORS.textSec, marginBottom: SPACE.sm, marginTop: SPACE.sm },
   hint: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, lineHeight: 17 },
+  warnHint: { color: COLORS.warning, fontFamily: FONTS.semibold },
 
   contractScroll: { marginBottom: SPACE.md },
   contractChip:       { paddingHorizontal: SPACE.md, paddingVertical: SPACE.sm, borderRadius: RADIUS_SM, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.surface, marginRight: SPACE.sm },
@@ -857,11 +862,15 @@ const styles = StyleSheet.create({
   payCell: { width: PAY_W, alignItems: 'flex-end', justifyContent: 'center', paddingVertical: SPACE.xs },
 
   presenceToggle: { width: 34, height: 30, borderRadius: RADIUS_SM, alignItems: 'center', justifyContent: 'center', marginBottom: 2 },
-  presencePresent: { backgroundColor: COLORS.ok + '28' },
-  presenceAbsent:  { backgroundColor: COLORS.critical + '20' },
-  presenceFuture:  { backgroundColor: COLORS.borderSub },
-  presenceLocked:  { opacity: 0.5 },
-  presenceSymbol:  { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
+  presencePresent:  { backgroundColor: COLORS.ok + '28' },
+  presenceAbsent:   { backgroundColor: COLORS.critical + '20' },
+  presenceUnmarked: { backgroundColor: COLORS.borderSub, borderWidth: 1, borderColor: COLORS.border, borderStyle: 'dashed' },
+  presenceLocked:   { opacity: 0.45 },
+  presenceSymbol:      { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
+  presenceSymbolMuted: { color: COLORS.textMuted },
+
+  lockRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, height: 22 },
+  lockOt:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textMuted },
 
   otInput: {
     width: 36, height: 22, textAlign: 'center',
