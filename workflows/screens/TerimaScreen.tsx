@@ -14,6 +14,7 @@ import { pickAndUploadPhoto } from '../../tools/storage';
 import { requestGps } from '../../tools/gps';
 import { getPurchaseOrderDisplayNumber } from '../../tools/purchaseOrders';
 import { supplierToBase, displayQty } from '../../tools/materialUnitConversion';
+import { buildUnambiguousCatalogNameMap, normalizeCatalogName } from '../../tools/catalogNameIndex';
 import { generateClientReceiptId } from '../../tools/receiptIdempotency';
 import { supabase } from '../../tools/supabase';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
@@ -35,6 +36,14 @@ interface InboundMTN {
   reason: string | null;
   status: string;
   created_at: string;
+}
+
+interface CatalogRow {
+  id: string;
+  name: string;
+  unit: string;
+  supplier_unit: string | null;
+  base_qty_per_supplier_unit: number | null;
 }
 
 export default function TerimaScreen() {
@@ -70,19 +79,19 @@ export default function TerimaScreen() {
   // Catalog lookup by EXACT material name (PO headers carry no material_id).
   // Carries the catalog `id` so receipts can link to the catalog row (the
   // received-vs-planned join key, migration 055). Rebar receives in batang;
-  // anything unmatched stays as-is.
-  const [catalogByName, setCatalogByName] = useState<Map<string, { id: string; unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>>(new Map());
+  // anything unmatched stays as-is. The catalog is known to carry duplicate
+  // names during the transition — a name matching 2+ rows maps to `null`
+  // (ambiguous → no id link, no rebar factor), never an arbitrary duplicate.
+  // Same contract as migration 055's own receipt_lines.material_id backfill
+  // (055:56-73, "catalog has known duplicate names — never guess").
+  const [catalogByName, setCatalogByName] = useState<Map<string, CatalogRow | null>>(new Map());
 
   useEffect(() => {
     supabase
       .from('material_catalog')
       .select('id, name, unit, supplier_unit, base_qty_per_supplier_unit')
       .then(({ data }) => {
-        const map = new Map<string, { id: string; unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>();
-        for (const row of (data as Array<{ id: string; name: string; unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }>) ?? []) {
-          if (row.name) map.set(row.name.trim().toLowerCase(), row);
-        }
-        setCatalogByName(map);
+        setCatalogByName(buildUnambiguousCatalogNameMap((data as CatalogRow[]) ?? []));
       });
   }, []);
 
@@ -100,7 +109,11 @@ export default function TerimaScreen() {
   const selectedPO = useMemo(() => purchaseOrders.find(p => p.id === poId), [purchaseOrders, poId]);
 
   // Factor for the selected PO's material (null → 1:1, everything stays base).
-  const poCatalog = selectedPO ? catalogByName.get(selectedPO.material_name.trim().toLowerCase()) ?? null : null;
+  // `?? null` collapses BOTH "no match" (get → undefined) and "ambiguous
+  // name" (get → null, see buildUnambiguousCatalogNameMap) to the same
+  // unlinked state — an ambiguous name gets no id and no rebar factor,
+  // never a guessed duplicate.
+  const poCatalog = selectedPO ? catalogByName.get(normalizeCatalogName(selectedPO.material_name)) ?? null : null;
   const poFactor = poCatalog?.base_qty_per_supplier_unit ?? null;
   const poInputUnit = poFactor != null ? (poCatalog?.supplier_unit || 'batang') : selectedPO?.unit ?? '';
   /** Format a BASE-unit (kg) PO quantity for display — batang for rebar. */
