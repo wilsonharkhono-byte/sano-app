@@ -5,12 +5,12 @@ import { supabase } from '../../tools/supabase';
 import { NotificationList, type NotificationItem } from './components/NotificationList';
 import Header from '../components/Header';
 import { COLORS } from '../theme';
-
-const NOTIFICATION_ROUTE_MAP: Record<string, string> = {
-  ApprovalsScreen: 'Approvals',
-  POScreen: 'Procurement',
-  ReceiptScreen: 'Terima',
-};
+import { useProject } from '../hooks/useProject';
+// This screen is shared by the supervisor nav (workflows/navigation.tsx) AND
+// the principal nav (office/PrincipalNavigation.tsx), so deeplink resolution
+// must be role-aware: supervisors have no Approvals route (their APPROVED/
+// REJECTED outcomes route to Permintaan), principals keep Approvals.
+import { resolveNotificationRoute } from '../../tools/notificationRouting';
 
 interface Props {
   profileId: string;
@@ -42,6 +42,7 @@ function rowToItem(row: NotificationRow): NotificationItem {
 
 export default function NotificationsScreen({ profileId }: Props): React.ReactElement {
   const navigation = useNavigation<{ navigate: (screen: string, params?: object) => void }>();
+  const { profile } = useProject();
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -84,13 +85,13 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
       setItems(prev => prev.map(i => i.id === item.id ? { ...i, readAt } : i));
       void supabase.from('notifications').update({ read_at: readAt }).eq('id', item.id);
     }
-    const target = NOTIFICATION_ROUTE_MAP[item.deeplinkScreen] ?? item.deeplinkScreen;
+    const target = resolveNotificationRoute(item.deeplinkScreen, profile?.role);
     try {
       navigation.navigate(target, item.deeplinkParams ?? {});
     } catch {
       // Route not in current role's nav — stay on Notifikasi (no-op).
     }
-  }, [navigation]);
+  }, [navigation, profile?.role]);
 
   return (
     <View style={styles.container}>

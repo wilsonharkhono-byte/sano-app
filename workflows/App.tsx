@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useState } from 'react';
+import React, { Suspense, useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, Platform, View } from 'react-native';
 import * as Font from 'expo-font';
@@ -9,19 +9,13 @@ import { ProjectProvider, useProject } from './hooks/useProject';
 import { COLORS } from './theme';
 import { lazyScreen } from './components/LazyScreen';
 import { registerForPushNotifications, attachNotificationTapListener } from '../tools/notifications';
+// Role-aware deeplink→route resolution (fixes the supervisor Approvals
+// dead-end — see tools/notificationRouting.ts for the role×route matrix).
+import { resolveNotificationRoute } from '../tools/notificationRouting';
 
 // Module-scoped so all three role-based NavigationContainers share the same ref.
 // The push-notification tap listener navigates through this ref from outside the React tree.
 export const navigationRef = createNavigationContainerRef<Record<string, object | undefined>>();
-
-// Notification deeplink screen names may not match the role's nav routes.
-// Map to actual route names; fall back to the Notifikasi tab if the role's
-// stack doesn't have that route (e.g., supervisor has no Approvals tab).
-const NOTIFICATION_ROUTE_MAP: Record<string, string> = {
-  ApprovalsScreen: 'Approvals',
-  POScreen: 'Procurement',
-  ReceiptScreen: 'Terima',
-};
 
 const AppNavigation = lazyScreen(() => import('./navigation'));
 const LoginScreen = lazyScreen(() => import('./screens/LoginScreen'));
@@ -33,6 +27,15 @@ const GlobalAIChatLauncher = React.lazy(() => import('./components/GlobalAIChatL
 // Must be rendered inside ProjectProvider so useProject() works.
 function RoleRouter() {
   const { profile, loading } = useProject();
+
+  // The tap listener attaches once (empty deps) but must resolve routes with
+  // the CURRENT role — the profile loads after the listener is wired, and a
+  // deeplink like ApprovalsScreen resolves differently per role. A ref keeps
+  // the listener closure reading the latest role without re-attaching.
+  const roleRef = useRef<string | undefined>(profile?.role);
+  useEffect(() => {
+    roleRef.current = profile?.role;
+  }, [profile?.role]);
 
   // Register the Expo push token once the profile is known.
   useEffect(() => {
@@ -47,7 +50,7 @@ function RoleRouter() {
     const cleanup = attachNotificationTapListener((screen, params) => {
       const ref = navigationRef.current;
       if (!ref?.isReady()) return;
-      const target = NOTIFICATION_ROUTE_MAP[screen] ?? screen;
+      const target = resolveNotificationRoute(screen, roleRef.current);
       try {
         ref.navigate(target as never, (params ?? {}) as never);
       } catch {
