@@ -64,6 +64,11 @@ export async function deriveMilestoneStatuses(projectId: string): Promise<
     .is('deleted_at', null)
     .eq('author_status', 'confirmed');
 
+  // Task 3.1: intentionally UNFILTERED — this resolves each milestone's OWN
+  // `boq_ids` FK links (below) to a progress value, not an active-plan
+  // enumeration. Filtering would silently show 0% for a milestone linked to a
+  // code a later re-publish superseded, instead of its last recorded
+  // progress. See migration 074_boq_items_supersede.sql.
   const { data: boqItems } = await supabase
     .from('boq_items')
     .select('id, progress')
@@ -176,10 +181,15 @@ export interface ProjectHealthSummary {
 export async function computeProjectHealth(projectId: string): Promise<ProjectHealthSummary> {
   const statuses = await deriveMilestoneStatuses(projectId);
 
+  // Task 3.1: active-plan-only — this averages `progress` across every row
+  // returned, so a code a later re-publish superseded would otherwise dilute
+  // overallProgress exactly like the Progress Summary symptom (see migration
+  // 074_boq_items_supersede.sql).
   const { data: boqItems } = await supabase
     .from('boq_items')
     .select('progress')
-    .eq('project_id', projectId);
+    .eq('project_id', projectId)
+    .is('superseded_at', null);
 
   const items = boqItems ?? [];
   const overallProgress = items.length > 0

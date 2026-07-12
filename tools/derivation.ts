@@ -137,10 +137,18 @@ export interface MaterialBalance {
 export async function deriveMaterialBalance(projectId: string): Promise<MaterialBalance[]> {
   const [boqTotals, { data: boqItems }, { data: latestAhs }, { data: purchaseOrders }, { data: receipts }] = await Promise.all([
     deriveBoqInstalledTotals(projectId),
+    // Task 3.1: active-plan-only. `boqPlannedMap`/`boqItems` below feed BOTH
+    // the ahs_lines path (already scoped to the latest ahs_version, whose
+    // boq_item_id set can never include a superseded row by construction —
+    // this filter is a no-op there) AND the legacy v1 fallback loop (no
+    // ahs_version/master scoping at all — there, a superseded row WOULD
+    // double-count into the balance without this filter). See migration
+    // 074_boq_items_supersede.sql.
     supabase
       .from('boq_items')
       .select('id, planned, installed, unit, tier1_material, tier2_material')
-      .eq('project_id', projectId),
+      .eq('project_id', projectId)
+      .is('superseded_at', null),
     // Pick the CURRENT baseline, not "highest version" — every publish writes
     // version=1, so ordering by version is a tie that can return a stale,
     // demoted version. publishBaselineV2 maintains is_current (demote old →

@@ -428,6 +428,57 @@ export function buildBoqItemInsert(row: StagingRowV2, projectId: string): BoqIte
   };
 }
 
+/**
+ * An existing boq_items row's code + supersede status, as read from the DB
+ * BEFORE this publish's supersede/resurrect step runs.
+ */
+export interface ExistingBoqCodeStatus {
+  code: string;
+  /** True when superseded_at is non-null (absent from a PRIOR publish). */
+  superseded: boolean;
+}
+
+export interface BoqSupersedeDelta {
+  /** Existing, currently-active codes NOT present in the new workbook. */
+  toSupersede: string[];
+  /** Existing, currently-superseded codes that REAPPEARED in the new workbook. */
+  toResurrect: string[];
+}
+
+/**
+ * Task 3.1 — compute which existing boq_items codes should be marked
+ * superseded (soft-deleted) because they're absent from this publish's
+ * landed code set, and which previously-superseded codes should be
+ * resurrected because they reappeared. Pure — no I/O — so the publish
+ * wiring can be unit-tested without a live Supabase call. See migration
+ * 074_boq_items_supersede.sql for why this is a soft marker, not a DELETE.
+ *
+ * Exact string match on `code`, no case/whitespace normalization: codes are
+ * generated deterministically by extractTakeoffs.ts (chapter/sub-chapter/
+ * item-number segments joined with '.') and never carry incidental
+ * whitespace/case variance, and the boq_items upsert itself matches on exact
+ * code via `onConflict: 'project_id,code'` — normalizing here would diverge
+ * from what the upsert treats as "the same row" (findDuplicateBoqCodes above
+ * makes the same exact-match assumption).
+ */
+export function computeBoqSupersedeDelta(
+  existing: ExistingBoqCodeStatus[],
+  newCodes: Iterable<string>,
+): BoqSupersedeDelta {
+  const newSet = new Set(newCodes);
+  const toSupersede: string[] = [];
+  const toResurrect: string[] = [];
+  for (const item of existing) {
+    const inNewSet = newSet.has(item.code);
+    if (!inNewSet && !item.superseded) {
+      toSupersede.push(item.code);
+    } else if (inNewSet && item.superseded) {
+      toResurrect.push(item.code);
+    }
+  }
+  return { toSupersede, toResurrect };
+}
+
 export interface MasterLineDraft {
   material_id: string | null;
   material_name: string;
@@ -763,6 +814,10 @@ export async function publishBaselineV2(
    * screen branches on it to render the breach panel + escalation path.
    */
   ceilingApprovalRequired?: boolean;
+  /** Task 3.1 — codes newly marked superseded_at on this re-publish. */
+  supersededCount?: number;
+  /** Task 3.1 — previously-superseded codes that reappeared and were resurrected. */
+  resurrectedCount?: number;
 }> {
   const revisionContext = options?.revisionContext;
   const { data: stagingRowsDB, error: fetchErr } = await supabase
@@ -1025,6 +1080,93 @@ export async function publishBaselineV2(
     };
   }
 
+  // ── Task 3.1 — supersede stale boq_items on re-publish ───────────────────
+  // A code that existed for this project BEFORE this publish but is absent
+  // from the set that just landed (boqIdByCode) is no longer part of the
+  // current plan — mark it superseded_at = now() so it stops being an ACTIVE
+  // plan row (Progress Summary, useProject's boq_items load, work-group and
+  // allocation pickers all filter superseded_at IS NULL — see migration
+  // 074_boq_items_supersede.sql). We do NOT delete it: allocations, receipts,
+  // progress_entries, opname_lines, etc. may FK it, and historical resolution
+  // by id must keep working. A code that reappears in this publish after
+  // being superseded by an EARLIER one is resurrected (superseded_at cleared
+  // back to null) — a later workbook bringing a code back means it's active
+  // again.
+  //
+  // Only runs on a RE-PUBLISH (isRepublish) — on a first publish nothing
+  // existed before, so there is nothing to supersede or resurrect.
+  //
+  // Ordering: runs AFTER the boq upsert lands (boqIdByCode is confirmed
+  // non-empty above) and BEFORE the ahs_lines/master build below — it only
+  // needs the landed code set, nothing built from it. Relative to the rest of
+  // the publish: it sits AFTER the Task 2.12 ceiling-raise gate (already ran,
+  // before the version flip, near the top of this function) and BEFORE the
+  // Task 2.11 plan_revisions audit write (further down) — so a supersede
+  // failure can never block the version flip that already happened, and
+  // never blocks the audit trail from recording what was acknowledged.
+  //
+  // NON-FATAL, same contract as the baseline-snapshot and plan_revisions
+  // writes below: a failure here must never sink an otherwise-successful
+  // publish that already wrote boq_items/ahs_lines/master_lines. Surfaced via
+  // `warnings` (declared here so this step and the later snapshot/revision
+  // writes share one array).
+  const warnings: string[] = [];
+  let supersededCount = 0;
+  let resurrectedCount = 0;
+  if (isRepublish) {
+    try {
+      const { data: existingBoqRows, error: existingErr } = await supabase
+        .from('boq_items')
+        .select('code, superseded_at')
+        .eq('project_id', projectId);
+      if (existingErr) {
+        warnings.push(
+          `boq_items supersede lookup failed (stale codes may remain visible): ${existingErr.message}`,
+        );
+      } else {
+        const existing: ExistingBoqCodeStatus[] = ((existingBoqRows ?? []) as { code: string; superseded_at: string | null }[])
+          .map(r => ({ code: r.code, superseded: r.superseded_at != null }));
+        const { toSupersede, toResurrect } = computeBoqSupersedeDelta(existing, boqIdByCode.keys());
+
+        if (toSupersede.length > 0) {
+          const { error: supersedeErr } = await supabase
+            .from('boq_items')
+            .update({ superseded_at: new Date().toISOString() })
+            .eq('project_id', projectId)
+            .in('code', toSupersede);
+          if (supersedeErr) {
+            warnings.push(
+              `boq_items supersede update failed for ${toSupersede.length} code(s) ` +
+              `(stale rows remain visible as active): ${supersedeErr.message}`,
+            );
+          } else {
+            supersededCount = toSupersede.length;
+          }
+        }
+
+        if (toResurrect.length > 0) {
+          const { error: resurrectErr } = await supabase
+            .from('boq_items')
+            .update({ superseded_at: null })
+            .eq('project_id', projectId)
+            .in('code', toResurrect);
+          if (resurrectErr) {
+            warnings.push(
+              `boq_items resurrect update failed for ${toResurrect.length} code(s) ` +
+              `(reappeared code(s) may stay hidden as superseded): ${resurrectErr.message}`,
+            );
+          } else {
+            resurrectedCount = toResurrect.length;
+          }
+        }
+      }
+    } catch (err) {
+      warnings.push(
+        `boq_items supersede step failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   // Build ahs_lines + master_lines from each BoQ row's NORMALIZED BREAKDOWN
   // (the per-diameter recipe components produced from the Breakdown sheets), NOT
   // the generic Analisa blocks. This is what makes the published baseline match
@@ -1100,8 +1242,8 @@ export async function publishBaselineV2(
   // an otherwise-successful publish that already wrote boq_items/ahs_lines/
   // master_lines. Surfaced via `warnings` so it is visible, never silent
   // (CLAUDE.md §1.1: wrong numbers — or silently missing ones — are worse
-  // than an admitted gap).
-  const warnings: string[] = [];
+  // than an admitted gap). `warnings` itself is declared earlier, right after
+  // the Task 3.1 supersede step, so both share one array.
   // 2.10 review item (ii): gate the snapshot on master-lines success. Only
   // anchor a baseline for materials whose master lines actually LANDED — a
   // material with ANY failed master line is excluded, because its snapshot qty
@@ -1254,5 +1396,7 @@ export async function publishBaselineV2(
     skippedZeroPlanned,
     quarantinedRows: quarantined,
     warnings,
+    supersededCount,
+    resurrectedCount,
   };
 }

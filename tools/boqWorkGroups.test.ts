@@ -24,6 +24,7 @@ function item(label: string, chapter: string | null = null, overrides: Partial<B
     cost_breakdown: null,
     client_unit_price: null,
     internal_unit_price: null,
+    superseded_at: null,
     ...overrides,
   };
 }

@@ -67,6 +67,17 @@ export interface BoqItem {
   cost_breakdown: CostBreakdown | null;
   client_unit_price: number | null;
   internal_unit_price: number | null;
+  /**
+   * Task 3.1 — non-null when a LATER re-publish's workbook no longer
+   * contains this code (see migration 074_boq_items_supersede.sql). Soft
+   * marker, not a delete: allocations/receipts/progress_entries may still FK
+   * this row, so it must keep resolving by id. Readers that enumerate the
+   * ACTIVE plan (Progress Summary, useProject's boq_items load, work-group /
+   * allocation pickers) filter `superseded_at IS NULL`; readers that resolve
+   * a specific boq_item_id by FK (allocation display, audit joins,
+   * opname/payroll exports) intentionally do NOT filter on it.
+   */
+  superseded_at: string | null;
 }
 
 /**

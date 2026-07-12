@@ -452,11 +452,20 @@ export async function generateProgressSummary(projectId: string): Promise<Report
       .order('created_at', { ascending: false }),
   ]);
 
+  // Task 3.1: the query above is intentionally UNFILTERED — `boqMap` below
+  // resolves progress_entries.boq_item_id by FK (an entry logged against a
+  // code that a LATER re-publish superseded must still show its code/label,
+  // same as reports.ts's payroll/client-charge FK resolution). Only the
+  // ACTIVE-plan enumeration (`enriched`/`overall_progress`/the item counts —
+  // the surface that actually pollutes/dilutes, per migration
+  // 074_boq_items_supersede.sql) is filtered, in-memory, to non-superseded
+  // rows.
   const boqItems: BoqItem[] = items ?? [];
+  const activeBoqItems = boqItems.filter(b => b.superseded_at == null);
   const totalMap = new Map(totals.map(t => [t.boq_item_id, t.total_installed]));
   const boqMap = new Map(boqItems.map(item => [item.id, item]));
 
-  const enriched = boqItems.map(b => ({
+  const enriched = activeBoqItems.map(b => ({
     code: b.code,
     label: b.label,
     planned: b.planned,
