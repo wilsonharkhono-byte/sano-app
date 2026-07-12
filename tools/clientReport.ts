@@ -124,9 +124,26 @@ export async function nextRevisionNo(projectId: string, reportNo: number): Promi
   return (data?.revision ?? 0) + 1;
 }
 
+// Postgres 23505 is the primary signal. Also match on the constraint name
+// from migration 075 as a fallback — future-proofs against a driver/proxy
+// that loses the error `code` field but keeps `message`, and against other
+// unique constraints on this table being (mis)read as a numbering race if
+// their message happens to omit a code. Named-constraint match stays scoped
+// to THIS constraint specifically, so it won't paper over unrelated
+// violations the way a bare "any 23505" fallback would.
+const NUMBERING_CONSTRAINT_NAME = 'uq_client_progress_reports_no_revision';
+
 function isUniqueViolation(error: any): boolean {
-  return error?.code === '23505';
+  if (!error) return false;
+  if (error.code === '23505') return true;
+  return typeof error.message === 'string' && error.message.includes(NUMBERING_CONSTRAINT_NAME);
 }
+
+// Operator-facing message for when the numbering race never resolves inside
+// the retry budget — swapped in for the raw Postgres 23505 copy, which is
+// meaningless to a non-technical user tapping "Terbitkan". The raw error is
+// still logged via console.warn below so the real cause isn't lost.
+const REPORT_NUMBER_CONFLICT_MESSAGE = 'Nomor laporan bentrok berulang — coba lagi.';
 
 // Bounded retries for the report-numbering race (Task 3.7): two concurrent
 // "Terbitkan" taps can both read the same max(report_no) (or max(revision))
@@ -241,7 +258,7 @@ export async function issueClientReport(
   draft: ClientReportDraft,
   projectId: string,
   userId: string,
-): Promise<{ id: string }> {
+): Promise<{ id: string; reportNo: number; revision: number }> {
   const isRevision = (draft.revision ?? 1) > 1;
   let reportNo = draft.reportNo;
   let revision = draft.revision ?? 1;
@@ -279,14 +296,25 @@ export async function issueClientReport(
         report_no: reportNo,
         revision,
       });
-      return { id: data.id };
+      // Return the number ACTUALLY inserted, not draft.reportNo/revision —
+      // a lost race + successful retry above may have bumped both, and the
+      // caller (ClientReportBuilderScreen) toasts these values so the
+      // operator sees the true issued number, not the stale pre-retry one.
+      return { id: data.id, reportNo, revision };
     }
 
-    // Anything other than a unique-violation on (project_id, report_no,
-    // revision) — migration 075 — is a real failure; surface it immediately.
-    // Same on the final attempt: stop retrying and surface the conflict.
-    if (!error || !isUniqueViolation(error) || attempt === MAX_REPORT_ISSUE_ATTEMPTS) {
+    if (!error || !isUniqueViolation(error)) {
+      // A real failure unrelated to the numbering race — surface immediately.
       throw error ?? new Error('Client report issue failed');
+    }
+
+    if (attempt === MAX_REPORT_ISSUE_ATTEMPTS) {
+      // The numbering race never resolved inside the retry budget. The raw
+      // Postgres 23505 copy is meaningless to whoever tapped "Terbitkan" —
+      // log it for diagnosis and surface a plain-language operator message
+      // instead.
+      console.warn('[issueClientReport] report numbering conflict persisted after retries', error);
+      throw new Error(REPORT_NUMBER_CONFLICT_MESSAGE);
     }
 
     // Lost the race: someone else took this (report_no, revision) between

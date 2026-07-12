@@ -196,9 +196,15 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
     if (!draft || !project || !profile) return;
     setBusy(true);
     try {
-      await issueClientReport(draft, project.id, profile.id);
-      const rev = (draft.revision ?? 1) > 1 ? ` (R${draft.revision})` : '';
-      toast(`Laporan #${String(draft.reportNo).padStart(2, '0')}${rev} diterbitkan`, 'ok');
+      // Toast the number ACTUALLY issued (returned by issueClientReport),
+      // not draft.reportNo/draft.revision — a lost numbering race + retry
+      // inside issueClientReport can bump either past what the draft held,
+      // and toasting the stale pre-retry value tells the user the wrong
+      // report number was issued. Same return covers both the new-issue and
+      // "Buat Revisi" paths.
+      const { reportNo, revision } = await issueClientReport(draft, project.id, profile.id);
+      const rev = revision > 1 ? ` (R${revision})` : '';
+      toast(`Laporan #${String(reportNo).padStart(2, '0')}${rev} diterbitkan`, 'ok');
       setDraft(null);
       await loadHistory();
     } catch (err: any) {

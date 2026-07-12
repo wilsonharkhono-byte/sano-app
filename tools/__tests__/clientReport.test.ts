@@ -169,7 +169,7 @@ describe('issueClientReport', () => {
 
     const result = await issueClientReport(draft, 'proj-1', 'user-1');
 
-    expect(result).toEqual({ id: 'rep-1' });
+    expect(result).toEqual({ id: 'rep-1', reportNo: 7, revision: 1 });
     expect(mockSupabase.from).toHaveBeenNthCalledWith(1, 'client_progress_reports');
     expect(insertChain.insert).toHaveBeenCalledWith(expect.objectContaining({
       project_id: 'proj-1', report_no: 7, kind: 'mingguan',
@@ -199,11 +199,12 @@ describe('issueClientReport', () => {
       .mockReturnValueOnce(insertChain)
       .mockReturnValueOnce(exportChain);
 
-    await issueClientReport(draft, 'proj-1', 'user-1');
+    const result = await issueClientReport(draft, 'proj-1', 'user-1');
 
     expect(insertChain.insert).toHaveBeenCalledWith(expect.objectContaining({
       report_no: 2, revision: 2,
     }));
+    expect(result).toEqual({ id: 'rep-2r2', reportNo: 2, revision: 2 });
   });
 
   // Task 3.7: race-safe numbering. Migration 075 adds a hard UNIQUE index on
@@ -246,7 +247,11 @@ describe('issueClientReport', () => {
 
     const result = await issueClientReport(draft, 'proj-1', 'user-1');
 
-    expect(result).toEqual({ id: 'rep-retry' });
+    // The stale-toast bug: the caller must be told #08 (what was actually
+    // inserted after the retry), not #07 (the pre-retry number the draft
+    // still holds) — so the return value carries the post-retry numbers,
+    // not an echo of draft.reportNo/draft.revision.
+    expect(result).toEqual({ id: 'rep-retry', reportNo: 8, revision: 1 });
     expect(conflictChain.insert).toHaveBeenCalledWith(expect.objectContaining({ report_no: 7, revision: 1 }));
     expect(successChain.insert).toHaveBeenCalledWith(expect.objectContaining({ report_no: 8, revision: 1 }));
     expect((successChain.insert as jest.Mock).mock.calls[0][0].snapshot).toMatchObject({ reportNo: 8, revision: 1 });
@@ -287,7 +292,7 @@ describe('issueClientReport', () => {
 
     const result = await issueClientReport(draft, 'proj-1', 'user-1');
 
-    expect(result).toEqual({ id: 'rep-2r3' });
+    expect(result).toEqual({ id: 'rep-2r3', reportNo: 2, revision: 3 });
     expect(conflictChain.insert).toHaveBeenCalledWith(expect.objectContaining({ report_no: 2, revision: 2 }));
     expect(successChain.insert).toHaveBeenCalledWith(expect.objectContaining({ report_no: 2, revision: 3 }));
   });
@@ -310,7 +315,10 @@ describe('issueClientReport', () => {
     expect(errChain.insert).toHaveBeenCalledTimes(1);
   });
 
-  it('gives up after the bounded retry limit if the race never resolves', async () => {
+  // Minor (a): retry-exhaustion must surface a plain-language Indonesian
+  // operator message, not the raw Postgres 23505 copy — the raw error is
+  // still logged via console.warn so the real cause isn't lost.
+  it('gives up after the bounded retry limit if the race never resolves, mapping to an operator-facing message', async () => {
     const draft = {
       kind: 'harian', reportNo: 3, periodStart: '2026-07-01', periodEnd: '2026-07-01',
       projectName: 'X', clientName: null, subtitle: '', statusLabel: 'Sesuai Jadwal',
@@ -339,9 +347,60 @@ describe('issueClientReport', () => {
       call += 1;
       return call % 2 === 1 ? conflictChain : assignChain;
     });
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await expect(issueClientReport(draft, 'proj-1', 'user-1')).rejects.toMatchObject({ code: '23505' });
+    await expect(issueClientReport(draft, 'proj-1', 'user-1')).rejects.toMatchObject({
+      message: 'Nomor laporan bentrok berulang — coba lagi.',
+    });
     expect(conflictChain.insert).toHaveBeenCalledTimes(5); // MAX_REPORT_ISSUE_ATTEMPTS
+    expect(warnSpy).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ code: '23505' }));
+
+    warnSpy.mockRestore();
+  });
+
+  // Minor (c): isUniqueViolation also recognizes the constraint name from
+  // migration 075 even when `code` is missing/different — future-proofs
+  // against other unique constraints on this table being misread as a
+  // numbering race, while still retrying on THIS specific constraint.
+  it('retries on a unique-violation identified by constraint name even without a 23505 code', async () => {
+    const draft = {
+      kind: 'mingguan', reportNo: 7, periodStart: '2026-06-08', periodEnd: '2026-06-14',
+      projectName: 'Graha', clientName: 'Bpk', subtitle: 'Finishing', statusLabel: 'Sesuai Jadwal',
+      weather: 'Cerah', crewTotal: 8, crewBreakdown: '3 tukang', safetyIncidents: 0,
+      nextPlan: 'Lanjut', updates: [], hero: null, thumbs: [],
+    } as any;
+
+    const conflictChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({
+        data: null,
+        error: { message: 'duplicate key value violates unique constraint "uq_client_progress_reports_no_revision"' },
+      }),
+    };
+    const assignChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: { report_no: 7 }, error: null }),
+    };
+    const successChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: { id: 'rep-retry-2' }, error: null }),
+    };
+    const exportChain = { insert: jest.fn().mockResolvedValue({ error: null }) };
+
+    (mockSupabase.from as jest.Mock)
+      .mockReturnValueOnce(conflictChain)
+      .mockReturnValueOnce(assignChain)
+      .mockReturnValueOnce(successChain)
+      .mockReturnValueOnce(exportChain);
+
+    const result = await issueClientReport(draft, 'proj-1', 'user-1');
+
+    expect(result).toEqual({ id: 'rep-retry-2', reportNo: 8, revision: 1 });
   });
 });
 

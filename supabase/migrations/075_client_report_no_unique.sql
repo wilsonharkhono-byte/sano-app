@@ -45,10 +45,24 @@
 -- catches and retries with a fresh number." Paste this migration whenever is
 -- convenient; there is no ordering dependency on the app build.
 --
--- Idempotent / re-paste-safe: CREATE UNIQUE INDEX IF NOT EXISTS. The
--- duplicate-count guard is a pure SELECT — safe to re-run every time; once
--- the index exists, a re-paste just no-ops on the IF NOT EXISTS branch
--- without re-running the guard's RAISE path (dupes can't exist post-index).
+-- Idempotent / re-paste-safe: the DO-block guard is NOT gated by IF NOT
+-- EXISTS — it re-runs its SELECT COUNT in full on every paste, index or no
+-- index. It's a pure read with no side effects, so that's safe. Once the
+-- index exists it simply can't fire the RAISE branch anymore, because the
+-- unique constraint has already prevented any new dupes from being written
+-- — not because the guard itself is skipped. Only the CREATE UNIQUE INDEX
+-- statement below is conditional (IF NOT EXISTS), which is what makes a
+-- re-paste of THAT statement a no-op once applied.
+--
+-- Operator note — bundled in this same deploy, unrelated to report
+-- numbering: this task also changed DailyLogScreen's photo default from
+-- is_featured: true to false with a real per-photo star toggle. Photos
+-- logged BEFORE this fix already have is_featured = true persisted from the
+-- old hardcoded default, and will keep appearing in client reports exactly
+-- as before until someone opens that day's log and manually un-stars them.
+-- Only new photos added after this ships default to unfeatured. No backfill
+-- was written by design — see tools/dailySiteLogs.ts (toggleFeaturedPhoto)
+-- and workflows/screens/DailyLogScreen.tsx.
 
 DO $$
 DECLARE
