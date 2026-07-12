@@ -9,7 +9,7 @@ import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { pickAndUploadPhoto } from '../../tools/storage';
 import { sanitizeText } from '../../tools/validation';
-import { getDailyLog, upsertDailyLog, type DailyLogHighlight, type DailyLogPhoto } from '../../tools/dailySiteLogs';
+import { getDailyLog, upsertDailyLog, toggleFeaturedPhoto, type DailyLogHighlight, type DailyLogPhoto } from '../../tools/dailySiteLogs';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 function todayIso(): string {
@@ -60,9 +60,14 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
     if (!project) return;
     const path = await pickAndUploadPhoto(`daily-log/${project.id}`);
     if (!path) return;
-    setPhotos((prev) => [...prev, { storage_path: path, caption: null, is_featured: true, captured_at: new Date().toISOString() }]);
+    // Task 3.7: photos are NOT featured by default — the estimator must
+    // explicitly star which ones should surface in the client report. Before
+    // this fix every photo was force-featured, making the "yang ditandai"
+    // (marked) filter in the client report vacuous.
+    setPhotos((prev) => [...prev, { storage_path: path, caption: null, is_featured: false, captured_at: new Date().toISOString() }]);
   };
   const removePhoto = (i: number) => setPhotos((prev) => prev.filter((_, idx) => idx !== i));
+  const toggleFeatured = (i: number) => setPhotos((prev) => toggleFeaturedPhoto(prev, i));
 
   const save = async () => {
     if (!project || !profile) return;
@@ -147,12 +152,14 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
           </TouchableOpacity>
         </Card>
 
-        <Card title="Dokumentasi" subtitle="Foto yang ditandai akan muncul di laporan klien.">
+        <Card title="Dokumentasi" subtitle="Tandai (★) foto yang ingin ditampilkan di laporan klien — foto yang tidak ditandai tidak akan muncul.">
           <PhotoGalleryField
             photoPaths={photos.map((p) => p.storage_path)}
             onAdd={addPhoto}
             onReplace={(_index) => addPhoto()}
             onRemove={removePhoto}
+            featured={photos.map((p) => p.is_featured)}
+            onToggleFeatured={toggleFeatured}
             emptyLabel="Tambah Foto Lapangan"
             helperText="Foto kondisi lapangan, progres, atau material."
           />

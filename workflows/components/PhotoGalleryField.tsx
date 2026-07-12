@@ -12,6 +12,11 @@ interface Props {
   emptyLabel?: string;
   helperText?: string;
   maxPhotos?: number;
+  // Task 3.7: optional per-photo "featured" toggle (used by DailyLogScreen so
+  // estimators can star which photos actually go into the client report).
+  // Omitted entirely by callers that don't have a featured concept.
+  featured?: boolean[];
+  onToggleFeatured?: (index: number) => void;
 }
 
 interface ThumbProps {
@@ -19,9 +24,11 @@ interface ThumbProps {
   index: number;
   onReplace: (index: number) => void;
   onRemove: (index: number) => void;
+  isFeatured?: boolean;
+  onToggleFeatured?: (index: number) => void;
 }
 
-function PhotoThumb({ path, index, onReplace, onRemove }: ThumbProps) {
+function PhotoThumb({ path, index, onReplace, onRemove, isFeatured, onToggleFeatured }: ThumbProps) {
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -54,6 +61,18 @@ function PhotoThumb({ path, index, onReplace, onRemove }: ThumbProps) {
       </TouchableOpacity>
       <View style={styles.metaRow}>
         <Text style={styles.metaTitle}>Foto {index + 1}</Text>
+        {onToggleFeatured ? (
+          <TouchableOpacity
+            style={styles.featuredRow}
+            onPress={() => onToggleFeatured(index)}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+          >
+            <Ionicons name={isFeatured ? 'star' : 'star-outline'} size={16} color={isFeatured ? COLORS.accentDark : COLORS.textSec} />
+            <Text style={[styles.featuredText, isFeatured && styles.featuredTextOn]}>
+              {isFeatured ? 'Ditandai untuk laporan' : 'Tandai untuk laporan'}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
         <View style={styles.actionRow}>
           <TouchableOpacity style={styles.textBtn} onPress={() => onReplace(index)}>
             <Text style={styles.replaceText}>Ganti</Text>
@@ -75,6 +94,8 @@ export default function PhotoGalleryField({
   emptyLabel = 'Tambah Foto',
   helperText,
   maxPhotos = 6,
+  featured,
+  onToggleFeatured,
 }: Props) {
   const canAdd = photoPaths.length < maxPhotos;
 
@@ -88,6 +109,8 @@ export default function PhotoGalleryField({
             index={index}
             onReplace={onReplace}
             onRemove={onRemove}
+            isFeatured={featured?.[index]}
+            onToggleFeatured={onToggleFeatured}
           />
         ))}
         {canAdd ? (
@@ -162,6 +185,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     flexWrap: 'wrap',
+  },
+  featuredRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 2,
+  },
+  featuredText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.textSec,
+  },
+  featuredTextOn: {
+    color: COLORS.accentDark,
+    fontWeight: '700',
   },
   textBtn: {
     paddingVertical: 2,

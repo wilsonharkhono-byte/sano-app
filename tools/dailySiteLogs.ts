@@ -55,6 +55,14 @@ export interface PeriodAggregate {
   safetyIncidents: number;
 }
 
+// Task 3.7: pure state-update helper for the per-photo featured toggle in
+// DailyLogScreen. Flips exactly one photo's is_featured, leaving the rest
+// untouched — extracted so the toggle logic is unit-testable without
+// mounting the screen.
+export function toggleFeaturedPhoto(photos: DailyLogPhoto[], index: number): DailyLogPhoto[] {
+  return photos.map((p, i) => (i === index ? { ...p, is_featured: !p.is_featured } : p));
+}
+
 export async function getDailyLog(projectId: string, isoDate: string): Promise<DailySiteLog | null> {
   const { data: log, error } = await supabase
     .from('daily_site_logs')

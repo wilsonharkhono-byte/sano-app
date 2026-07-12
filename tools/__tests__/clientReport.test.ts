@@ -1,4 +1,4 @@
-import { mapMilestoneStatusToLabel, deriveProjectStatusLabel, installedAsOf, computeWeeklyProgressDelta, assignNextReportNo, recordClientProgressReportExport, assembleClientReportDraft, issueClientReport, listClientReports, getClientReportSnapshot } from '../clientReport';
+import { mapMilestoneStatusToLabel, deriveProjectStatusLabel, installedAsOf, computeWeeklyProgressDelta, assignNextReportNo, nextRevisionNo, recordClientProgressReportExport, assembleClientReportDraft, issueClientReport, listClientReports, getClientReportSnapshot } from '../clientReport';
 import { supabase } from '../supabase';
 
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
@@ -107,6 +107,34 @@ describe('clientReport numbering + audit', () => {
     expect(await assignNextReportNo('proj-1')).toBe(7);
   });
 
+  // Task 3.7: true-max revision counter — queried fresh rather than trusting
+  // whatever revision row the caller happens to be looking at.
+  it('nextRevisionNo returns 1 when the report_no has no revisions yet', async () => {
+    const chain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+    };
+    (mockSupabase.from as jest.Mock).mockReturnValue(chain);
+    expect(await nextRevisionNo('proj-1', 5)).toBe(1);
+  });
+
+  it('nextRevisionNo returns max(revision)+1 scoped to (project_id, report_no)', async () => {
+    const chain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: { revision: 3 }, error: null }),
+    };
+    (mockSupabase.from as jest.Mock).mockReturnValue(chain);
+    expect(await nextRevisionNo('proj-1', 5)).toBe(4);
+    expect(chain.eq).toHaveBeenCalledWith('project_id', 'proj-1');
+    expect(chain.eq).toHaveBeenCalledWith('report_no', 5);
+  });
+
   it('recordClientProgressReportExport inserts the plain-string report_type', async () => {
     const chain = { insert: jest.fn().mockResolvedValue({ error: null }) };
     (mockSupabase.from as jest.Mock).mockReturnValue(chain);
@@ -176,6 +204,144 @@ describe('issueClientReport', () => {
     expect(insertChain.insert).toHaveBeenCalledWith(expect.objectContaining({
       report_no: 2, revision: 2,
     }));
+  });
+
+  // Task 3.7: race-safe numbering. Migration 075 adds a hard UNIQUE index on
+  // (project_id, report_no, revision); a lost race between two concurrent
+  // "Terbitkan" taps now surfaces as a Postgres 23505 instead of silently
+  // inserting a duplicate. issueClientReport must catch that, recompute the
+  // true next number, and retry.
+  it('retries with a fresh report_no on a unique-violation for a brand-new report, then succeeds', async () => {
+    const draft = {
+      kind: 'mingguan', reportNo: 7, periodStart: '2026-06-08', periodEnd: '2026-06-14',
+      projectName: 'Graha', clientName: 'Bpk', subtitle: 'Finishing', statusLabel: 'Sesuai Jadwal',
+      weather: 'Cerah', crewTotal: 8, crewBreakdown: '3 tukang', safetyIncidents: 0,
+      nextPlan: 'Lanjut', updates: [], hero: null, thumbs: [],
+    } as any;
+
+    const conflictChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint "uq_client_progress_reports_no_revision"' } }),
+    };
+    const assignChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: { report_no: 7 }, error: null }), // someone else took 7 first
+    };
+    const successChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: { id: 'rep-retry' }, error: null }),
+    };
+    const exportChain = { insert: jest.fn().mockResolvedValue({ error: null }) };
+
+    (mockSupabase.from as jest.Mock)
+      .mockReturnValueOnce(conflictChain)  // 1st insert attempt -> 23505
+      .mockReturnValueOnce(assignChain)    // assignNextReportNo requery -> 8
+      .mockReturnValueOnce(successChain)   // 2nd insert attempt -> success
+      .mockReturnValueOnce(exportChain);   // report_exports insert
+
+    const result = await issueClientReport(draft, 'proj-1', 'user-1');
+
+    expect(result).toEqual({ id: 'rep-retry' });
+    expect(conflictChain.insert).toHaveBeenCalledWith(expect.objectContaining({ report_no: 7, revision: 1 }));
+    expect(successChain.insert).toHaveBeenCalledWith(expect.objectContaining({ report_no: 8, revision: 1 }));
+    expect((successChain.insert as jest.Mock).mock.calls[0][0].snapshot).toMatchObject({ reportNo: 8, revision: 1 });
+  });
+
+  it('retries with a fresh revision on a unique-violation when re-issuing an existing report_no', async () => {
+    const draft = {
+      kind: 'harian', reportNo: 2, revision: 2, periodStart: '2026-07-02', periodEnd: '2026-07-02',
+      projectName: 'Nusa', clientName: null, subtitle: '', statusLabel: 'Sesuai Jadwal',
+      weather: null, crewTotal: null, crewBreakdown: null, safetyIncidents: 0,
+      nextPlan: '', updates: [], hero: null, thumbs: [],
+    } as any;
+
+    const conflictChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: null, error: { code: '23505' } }),
+    };
+    const revisionChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: { revision: 2 }, error: null }), // someone else already took R2
+    };
+    const successChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: { id: 'rep-2r3' }, error: null }),
+    };
+    const exportChain = { insert: jest.fn().mockResolvedValue({ error: null }) };
+
+    (mockSupabase.from as jest.Mock)
+      .mockReturnValueOnce(conflictChain)
+      .mockReturnValueOnce(revisionChain)
+      .mockReturnValueOnce(successChain)
+      .mockReturnValueOnce(exportChain);
+
+    const result = await issueClientReport(draft, 'proj-1', 'user-1');
+
+    expect(result).toEqual({ id: 'rep-2r3' });
+    expect(conflictChain.insert).toHaveBeenCalledWith(expect.objectContaining({ report_no: 2, revision: 2 }));
+    expect(successChain.insert).toHaveBeenCalledWith(expect.objectContaining({ report_no: 2, revision: 3 }));
+  });
+
+  it('does not retry non-unique-violation insert errors', async () => {
+    const draft = {
+      kind: 'harian', reportNo: 1, periodStart: '2026-07-01', periodEnd: '2026-07-01',
+      projectName: 'X', clientName: null, subtitle: '', statusLabel: 'Sesuai Jadwal',
+      weather: null, crewTotal: null, crewBreakdown: null, safetyIncidents: 0,
+      nextPlan: '', updates: [], hero: null, thumbs: [],
+    } as any;
+    const errChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: null, error: { code: '23503', message: 'foreign key violation' } }),
+    };
+    (mockSupabase.from as jest.Mock).mockReturnValue(errChain);
+
+    await expect(issueClientReport(draft, 'proj-1', 'user-1')).rejects.toMatchObject({ code: '23503' });
+    expect(errChain.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up after the bounded retry limit if the race never resolves', async () => {
+    const draft = {
+      kind: 'harian', reportNo: 3, periodStart: '2026-07-01', periodEnd: '2026-07-01',
+      projectName: 'X', clientName: null, subtitle: '', statusLabel: 'Sesuai Jadwal',
+      weather: null, crewTotal: null, crewBreakdown: null, safetyIncidents: 0,
+      nextPlan: '', updates: [], hero: null, thumbs: [],
+    } as any;
+    const conflictChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: null, error: { code: '23505' } }),
+    };
+    const assignChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(),
+      limit: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: { report_no: 3 }, error: null }),
+    };
+    // Every insert attempt conflicts, every requery hands back the same
+    // number (worst case: perpetual contention) — must stop, not loop
+    // forever. `.from()` alternates between the insert chain (odd calls) and
+    // the assignNextReportNo requery chain (even calls) since both target
+    // the same table name and can't be disambiguated by argument alone.
+    let call = 0;
+    (mockSupabase.from as jest.Mock).mockImplementation(() => {
+      call += 1;
+      return call % 2 === 1 ? conflictChain : assignChain;
+    });
+
+    await expect(issueClientReport(draft, 'proj-1', 'user-1')).rejects.toMatchObject({ code: '23505' });
+    expect(conflictChain.insert).toHaveBeenCalledTimes(5); // MAX_REPORT_ISSUE_ATTEMPTS
   });
 });
 

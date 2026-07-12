@@ -106,6 +106,39 @@ export async function assignNextReportNo(projectId: string): Promise<number> {
   return (data?.report_no ?? 0) + 1;
 }
 
+// Task 3.7: true-max revision counter. ClientReportBuilderScreen's history
+// list can hand back ANY revision row the user tapped (not necessarily the
+// newest one for that report_no) — trusting `viewing.meta.revision + 1` can
+// therefore recreate a revision number that already exists. Query the actual
+// max instead. Also reused by issueClientReport's retry-on-conflict below.
+export async function nextRevisionNo(projectId: string, reportNo: number): Promise<number> {
+  const { data, error } = await supabase
+    .from('client_progress_reports')
+    .select('revision')
+    .eq('project_id', projectId)
+    .eq('report_no', reportNo)
+    .order('revision', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.revision ?? 0) + 1;
+}
+
+function isUniqueViolation(error: any): boolean {
+  return error?.code === '23505';
+}
+
+// Bounded retries for the report-numbering race (Task 3.7): two concurrent
+// "Terbitkan" taps can both read the same max(report_no) (or max(revision))
+// during draft assembly and then race to insert. Migration 075 adds a hard
+// UNIQUE index on (project_id, report_no, revision) so a collision surfaces
+// LOUDLY as a Postgres unique-violation (23505) instead of silently minting
+// a duplicate — this loop catches that violation and retries with a freshly
+// recomputed number. Works even without 075 applied (the insert would then
+// just succeed with a duplicate number, same as before this fix) — 075 is
+// what turns the (rare) silent dupe into a loud, retried conflict.
+const MAX_REPORT_ISSUE_ATTEMPTS = 5;
+
 export async function recordClientProgressReportExport(
   projectId: string,
   userId: string,
@@ -209,35 +242,66 @@ export async function issueClientReport(
   projectId: string,
   userId: string,
 ): Promise<{ id: string }> {
-  const { data, error } = await supabase
-    .from('client_progress_reports')
-    .insert({
-      project_id: projectId,
-      report_no: draft.reportNo,
-      revision: draft.revision ?? 1,
-      kind: draft.kind,
-      period_start: draft.periodStart,
-      period_end: draft.periodEnd,
-      status_label: draft.statusLabel,
-      weather: draft.weather,
-      crew_total: draft.crewTotal,
-      crew_breakdown: draft.crewBreakdown,
-      safety_incidents: draft.safetyIncidents,
-      next_plan: draft.nextPlan,
-      snapshot: draft,                       // frozen rendered content
-      issued_at: new Date().toISOString(),
-      issued_by: userId,
-    })
-    .select('id')
-    .single();
-  if (error || !data) throw error ?? new Error('Client report issue failed');
+  const isRevision = (draft.revision ?? 1) > 1;
+  let reportNo = draft.reportNo;
+  let revision = draft.revision ?? 1;
+  // Starts out literally `draft` (not a copy) so the common, uncontested path
+  // inserts the exact snapshot the caller built. Only rebuilt after a retry,
+  // once reportNo/revision have actually changed from what the caller passed.
+  let snapshot: ClientReportDraft = draft;
 
-  await recordClientProgressReportExport(projectId, userId, {
-    kind: draft.kind,
-    report_no: draft.reportNo,
-    revision: draft.revision ?? 1,
-  });
-  return { id: data.id };
+  for (let attempt = 1; attempt <= MAX_REPORT_ISSUE_ATTEMPTS; attempt++) {
+    const { data, error } = await supabase
+      .from('client_progress_reports')
+      .insert({
+        project_id: projectId,
+        report_no: reportNo,
+        revision,
+        kind: draft.kind,
+        period_start: draft.periodStart,
+        period_end: draft.periodEnd,
+        status_label: draft.statusLabel,
+        weather: draft.weather,
+        crew_total: draft.crewTotal,
+        crew_breakdown: draft.crewBreakdown,
+        safety_incidents: draft.safetyIncidents,
+        next_plan: draft.nextPlan,
+        snapshot,                              // frozen rendered content
+        issued_at: new Date().toISOString(),
+        issued_by: userId,
+      })
+      .select('id')
+      .single();
+
+    if (!error && data) {
+      await recordClientProgressReportExport(projectId, userId, {
+        kind: draft.kind,
+        report_no: reportNo,
+        revision,
+      });
+      return { id: data.id };
+    }
+
+    // Anything other than a unique-violation on (project_id, report_no,
+    // revision) — migration 075 — is a real failure; surface it immediately.
+    // Same on the final attempt: stop retrying and surface the conflict.
+    if (!error || !isUniqueViolation(error) || attempt === MAX_REPORT_ISSUE_ATTEMPTS) {
+      throw error ?? new Error('Client report issue failed');
+    }
+
+    // Lost the race: someone else took this (report_no, revision) between
+    // our read and our insert. Recompute the true max and try again — bump
+    // report_no for a brand-new report, or revision for an explicit re-issue
+    // (Buat Revisi) of an existing report_no.
+    if (isRevision) {
+      revision = await nextRevisionNo(projectId, reportNo);
+    } else {
+      reportNo = await assignNextReportNo(projectId);
+    }
+    snapshot = { ...draft, reportNo, revision };
+  }
+
+  throw new Error('Client report issue failed after retries');
 }
 
 // ---------------------------------------------------------------------------
