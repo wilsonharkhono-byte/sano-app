@@ -22,6 +22,9 @@ import { evaluateTier4Untracked, evaluateTier3BudgetSoft } from '../../tools/bud
 import {
   requiresOverageReason, requiresOverageNote, OVERAGE_REASONS, OVERAGE_REASON_LABELS,
 } from '../../tools/requestOverage';
+import {
+  buildSubmitMaterialRequestPayload, type SubmitRequestLineInput,
+} from '../../tools/submitMaterialRequest';
 import { buildWorkGroups } from '../../tools/boqWorkGroups';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, RADIUS_SM } from '../theme';
 import type {
@@ -644,9 +647,57 @@ export default function PermintaanScreen() {
 
     setSubmitting(true);
     try {
-      const { data: header, error: headerErr } = await supabase
-        .from('material_request_headers')
-        .insert({
+      // Transactional submit (Task 2.9): header + N lines + per-line allocations
+      // + activity_log all land in ONE plpgsql transaction (submit_material_request,
+      // migration 073). Before this, a failed line/allocation insert orphaned the
+      // header — the exact bug class 045 fixed for POs. Any RAISE now rolls the
+      // whole request back, so there is a single error path and no partial-write
+      // cleanup to do. Field-for-field the payload mirrors the old direct inserts.
+      const submitLines: SubmitRequestLineInput[] = validLines.map(line => ({
+        material_id: line.materialId ?? null,
+        custom_material_name: line.isCustom || !line.materialId ? sanitizeText(line.materialName) : null,
+        tier: line.tier,
+        material_spec_reference: line.specRef ? sanitizeText(line.specRef) : null,
+        // BASE-unit canonical: triggers 048/049 compare quantity against
+        // per-kg benchmarks/envelopes. Batang exists only in the UI.
+        quantity: supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit),
+        unit: sanitizeText(line.base_qty_per_supplier_unit ? (line.baseUnit || line.unit) : line.unit),
+        // Advisory: 033 Trigger 1 overwrites line_flag server-side.
+        line_flag: line.lineResult?.flag ?? 'OK',
+        // line_check_details is the supervisor's evidence-of-then snapshot
+        // (spec §3) — it now carries the overage running-total components via
+        // lineResult.overage. Office/approval panels RECOMPUTE live and never
+        // trust this stored value as current numbers.
+        line_check_details: line.lineResult,
+        // Signal-1 reason capture: persisted only for a line that is
+        // actually over-total at submit (a reason left over from an earlier,
+        // higher quantity is dropped if the line fell back under 100%).
+        overage_reason: requiresOverageReason(line.lineResult) ? line.overageReason : null,
+        overage_note: requiresOverageReason(line.lineResult) && line.overageReason && line.overageNote
+          ? sanitizeText(line.overageNote)
+          : null,
+        work_group_label: line.tier === 1 && line.workGroupKey
+          ? workGroupMap.get(line.workGroupKey)?.label ?? null
+          : null,
+        allocations: line.allocationPreview.map(preview => ({
+          boq_item_id: preview.boqItemId,
+          allocated_quantity: preview.allocatedQuantity,
+          proportion_pct: preview.proportionPct,
+          allocation_basis: preview.allocationBasis,
+        })),
+      }));
+
+      const materialSummary = validLines
+        .map(line => {
+          const kgNote = line.base_qty_per_supplier_unit
+            ? ` (≈ ${supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit).toFixed(1)} ${line.baseUnit || 'kg'})`
+            : '';
+          return `${line.materialName} ×${line.quantity} ${line.unit}${kgNote}`.trim();
+        })
+        .join(', ');
+
+      const payload = buildSubmitMaterialRequestPayload(
+        {
           project_id: project.id,
           boq_item_id: null,
           request_basis: ACTIVE_REQUEST_BASIS,
@@ -659,79 +710,19 @@ export default function PermintaanScreen() {
           // header opens PENDING. Any server-side promotion (033 Trigger 2) is
           // now unreachable for quantity/budget flags (they cap at WARNING).
           overall_status: 'PENDING',
-        })
-        .select('id')
-        .single();
+        },
+        submitLines,
+        {
+          project_id: project.id,
+          user_id: profile.id,
+          type: 'permintaan',
+          label: `Permintaan material: ${materialSummary}`,
+          flag: overallFlag,
+        },
+      );
 
-      if (headerErr || !header) throw headerErr ?? new Error('Header insert failed');
-
-      for (const line of validLines) {
-        const { data: createdLine, error: lineErr } = await supabase
-          .from('material_request_lines')
-          .insert({
-            request_header_id: header.id,
-            material_id: line.materialId ?? null,
-            custom_material_name: line.isCustom || !line.materialId ? sanitizeText(line.materialName) : null,
-            tier: line.tier,
-            material_spec_reference: line.specRef ? sanitizeText(line.specRef) : null,
-            // BASE-unit canonical: triggers 048/049 compare quantity against
-            // per-kg benchmarks/envelopes. Batang exists only in the UI.
-            quantity: supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit),
-            unit: sanitizeText(line.base_qty_per_supplier_unit ? (line.baseUnit || line.unit) : line.unit),
-            line_flag: line.lineResult?.flag ?? 'OK',
-            // line_check_details is the supervisor's evidence-of-then snapshot
-            // (spec §3) — it now carries the overage running-total components via
-            // lineResult.overage. Office/approval panels RECOMPUTE live and never
-            // trust this stored value as current numbers.
-            line_check_details: line.lineResult,
-            // Signal-1 reason capture: persisted only for a line that is
-            // actually over-total at submit (a reason left over from an earlier,
-            // higher quantity is dropped if the line fell back under 100%).
-            overage_reason: requiresOverageReason(line.lineResult) ? line.overageReason : null,
-            overage_note: requiresOverageReason(line.lineResult) && line.overageReason && line.overageNote
-              ? sanitizeText(line.overageNote)
-              : null,
-            work_group_label: line.tier === 1 && line.workGroupKey
-              ? workGroupMap.get(line.workGroupKey)?.label ?? null
-              : null,
-          })
-          .select('id')
-          .single();
-
-        if (lineErr || !createdLine) throw lineErr ?? new Error('Line insert failed');
-
-        const allocationRows = line.allocationPreview.map(preview => ({
-          request_line_id: createdLine.id,
-          boq_item_id: preview.boqItemId,
-          allocated_quantity: preview.allocatedQuantity,
-          proportion_pct: preview.proportionPct,
-          allocation_basis: preview.allocationBasis,
-        }));
-
-        if (allocationRows.length > 0) {
-          const { error: allocationErr } = await supabase
-            .from('material_request_line_allocations')
-            .insert(allocationRows);
-          if (allocationErr) throw allocationErr;
-        }
-      }
-
-      const materialSummary = validLines
-        .map(line => {
-          const kgNote = line.base_qty_per_supplier_unit
-            ? ` (≈ ${supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit).toFixed(1)} ${line.baseUnit || 'kg'})`
-            : '';
-          return `${line.materialName} ×${line.quantity} ${line.unit}${kgNote}`.trim();
-        })
-        .join(', ');
-
-      await supabase.from('activity_log').insert({
-        project_id: project.id,
-        user_id: profile.id,
-        type: 'permintaan',
-        label: `Permintaan material: ${materialSummary}`,
-        flag: overallFlag,
-      });
+      const { error: submitErr } = await supabase.rpc('submit_material_request', payload);
+      if (submitErr) throw submitErr;
 
       toast(
         `Permintaan material dikirim — ${validLines.length} line`,

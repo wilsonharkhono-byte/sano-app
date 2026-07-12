@@ -11,6 +11,7 @@ import { useToast } from '../components/Toast';
 import { supabase } from '../../tools/supabase';
 import { getNextPurchaseOrderNumber, getPurchaseOrderDisplayNumber } from '../../tools/purchaseOrders';
 import { isPoClosed } from '../../tools/poStatus';
+import { POStatus } from '../../tools/constants';
 import { computeGate2, summarizeAhsBaselinePrices, type Gate2Result, type Gate2Input } from '../gates/gate2';
 import { buildMaterialScopeIndex, deriveAutomaticScopeTag, normalizeBoqRefToScopeTag } from '../../tools/procurementScope';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
@@ -221,9 +222,12 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       const lines = (linesRes.data as PurchaseOrderLine[]) ?? [];
 
       // Task 2.8 — flatten the joined header fields into flat candidates, and
-      // collect the request_line_ids already consumed by ANY existing PO line
-      // (lockstep with migration 069's fulfilled-line exclusion, which counts
-      // every purchase_order_lines.request_line_id regardless of PO status).
+      // collect the request_line_ids already consumed by existing PO lines whose
+      // PO is NOT CANCELLED (lockstep with migration 073's fulfilled-line
+      // exclusion, which joins purchase_orders and adds `po.status <> 'CANCELLED'`).
+      // A request line linked to a later-CANCELLED PO is NOT fulfilled — it
+      // returns to the picker so the admin can re-link it. CLOSED_SHORT / OPEN /
+      // received POs keep their links (the line was genuinely ordered).
       type RequestLineRow = {
         id: string;
         material_id: string | null;
@@ -243,8 +247,14 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
           overall_status: row.material_request_headers?.overall_status ?? '',
         })),
       );
+      const cancelledPoIds = new Set(
+        purchaseOrders.filter(po => po.status === POStatus.CANCELLED).map(po => po.id),
+      );
       setLinkedRequestLineIds(new Set(
-        lines.map(l => l.request_line_id).filter((id): id is string => Boolean(id)),
+        lines
+          .filter(l => !cancelledPoIds.has(l.po_id))
+          .map(l => l.request_line_id)
+          .filter((id): id is string => Boolean(id)),
       ));
 
       const masterLines = (masterLinesRes.data as ProjectMaterialMasterLine[]) ?? [];

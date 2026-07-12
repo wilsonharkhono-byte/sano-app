@@ -6,10 +6,18 @@
 // Rules (spec: 2026-07-10 SANO flow remediation, Task 2.8):
 //   1. APPROVED-only — the header's overall_status must be 'APPROVED'. A
 //      pending/held/rejected request is not yet (or never) purchasable.
-//   2. Unlinked-only — a request line already referenced by any
-//      purchase_order_lines.request_line_id is fulfilled; offering it again
-//      would double-link one request to two POs (and migration 069's
+//   2. Unlinked-only — a request line already referenced by a NON-CANCELLED PO
+//      line's purchase_order_lines.request_line_id is fulfilled; offering it
+//      again would double-link one request to two POs (and migration 069/073's
 //      fulfilled-line exclusion would silently under-count the open need).
+//      LOCKSTEP (Task 2.9): migration 073 CREATE OR REPLACEs the tier gate
+//      computers so the fulfilled-line exclusion joins purchase_orders and adds
+//      `po.status <> 'CANCELLED'` — a request line linked to a later-CANCELLED
+//      PO is no longer fulfilled and must be re-offered here. This helper filters
+//      against a linkedRequestLineIds set; the CANCELLED-PO exclusion is applied
+//      where that set is BUILT (Gate2Screen.loadData), so callers must pass a set
+//      that already omits CANCELLED POs' links. Only CANCELLED unfulfills;
+//      CLOSED_SHORT / OPEN / received links stay in the set (genuinely ordered).
 //   3. Material match — when the draft PO line is a catalog material, only
 //      request lines for that exact material_id qualify. A free-text draft
 //      line (material_id null) may link to ANY eligible line — including
