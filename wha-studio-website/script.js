@@ -120,6 +120,20 @@ const motionOff = () =>
 const $ = (sel, el = document) => el.querySelector(sel);
 const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
 
+/* Storage + history can throw in sandboxed iframes / file:// contexts —
+   degrade gracefully (intro replays, motion pref not persisted, no deep-link
+   URL updates) rather than letting one SecurityError kill every interaction. */
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* unavailable */ } },
+  sget(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+  sset(k, v) { try { sessionStorage.setItem(k, v); } catch { /* unavailable */ } },
+};
+const safeHistory = {
+  push(state, url) { try { history.pushState(state, '', url); } catch { /* sandboxed */ } },
+  replace(state, url) { try { history.replaceState(state, '', url); } catch { /* sandboxed */ } },
+};
+
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
 /* --------------------------------------------------------------------------
@@ -128,12 +142,12 @@ const clamp01 = (v) => Math.min(1, Math.max(0, v));
 
 const intro = $('#intro');
 (function runIntro() {
-  const seen = sessionStorage.getItem('wha-intro-seen');
+  const seen = store.sget('wha-intro-seen');
   if (seen || motionOff()) {
     document.body.dataset.intro = 'skipped';
     return;
   }
-  sessionStorage.setItem('wha-intro-seen', '1');
+  store.sset('wha-intro-seen', '1');
   const finish = () => {
     if (document.body.dataset.intro !== 'pending') return;
     document.body.dataset.intro = 'done';
@@ -454,8 +468,8 @@ function openDetail(slug, pushHash = true) {
   detailScroll.scrollTop = 0;
   if (pushHash) {
     const url = `#/projects/${slug}`;
-    if (wasOpen) history.replaceState({ project: slug }, '', url);
-    else history.pushState({ project: slug }, '', url);
+    if (wasOpen) safeHistory.replace({ project: slug }, url);
+    else safeHistory.push({ project: slug }, url);
   }
   $('#detailClose').focus();
 }
@@ -467,7 +481,7 @@ function closeDetail(fromPop = false) {
   lockScroll(false);
   if (releaseDetailTrap) releaseDetailTrap();
   if (!fromPop && location.hash.startsWith('#/projects/')) {
-    history.pushState({}, '', location.pathname + location.search);
+    safeHistory.push({}, location.pathname + location.search);
   }
   if (lastCardFocused && document.contains(lastCardFocused)) lastCardFocused.focus();
 }
@@ -661,7 +675,7 @@ $('#inquiryForm').addEventListener('submit', async (e) => {
    -------------------------------------------------------------------------- */
 
 const motionToggle = $('#motionToggle');
-if (localStorage.getItem('wha-reduce-motion') === '1') {
+if (store.get('wha-reduce-motion') === '1') {
   document.body.classList.add('reduce-motion');
   motionToggle.setAttribute('aria-pressed', 'true');
   motionToggle.textContent = 'Motion reduced — restore';
@@ -670,7 +684,7 @@ motionToggle.addEventListener('click', () => {
   const on = document.body.classList.toggle('reduce-motion');
   motionToggle.setAttribute('aria-pressed', String(on));
   motionToggle.textContent = on ? 'Motion reduced — restore' : 'Reduce motion';
-  localStorage.setItem('wha-reduce-motion', on ? '1' : '0');
+  store.set('wha-reduce-motion', on ? '1' : '0');
   layoutRail();
   layoutProcess();
 });
