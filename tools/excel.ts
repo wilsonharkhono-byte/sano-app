@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx';
 import { encode } from 'base64-arraybuffer';
 import type { ReportPayload } from './reports';
 import { formatDriftPct } from './planDrift';
+import { needsProcurement } from './materialThresholds';
 import type {
   ProgressSummaryData,
   MaterialBalanceData,
@@ -262,7 +263,7 @@ export function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) 
     ['Indikator', 'Nilai'],
     ['Total Material', String(d.total_materials)],
     ['Over-Received', String(d.over_received)],
-    ['Under-Received', String(d.under_received)],
+    ['Perlu Pengadaan', String(d.needs_procurement)],
     ['Over-Budget', String(d.over_budget ?? 0)],
   ];
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
@@ -285,7 +286,9 @@ export function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) 
     const planned = b.planned ?? 0;
     const installed = b.installed ?? 0;
     const onSite = b.on_site ?? received - installed;
-    const status = onSite < 0 ? 'Defisit di Lapangan' : received < planned * 0.8 ? 'Perlu Pengadaan' : 'Aman';
+    // Task 3.3: shared on_site-based predicate (tools/materialThresholds.ts) —
+    // same rule as the LaporanScreen tile and the reports.ts summary count.
+    const status = onSite < 0 ? 'Defisit di Lapangan' : needsProcurement({ planned, on_site: onSite }) ? 'Perlu Pengadaan' : 'Aman';
     const isRp = b.control === 'RP';
     return [
       b.material_name ?? b.name ?? '—',

@@ -26,7 +26,12 @@ export interface ReportPhoto {
 export interface MaterialBalanceData {
   total_materials: number;
   over_received: number;
-  under_received: number;
+  // Task 3.3: renamed from `under_received` (which counted `received <
+  // planned*0.8` — a DIFFERENT rule than the "Perlu Pengadaan" tile on
+  // LaporanScreen). Now counts tools/materialThresholds.ts `needsProcurement`
+  // (on_site-based), the same predicate that drives the per-row Status
+  // column below and the LaporanScreen dashboard tile — one rule everywhere.
+  needs_procurement: number;
   over_budget?: number;
   // Single decision point (set once, in tools/reports.ts) for whether Rp
   // budget fields are present on `balances` rows. Exporters (excel/pdf) and

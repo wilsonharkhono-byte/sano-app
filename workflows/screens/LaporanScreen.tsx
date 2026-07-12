@@ -28,6 +28,7 @@ import { generateReport, recordReportExport, type ReportPayload, type ReportType
 import { ReportPreview } from '../components/ReportPreview';
 import { deriveMaterialBalance } from '../../tools/derivation';
 import { computeOverallProgress } from '../../tools/progressMath';
+import { needsProcurement } from '../../tools/materialThresholds';
 import { getProjectTeam, listAllProfiles, addUserToProject, removeUserFromProject, availableProfiles, type TeamMember, type ProfileOption, ROLE_LABELS } from '../../tools/projectManagement';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
@@ -191,7 +192,10 @@ export default function LaporanScreen() {
       .then((balances) => {
         setMaterialBalanceSummary({
           total: balances.length,
-          lowStock: balances.filter((item) => item.on_site <= Math.max(item.planned * 0.1, 0)).length,
+          // Task 3.3: tools/materialThresholds.ts — same predicate drives the
+          // Material Balance report's "Perlu Pengadaan" summary count and
+          // per-row Status column, so this tile never disagrees with an export.
+          lowStock: balances.filter((item) => needsProcurement({ planned: item.planned, on_site: item.on_site })).length,
           deficit: balances.filter((item) => item.on_site < 0).length,
         });
       })

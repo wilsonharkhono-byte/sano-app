@@ -57,7 +57,7 @@ describe('excel.ts buildMaterialBalance — supervisor redaction', () => {
   it('estimator payload (show_costs=true) keeps Anggaran/Terpakai columns', () => {
     const wb = XLSX.utils.book_new();
     const data: MaterialBalanceData = {
-      total_materials: 1, over_received: 0, under_received: 0, over_budget: 0, show_costs: true,
+      total_materials: 1, over_received: 0, needs_procurement: 0, over_budget: 0, show_costs: true,
       balances: [{ ...baseRow, budget_total_rupiah: 6_500_000, committed_rupiah: 2_600_000 }],
     };
     buildMaterialBalance(wb, data);
@@ -69,7 +69,7 @@ describe('excel.ts buildMaterialBalance — supervisor redaction', () => {
   it('supervisor payload (show_costs=false) has no Anggaran/Terpakai column', () => {
     const wb = XLSX.utils.book_new();
     const data: MaterialBalanceData = {
-      total_materials: 1, over_received: 0, under_received: 0, over_budget: 0, show_costs: false,
+      total_materials: 1, over_received: 0, needs_procurement: 0, over_budget: 0, show_costs: false,
       balances: [{ ...baseRow }],
     };
     buildMaterialBalance(wb, data);

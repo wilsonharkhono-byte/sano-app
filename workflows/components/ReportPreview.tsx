@@ -101,7 +101,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <SLabel>Ringkasan</SLabel>
         <RRow label="Total Material" value={d.total_materials} />
         <RRow label="Over-Received" value={d.over_received} color={COLORS.warning} />
-        <RRow label="Under-Received" value={d.under_received} color={COLORS.critical} />
+        <RRow label="Perlu Pengadaan" value={d.needs_procurement} color={COLORS.critical} />
         <RRow label="Over-Budget" value={d.over_budget ?? 0} color={COLORS.critical} />
         <SLabel>Detail Material</SLabel>
         {(d.balances ?? []).map((b: any, i: number) => (

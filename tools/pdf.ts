@@ -26,6 +26,7 @@ import type {
 } from './reportDataTypes';
 import { SanoDoc, C, FS, PDF } from './pdf-layout';
 import { formatDriftPct } from './planDrift';
+import { needsProcurement } from './materialThresholds';
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -153,14 +154,14 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
   sd.kpiRow([
     { value: String(d.total_materials ?? 0), label: 'Total Material', color: C.info },
     { value: String(d.over_received ?? 0), label: 'Over-Received', color: C.warning },
-    { value: String(d.under_received ?? 0), label: 'Under-Received', color: C.critical },
+    { value: String(d.needs_procurement ?? 0), label: 'Perlu Pengadaan', color: C.critical },
     { value: String(d.over_budget ?? 0), label: 'Over-Budget', color: C.critical },
   ]);
 
   sd.sectionTitle('Ringkasan');
   sd.metricRow('Total Material', String(d.total_materials ?? 0));
   sd.metricRow('Over-Received', String(d.over_received ?? 0), { valueColor: C.warning });
-  sd.metricRow('Under-Received', String(d.under_received ?? 0), { valueColor: C.critical });
+  sd.metricRow('Perlu Pengadaan', String(d.needs_procurement ?? 0), { valueColor: C.critical });
   sd.metricRow('Over-Budget', String(d.over_budget ?? 0), { valueColor: C.critical });
 
   if ((d.balances ?? []).length > 0) {
@@ -196,7 +197,9 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
         const planned = b.planned ?? 0;
         const installed = b.installed ?? 0;
         const onSite = b.on_site ?? received - installed;
-        const status = onSite < 0 ? 'Defisit' : received < planned * 0.8 ? 'Perlu Pengadaan' : 'Aman';
+        // Task 3.3: shared on_site-based predicate (tools/materialThresholds.ts) —
+        // same rule as the LaporanScreen tile and the reports.ts summary count.
+        const status = onSite < 0 ? 'Defisit' : needsProcurement({ planned, on_site: onSite }) ? 'Perlu Pengadaan' : 'Aman';
         const isRp = b.control === 'RP';
         return [
           b.material_name ?? b.name ?? '—',

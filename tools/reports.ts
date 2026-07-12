@@ -8,6 +8,7 @@ import { deriveBoqInstalledTotals, derivePoReceivedTotals, deriveMaterialBalance
 import { resolvePhotoUrl } from './storage';
 import { getMaterialDrift } from './envelopes';
 import { computeOverallProgress } from './progressMath';
+import { needsProcurement } from './materialThresholds';
 import {
   CHANGE_TYPE_LABELS,
   COST_BEARER_LABELS,
@@ -563,7 +564,9 @@ export async function generateMaterialBalanceReport(
       show_costs: showCosts,
       total_materials: balances.length,
       over_received: balances.filter(b => b.received > b.planned).length,
-      under_received: balances.filter(b => b.received < b.planned * 0.8).length,
+      // Task 3.3: shared on_site-based predicate — same rule as the
+      // LaporanScreen tile and the per-row Status column below.
+      needs_procurement: balances.filter(b => needsProcurement({ planned: b.planned, on_site: b.on_site })).length,
       over_budget: balances.filter(b => b.control === 'RP' && (b.burn_pct ?? 0) > 100).length,
       balances: rows,
     },
