@@ -387,11 +387,15 @@ describe('computeBoqSupersedeDelta', () => {
   });
 
   it('returns empty deltas for an empty existing set (first publish)', () => {
-    expect(computeBoqSupersedeDelta([], ['1', '2'])).toEqual({ toSupersede: [], toResurrect: [] });
+    expect(computeBoqSupersedeDelta([], ['1', '2'])).toEqual({
+      toSupersede: [], toResurrect: [], excludedFromSupersede: [],
+    });
   });
 
   it('returns empty deltas when nothing existing and nothing new', () => {
-    expect(computeBoqSupersedeDelta([], [])).toEqual({ toSupersede: [], toResurrect: [] });
+    expect(computeBoqSupersedeDelta([], [])).toEqual({
+      toSupersede: [], toResurrect: [], excludedFromSupersede: [],
+    });
   });
 
   it('supersedes every active code when the new set is empty', () => {
@@ -419,6 +423,66 @@ describe('computeBoqSupersedeDelta', () => {
     const { toSupersede, toResurrect } = computeBoqSupersedeDelta(existing, boqIdByCode.keys());
     expect(toSupersede).toEqual(['3']);
     expect(toResurrect).toEqual([]);
+  });
+
+  // ─── excludeFromSupersede (reviewer fix — quarantine/upsert-failure ≠ plan change) ───
+  //
+  // A code that fails to LAND this round (quarantined for missing fields, or
+  // a resilientWrite upsert failure) is a DATA GLITCH, not a decision to drop
+  // it from the plan. Its previous ACTIVE row must stay active rather than
+  // being silently superseded. Contrast with a zero-planned code, which is a
+  // genuine plan change and must still supersede.
+
+  it('excludes a quarantined code from supersede — its previous ACTIVE row stays active', () => {
+    const existing = [active('1'), active('2')];
+    const { toSupersede, toResurrect, excludedFromSupersede } = computeBoqSupersedeDelta(
+      existing, ['2'], ['1'],
+    );
+    expect(toSupersede).toEqual([]);
+    expect(toResurrect).toEqual([]);
+    expect(excludedFromSupersede).toEqual(['1']);
+  });
+
+  it('excludes a resilientWrite upsert-failure code from supersede — same treatment as quarantine', () => {
+    const existing = [active('1'), active('2'), active('3')];
+    const { toSupersede, excludedFromSupersede } = computeBoqSupersedeDelta(
+      existing, ['2'], ['1', '3'],
+    );
+    expect(toSupersede).toEqual([]);
+    expect(excludedFromSupersede).toEqual(['1', '3']);
+  });
+
+  it('still supersedes a zero-planned code absent from BOTH newCodes and excludeFromSupersede (deliberate)', () => {
+    // A code whose take-off volume went to 0 is deliberately absent from
+    // BOTH sets (see zeroPlannedBoqCodes / buildBoqItemInsert call site) —
+    // it must still supersede, truthfully hiding the stale nonzero planned
+    // qty instead of leaving it visible like a quarantined/failed code.
+    const existing = [active('zero-code'), active('landed-code')];
+    const { toSupersede, excludedFromSupersede } = computeBoqSupersedeDelta(
+      existing, ['landed-code'], ['some-other-quarantined-code'],
+    );
+    expect(toSupersede).toEqual(['zero-code']);
+    expect(excludedFromSupersede).toEqual([]);
+  });
+
+  it('does not resurrect an already-superseded code merely because it is excluded (quarantined/failed again)', () => {
+    // Failing to land this round is not evidence a previously-superseded
+    // code is active again — it must stay superseded, self-healing only on
+    // a clean re-publish.
+    const existing = [superseded('1')];
+    const { toSupersede, toResurrect, excludedFromSupersede } = computeBoqSupersedeDelta(
+      existing, [], ['1'],
+    );
+    expect(toSupersede).toEqual([]);
+    expect(toResurrect).toEqual([]);
+    expect(excludedFromSupersede).toEqual([]);
+  });
+
+  it('defaults excludeFromSupersede to empty when omitted (back-compat with the 2-arg call)', () => {
+    const existing = [active('1')];
+    const { toSupersede, excludedFromSupersede } = computeBoqSupersedeDelta(existing, []);
+    expect(toSupersede).toEqual(['1']);
+    expect(excludedFromSupersede).toEqual([]);
   });
 });
 
@@ -704,6 +768,13 @@ interface PubCfg {
   failBoqSupersedeLookup?: boolean;
   failBoqSupersedeUpdate?: boolean;
   failBoqResurrectUpdate?: boolean;
+  /**
+   * Reviewer fix — codes whose boq_items upsert always fails (simulating a
+   * resilientWrite batch/row rejection), so buildBoqItemInsert's row never
+   * lands in boqIdByCode. Used to test that the code's previous ACTIVE row
+   * is excluded from supersede rather than silently dropped.
+   */
+  failBoqUpsertCodes?: Set<string>;
 }
 
 interface PubHarness {
@@ -775,6 +846,12 @@ function makePubHarness(cfg: PubCfg): PubHarness {
             : { data: null, error: null };
         }
         const batch = (ctx.payload ?? []) as Array<{ code: string }>;
+        if (cfg.failBoqUpsertCodes && batch.some(b => cfg.failBoqUpsertCodes!.has(b.code))) {
+          // Rejects the whole chunk, same as a real upsert error — resilientWrite
+          // then retries row-by-row, so a 1-row batch containing only the bad
+          // code fails again here and permanently quarantines just that code.
+          return { data: null, error: { message: 'boq_items upsert boom' } };
+        }
         return { data: batch.map(b => ({ id: `boqitem-${b.code}`, code: b.code })), error: null };
       }
       case 'ahs_lines':
@@ -1081,6 +1158,66 @@ describe('publishBaselineV2 — boq_items supersede/resurrect wiring (Task 3.1)'
     expect(result.success).toBe(true);
     expect(result.resurrectedCount).toBe(0);
     expect(result.warnings?.some(w => /resurrect update failed/i.test(w))).toBe(true);
+  });
+
+  // Reviewer fix — a code that fails to LAND this round (quarantined row, or
+  // a resilientWrite upsert failure) is a data glitch, not a plan change:
+  // its previous ACTIVE row must stay active, not get silently superseded.
+
+  it('(q) a quarantined row (missing label/unit) keeps its code\'s previous ACTIVE row active, with a warning', async () => {
+    const h = makePubHarness({
+      stagingRows: [
+        ...pubStagingRows(), // lands A.1, A.2 this publish
+        {
+          id: 'srow-9', row_number: 9, row_type: 'boq', raw_data: {},
+          parsed_data: { code: 'A.9', planned: 4 }, // missing label/unit → quarantined
+        },
+      ],
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: { id: 'ahsv-old' },
+      latestVersion: { version: 1 },
+      existingBoqItems: [{ code: 'A.9', superseded_at: null }], // previously ACTIVE
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1', {
+      revisionContext: revCtx(0, 1, [REV_LINE]),
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.supersededCount).toBe(0);
+    // No supersede update ran at all — the only pre-existing code (A.9) was
+    // excluded, so toSupersede was empty.
+    expect(h.captured.supersedeCodes).toBeUndefined();
+    expect(result.warnings?.some(w => /failed to land this round/i.test(w) && /A\.9/.test(w))).toBe(true);
+  });
+
+  it('(r) a resilientWrite upsert failure keeps its code\'s previous ACTIVE row active, with a warning', async () => {
+    const h = makePubHarness({
+      stagingRows: [
+        ...pubStagingRows(), // lands A.1, A.2 this publish
+        {
+          id: 'srow-9', row_number: 9, row_type: 'boq', raw_data: {},
+          parsed_data: { code: 'A.9', label: 'Item 9', unit: 'm3', planned: 4 },
+        },
+      ],
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: { id: 'ahsv-old' },
+      latestVersion: { version: 1 },
+      existingBoqItems: [{ code: 'A.9', superseded_at: null }], // previously ACTIVE
+      failBoqUpsertCodes: new Set(['A.9']),
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1', {
+      revisionContext: revCtx(0, 1, [REV_LINE]),
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.supersededCount).toBe(0);
+    expect(h.captured.supersedeCodes).toBeUndefined();
+    expect(result.quarantinedRows?.some(w => /A\.9/.test(w))).toBe(true);
+    expect(result.warnings?.some(w => /failed to land this round/i.test(w) && /A\.9/.test(w))).toBe(true);
   });
 });
 

@@ -443,6 +443,15 @@ export interface BoqSupersedeDelta {
   toSupersede: string[];
   /** Existing, currently-superseded codes that REAPPEARED in the new workbook. */
   toResurrect: string[];
+  /**
+   * Existing, currently-active codes that are absent from `newCodes` (didn't
+   * land this round) but were named in `excludeFromSupersede` — a quarantined
+   * row or a resilientWrite upsert failure, not a plan change — so they were
+   * held OUT of `toSupersede`. Their previous row stays active. Surfaced so
+   * the caller can warn "code X failed to land; its previous row remains
+   * active" instead of the drop happening silently.
+   */
+  excludedFromSupersede: string[];
 }
 
 /**
@@ -460,23 +469,49 @@ export interface BoqSupersedeDelta {
  * code via `onConflict: 'project_id,code'` — normalizing here would diverge
  * from what the upsert treats as "the same row" (findDuplicateBoqCodes above
  * makes the same exact-match assumption).
+ *
+ * `excludeFromSupersede` (default empty, Task 3.1 remediation) is the set of
+ * codes that failed to LAND this round for a reason OTHER than a plan change:
+ * a quarantined row (missing code/label/unit/planned) or a resilientWrite
+ * upsert failure. Those codes are also absent from `newCodes` — they never
+ * reached boqIdByCode — but a code in `excludeFromSupersede` is a DATA GLITCH,
+ * not a decision to drop it from the plan, so its previous ACTIVE row is held
+ * out of `toSupersede` (reported via `excludedFromSupersede` instead) and
+ * stays visible. It is deliberately NOT resurrected either — failing/
+ * quarantining this round is not evidence the code is active, so a code that
+ * was already superseded before this publish just stays superseded; it
+ * self-heals on the next clean re-publish.
+ *
+ * Contrast this with a ZERO-PLANNED code (BoQ row's take-off volume is 0 —
+ * see `zeroPlannedBoqCodes`): that code is deliberately left OUT of both
+ * `newCodes` and `excludeFromSupersede`, so it DOES get superseded. Going to
+ * zero is a real plan change — the row must stop showing its stale nonzero
+ * planned qty — so hiding it here is correct, not a bug to "fix" by adding it
+ * to the exclude set.
  */
 export function computeBoqSupersedeDelta(
   existing: ExistingBoqCodeStatus[],
   newCodes: Iterable<string>,
+  excludeFromSupersede: Iterable<string> = [],
 ): BoqSupersedeDelta {
   const newSet = new Set(newCodes);
+  const excludeSet = new Set(excludeFromSupersede);
   const toSupersede: string[] = [];
   const toResurrect: string[] = [];
+  const excludedFromSupersede: string[] = [];
   for (const item of existing) {
     const inNewSet = newSet.has(item.code);
     if (!inNewSet && !item.superseded) {
-      toSupersede.push(item.code);
+      if (excludeSet.has(item.code)) {
+        excludedFromSupersede.push(item.code);
+      } else {
+        toSupersede.push(item.code);
+      }
     } else if (inNewSet && item.superseded) {
       toResurrect.push(item.code);
     }
   }
-  return { toSupersede, toResurrect };
+  return { toSupersede, toResurrect, excludedFromSupersede };
 }
 
 export interface MasterLineDraft {
@@ -1042,6 +1077,12 @@ export async function publishBaselineV2(
   // rejection) are quarantined individually so one bad row can never reject the
   // whole batch and leave the baseline empty.
   const quarantined: string[] = [];
+  // Codes dropped this round for a reason OTHER than a plan change (missing
+  // required field, or a resilientWrite upsert failure below). Fed into
+  // computeBoqSupersedeDelta's excludeFromSupersede so a data glitch never
+  // silently supersedes that code's previous ACTIVE row — see Task 3.1
+  // remediation comment at the supersede block below.
+  const quarantinedCodes: string[] = [];
   const skippedZeroPlanned = zeroPlannedBoqCodes(rows);
   const skipSet = new Set(skippedZeroPlanned);
   const boqInserts: BoqItemInsert[] = [];
@@ -1052,6 +1093,7 @@ export async function publishBaselineV2(
     const insert = buildBoqItemInsert(r, projectId);
     if (!insert) {
       quarantined.push(`BoQ "${pd.code ?? '?'}": data tidak lengkap (code/label/unit/planned) — dilewati.`);
+      if (pd.code) quarantinedCodes.push(pd.code);
       continue;
     }
     boqInserts.push(insert);
@@ -1065,6 +1107,7 @@ export async function publishBaselineV2(
     (batch) => supabase.from('boq_items').upsert(batch, { onConflict: 'project_id,code' }).select('id, code'),
   );
   for (const f of boqFailed) quarantined.push(`BoQ ${f.row.code}: ${f.error}`);
+  const failedUpsertCodes = boqFailed.map(f => f.row.code);
   const boqIdByCode = new Map<string, string>(boqData.map(b => [b.code, b.id]));
 
   // Never let a hollow baseline go live. If no BoQ item landed — whatever the
@@ -1092,6 +1135,21 @@ export async function publishBaselineV2(
   // being superseded by an EARLIER one is resurrected (superseded_at cleared
   // back to null) — a later workbook bringing a code back means it's active
   // again.
+  //
+  // Diffed against LANDED codes, not workbook codes: a code that failed to
+  // LAND this round — quarantined (missing code/label/unit/planned, see
+  // quarantinedCodes above) or a resilientWrite upsert failure (see
+  // failedUpsertCodes above) — is a DATA GLITCH, not a plan change. Its
+  // previous ACTIVE row must stay active, so both code lists are passed as
+  // computeBoqSupersedeDelta's `excludeFromSupersede` and a warning fires
+  // below linking "code X failed to land" to "its previous row remains
+  // active" so the drop is never silent. Contrast a ZERO-PLANNED code
+  // (take-off volume 0, see zeroPlannedBoqCodes): that one is deliberately
+  // superseded — going to zero is a real plan change and the row must stop
+  // showing its stale nonzero planned qty — so it is NOT added to either
+  // list. A future editor "fixing" one of these the other way would either
+  // resurface stale plan data (excluding zero-planned) or hide rows on a
+  // transient DB hiccup (no longer excluding quarantined/failed codes).
   //
   // Only runs on a RE-PUBLISH (isRepublish) — on a first publish nothing
   // existed before, so there is nothing to supersede or resurrect.
@@ -1126,7 +1184,19 @@ export async function publishBaselineV2(
       } else {
         const existing: ExistingBoqCodeStatus[] = ((existingBoqRows ?? []) as { code: string; superseded_at: string | null }[])
           .map(r => ({ code: r.code, superseded: r.superseded_at != null }));
-        const { toSupersede, toResurrect } = computeBoqSupersedeDelta(existing, boqIdByCode.keys());
+        const { toSupersede, toResurrect, excludedFromSupersede } = computeBoqSupersedeDelta(
+          existing,
+          boqIdByCode.keys(),
+          [...quarantinedCodes, ...failedUpsertCodes],
+        );
+
+        if (excludedFromSupersede.length > 0) {
+          warnings.push(
+            `${excludedFromSupersede.length} code(s) failed to land this round (quarantined or upsert ` +
+            `failure, not a plan change) — previous row remains ACTIVE, not superseded: ` +
+            `${excludedFromSupersede.slice(0, 5).join(', ')}`,
+          );
+        }
 
         if (toSupersede.length > 0) {
           const { error: supersedeErr } = await supabase
