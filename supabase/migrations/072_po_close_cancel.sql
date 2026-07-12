@@ -33,6 +33,15 @@
 --   leaves the receivable list and stays out of every open-PO count. A future
 --   migration owns reopen semantics if the business needs them.
 --
+-- ── Residuals (known gaps left open by this migration) ────────────────────
+--   submit_receipt_lines now rejects receives against a CANCELLED/CLOSED_SHORT
+--   PO (see section 2). The legacy 15-arg submit_receipt (062) is NOT given
+--   the same guard — deployed builds still call it directly. Residual: a
+--   legacy single-line client can still revive a terminal PO (insert a
+--   receipt and flip its status back to PARTIAL/FULLY_RECEIVED) until those
+--   clients migrate to submit_receipt_lines. Close this by retiring 062 or
+--   backporting the same guard to it.
+--
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 1. Widen purchase_orders.status CHECK to add 'CLOSED_SHORT'.
 --    Find the constraint BY SHAPE (001 named it purchase_orders_status_check, but
@@ -73,8 +82,22 @@ END $$;
 --    inserts and the total-received SUM. ONLY the status recompute learns the
 --    final flag.
 --
+--    Terminal-status guard (post-review, Task 2.7 fix #1): the FOR UPDATE SELECT
+--    now also reads status into v_status. Immediately after the PO-exists guard —
+--    BEFORE the idempotency short-circuit — a CANCELLED or CLOSED_SHORT PO RAISEs.
+--    Without this, a receive blocked on cancel_purchase_order's FOR UPDATE lock
+--    would resume after the cancel commits, insert its receipt, and flip the PO
+--    back to PARTIAL/FULLY_RECEIVED — silently reviving a terminal PO and
+--    re-inflating total_ordered (071's creation-time gate enforces against that
+--    figure). Placing the guard before idempotency is deliberate: a replayed
+--    client_receipt_id against a now-terminal PO must also fail loud rather than
+--    quietly returning the old receipt id.
+--
 --    The legacy 15-arg submit_receipt (062) is DELIBERATELY LEFT UNTOUCHED —
---    deployed builds still call it and it never learned a final flag.
+--    deployed builds still call it and it never learned a final flag. It also
+--    does NOT get this terminal-status guard (see the Residuals note at the top
+--    of this file): a legacy single-line client can still revive a terminal PO
+--    until it migrates to submit_receipt_lines.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 DROP FUNCTION IF EXISTS submit_receipt_lines(
@@ -108,15 +131,17 @@ DECLARE
   v_receipt_id     UUID;
   v_po_qty         NUMERIC;
   v_po_project_id  UUID;
+  v_status         TEXT;
   v_total_received NUMERIC;
   v_new_status     TEXT;
   v_orphan_line    UUID;
 BEGIN
   -- Lock the PO row up front to serialize concurrent receipts against the same
   -- PO and to make the idempotency check-then-insert race-safe (a same-id retry
-  -- blocks here until the first call commits). Read project_id for the guards.
-  SELECT quantity, project_id
-    INTO v_po_qty, v_po_project_id
+  -- blocks here until the first call commits). Read project_id for the guards
+  -- and status for the terminal-PO guard below.
+  SELECT quantity, project_id, status
+    INTO v_po_qty, v_po_project_id, v_status
   FROM purchase_orders
   WHERE id = p_po_id
   FOR UPDATE;
@@ -126,6 +151,18 @@ BEGIN
 
   IF v_po_project_id IS NULL THEN
     RAISE EXCEPTION 'submit_receipt_lines: purchase order % not found', p_po_id;
+  END IF;
+
+  -- ── Terminal-status guard (Task 2.7 post-review fix #1) ────────────────────
+  -- A CANCELLED or CLOSED_SHORT PO never accepts another receipt. Without this,
+  -- a receive blocked on cancel_purchase_order's FOR UPDATE lock would resume
+  -- right after CANCELLED commits, insert its receipt, and flip the PO back to
+  -- PARTIAL/FULLY_RECEIVED — silently reviving a terminal PO and re-inflating
+  -- total_ordered (the figure 071's hard gate enforces against). Checked BEFORE
+  -- the idempotency short-circuit below: a replayed client_receipt_id against a
+  -- now-terminal PO must also fail loud, not quietly return the old receipt.
+  IF v_status IN ('CANCELLED', 'CLOSED_SHORT') THEN
+    RAISE EXCEPTION 'PO % is % — cannot receive against a terminal PO', p_po_id, v_status;
   END IF;
 
   IF p_project_id IS DISTINCT FROM v_po_project_id THEN
@@ -153,6 +190,11 @@ BEGIN
   END IF;
 
   -- ── Idempotency short-circuit (Task 1.2) — PO-scoped, same as 062/070 ──────
+  -- A replayed client_receipt_id short-circuits on the FIRST call's outcome and
+  -- ignores whatever p_is_final the retry carries — first call's semantics win,
+  -- because the replay is the same logical receipt, not a new one. (By the time
+  -- we reach here the terminal-status guard above has already ruled out the PO
+  -- having gone CANCELLED/CLOSED_SHORT since that first call.)
   IF p_client_receipt_id IS NOT NULL THEN
     SELECT id INTO v_receipt_id
     FROM receipts
@@ -294,6 +336,14 @@ GRANT EXECUTE ON FUNCTION submit_receipt_lines(
 --    cases: CLOSED_SHORT only exists post-072, and any short-close done through
 --    submit_receipt_lines (070+) stamps po_line_id, so the fallback fires only for
 --    receipts taken via the deprecated 062 path before the short-close.
+--
+--    A second documented limit, same neighborhood: this per-line cap sub-select
+--    reads receipt_lines ONLY, but the PO's status SUM in submit_receipt_lines
+--    (section 2 above) also counts legacy material_receipts rows. A pre-045 PO
+--    that still carries material_receipts and gets short-closed will have its
+--    per-line cap understate what was actually received, because material_receipts
+--    has no po_line_id to attribute against. Bounded the same way as the fallback
+--    above: only pre-045 legacy data is affected, and it shrinks over time.
 --
 --    ⚠ security_invoker (MANDATORY): 061 flipped this view to security_invoker;
 --    CREATE OR REPLACE VIEW RESETS reloptions, so the flag MUST be restated here
