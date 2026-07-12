@@ -86,6 +86,60 @@ describe('buildMasterLinesV2', () => {
   });
 });
 
+import { buildBaselineSnapshotRows, type MasterLineRecord } from '../publishBaselineV2';
+
+describe('buildBaselineSnapshotRows', () => {
+  it('aggregates per material by summing planned_quantity across boq_items', () => {
+    const masterLines: MasterLineRecord[] = [
+      { master_id: 'm1', material_id: 'id-d13', boq_item_id: 'boq-1', planned_quantity: 100, unit: 'kg' },
+      { master_id: 'm1', material_id: 'id-d13', boq_item_id: 'boq-2', planned_quantity: 50, unit: 'kg' },
+      { master_id: 'm1', material_id: 'id-pcc', boq_item_id: 'boq-1', planned_quantity: 30, unit: 'zak' },
+    ];
+    const rows = buildBaselineSnapshotRows(masterLines, 'proj-1', 'm1');
+    expect(rows).toHaveLength(2);
+    const d13 = rows.find(r => r.material_id === 'id-d13')!;
+    expect(d13.baseline_planned_qty).toBeCloseTo(150, 6);
+    expect(d13.unit).toBe('kg');
+    const pcc = rows.find(r => r.material_id === 'id-pcc')!;
+    expect(pcc.baseline_planned_qty).toBeCloseTo(30, 6);
+  });
+
+  it('carries project_id and source_master_id onto every row', () => {
+    const masterLines: MasterLineRecord[] = [
+      { master_id: 'm1', material_id: 'id-d13', boq_item_id: 'boq-1', planned_quantity: 100, unit: 'kg' },
+    ];
+    const rows = buildBaselineSnapshotRows(masterLines, 'proj-42', 'master-77');
+    expect(rows).toEqual([
+      { project_id: 'proj-42', material_id: 'id-d13', baseline_planned_qty: 100, unit: 'kg', source_master_id: 'master-77' },
+    ]);
+  });
+
+  it('skips lines with no resolved material_id rather than fabricating a snapshot', () => {
+    const masterLines = [
+      { master_id: 'm1', material_id: null, boq_item_id: 'boq-1', planned_quantity: 100, unit: 'kg' },
+      { master_id: 'm1', material_id: 'id-d13', boq_item_id: 'boq-1', planned_quantity: 25, unit: 'kg' },
+    ] as unknown as MasterLineRecord[];
+    const rows = buildBaselineSnapshotRows(masterLines, 'proj-1', 'm1');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].material_id).toBe('id-d13');
+  });
+
+  it('drops a material whose lines disagree on unit rather than guessing which is right', () => {
+    const masterLines: MasterLineRecord[] = [
+      { master_id: 'm1', material_id: 'id-mixed', boq_item_id: 'boq-1', planned_quantity: 10, unit: 'kg' },
+      { master_id: 'm1', material_id: 'id-mixed', boq_item_id: 'boq-2', planned_quantity: 5, unit: 'zak' },
+      { master_id: 'm1', material_id: 'id-clean', boq_item_id: 'boq-3', planned_quantity: 8, unit: 'm3' },
+    ];
+    const rows = buildBaselineSnapshotRows(masterLines, 'proj-1', 'm1');
+    expect(rows.find(r => r.material_id === 'id-mixed')).toBeUndefined();
+    expect(rows.find(r => r.material_id === 'id-clean')).toBeDefined();
+  });
+
+  it('returns an empty array for empty input', () => {
+    expect(buildBaselineSnapshotRows([], 'proj-1', 'm1')).toEqual([]);
+  });
+});
+
 describe('foldRebarWaste', () => {
   it('distributes a waste line proportionally onto resolved rebar lines and drops the waste line', () => {
     const drafts: MasterLineDraft[] = [

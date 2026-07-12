@@ -487,6 +487,62 @@ export function buildMasterLinesV2(
   return [...byPair.values()];
 }
 
+export interface BaselineSnapshotRow {
+  project_id: string;
+  material_id: string;
+  baseline_planned_qty: number;
+  unit: string;
+  source_master_id: string;
+}
+
+/**
+ * Aggregate a master's per-(boq_item, material) lines (buildMasterLinesV2's
+ * output) down to ONE row per material — the SUM of planned_quantity across
+ * every BoQ item that uses it, in base units. This is the shape
+ * material_baseline_snapshots stores: an immutable per-material anchor
+ * (spec 2026-07-10-two-signal-overallocation-design.md §4).
+ *
+ * Only lines with a resolved material_id ever reach here — buildMasterLinesV2
+ * already excludes null material_id / non-material line types, so the guard
+ * below is defensive, not load-bearing, in case a caller passes an unfiltered
+ * list.
+ *
+ * A material's unit is fixed in material_catalog, so every line for the same
+ * material_id should agree on unit — but if they don't (stale/mixed data),
+ * the material is DROPPED rather than summed under a guessed unit or an
+ * arbitrarily-picked one (CLAUDE.md §1.1: wrong numbers are worse than
+ * absent numbers). The caller sees one fewer snapshot row, never a wrong one.
+ */
+export function buildBaselineSnapshotRows(
+  masterLines: MasterLineRecord[],
+  projectId: string,
+  masterId: string,
+): BaselineSnapshotRow[] {
+  const byMaterial = new Map<string, { qty: number; unit: string; unitMismatch: boolean }>();
+  for (const line of masterLines) {
+    if (!line.material_id) continue;
+    const existing = byMaterial.get(line.material_id);
+    if (!existing) {
+      byMaterial.set(line.material_id, { qty: line.planned_quantity, unit: line.unit, unitMismatch: false });
+    } else {
+      existing.qty += line.planned_quantity;
+      if (existing.unit !== line.unit) existing.unitMismatch = true;
+    }
+  }
+  const rows: BaselineSnapshotRow[] = [];
+  for (const [material_id, agg] of byMaterial) {
+    if (agg.unitMismatch) continue;
+    rows.push({
+      project_id: projectId,
+      material_id,
+      baseline_planned_qty: agg.qty,
+      unit: agg.unit,
+      source_master_id: masterId,
+    });
+  }
+  return rows;
+}
+
 export async function publishBaselineV2(
   sessionId: string,
   projectId: string,
@@ -500,6 +556,7 @@ export async function publishBaselineV2(
   unresolvedComponentCount?: number;
   skippedZeroPlanned?: string[];
   quarantinedRows?: string[];
+  warnings?: string[];
 }> {
   const { data: stagingRowsDB, error: fetchErr } = await supabase
     .from('import_staging_rows')
@@ -794,6 +851,42 @@ export async function publishBaselineV2(
     masterLineFailedCount = mlFailed.length;
     for (const f of mlFailed) quarantined.push(`Master line: ${f.error}`);
   }
+
+  // Immutable per-material anchor for Signal 2 (plan drift) — written right
+  // after the master lines land, aggregated from the SAME masterLines this
+  // publish just built (spec 2026-07-10-two-signal-overallocation-design.md
+  // §4). The upsert's ignoreDuplicates:true sends ON CONFLICT (project_id,
+  // material_id) DO NOTHING, so a material's snapshot is written only by the
+  // FIRST publish in which it appears — every later publish's upsert for an
+  // already-snapshotted material silently no-ops, and existing snapshot rows
+  // are NEVER touched by this code path (this table has no UPDATE policy at
+  // all — see migration 077). A material introduced only in THIS publish (not
+  // present in any earlier master) gets its snapshot from this run.
+  //
+  // Non-fatal by design (controller decision): the snapshot is an anchor for
+  // a secondary signal, not the plan itself — a failure here must never sink
+  // an otherwise-successful publish that already wrote boq_items/ahs_lines/
+  // master_lines. Surfaced via `warnings` so it is visible, never silent
+  // (CLAUDE.md §1.1: wrong numbers — or silently missing ones — are worse
+  // than an admitted gap).
+  const warnings: string[] = [];
+  const snapshotRows = buildBaselineSnapshotRows(masterLines, projectId, master.id as string);
+  if (snapshotRows.length > 0) {
+    const { failed: snapshotFailed } = await resilientWrite(
+      snapshotRows,
+      (batch) => supabase
+        .from('material_baseline_snapshots')
+        .upsert(batch, { onConflict: 'project_id,material_id', ignoreDuplicates: true }),
+    );
+    if (snapshotFailed.length > 0) {
+      warnings.push(
+        `${snapshotFailed.length} material_baseline_snapshots row(s) failed to write ` +
+        `(anchor only — this publish's plan itself is unaffected): ` +
+        `${snapshotFailed.slice(0, 5).map(f => f.error).join('; ')}`,
+      );
+    }
+  }
+
   if (unresolvedComponents.length > 0) {
     console.warn(
       `publishBaselineV2: ${unresolvedComponents.length} components unresolved to catalog ` +
@@ -805,6 +898,10 @@ export async function publishBaselineV2(
     console.warn(`publishBaselineV2: ${quarantined.length} row(s) quarantined:`, quarantined.slice(0, 10));
   }
 
+  if (warnings.length > 0) {
+    console.warn(`publishBaselineV2: ${warnings.length} warning(s):`, warnings);
+  }
+
   return {
     success: true,
     boqCount: boqIdByCode.size,
@@ -814,5 +911,6 @@ export async function publishBaselineV2(
     unresolvedComponentCount: unresolvedComponents.length,
     skippedZeroPlanned,
     quarantinedRows: quarantined,
+    warnings,
   };
 }
