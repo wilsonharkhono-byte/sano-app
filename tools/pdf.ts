@@ -25,6 +25,7 @@ import type {
   ReportPhoto,
 } from './reportDataTypes';
 import { SanoDoc, C, FS, PDF } from './pdf-layout';
+import { formatDriftPct } from './planDrift';
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -166,12 +167,15 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
     sd.gap(6);
     sd.sectionTitle('Detail Material');
     // NOTE: "Terpasang" and "On-Site" columns are omitted from the PDF to
-    // make room for the five new budget/control columns while keeping
-    // fractional widths summing to ~1.0. Both columns remain in excel.ts.
+    // make room for the budget/control/drift columns while keeping fractional
+    // widths summing to ~1.0. Both quantity columns remain in excel.ts.
     const showCosts = d.show_costs === true;
     sd.table(
       [
-        { header: 'Material', width: showCosts ? 0.22 : 0.47 },
+        // Material shrinks from 0.22 to 0.16 in the showCosts layout to make
+        // room for the Drift column below (0.22+...+0.05 = 1.00 without it;
+        // 0.16+...+0.05+0.06 = 1.00 with it).
+        { header: 'Material', width: showCosts ? 0.16 : 0.47 },
         { header: 'Sat.', width: 0.05 },
         { header: 'Rencana', width: 0.09, align: 'right' },
         { header: 'Diterima', width: 0.09, align: 'right' },
@@ -183,6 +187,9 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
         ] : []),
         { header: 'Burn %', width: 0.06, align: 'right' },
         { header: 'Flag', width: 0.05 },
+        // Signal-2 plan drift (Task 2.13) — office viewers only, same
+        // show_costs gate as the Rp columns above.
+        ...(showCosts ? [{ header: 'Drift', width: 0.06, align: 'right' as const }] : []),
       ],
       (d.balances ?? []).map((b) => {
         const received = b.received ?? b.total_received ?? 0;
@@ -204,6 +211,7 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
           ] : []),
           b.control === 'NONE' || b.burn_pct == null ? '—' : b.burn_pct.toFixed(0) + '%',
           b.control === 'NONE' ? '—' : (b.flag ?? '—'),
+          ...(showCosts ? [b.drift_pct == null ? '—' : formatDriftPct(b.drift_pct)] : []),
         ];
       }),
     );

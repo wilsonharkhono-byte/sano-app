@@ -22,6 +22,8 @@ import type { MandorAttendance, KasbonAging } from '../../tools/types';
 import { generateReport, recordReportExport, type ReportPayload, type ReportType, type ReportFilters } from '../../tools/reports';
 import { ReportPreview } from '../../workflows/components/ReportPreview';
 import ClientReportBuilderScreen from '../../workflows/screens/ClientReportBuilderScreen';
+import { getMaterialDrift } from '../../tools/envelopes';
+import { aggregateDriftRollup, formatRollupTile, type DriftRollup } from '../../tools/planDrift';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE, BREAKPOINTS, MAX_CONTENT_WIDTH } from '../../workflows/theme';
 
 
@@ -56,10 +58,22 @@ export default function OfficeReportsScreen() {
   const [laborSummary, setLaborSummary] = useState<LaborPaymentSummary[]>([]);
   const [attendance, setAttendance] = useState<MandorAttendance[]>([]);
   const [kasbonAging, setKasbonAging] = useState<KasbonAging[]>([]);
+  // Signal-2 plan drift rollup (Task 2.13, spec §4 "Project rollup") — this
+  // screen is the one surface shared by BOTH office navigators (OfficeNavigation's
+  // Reports tab for admin/estimator, PrincipalNavigation's Reports tab for
+  // principal), so a single fetch here satisfies spec §6's "Always: Estimator
+  // sees rollup; Principal sees rollup" without duplicating the tile across two
+  // different Home screens (OfficeHomeScreen vs PrincipalHomeScreen).
+  const [driftRollup, setDriftRollup] = useState<DriftRollup | null>(null);
 
   useEffect(() => {
     if (!project) return;
     getSiteChangeSummary(project.id).then(setChangeSummary);
+  }, [project]);
+
+  useEffect(() => {
+    if (!project) return;
+    getMaterialDrift(project.id).then((rows) => setDriftRollup(aggregateDriftRollup(rows)));
   }, [project]);
 
   useEffect(() => {
@@ -233,6 +247,14 @@ export default function OfficeReportsScreen() {
             <Text style={styles.inlineActionBtnText}>Buka Panel Milestone</Text>
           </TouchableOpacity>
         </Card>
+
+        {/* Signal-2 plan drift rollup (Task 2.13) — hidden entirely when there's
+            nothing to roll up yet (no baseline snapshots for this project). */}
+        {driftRollup && formatRollupTile(driftRollup) && (
+          <Card title="Drift Rencana Material" borderColor={COLORS.info}>
+            <Text style={styles.hint}>{formatRollupTile(driftRollup)}</Text>
+          </Card>
+        )}
 
         {/* Handover eligibility */}
         <Card title="Status Serah Terima" borderColor={handoverEligible ? COLORS.ok : COLORS.critical}>

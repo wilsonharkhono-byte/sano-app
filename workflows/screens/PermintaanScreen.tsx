@@ -17,11 +17,12 @@ import { sanitizeText, isPositiveNumber } from '../../tools/validation';
 import { supplierToBase } from '../../tools/materialUnitConversion';
 import { applyCatalogMaterialToLine } from '../../tools/materialSelection';
 import { supabase } from '../../tools/supabase';
-import { getWorkGroupEnvelope, getMaterialBudget } from '../../tools/envelopes';
+import { getWorkGroupEnvelope, getMaterialBudget, getMaterialDrift } from '../../tools/envelopes';
 import { evaluateTier4Untracked, evaluateTier3BudgetSoft } from '../../tools/budgetGate';
 import {
   requiresOverageReason, requiresOverageNote, OVERAGE_REASONS, OVERAGE_REASON_LABELS,
 } from '../../tools/requestOverage';
+import { shouldShowDriftBadge, formatDriftBadge, type MaterialDrift } from '../../tools/planDrift';
 import {
   buildSubmitMaterialRequestPayload, type SubmitRequestLineInput,
 } from '../../tools/submitMaterialRequest';
@@ -280,6 +281,10 @@ export default function PermintaanScreen() {
   const [workGroupEnvCache, setWorkGroupEnvCache] = useState<Map<string, MaterialEnvelopeStatus | null>>(new Map());
   // Tier-3 Rupiah budget envelope per material (null = fetched, no baseline).
   const [budgetCache, setBudgetCache] = useState<Map<string, MaterialBudgetStatus | null>>(new Map());
+  // Signal-2 plan drift (Task 2.13) — one project-wide fetch (getMaterialDrift
+  // already returns every material with a baseline snapshot in one round trip,
+  // so there is no per-line lazy-load like the other caches above).
+  const [driftCache, setDriftCache] = useState<Map<string, MaterialDrift>>(new Map());
 
   // Work-groups: the bulk unit a supervisor orders against (Tier 1 target).
   const workGroups = useMemo<WorkGroup[]>(() => buildWorkGroups(boqItems), [boqItems]);
@@ -301,6 +306,15 @@ export default function PermintaanScreen() {
           .sort((a, b) => a.name.localeCompare(b.name, 'id', { sensitivity: 'base' }));
         setMaterialOptions(nextOptions);
       });
+  }, [project]);
+
+  // Signal-2 plan drift (spec §4) — supervisor sees the badge as context only,
+  // no Rp. One project-wide fetch; re-runs when the active project changes.
+  useEffect(() => {
+    if (!project) return;
+    getMaterialDrift(project.id).then((rows) => {
+      setDriftCache(new Map(rows.map(row => [row.material_id, row])));
+    });
   }, [project]);
 
   const filteredMaterialOptions = useMemo(() => {
@@ -766,6 +780,10 @@ export default function PermintaanScreen() {
               const orderedQtyEnv = Number(envelope?.total_ordered ?? 0);
               const burnPct = plannedQty > 0 ? (requestedQtyEnv / plannedQty) * 100 : 0;
               const barColor = burnPct > 100 ? COLORS.critical : burnPct > 80 ? COLORS.warning : COLORS.ok;
+              // Signal-2 plan drift (spec §4) — context only, no Rp; shown as a
+              // badge next to the envelope figures regardless of Signal-1 status.
+              const drift = line.materialId ? driftCache.get(line.materialId) ?? null : null;
+              const showDrift = drift != null && shouldShowDriftBadge(drift.drift_pct);
 
               return (
                 <Card key={line.id}>
@@ -975,6 +993,12 @@ export default function PermintaanScreen() {
                       <Text style={[styles.envelopePct, { color: barColor }]}>
                         {burnPct.toFixed(0)}% dari rencana (permintaan)
                       </Text>
+                      {showDrift && (
+                        <View style={styles.driftBadge}>
+                          <Ionicons name="git-compare-outline" size={12} color={COLORS.info} />
+                          <Text style={styles.driftBadgeText}>{formatDriftBadge(drift!.drift_pct as number)}</Text>
+                        </View>
+                      )}
                     </View>
                   )}
 
@@ -1575,6 +1599,25 @@ const styles = StyleSheet.create({
   envelopePct: {
     fontSize: TYPE.sm,
     fontFamily: FONTS.bold,
+  },
+  // Signal-2 plan drift badge (Task 2.13) — context only, distinct from the
+  // burn-pct color logic above (drift can be positive/negative regardless of
+  // whether the Signal-1 envelope is currently healthy).
+  driftBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.xs - 2,
+    marginTop: SPACE.xs,
+    paddingVertical: 3,
+    paddingHorizontal: SPACE.xs,
+    borderRadius: RADIUS_SM,
+    backgroundColor: COLORS.infoBg,
+    alignSelf: 'flex-start',
+  },
+  driftBadgeText: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.medium,
+    color: COLORS.info,
   },
 
   allocationBox: {

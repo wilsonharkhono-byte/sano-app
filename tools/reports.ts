@@ -6,6 +6,7 @@ import { supabase } from './supabase';
 import { getPurchaseOrderDisplayNumber } from './purchaseOrders';
 import { deriveBoqInstalledTotals, derivePoReceivedTotals, deriveMaterialBalanceWithControl } from './derivation';
 import { resolvePhotoUrl } from './storage';
+import { getMaterialDrift } from './envelopes';
 import {
   CHANGE_TYPE_LABELS,
   COST_BEARER_LABELS,
@@ -514,9 +515,32 @@ export async function generateMaterialBalanceReport(
 
   // Fail closed: missing/null viewerRole is treated as supervisor.
   const showCosts = options.viewerRole != null && options.viewerRole !== 'supervisor';
+
+  // Signal-2 plan drift (Task 2.13, spec §4): "estimator/principal see
+  // per-material drift"; supervisors get the badge in Permintaan instead of a
+  // report column. Drift is quantity-based, not Rp, but this report rides the
+  // same show_costs decision point as the budget fields below (controller
+  // decision — show drift to office only, consistent with the Rp gate) so
+  // exporters (excel/pdf/preview) react to one flag instead of re-deriving
+  // viewerRole logic per column. Only fetched when it will actually be used.
+  const driftByMaterial = showCosts
+    ? new Map((await getMaterialDrift(projectId)).map(d => [d.material_id, d]))
+    : new Map<string, Awaited<ReturnType<typeof getMaterialDrift>>[number]>();
+
+  const withDrift = showCosts
+    ? balances.map((b) => {
+        const drift = b.material_id ? driftByMaterial.get(b.material_id) : undefined;
+        return {
+          ...b,
+          drift_pct: drift?.drift_pct ?? null,
+          baseline_planned_qty: drift?.baseline_planned_qty ?? null,
+        };
+      })
+    : balances;
+
   const rows = showCosts
-    ? balances
-    : balances.map(({ budget_total_rupiah, committed_rupiah, benchmark_unit_price, ...rest }) => rest);
+    ? withDrift
+    : withDrift.map(({ budget_total_rupiah, committed_rupiah, benchmark_unit_price, ...rest }) => rest);
 
   return {
     type: 'material_balance',

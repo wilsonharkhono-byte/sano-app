@@ -23,6 +23,8 @@ import type {
 import { evaluateTier3Budget, evaluateTier4Untracked } from './budgetGate';
 import { summarizeAhsBaselinePrices } from '../workflows/gates/gate2';
 import type { MaterialBaselinePriceSummary } from '../workflows/gates/gate2';
+import { fetchAllPaged } from './queryHelpers';
+import { computeDriftPct, type MaterialDrift } from './planDrift';
 
 // ─── Envelope Queries ────────────────────────────────────────────────
 
@@ -174,6 +176,63 @@ export async function getWorkGroupEnvelope(
     burn_pct: Number(row.burn_pct ?? 0),
     boq_item_count: Number(row.boq_item_count ?? 0),
   };
+}
+
+/**
+ * Signal 2 (plan drift, Task 2.13): per-material {baseline, current, drift_pct}
+ * for every material that has a baseline snapshot (077) in this project.
+ *
+ * Two flat, paginated selects rather than a Supabase relational join: the
+ * snapshot table (a real table) and v_material_envelope_status (a view with
+ * its own LATERAL joins) don't share a FK Supabase's PostgREST can traverse,
+ * and the snapshot row count is small (one per material ever planned) — a
+ * plain in-memory Map join is cheaper than round-tripping per material. Both
+ * legs use fetchAllPaged since a large multi-building project can exceed the
+ * 1000-row default cap (see project memory "SANO single-sheet ingest" for why
+ * undercounted material rollups are the class of bug to avoid here).
+ *
+ * "Current planned" is v_material_envelope_status.total_planned (latest
+ * published master) per design spec §4 — never re-derived here, so this
+ * agrees with every other envelope-driven surface (PermintaanScreen,
+ * ApprovalsScreen, Material Balance report) by construction.
+ *
+ * A material with a snapshot but no longer present in the current envelope
+ * view (removed from the latest publish) is treated as current_planned_qty=0
+ * — an honest "no longer planned", not a dropped row.
+ */
+export async function getMaterialDrift(projectId: string): Promise<MaterialDrift[]> {
+  const [snapshots, envelopeRows] = await Promise.all([
+    fetchAllPaged<{ material_id: string; baseline_planned_qty: number; unit: string }>((from, to) =>
+      supabase
+        .from('material_baseline_snapshots')
+        .select('material_id, baseline_planned_qty, unit')
+        .eq('project_id', projectId)
+        .order('material_id', { ascending: true })
+        .range(from, to)),
+    fetchAllPaged<{ material_id: string; material_name: string; unit: string; total_planned: number }>((from, to) =>
+      supabase
+        .from('v_material_envelope_status')
+        .select('material_id, material_name, unit, total_planned')
+        .eq('project_id', projectId)
+        .order('material_id', { ascending: true })
+        .range(from, to)),
+  ]);
+
+  const currentByMaterial = new Map(envelopeRows.map(row => [row.material_id, row]));
+
+  return snapshots.map((snap): MaterialDrift => {
+    const current = currentByMaterial.get(snap.material_id);
+    const baselinePlannedQty = Number(snap.baseline_planned_qty);
+    const currentPlannedQty = Number(current?.total_planned ?? 0);
+    return {
+      material_id: snap.material_id,
+      material_name: current?.material_name ?? '—',
+      unit: current?.unit ?? snap.unit,
+      baseline_planned_qty: baselinePlannedQty,
+      current_planned_qty: currentPlannedQty,
+      drift_pct: computeDriftPct(baselinePlannedQty, currentPlannedQty),
+    };
+  });
 }
 
 // ─── Tier 2 Allocation ──────────────────────────────────────────────

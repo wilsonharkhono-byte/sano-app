@@ -50,6 +50,13 @@ export interface MaterialBalanceData {
     committed_rupiah?: number | null;
     burn_pct?: number | null;
     flag?: string;
+    // Signal-2 plan drift (Task 2.13, spec §4) — quantity-based, not Rp, but
+    // gated behind the same show_costs decision point as the budget fields
+    // above: office viewers only (supervisor gets the badge in Permintaan,
+    // not a report column — see tools/reports.ts generateMaterialBalanceReport).
+    // undefined = material has no baseline snapshot yet (no comparison).
+    drift_pct?: number | null;
+    baseline_planned_qty?: number | null;
   }>;
 }
 

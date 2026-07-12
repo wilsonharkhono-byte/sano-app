@@ -21,15 +21,24 @@ jest.mock('../storage', () => ({
 jest.mock('../siteChanges', () => ({
   CHANGE_TYPE_LABELS: {}, COST_BEARER_LABELS: {}, DECISION_LABELS: {}, IMPACT_LABELS: {},
 }));
+// Task 2.13 — generateMaterialBalanceReport joins Signal-2 drift for office
+// viewers via getMaterialDrift (tools/envelopes.ts). Mocked at the module
+// boundary like the sibling data-source mocks above, so these redaction tests
+// don't need to know getMaterialDrift's own supabase plumbing.
+jest.mock('../envelopes', () => ({
+  getMaterialDrift: jest.fn(),
+}));
 
 import { generateMaterialBalanceReport, generateReceiptLog } from '../reports';
 import type { MaterialBalanceData, ReceiptLogData } from '../reportDataTypes';
 import { supabase } from '../supabase';
 import { deriveMaterialBalanceWithControl, derivePoReceivedTotals } from '../derivation';
+import { getMaterialDrift } from '../envelopes';
 
 const mockSupabase = supabase as jest.Mocked<typeof supabase>;
 const mockDeriveBalance = deriveMaterialBalanceWithControl as jest.Mock;
 const mockDerivePoTotals = derivePoReceivedTotals as jest.Mock;
+const mockGetMaterialDrift = getMaterialDrift as jest.Mock;
 
 describe('generateMaterialBalanceReport — supervisor price redaction', () => {
   beforeEach(() => {
@@ -41,6 +50,9 @@ describe('generateMaterialBalanceReport — supervisor price redaction', () => {
         burn_pct: 40, flag: 'OK',
       },
     ]);
+    mockGetMaterialDrift.mockResolvedValue([
+      { material_id: 'm1', material_name: 'Semen', unit: 'sak', baseline_planned_qty: 80, current_planned_qty: 100, drift_pct: 0.25 },
+    ]);
   });
 
   it('estimator sees Rp budget fields', async () => {
@@ -51,6 +63,15 @@ describe('generateMaterialBalanceReport — supervisor price redaction', () => {
     expect(row.budget_total_rupiah).toBe(6_500_000);
     expect(row.committed_rupiah).toBe(2_600_000);
     expect(row.benchmark_unit_price).toBe(65000);
+  });
+
+  it('estimator sees Signal-2 drift_pct joined from getMaterialDrift', async () => {
+    const payload = await generateMaterialBalanceReport('proj-1', { viewerRole: 'estimator' });
+    const data = payload.data as MaterialBalanceData;
+    const row = data.balances[0] as any;
+    expect(row.drift_pct).toBe(0.25);
+    expect(row.baseline_planned_qty).toBe(80);
+    expect(mockGetMaterialDrift).toHaveBeenCalledWith('proj-1');
   });
 
   it('supervisor gets no Rp budget fields (keys omitted, not nulled)', async () => {
@@ -65,6 +86,14 @@ describe('generateMaterialBalanceReport — supervisor price redaction', () => {
     expect(row.material_name).toBe('Semen');
     expect(row.control).toBe('RP');
     expect(row.planned).toBe(100);
+  });
+
+  it('supervisor gets no drift_pct either — badge lives in Permintaan, not this report', async () => {
+    const payload = await generateMaterialBalanceReport('proj-1', { viewerRole: 'supervisor' });
+    const data = payload.data as MaterialBalanceData;
+    const row = data.balances[0] as any;
+    expect('drift_pct' in row).toBe(false);
+    expect(mockGetMaterialDrift).not.toHaveBeenCalled();
   });
 
   it('missing viewerRole fails closed (treated as supervisor)', async () => {

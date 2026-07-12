@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, Image } from 'react-native';
 import { COLORS } from '../theme';
 import type { ReportPayload } from '../../tools/reports';
+import { formatDriftPct } from '../../tools/planDrift';
 
 function RRow({ label, value, color }: { label: string; value: string | number; color?: string }) {
   return (
@@ -118,6 +119,14 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
             {d.show_costs && b.control === 'RP' && (
               <Text style={{ fontSize: 12, color: COLORS.textSec }}>
                 Anggaran: Rp {Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID')} · Terpakai: Rp {Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID')} · {b.burn_pct != null ? b.burn_pct.toFixed(0) + '%' : '—'} [{b.flag ?? '—'}]
+              </Text>
+            )}
+            {/* Signal-2 plan drift (Task 2.13) — office viewers only, same
+                show_costs gate as the Rp line above. drift_pct undefined/null
+                = no baseline snapshot yet for this material. */}
+            {d.show_costs && b.drift_pct != null && (
+              <Text style={{ fontSize: 12, color: COLORS.info }}>
+                Drift vs baseline: {formatDriftPct(b.drift_pct)}
               </Text>
             )}
           </View>

@@ -7,6 +7,7 @@ import { Platform } from 'react-native';
 import * as XLSX from 'xlsx';
 import { encode } from 'base64-arraybuffer';
 import type { ReportPayload } from './reports';
+import { formatDriftPct } from './planDrift';
 import type {
   ProgressSummaryData,
   MaterialBalanceData,
@@ -275,6 +276,9 @@ export function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) 
     'Tier', 'Kontrol',
     ...(showCosts ? ['Anggaran (Rp)', 'Terpakai (Rp)'] : []),
     'Burn %', 'Flag',
+    // Signal-2 plan drift (Task 2.13) — office viewers only, same show_costs
+    // gate as the Rp columns above (see MaterialBalanceData.drift_pct).
+    ...(showCosts ? ['Drift vs Baseline'] : []),
   ];
   const rows: string[][] = (d.balances ?? []).map((b) => {
     const received = b.received ?? b.total_received ?? 0;
@@ -299,6 +303,7 @@ export function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) 
       ] : []),
       b.control === 'NONE' || b.burn_pct == null ? '—' : b.burn_pct.toFixed(0) + '%',
       b.control === 'NONE' ? '—' : (b.flag ?? '—'),
+      ...(showCosts ? [b.drift_pct == null ? '—' : formatDriftPct(b.drift_pct)] : []),
     ];
   });
   const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
