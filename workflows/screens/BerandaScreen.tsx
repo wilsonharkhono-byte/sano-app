@@ -12,6 +12,7 @@ import Badge       from '../components/Badge';
 import { useProject } from '../hooks/useProject';
 import { signOut }    from '../../tools/auth';
 import { getOpenAuditCases } from '../../tools/audit';
+import { computeOverallProgress } from '../../tools/progressMath';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -45,9 +46,9 @@ export default function BerandaScreen() {
   }, [project, profile]);
 
   // ── Derived metrics ─────────────────────────────────────────────────────
-  const overallProgress = boqItems.length > 0
-    ? Math.round(boqItems.reduce((s, b) => s + b.progress, 0) / boqItems.length)
-    : 0;
+  // Task 3.2: volume-weighted over active, planned>0 items (tools/progressMath.ts)
+  // — same number as the Progress Summary report and every other surface.
+  const overallProgress = Math.round(computeOverallProgress(boqItems));
 
   const pendingDeliveries = purchaseOrders.filter(
     po => po.status === 'OPEN' || po.status === 'PARTIAL_RECEIVED',

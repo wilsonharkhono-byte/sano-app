@@ -27,6 +27,7 @@ import { supabase } from '../../tools/supabase';
 import { generateReport, recordReportExport, type ReportPayload, type ReportType, type ReportFilters } from '../../tools/reports';
 import { ReportPreview } from '../components/ReportPreview';
 import { deriveMaterialBalance } from '../../tools/derivation';
+import { computeOverallProgress } from '../../tools/progressMath';
 import { getProjectTeam, listAllProfiles, addUserToProject, removeUserFromProject, availableProfiles, type TeamMember, type ProfileOption, ROLE_LABELS } from '../../tools/projectManagement';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
@@ -145,9 +146,9 @@ export default function LaporanScreen() {
   const { projects } = useProject();
 
   // Report metrics
-  const overallProgress = boqItems.length > 0
-    ? Math.round(boqItems.reduce((s, b) => s + b.progress, 0) / boqItems.length)
-    : 0;
+  // Task 3.2: volume-weighted over active, planned>0 items (tools/progressMath.ts)
+  // — same number as the Progress Summary report and every other surface.
+  const overallProgress = Math.round(computeOverallProgress(boqItems));
   const completedItems = boqItems.filter(b => b.progress >= 100).length;
   const openDefects = defects.filter(d => d.status === 'OPEN' || d.status === 'VALIDATED' || d.status === 'IN_REPAIR').length;
 

@@ -7,6 +7,7 @@ import { getPurchaseOrderDisplayNumber } from './purchaseOrders';
 import { deriveBoqInstalledTotals, derivePoReceivedTotals, deriveMaterialBalanceWithControl } from './derivation';
 import { resolvePhotoUrl } from './storage';
 import { getMaterialDrift } from './envelopes';
+import { computeOverallProgress } from './progressMath';
 import {
   CHANGE_TYPE_LABELS,
   COST_BEARER_LABELS,
@@ -474,9 +475,11 @@ export async function generateProgressSummary(projectId: string): Promise<Report
     progress: b.planned > 0 ? Math.min(100, Math.round(((totalMap.get(b.id) ?? b.installed) / b.planned) * 100)) : 0,
   }));
 
-  const overall = enriched.length > 0
-    ? Math.round(enriched.reduce((s, i) => s + i.progress, 0) / enriched.length)
-    : 0;
+  // Task 3.2: volume-weighted over active, planned>0 items — see
+  // tools/progressMath.ts for the formula + rationale. This replaces the old
+  // unweighted mean-of-per-item-% (which counted planned=0 items as 0% and
+  // let many tiny items dilute a near-done large one).
+  const overall = Math.round(computeOverallProgress(enriched));
 
   const data: ProgressSummaryData = {
     overall_progress: overall,

@@ -8,6 +8,7 @@ import { supabase } from './supabase';
 import type { MilestoneStatus } from './types';
 import { aggregatePeriod } from './dailySiteLogs';
 import { resolvePhotoUrl } from './storage';
+import { computeOverallProgress } from './progressMath';
 
 const STATUS_LABELS: Record<MilestoneStatus, string> = {
   ON_TRACK: 'Sesuai Jadwal',
@@ -47,16 +48,28 @@ export async function installedAsOf(projectId: string, isoDateEnd: string): Prom
   return map;
 }
 
-function overallProgress(boqItems: Array<{ id: string; planned: number }>, installed: Map<string, number>): number {
-  const withPlan = boqItems.filter((b) => b.planned > 0);
-  if (withPlan.length === 0) return 0;
-  const sum = withPlan.reduce((s, b) => s + Math.min(100, ((installed.get(b.id) ?? 0) / b.planned) * 100), 0);
-  return sum / withPlan.length;
+// Task 3.2: delegates to the shared volume-weighted formula
+// (tools/progressMath.ts) — this "as of" variant keeps its own semantics
+// (installed is read from a point-in-time progress_entries snapshot, not the
+// live boq_items.installed column) but the AGGREGATION math is now the same
+// one function every surface uses, so the weekly delta hint reconciles with
+// the Progress Summary report / Beranda / Laporan overall %.
+function overallProgress(
+  boqItems: Array<{ id: string; planned: number; superseded_at?: string | null }>,
+  installed: Map<string, number>,
+): number {
+  return computeOverallProgress(
+    boqItems.map((b) => ({
+      planned: b.planned,
+      installed: installed.get(b.id) ?? 0,
+      superseded_at: b.superseded_at,
+    })),
+  );
 }
 
 export async function computeWeeklyProgressDelta(
   projectId: string,
-  boqItems: Array<{ id: string; planned: number }>,
+  boqItems: Array<{ id: string; planned: number; superseded_at?: string | null }>,
   startIso: string,
   endIso: string,
 ): Promise<number> {
