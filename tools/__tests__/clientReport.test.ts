@@ -30,11 +30,14 @@ describe('clientReport status mapping', () => {
 describe('clientReport weekly delta', () => {
   beforeEach(() => jest.clearAllMocks());
 
-  it('installedAsOf sums quantities per boq item up to the cutoff date', async () => {
+  // Task 3.5: installedAsOf now takes an EXCLUSIVE cutoff and queries with
+  // `.lt()` (was inclusive `.lte()`) — callers pass a WIB-day-boundary
+  // instant from tools/timeWindow.ts instead of an offset-less literal.
+  it('installedAsOf sums quantities per boq item strictly before the cutoff instant', async () => {
     const chain = {
       select: jest.fn().mockReturnThis(),
       eq: jest.fn().mockReturnThis(),
-      lte: jest.fn().mockResolvedValue({
+      lt: jest.fn().mockResolvedValue({
         data: [
           { boq_item_id: 'a', quantity: 4, created_at: '2026-06-10' },
           { boq_item_id: 'a', quantity: 6, created_at: '2026-06-11' },
@@ -45,17 +48,17 @@ describe('clientReport weekly delta', () => {
     };
     (mockSupabase.from as jest.Mock).mockReturnValue(chain);
 
-    const map = await installedAsOf('proj-1', '2026-06-14T23:59:59');
+    const map = await installedAsOf('proj-1', '2026-06-14T17:00:00.000Z');
 
     expect(map.get('a')).toBe(10);
     expect(map.get('b')).toBe(2);
-    expect(chain.lte).toHaveBeenCalledWith('created_at', '2026-06-14T23:59:59');
+    expect(chain.lt).toHaveBeenCalledWith('created_at', '2026-06-14T17:00:00.000Z');
   });
 
   it('computeWeeklyProgressDelta = overall% at end minus overall% at start', async () => {
     // start: a=0/10, b=0/10 -> 0% ; end: a=10/10, b=5/10 -> (100+50)/2 = 75%
-    const startChain = { select: jest.fn().mockReturnThis(), eq: jest.fn().mockReturnThis(), lte: jest.fn().mockResolvedValue({ data: [], error: null }) };
-    const endChain = { select: jest.fn().mockReturnThis(), eq: jest.fn().mockReturnThis(), lte: jest.fn().mockResolvedValue({
+    const startChain = { select: jest.fn().mockReturnThis(), eq: jest.fn().mockReturnThis(), lt: jest.fn().mockResolvedValue({ data: [], error: null }) };
+    const endChain = { select: jest.fn().mockReturnThis(), eq: jest.fn().mockReturnThis(), lt: jest.fn().mockResolvedValue({
       data: [
         { boq_item_id: 'a', quantity: 10, created_at: '2026-06-13' },
         { boq_item_id: 'b', quantity: 5, created_at: '2026-06-13' },
@@ -69,8 +72,11 @@ describe('clientReport weekly delta', () => {
     );
 
     expect(Math.round(delta)).toBe(75);
-    expect(startChain.lte).toHaveBeenCalledWith('created_at', '2026-06-08T00:00:00');
-    expect(endChain.lte).toHaveBeenCalledWith('created_at', '2026-06-14T23:59:59');
+    // Task 3.5: WIB day boundaries via dayRangeWIB, both exclusive `.lt()`.
+    // 00:00:00 WIB 2026-06-08 == 2026-06-07T17:00:00.000Z; the exclusive end
+    // of 2026-06-14's WIB day == 00:00:00 WIB 2026-06-15 == 2026-06-14T17:00:00.000Z.
+    expect(startChain.lt).toHaveBeenCalledWith('created_at', '2026-06-07T17:00:00.000Z');
+    expect(endChain.lt).toHaveBeenCalledWith('created_at', '2026-06-14T17:00:00.000Z');
   });
 });
 

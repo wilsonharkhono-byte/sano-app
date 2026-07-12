@@ -3,6 +3,7 @@
 // In production, PDF/Excel rendering would happen server-side via edge function.
 
 import { supabase } from './supabase';
+import { wibStartOfDayIso, wibEndOfDayExclusiveIso } from './timeWindow';
 import { getPurchaseOrderDisplayNumber } from './purchaseOrders';
 import { deriveBoqInstalledTotals, derivePoReceivedTotals, deriveMaterialBalanceWithControl } from './derivation';
 import { resolvePhotoUrl } from './storage';
@@ -59,14 +60,21 @@ export interface ReportGenerationOptions {
   viewerRole?: string | null;
 }
 
+// Task 3.5: date-window filters were previously built with an offset-less-in-
+// spirit-but-`Z`-suffixed literal (`T00:00:00.000Z` / `T23:59:59.999Z`) —
+// anchored to UTC midnight, not WIB midnight, so for a site operating in
+// Asia/Jakarta (UTC+7) the reported "day" started and ended 7 hours early.
+// Both now route through tools/timeWindow.ts. `toEndOfDayExclusive` returns
+// an EXCLUSIVE upper bound (start of the next WIB day) — every call site
+// below uses `.lt()`, never `.lte()`, against it.
 function toStartOfDay(date?: string): string | null {
   if (!date) return null;
-  return `${date}T00:00:00.000Z`;
+  return wibStartOfDayIso(date);
 }
 
-function toEndOfDay(date?: string): string | null {
+function toEndOfDayExclusive(date?: string): string | null {
   if (!date) return null;
-  return `${date}T23:59:59.999Z`;
+  return wibEndOfDayExclusiveIso(date);
 }
 
 async function getProfileDirectory(userIds: string[]) {
@@ -609,9 +617,9 @@ export async function generateSiteChangeLog(
     .order('created_at', { ascending: false });
 
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
   if (dateFrom) query = query.gte('created_at', dateFrom);
-  if (dateTo) query = query.lte('created_at', dateTo);
+  if (dateTo) query = query.lt('created_at', dateTo);
 
   const { data: rows, error } = await query;
   if (error) throw new Error(error.message);
@@ -817,14 +825,24 @@ async function generateAuditList(
   projectId: string,
   filters: ReportFilters = {},
 ): Promise<ReportPayload> {
+  // Task 3.5: this report used to be the THIRD, independently-wrong date-
+  // window convention in this file — a raw `filters.date_from` (no time-of-
+  // day, cast ambiguously by Postgres) and `filters.date_to + 'T23:59:59'`
+  // (no timezone marker AND an inclusive bound that drops the last
+  // second-fraction of the day). Now routes through the same
+  // toStartOfDay/toEndOfDayExclusive WIB helpers as every other report below,
+  // with `.lt()` against the exclusive end.
+  const dateFrom = toStartOfDay(filters.date_from);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
+
   let anomalyQuery = supabase
     .from('anomaly_events')
     .select('id, created_at, event_type, entity_type, entity_id, severity, description')
     .eq('project_id', projectId)
     .order('created_at', { ascending: false });
 
-  if (filters.date_from) anomalyQuery = anomalyQuery.gte('created_at', filters.date_from);
-  if (filters.date_to)   anomalyQuery = anomalyQuery.lte('created_at', filters.date_to + 'T23:59:59');
+  if (dateFrom) anomalyQuery = anomalyQuery.gte('created_at', dateFrom);
+  if (dateTo)   anomalyQuery = anomalyQuery.lt('created_at', dateTo);
 
   let auditQuery = supabase
     .from('audit_cases')
@@ -832,8 +850,8 @@ async function generateAuditList(
     .eq('project_id', projectId)
     .order('created_at', { ascending: false });
 
-  if (filters.date_from) auditQuery = auditQuery.gte('created_at', filters.date_from);
-  if (filters.date_to)   auditQuery = auditQuery.lte('created_at', filters.date_to + 'T23:59:59');
+  if (dateFrom) auditQuery = auditQuery.gte('created_at', dateFrom);
+  if (dateTo)   auditQuery = auditQuery.lt('created_at', dateTo);
 
   const [anomalyRes, auditRes] = await Promise.all([anomalyQuery, auditQuery]);
 
@@ -897,9 +915,9 @@ export async function generateAIUsageSummary(
     .order('created_at', { ascending: false });
 
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
   if (dateFrom) query = query.gte('created_at', dateFrom);
-  if (dateTo) query = query.lte('created_at', dateTo);
+  if (dateTo) query = query.lt('created_at', dateTo);
 
   const { data: logs, error } = await query;
 
@@ -1070,7 +1088,7 @@ export async function generateApprovalSLAUser(
   filters: ReportFilters = {},
 ): Promise<ReportPayload> {
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
 
   let requestQuery = supabase
     .from('material_request_headers')
@@ -1111,13 +1129,13 @@ export async function generateApprovalSLAUser(
     kasbonQuery = kasbonQuery.gte('created_at', dateFrom);
   }
   if (dateTo) {
-    requestQuery = requestQuery.lte('created_at', dateTo);
-    voQuery = voQuery.lte('created_at', dateTo);
-    mtnQuery = mtnQuery.lte('created_at', dateTo);
-    taskQuery = taskQuery.lte('created_at', dateTo);
-    opnameQuery = opnameQuery.lte('submitted_at', dateTo);
-    attendanceQuery = attendanceQuery.lte('created_at', dateTo);
-    kasbonQuery = kasbonQuery.lte('created_at', dateTo);
+    requestQuery = requestQuery.lt('created_at', dateTo);
+    voQuery = voQuery.lt('created_at', dateTo);
+    mtnQuery = mtnQuery.lt('created_at', dateTo);
+    taskQuery = taskQuery.lt('created_at', dateTo);
+    opnameQuery = opnameQuery.lt('submitted_at', dateTo);
+    attendanceQuery = attendanceQuery.lt('created_at', dateTo);
+    kasbonQuery = kasbonQuery.lt('created_at', dateTo);
   }
 
   const [
@@ -1297,7 +1315,7 @@ export async function generateOperationalEntryDiscipline(
   filters: ReportFilters = {},
 ): Promise<ReportPayload> {
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
 
   let requestQuery = supabase.from('material_request_headers').select('id, requested_by, created_at').eq('project_id', projectId);
   let receiptQuery = supabase.from('receipts').select('id, received_by, created_at').eq('project_id', projectId);
@@ -1321,15 +1339,15 @@ export async function generateOperationalEntryDiscipline(
     kasbonQuery = kasbonQuery.gte('created_at', dateFrom);
   }
   if (dateTo) {
-    requestQuery = requestQuery.lte('created_at', dateTo);
-    receiptQuery = receiptQuery.lte('created_at', dateTo);
-    progressQuery = progressQuery.lte('created_at', dateTo);
-    defectQuery = defectQuery.lte('created_at', dateTo);
-    voQuery = voQuery.lte('created_at', dateTo);
-    reworkQuery = reworkQuery.lte('created_at', dateTo);
-    mtnQuery = mtnQuery.lte('created_at', dateTo);
-    attendanceQuery = attendanceQuery.lte('created_at', dateTo);
-    kasbonQuery = kasbonQuery.lte('created_at', dateTo);
+    requestQuery = requestQuery.lt('created_at', dateTo);
+    receiptQuery = receiptQuery.lt('created_at', dateTo);
+    progressQuery = progressQuery.lt('created_at', dateTo);
+    defectQuery = defectQuery.lt('created_at', dateTo);
+    voQuery = voQuery.lt('created_at', dateTo);
+    reworkQuery = reworkQuery.lt('created_at', dateTo);
+    mtnQuery = mtnQuery.lt('created_at', dateTo);
+    attendanceQuery = attendanceQuery.lt('created_at', dateTo);
+    kasbonQuery = kasbonQuery.lt('created_at', dateTo);
   }
 
   const [
@@ -1505,7 +1523,7 @@ export async function generateToolUsageSummary(
   filters: ReportFilters = {},
 ): Promise<ReportPayload> {
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
 
   let exportQuery = supabase
     .from('report_exports')
@@ -1523,8 +1541,8 @@ export async function generateToolUsageSummary(
     aiQuery = aiQuery.gte('created_at', dateFrom);
   }
   if (dateTo) {
-    exportQuery = exportQuery.lte('generated_at', dateTo);
-    aiQuery = aiQuery.lte('created_at', dateTo);
+    exportQuery = exportQuery.lt('generated_at', dateTo);
+    aiQuery = aiQuery.lt('created_at', dateTo);
   }
 
   const [exportRes, aiRes] = await Promise.all([exportQuery, aiQuery]);
@@ -1624,7 +1642,7 @@ export async function generateExceptionHandlingLoad(
   filters: ReportFilters = {},
 ): Promise<ReportPayload> {
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
 
   let taskQuery = supabase
     .from('approval_tasks')
@@ -1660,12 +1678,12 @@ export async function generateExceptionHandlingLoad(
     auditQuery = auditQuery.gte('created_at', dateFrom);
   }
   if (dateTo) {
-    taskQuery = taskQuery.lte('created_at', dateTo);
-    requestQuery = requestQuery.lte('created_at', dateTo);
-    voQuery = voQuery.lte('created_at', dateTo);
-    mtnQuery = mtnQuery.lte('created_at', dateTo);
-    anomalyQuery = anomalyQuery.lte('created_at', dateTo);
-    auditQuery = auditQuery.lte('created_at', dateTo);
+    taskQuery = taskQuery.lt('created_at', dateTo);
+    requestQuery = requestQuery.lt('created_at', dateTo);
+    voQuery = voQuery.lt('created_at', dateTo);
+    mtnQuery = mtnQuery.lt('created_at', dateTo);
+    anomalyQuery = anomalyQuery.lt('created_at', dateTo);
+    auditQuery = auditQuery.lt('created_at', dateTo);
   }
 
   const [taskRes, requestRes, voRes, mtnRes, anomalyRes, auditRes] = await Promise.all([

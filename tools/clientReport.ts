@@ -9,6 +9,7 @@ import type { MilestoneStatus } from './types';
 import { aggregatePeriod } from './dailySiteLogs';
 import { resolvePhotoUrl } from './storage';
 import { computeOverallProgress } from './progressMath';
+import { dayRangeWIB } from './timeWindow';
 
 const STATUS_LABELS: Record<MilestoneStatus, string> = {
   ON_TRACK: 'Sesuai Jadwal',
@@ -33,12 +34,17 @@ export function deriveProjectStatusLabel(statuses: MilestoneStatus[]): string {
   return 'Sesuai Jadwal';
 }
 
-export async function installedAsOf(projectId: string, isoDateEnd: string): Promise<Map<string, number>> {
+// Task 3.5: `cutoffIsoExclusive` is an EXCLUSIVE upper bound ("installed
+// strictly before this instant") rather than the old inclusive `lte`. Callers
+// pass a WIB-day-boundary instant from tools/timeWindow.ts — an exclusive
+// boundary composes correctly with "as of end of day X WIB" (== strictly
+// before the start of day X+1 WIB) without the old 23:59:59-literal gap.
+export async function installedAsOf(projectId: string, cutoffIsoExclusive: string): Promise<Map<string, number>> {
   const { data, error } = await supabase
     .from('progress_entries')
     .select('boq_item_id, quantity, created_at')
     .eq('project_id', projectId)
-    .lte('created_at', isoDateEnd);
+    .lt('created_at', cutoffIsoExclusive);
   if (error) throw error;
 
   const map = new Map<string, number>();
@@ -73,10 +79,17 @@ export async function computeWeeklyProgressDelta(
   startIso: string,
   endIso: string,
 ): Promise<number> {
-  // Overall progress as of midnight opening the period start vs. end-of-day of the period end.
+  // Task 3.5: overall progress as of midnight WIB opening the period start vs.
+  // end-of-day WIB of the period end. `dayRangeWIB` gives fromIso = start of
+  // `startIso`'s WIB day and toIso = the EXCLUSIVE end of `endIso`'s WIB day
+  // (== start of the next day WIB) — both are exactly the exclusive cutoffs
+  // `installedAsOf` now expects, so "as of end of day" lands on the same
+  // boundary as every other report's date window instead of a bespoke
+  // offset-less `T23:59:59` literal.
+  const { fromIso: periodStartWib, toIso: periodEndExclusiveWib } = dayRangeWIB(startIso, endIso);
   const [atStart, atEnd] = await Promise.all([
-    installedAsOf(projectId, `${startIso}T00:00:00`),
-    installedAsOf(projectId, `${endIso}T23:59:59`),
+    installedAsOf(projectId, periodStartWib),
+    installedAsOf(projectId, periodEndExclusiveWib),
   ]);
   return overallProgress(boqItems, atEnd) - overallProgress(boqItems, atStart);
 }
