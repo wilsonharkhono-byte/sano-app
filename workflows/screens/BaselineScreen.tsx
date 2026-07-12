@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Platform, TextInput } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -287,6 +287,31 @@ export default function BaselineScreen({
   }, [project]);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
+
+  // ── Stale-diff invalidation (review CRITICAL) ────────────────────────────
+  // The acknowledgment checklist is computed from a SNAPSHOT of stagingRows.
+  // While it is displayed the review cards stay editable, so an estimator could
+  // see a warning, EDIT the offending staged row, tick, and publish — landing
+  // the edited rows while the audit persists the STALE planned_after /
+  // classification (the row would lie). Any change to stagingRows while a
+  // preview exists therefore drops the preview + the acknowledged ticks, forcing
+  // a recompute. The publish path can then only be reached via handlePublish
+  // again (the checklist is unmounted once diffPreview is null), which re-fetches
+  // the current master and recomputes the diff — and publishBaselineV2's
+  // fail-loud guard refuses any re-publish without a fresh revisionContext.
+  //
+  // Keyed on stagingRows ONLY. diffPreview is read through a ref so setting the
+  // preview (which does not change stagingRows) never re-runs this effect and
+  // self-clears the checklist it just rendered.
+  const diffPreviewRef = useRef<PlanRevisionDiffResult | null>(null);
+  useEffect(() => { diffPreviewRef.current = diffPreview; }, [diffPreview]);
+  useEffect(() => {
+    if (!diffPreviewRef.current) return;
+    setDiffPreview(null);
+    setAcknowledgedClasses(new Set());
+    toast('Baris berubah — hitung ulang diff', 'warning');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stagingRows]);
 
   const handleDryRunV2 = async () => {
     if (!__DEV__) return;
@@ -703,7 +728,13 @@ export default function BaselineScreen({
       .from('project_material_master')
       .select('id')
       .eq('project_id', projectId)
+      // id DESC is the tiebreak (054 convention): a re-publish batch can create
+      // more than one master within the same wall-clock second, so created_at
+      // alone is not a deterministic "latest". Match the view's ordering exactly
+      // (v_material_envelopes: ORDER BY created_at DESC, id DESC) so the client
+      // diffs against the SAME master the envelope view scopes to.
       .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
       .limit(1)
       .maybeSingle();
     if (!master) return { isRepublish: false, lines: [] };
@@ -739,6 +770,70 @@ export default function BaselineScreen({
       if (r.material_name) names.set(r.material_id as string, r.material_name as string);
     }
     return { activity, names };
+  };
+
+  // Supplementary activity probe for materials NEW to the plan (review Fix 2).
+  // v_material_envelope_status is scoped to the CURRENT master, so a material
+  // that is new to the about-to-publish plan (not in the current master) has NO
+  // view row — its prior activity (tier-4 requests, since 053; id-linked
+  // receipts; POs placed against a name-matched line) is therefore invisible to
+  // fetchProjectActivity and would wrongly collapse it into noActivityChanged
+  // instead of surfacing as an ADDED line with true figures. Probe those exact
+  // material_ids directly. Three cheap IN-list selects, joined to their headers
+  // for the project + status filter (mirrors v_material_envelope_status's
+  // laterals: non-REJECTED requests / non-CANCELLED POs / any receipt).
+  //
+  // Scope note: receipts are matched by material_id only (id-linked). Unlinked,
+  // name-only receipts are not probed here — keeping this to three IN-list
+  // selects — so a name-only receipt against a brand-new material stays
+  // invisible; acceptable because the diff still records the material (via its
+  // request/PO activity, or as a no-activity summary line) and never invents a
+  // figure (CLAUDE.md §1.1).
+  const fetchActivityForNewMaterials = async (
+    projectId: string,
+    materialIds: string[],
+  ): Promise<Map<string, MaterialActivity>> => {
+    const out = new Map<string, MaterialActivity>();
+    if (materialIds.length === 0) return out;
+    const bump = (id: string): MaterialActivity => {
+      let a = out.get(id);
+      if (!a) { a = { ordered: 0, requested: 0, receiptsExist: false }; out.set(id, a); }
+      return a;
+    };
+
+    const [reqRes, poRes, rcptRes] = await Promise.all([
+      supabase
+        .from('material_request_lines')
+        .select('material_id, quantity, material_request_headers!inner(project_id, overall_status)')
+        .in('material_id', materialIds)
+        .eq('material_request_headers.project_id', projectId)
+        .neq('material_request_headers.overall_status', 'REJECTED'),
+      supabase
+        .from('purchase_order_lines')
+        .select('material_id, quantity, purchase_orders!inner(project_id, status)')
+        .in('material_id', materialIds)
+        .eq('purchase_orders.project_id', projectId)
+        .neq('purchase_orders.status', 'CANCELLED'),
+      supabase
+        .from('receipt_lines')
+        .select('material_id, receipts!inner(project_id)')
+        .in('material_id', materialIds)
+        .eq('receipts.project_id', projectId),
+    ]);
+
+    for (const r of (reqRes.data ?? []) as Array<{ material_id: string | null; quantity: unknown }>) {
+      if (!r.material_id) continue;
+      bump(r.material_id).requested += Number(r.quantity) || 0;
+    }
+    for (const r of (poRes.data ?? []) as Array<{ material_id: string | null; quantity: unknown }>) {
+      if (!r.material_id) continue;
+      bump(r.material_id).ordered += Number(r.quantity) || 0;
+    }
+    for (const r of (rcptRes.data ?? []) as Array<{ material_id: string | null }>) {
+      if (!r.material_id) continue;
+      bump(r.material_id).receiptsExist = true;
+    }
+    return out;
   };
 
   // Phase 1 — validate, then on a re-publish compute the diff. If any warning
@@ -782,6 +877,28 @@ export default function BaselineScreen({
         return;
       }
       const newRows = [...preview.totals].map(([material_id, planned_quantity]) => ({ material_id, planned_quantity }));
+
+      // Fix 2: materials new to this plan have no envelope-view row, so their
+      // prior activity is missing from activityInfo. Probe those specific ids so
+      // they classify as ADDED (with real ordered/requested) rather than
+      // collapsing into the no-activity summary — the audit line then tells the
+      // truth. Only the new-to-plan ids (absent from the view activity map).
+      const newMaterialIds = newRows
+        .map(r => r.material_id)
+        .filter(id => id && !activityInfo.activity.has(id));
+      if (newMaterialIds.length > 0) {
+        try {
+          const probed = await fetchActivityForNewMaterials(project.id, newMaterialIds);
+          for (const [id, a] of probed) activityInfo.activity.set(id, a);
+        } catch (probeErr) {
+          // Non-fatal: a probe failure must not block the re-publish diff. Worst
+          // case a new material with prior activity is under-classified (falls
+          // into the no-activity summary), never over-classified — the diff is
+          // still shown and nothing is fabricated.
+          console.warn('fetchActivityForNewMaterials failed (non-fatal):', probeErr);
+        }
+      }
+
       const diff = computePlanRevisionDiff(newRows, current.lines, activityInfo.activity);
       setMaterialNames(activityInfo.names);
 
@@ -822,6 +939,20 @@ export default function BaselineScreen({
         revisionContext ? { revisionContext } : undefined,
       );
       if (!result.success) {
+        // Partial-prior-publish dead end (review 5c): the server refuses the
+        // re-publish as "belum di-acknowledge" because a current ahs_version
+        // exists, yet the client took the first-publish path (revisionContext
+        // undefined) because fetchCurrentMaster found NO master to diff — i.e. a
+        // prior publish created the version but not the master. The user would
+        // otherwise be stuck on an opaque error with no diff to acknowledge.
+        if (!revisionContext && /acknowledge|di-acknowledge/i.test(result.error ?? '')) {
+          toast(
+            'Publish sebelumnya tidak tuntas (versi baseline ada tanpa master material). ' +
+            'Tutup lalu buka ulang sesi ini untuk menghitung ulang diff, kemudian publish lagi.',
+            'critical',
+          );
+          return;
+        }
         toast(`Publish gagal: ${result.error}`, 'critical');
         return;
       }
@@ -913,9 +1044,13 @@ export default function BaselineScreen({
               </TouchableOpacity>
               <Text style={styles.revisionClassCopy}>{meta.copy}</Text>
               {affected.map(l => {
+                // lowerBelowOrderedPct returns Infinity when the new plan is 0
+                // (fully absorbed) — render "—" rather than "Infinity%" (Fix 5d).
+                const pct = lowerBelowOrderedPct(l);
+                const pctLabel = Number.isFinite(pct) ? `${pct}%` : '—';
                 const suffix =
                   cls === 'LOWER_BELOW_ORDERED'
-                    ? ` — akan tercatat ${lowerBelowOrderedPct(l)}% melebihi alokasi baru`
+                    ? ` — akan tercatat ${pctLabel} melebihi alokasi baru`
                     : cls === 'REMOVED_WITH_ACTIVITY'
                       ? ` — order ${fmtQty(l.ordered_at_time)}, permintaan ${fmtQty(l.requested_at_time)}`
                       : '';

@@ -20,7 +20,12 @@ import type { PlanRevisionLine, PlanRevisionSummary } from './planRevisionDiff';
  * RAISE_ABSOLVING_OVERAGE lines. In THIS task the publish proceeds after
  * acknowledgment; 2.12 will insert a principal-approval gate (a
  * PLAN_CEILING_RAISE approval_task) BEFORE the publish proceeds when any such
- * line is present.
+ * line is present. 2.12's principal gate MUST NOT trust this client-computed
+ * classification: this whole record is produced by the caller, so a hostile or
+ * buggy client can omit RAISE_ABSOLVING_OVERAGE lines (or mislabel them) to
+ * skip the gate. The gate needs a SERVER-SIDE recompute of the diff from the
+ * about-to-land master vs the current one — the client's diffLines are an
+ * audit artifact, never the authority the gate keys off.
  */
 export interface RevisionContext {
   diffLines: PlanRevisionLine[];
@@ -858,6 +863,13 @@ export async function publishBaselineV2(
   // BEFORE calling publish. Refuse loudly here — BEFORE any mutation — so a
   // re-publish can never silently rewrite planned quantities under in-flight
   // requests/POs without a witnessed acknowledgment (spec §1.2 truth contract).
+  // HONESTY BOUNDARY: this enforcement lives in the app path only. The DB does
+  // NOT enforce acknowledgment — the publish is client-orchestrated across many
+  // statements, so a direct table writer (service role / Dashboard / a rogue
+  // client that skips this function) can still rewrite the master with no
+  // revision row. The append-only plan_revisions trail records what the app
+  // path acknowledged; it is not a database-level gate. Task 2.12's server-side
+  // recompute is what closes that gap for ceiling raises.
   if (isRepublish && !revisionContext) {
     return {
       success: false,
@@ -1107,11 +1119,21 @@ export async function publishBaselineV2(
         // Fan out PLAN_REVISED to supervisors + FYI to principal — only when a
         // material-with-activity actually changed. Non-fatal (the RPC is itself
         // EXCEPTION-wrapped per-enqueue; this catches an RPC-dispatch failure).
+        //
+        // p_raise_count gates the PRINCIPAL FYI inside the RPC (078): the
+        // principal only cares about ceiling RAISES (RAISE + RAISE_ABSOLVING_
+        // OVERAGE), not lowers/removes/adds. Supervisors are always notified on
+        // any non-empty diff. Computed from the acknowledged summary so the
+        // notification scope matches what the checklist showed.
         if (revisionContext.diffLines.length > 0) {
+          const raiseCount =
+            (revisionContext.summary?.raisedAbsolvingOverage ?? 0) +
+            (revisionContext.summary?.raised ?? 0);
           const { error: notifyErr } = await supabase.rpc('notify_plan_revised', {
             p_project_id: projectId,
             p_revision_id: revisionId,
             p_summary: revisionContext.notifySummaryText ?? 'Rencana material proyek diperbarui.',
+            p_raise_count: raiseCount,
           });
           if (notifyErr) {
             warnings.push(`notify_plan_revised failed (non-fatal): ${notifyErr.message}`);

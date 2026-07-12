@@ -79,7 +79,16 @@ describe('migration 078 — frozen contract surface', () => {
     expect(SQL).toContain("'supervisor'");
     expect(SQL).toContain("'principal'");
     expect(SQL).toMatch(/EXCEPTION WHEN OTHERS THEN\s+RAISE WARNING/);
-    expect(SQL).toMatch(/GRANT EXECUTE ON FUNCTION notify_plan_revised\(UUID, UUID, TEXT\) TO authenticated/);
+    expect(SQL).toMatch(/GRANT EXECUTE ON FUNCTION notify_plan_revised\(UUID, UUID, TEXT, INT\) TO authenticated/);
+  });
+
+  it('gates the principal FYI on the raise-class count (review Fix 5b)', () => {
+    // p_raise_count with a DEFAULT keeps re-paste / older callers back-compatible.
+    expect(SQL).toMatch(/p_raise_count\s+INT DEFAULT 0/);
+    // The principal enqueue is wrapped in a raise-count guard; supervisors are not.
+    expect(SQL).toMatch(/IF COALESCE\(p_raise_count, 0\) > 0 THEN/);
+    // The prior 3-arg overload is dropped so the arity change leaves nothing stale.
+    expect(SQL).toMatch(/DROP FUNCTION IF EXISTS notify_plan_revised\(UUID, UUID, TEXT\)/);
   });
 
   it('is SECURITY DEFINER with a pinned search_path', () => {

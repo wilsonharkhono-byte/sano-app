@@ -205,12 +205,25 @@ END $$;
 --
 --    p_summary is a short human sentence built client-side (e.g. "3 material
 --    dinaikkan, 1 melebihi order") — carried as the notification body.
+--
+--    p_raise_count (review 5b) gates the PRINCIPAL FYI: the principal cares
+--    only about ceiling RAISES (RAISE + RAISE_ABSOLVING_OVERAGE), so the client
+--    passes the raise-class line count and the principal is notified ONLY when
+--    it is > 0. Supervisors are always notified (any non-empty diff reaches
+--    this RPC). DEFAULT 0 keeps re-paste / any older 3-arg caller back-compatible
+--    — omitting the arg simply suppresses the principal FYI (the safe direction:
+--    never over-notify the principal on a non-raise revision).
 -- ═══════════════════════════════════════════════════════════════════════════
+
+-- Drop the prior 3-arg signature so the arity change below cannot leave a stale
+-- overload behind (idempotent; no-op if never applied — 078 is unpasted).
+DROP FUNCTION IF EXISTS notify_plan_revised(UUID, UUID, TEXT);
 
 CREATE OR REPLACE FUNCTION notify_plan_revised(
   p_project_id  UUID,
   p_revision_id UUID,
-  p_summary     TEXT
+  p_summary     TEXT,
+  p_raise_count INT DEFAULT 0
 ) RETURNS VOID
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -244,22 +257,26 @@ BEGIN
 
   -- Principal: FYI on the ceiling change (spec §5 step 5 — the non-gate FYI;
   -- the Task 2.12 principal APPROVAL for RAISE_ABSOLVING_OVERAGE is separate).
-  BEGIN
-    PERFORM enqueue_notification(
-      p_project_id,
-      'PLAN_REVISED',
-      'Baseline diperbarui',
-      v_body,
-      'BaselineScreen',
-      jsonb_build_object('revisionId', p_revision_id),
-      p_revision_id,
-      NULL,          -- p_exclude_user_id: none
-      'principal'    -- p_target_role (066)
-    );
-  EXCEPTION WHEN OTHERS THEN
-    RAISE WARNING 'notify_plan_revised (principal) failed: %', SQLERRM;
-  END;
+  -- Only when the revision actually RAISED a ceiling (review 5b) — a diff that
+  -- only lowered / removed / added materials is not the principal's concern.
+  IF COALESCE(p_raise_count, 0) > 0 THEN
+    BEGIN
+      PERFORM enqueue_notification(
+        p_project_id,
+        'PLAN_REVISED',
+        'Baseline diperbarui',
+        v_body,
+        'BaselineScreen',
+        jsonb_build_object('revisionId', p_revision_id),
+        p_revision_id,
+        NULL,          -- p_exclude_user_id: none
+        'principal'    -- p_target_role (066)
+      );
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'notify_plan_revised (principal) failed: %', SQLERRM;
+    END;
+  END IF;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION notify_plan_revised(UUID, UUID, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION notify_plan_revised(UUID, UUID, TEXT, INT) TO authenticated;

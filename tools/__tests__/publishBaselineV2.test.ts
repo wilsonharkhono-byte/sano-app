@@ -1,4 +1,4 @@
-jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
+jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
 
 import { topoSortBlocks, flattenBlock, findDuplicateBoqCodes, zeroPlannedBoqCodes, buildBoqItemInsert, type FlattenedLine } from '../publishBaselineV2';
 import { resolveCatalogId, type CatalogRow } from '../publishBaselineV2';
@@ -560,5 +560,285 @@ describe('loadCatalogAndAliases', () => {
     );
 
     await expect(loadCatalogAndAliases()).rejects.toThrow('alias table unavailable');
+  });
+});
+
+// ─── publishBaselineV2 — re-publish wiring (Task 2.11 review Fix 3) ──────────
+//
+// Integration tests over the full publish path with a mocked supabase. They
+// lock in the four wiring guarantees the 2.11 review called out:
+//   (a) a re-publish (a current ahs_version exists) WITHOUT revisionContext is
+//       refused fail-loud, BEFORE any mutation — zero writes.
+//   (b) a plan_revisions header insert failure is non-fatal: the publish still
+//       succeeds and surfaces the failure as a warning.
+//   (c) the 2.10 snapshot gating holds: a material whose master line failed is
+//       excluded from material_baseline_snapshots (wrong anchor > absent one).
+//   (d) a FIRST publish (no current version) attempts NO plan_revisions write.
+//   (e) the principal-FYI raise-count (Fix 5b) is threaded into notify_plan_revised.
+
+import { publishBaselineV2, type RevisionContext } from '../publishBaselineV2';
+import type { PlanRevisionLine, PlanRevisionSummary } from '../planRevisionDiff';
+
+const mockRpc = (supabase as unknown as { rpc: jest.Mock }).rpc;
+
+// Two catalog materials; recipe component names match EXACTLY so resolveCatalogId
+// resolves them without relying on fuzzy matching (kept deterministic).
+const PUB_CATALOG: CatalogRow[] = [
+  { id: 'id-d13', code: 'REB-DE13', name: 'Besi beton ulir 13 mm', category: 'Struktur', tier: 1, unit: 'kg' },
+  { id: 'id-pcc', code: 'CEM-PCC50', name: 'Semen PCC 50 kg', category: 'Material Beton', tier: 2, unit: 'zak' },
+];
+
+// Two BoQ rows, each with one resolvable material component.
+function pubStagingRows(): unknown[] {
+  return [
+    {
+      id: 'srow-1', row_number: 1, row_type: 'boq', raw_data: {},
+      parsed_data: {
+        code: 'A.1', label: 'Item 1', unit: 'm3', planned: 2,
+        recipe: { components: [{ materialName: 'Besi beton ulir 13 mm', quantityPerUnit: 10, unitPrice: 9000, lineType: 'material', unit: 'kg' }] },
+      },
+    },
+    {
+      id: 'srow-2', row_number: 2, row_type: 'boq', raw_data: {},
+      parsed_data: {
+        code: 'A.2', label: 'Item 2', unit: 'm3', planned: 3,
+        recipe: { components: [{ materialName: 'Semen PCC 50 kg', quantityPerUnit: 5, unitPrice: 75000, lineType: 'material', unit: 'zak' }] },
+      },
+    },
+  ];
+}
+
+interface PubCfg {
+  stagingRows: unknown[];
+  catalog: CatalogRow[];
+  oldCurrentVersion: { id: string } | null;
+  latestVersion: { version: number } | null;
+  failMasterMaterialIds?: Set<string>;
+  failRevisionInsert?: boolean;
+}
+
+interface PubHarness {
+  fromImpl: (table: string) => unknown;
+  mutations: Array<{ table: string; op: string; payload: unknown }>;
+  tablesTouched: Set<string>;
+  captured: { snapshotBatch?: unknown; revisionInsert?: unknown; revisionLineBatch?: unknown };
+}
+
+// Chainable builder + per-table resolver. Records every mutating op (insert /
+// update / upsert) so tests can assert "zero writes", and captures the batches
+// the assertions inspect (snapshots, revision lines).
+function makePubHarness(cfg: PubCfg): PubHarness {
+  const mutations: PubHarness['mutations'] = [];
+  const tablesTouched = new Set<string>();
+  const captured: PubHarness['captured'] = {};
+
+  const resolve = (table: string, ctx: {
+    op: string; payload: any; selectStr?: string; range?: [number, number];
+  }): { data: unknown; error: unknown } => {
+    switch (table) {
+      case 'import_staging_rows':
+        return { data: cfg.stagingRows, error: null };
+      case 'material_catalog': {
+        const [from, to] = ctx.range ?? [0, 999];
+        return { data: cfg.catalog.slice(from, to + 1), error: null };
+      }
+      case 'material_aliases': {
+        const [from, to] = ctx.range ?? [0, 999];
+        return { data: ([] as unknown[]).slice(from, to + 1), error: null };
+      }
+      case 'ahs_versions': {
+        if (ctx.op === 'update') return { data: null, error: null };      // demote
+        if (ctx.op === 'insert') return { data: { id: 'ahsv-new' }, error: null };
+        if (ctx.selectStr === 'id') return { data: cfg.oldCurrentVersion, error: null };
+        if (ctx.selectStr === 'version') return { data: cfg.latestVersion, error: null };
+        return { data: null, error: null };
+      }
+      case 'boq_items': {
+        const batch = (ctx.payload ?? []) as Array<{ code: string }>;
+        return { data: batch.map(b => ({ id: `boqitem-${b.code}`, code: b.code })), error: null };
+      }
+      case 'ahs_lines':
+        return { data: null, error: null };
+      case 'project_material_master':
+        return { data: { id: 'master-1' }, error: null };
+      case 'project_material_master_lines': {
+        const batch = (ctx.payload ?? []) as Array<{ material_id: string }>;
+        const hasFail = batch.some(r => cfg.failMasterMaterialIds?.has(r.material_id));
+        return hasFail
+          ? { data: null, error: { message: 'master line insert failed' } }
+          : { data: null, error: null };
+      }
+      case 'material_baseline_snapshots':
+        captured.snapshotBatch = ctx.payload;
+        return { data: null, error: null };
+      case 'plan_revisions':
+        captured.revisionInsert = ctx.payload;
+        return cfg.failRevisionInsert
+          ? { data: null, error: { message: 'revision header insert failed' } }
+          : { data: { id: 'rev-1' }, error: null };
+      case 'plan_revision_lines':
+        captured.revisionLineBatch = ctx.payload;
+        return { data: null, error: null };
+      default:
+        throw new Error(`Unhandled supabase.from('${table}') op=${ctx.op} select=${ctx.selectStr}`);
+    }
+  };
+
+  const makeBuilder = (table: string) => {
+    const ctx: { op: string; payload: any; selectStr?: string; range?: [number, number] } = { op: 'select', payload: undefined };
+    const chain: Record<string, any> = {};
+    chain.select = (s?: string) => { ctx.selectStr = s; return chain; };
+    const setOp = (op: string) => (arg?: unknown) => {
+      ctx.op = op; ctx.payload = arg;
+      mutations.push({ table, op, payload: arg });
+      return chain;
+    };
+    chain.insert = setOp('insert');
+    chain.update = setOp('update');
+    chain.upsert = setOp('upsert');
+    chain.delete = setOp('delete');
+    for (const m of ['eq', 'neq', 'in', 'order', 'limit']) chain[m] = () => chain;
+    chain.range = (from: number, to: number) => { ctx.range = [from, to]; return chain; };
+    const settle = () => Promise.resolve(resolve(table, ctx));
+    chain.single = () => settle();
+    chain.maybeSingle = () => settle();
+    chain.then = (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => settle().then(res, rej);
+    return chain;
+  };
+
+  return {
+    fromImpl: (table: string) => { tablesTouched.add(table); return makeBuilder(table); },
+    mutations,
+    tablesTouched,
+    captured,
+  };
+}
+
+const REV_SUMMARY = (over = 0, raise = 0): PlanRevisionSummary => ({
+  raisedAbsolvingOverage: over,
+  raised: raise,
+  loweredBelowOrdered: 0,
+  removedWithActivity: 0,
+  added: 0,
+  lowered: 0,
+  noActivityChanged: 0,
+  warningCount: over + raise,
+});
+
+const REV_LINE: PlanRevisionLine = {
+  material_id: 'id-d13',
+  planned_before: 10,
+  planned_after: 20,
+  ordered_at_time: 15,
+  requested_at_time: 0,
+  classification: 'RAISE_ABSOLVING_OVERAGE',
+};
+
+const revCtx = (over: number, raise: number, lines: PlanRevisionLine[]): RevisionContext => ({
+  diffLines: lines,
+  summary: REV_SUMMARY(over, raise),
+  acknowledgedAt: '2026-07-12T00:00:00Z',
+  acknowledgedBy: 'user-1',
+  notifySummaryText: 'Rencana material diperbarui.',
+});
+
+describe('publishBaselineV2 — re-publish wiring', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRpc.mockResolvedValue({ data: null, error: null });
+  });
+
+  it('(a) refuses a re-publish with no revisionContext BEFORE any mutation (zero writes)', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: { id: 'ahsv-old' }, // a current version exists → re-publish
+      latestVersion: { version: 1 },
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1'); // no options
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/acknowledge/i);
+    // Fail-loud is BEFORE demote/insert — nothing was written.
+    expect(h.mutations).toHaveLength(0);
+    expect(h.tablesTouched.has('plan_revisions')).toBe(false);
+  });
+
+  it('(b) a plan_revisions header insert failure is non-fatal: publish succeeds with a warning', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: { id: 'ahsv-old' },
+      latestVersion: { version: 1 },
+      failRevisionInsert: true,
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1', {
+      revisionContext: revCtx(0, 1, [REV_LINE]),
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.warnings?.some(w => /plan_revisions header failed/i.test(w))).toBe(true);
+    // Header failed → no lines written, no notification dispatched.
+    expect(h.tablesTouched.has('plan_revision_lines')).toBe(false);
+    expect(mockRpc).not.toHaveBeenCalled();
+  });
+
+  it('(c) excludes a failed-master-line material from the baseline snapshot (2.10 gating)', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: null,          // first publish — no acknowledgment needed
+      latestVersion: null,
+      failMasterMaterialIds: new Set(['id-pcc']), // pcc's master line fails
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1');
+
+    expect(result.success).toBe(true);
+    const snapshot = (h.captured.snapshotBatch ?? []) as Array<{ material_id: string }>;
+    const ids = snapshot.map(s => s.material_id);
+    expect(ids).toContain('id-d13');      // clean material anchored
+    expect(ids).not.toContain('id-pcc');  // failed material excluded
+  });
+
+  it('(d) a first publish attempts NO plan_revisions write', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: null,  // no current version → first publish
+      latestVersion: null,
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1');
+
+    expect(result.success).toBe(true);
+    expect(h.tablesTouched.has('plan_revisions')).toBe(false);
+    expect(mockRpc).not.toHaveBeenCalled();
+  });
+
+  it('(e) threads the raise-class count into notify_plan_revised (Fix 5b principal gate)', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: { id: 'ahsv-old' },
+      latestVersion: { version: 1 },
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1', {
+      revisionContext: revCtx(1, 2, [REV_LINE]), // 1 absolving + 2 plain raises = 3
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockRpc).toHaveBeenCalledWith(
+      'notify_plan_revised',
+      expect.objectContaining({ p_project_id: 'proj-1', p_raise_count: 3 }),
+    );
   });
 });

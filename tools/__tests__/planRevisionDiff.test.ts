@@ -34,6 +34,15 @@ describe('classifyPlanChange', () => {
       expect(classifyPlanChange(100, 150, true, true, act(90))).toBe('RAISE');
     });
 
+    it('precedence overlap: before < after < ordered → RAISE_ABSOLVING_OVERAGE', () => {
+      // The absolving test is `ordered > planned_before`, NOT `ordered > after`.
+      // Here ordered (200) exceeds even the raised plan (after 150): the raise
+      // still only partially covers the over-order, but it is unambiguously
+      // absolving an existing overage. Must NOT be mistaken for a plain RAISE
+      // just because the new ceiling is below the ordered qty.
+      expect(classifyPlanChange(100, 150, true, true, act(200))).toBe('RAISE_ABSOLVING_OVERAGE');
+    });
+
     it('raise with no ordering at all → plain RAISE', () => {
       expect(classifyPlanChange(100, 150, true, true, act(0, 50))).toBe('RAISE');
     });
