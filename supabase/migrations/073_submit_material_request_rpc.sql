@@ -57,10 +57,13 @@
 --       payload must fail loud, never silently drop the allocation).
 --
 -- ── Part B: fulfilled-line exclusion now ignores CANCELLED POs (lockstep) ───
---   Folded in from the Task 2.8 review. 069's three request-time gate computers
---   (compute_tier1_workgroup_flag / compute_tier2_flag / compute_tier3_flag)
---   exclude a request line from the "other open requests" burn once it is linked
---   to a PO:
+--   Folded in from the Task 2.8 review. Of 069's three request-time gate
+--   computers, ONLY compute_tier2_flag carries the fulfilled-line exclusion in
+--   its "other open requests" leg. (Tier 1 burns on WORKGROUP_ENVELOPE
+--   allocations — no exclusion subquery; tier 3 reads committed_rupiah from
+--   v_material_budget_status (047), whose request-lateral has no exclusion at
+--   all — a separate pre-existing semantic, unchanged here.) The exclusion
+--   drops a request line from the burn once it is linked to a PO:
 --       mrl.id NOT IN (SELECT pol.request_line_id FROM purchase_order_lines pol
 --                      WHERE pol.request_line_id IS NOT NULL)
 --   That subquery has NO PO-status predicate, so a request line linked to a PO
@@ -127,14 +130,19 @@ BEGIN
   -- Every allocation must point at a line that exists in this payload — a
   -- mis-built payload fails loud rather than silently dropping the allocation
   -- (the per-line insert below would otherwise just never match it).
+  -- NULL/missing line_index must ALSO raise: with only the two range
+  -- comparisons, a NULL index makes both predicates NULL (not true), the
+  -- EXISTS never fires, and the per-line WHERE below silently drops the
+  -- allocation — exactly the fail-quiet path this guard exists to prevent.
   IF p_allocations IS NOT NULL AND EXISTS (
     SELECT 1
     FROM jsonb_array_elements(p_allocations) AS alloc
-    WHERE (alloc->>'line_index')::INT < 0
+    WHERE (alloc->>'line_index') IS NULL
+       OR (alloc->>'line_index')::INT < 0
        OR (alloc->>'line_index')::INT >= v_line_count
   ) THEN
     RAISE EXCEPTION
-      'submit_material_request: allocation line_index out of range (valid 0..%)',
+      'submit_material_request: allocation line_index missing or out of range (valid 0..%)',
       v_line_count - 1;
   END IF;
 
@@ -230,16 +238,19 @@ GRANT EXECUTE ON FUNCTION submit_material_request(JSONB, JSONB, JSONB, JSONB)
 -- PART B — CANCELLED-PO fulfilled-line exclusion (lockstep with the client twin)
 --
 -- The three functions below are copied VERBATIM from 069_soft_request_gate.sql.
--- The ONLY change is in compute_tier1_workgroup_flag and compute_tier2_flag: the
--- fulfilled-line exclusion subquery now JOINs purchase_orders and adds
--- `AND po.status <> 'CANCELLED'`, so a request line linked to a cancelled PO
--- returns to the "other open requests" burn. compute_tier3_flag has no such
--- subquery (it burns Rupiah via v_material_budget_status) and is re-created
--- byte-identically so all three tier computers live in one lockstep artifact.
--- Signatures are UNCHANGED, so dispatch_line_flag (056) needs no change.
+-- The ONLY change is in compute_tier2_flag: its fulfilled-line exclusion
+-- subquery now JOINs purchase_orders and adds `AND po.status <> 'CANCELLED'`,
+-- so a request line linked to a cancelled PO returns to the "other open
+-- requests" burn. compute_tier1_workgroup_flag (burns on WORKGROUP_ENVELOPE
+-- allocations) and compute_tier3_flag (burns Rupiah via
+-- v_material_budget_status) contain NO exclusion subquery and are re-created
+-- byte-identically to 069, so all three tier computers live in one lockstep
+-- artifact. Signatures are UNCHANGED, so dispatch_line_flag (056) needs no
+-- change.
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- ── 1. Tier 1 (work-group). Byte-faithful to 069 except the exclusion join. ──
+-- ── 1. Tier 1 (work-group). Byte-identical to 069 — no exclusion subquery ──
+-- ── exists in this function; do NOT "restore" one here.                   ──
 CREATE OR REPLACE FUNCTION compute_tier1_workgroup_flag(
   p_request_line_id UUID,
   p_material_id UUID,
