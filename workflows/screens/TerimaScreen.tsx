@@ -17,6 +17,7 @@ import { supplierToBase, displayQty } from '../../tools/materialUnitConversion';
 import { buildUnambiguousCatalogNameMap, normalizeCatalogName } from '../../tools/catalogNameIndex';
 import { buildReceiptLinesPayload, type ReceiveLineDraft } from '../../tools/receiptLinesPayload';
 import { generateClientReceiptId } from '../../tools/receiptIdempotency';
+import { poStatusLabel, isPoReceivable, isPoClosed } from '../../tools/poStatus';
 import { supabase } from '../../tools/supabase';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import type { GateResult, PurchaseOrder } from '../../tools/types';
@@ -329,11 +330,15 @@ export default function TerimaScreen() {
   const remainingQty = selectedPO ? selectedPO.quantity - totalReceived : 0;
   const poProgress = selectedPO && selectedPO.quantity > 0 ? Math.min(100, (totalReceived / selectedPO.quantity) * 100) : 0;
 
-  // Derive PO status label
-  const poStatusLabel = !selectedPO ? '' :
-    totalReceived === 0 ? 'OPEN' :
-    totalReceived >= selectedPO.quantity ? 'FULLY RECEIVED' :
-    'PARTIAL';
+  // The PO's authoritative (server-computed) status drives the badge, the
+  // Indonesian label and whether the receive form is shown. A CLOSED_SHORT PO
+  // reads short (remaining > 0) but is terminal — never receivable.
+  const poBadgeFlag: 'OK' | 'WARNING' | 'INFO' | 'CRITICAL' =
+    selectedPO?.status === 'FULLY_RECEIVED' ? 'OK' :
+    selectedPO?.status === 'CANCELLED' ? 'CRITICAL' :
+    selectedPO?.status === 'CLOSED_SHORT' ? 'WARNING' :
+    selectedPO?.status === 'PARTIAL_RECEIVED' ? 'WARNING' :
+    'INFO';
 
   const gateResult: GateResult | null = useMemo(() => {
     if (!selectedPO || totalBaseQty <= 0) return null;
@@ -431,6 +436,9 @@ export default function TerimaScreen() {
         p_lines: linePayload,
         p_photos: photoRecords,
         p_client_receipt_id: clientReceiptIdRef.current,
+        // Task 2.7: a short delivery declared "Terima Final" is short-closed
+        // (CLOSED_SHORT) server-side instead of being left PARTIAL forever.
+        p_is_final: isFinal,
         p_activity_label: `${selectedPO!.material_name} — ${linePayload.length} baris (${receivedBase.toLocaleString('id-ID')} ${selectedPO!.unit}) diterima (${isFinal ? 'Final' : 'Parsial'})`,
       });
       if (rcptErr || !receiptId) throw rcptErr || new Error('Receipt insert failed');
@@ -483,7 +491,9 @@ export default function TerimaScreen() {
             accessibilityLabel="Pilih purchase order"
             value={poId}
             onChange={v => { setPoId(v); resetForm(); }}
-            options={purchaseOrders.map(po => ({
+            // Terminally-closed POs (CANCELLED / CLOSED_SHORT, Task 2.7) drop out
+            // of the receivable list — they can never be received against again.
+            options={purchaseOrders.filter(po => !isPoClosed(po.status)).map(po => ({
               value: po.id,
               code: getPurchaseOrderDisplayNumber(po),
               label: po.material_name,
@@ -521,7 +531,7 @@ export default function TerimaScreen() {
                 </View>
 
                 <View style={styles.poStatusRow}>
-                  <Badge flag={poStatusLabel === 'FULLY RECEIVED' ? 'OK' : poStatusLabel === 'PARTIAL' ? 'WARNING' : 'INFO'} label={poStatusLabel} />
+                  <Badge flag={poBadgeFlag} label={poStatusLabel(selectedPO.status)} />
                   <Text style={styles.hint}>{selectedPO.unit}</Text>
                 </View>
               </View>
@@ -543,8 +553,10 @@ export default function TerimaScreen() {
                 </>
               )}
 
-              {/* New receipt form */}
-              {remainingQty > 0 && (
+              {/* New receipt form — only for a PO that is still receivable
+                  (OPEN / PARTIAL_RECEIVED). A CLOSED_SHORT PO reads short but is
+                  terminal, so its form must close (Task 2.7). */}
+              {isPoReceivable(selectedPO.status) && remainingQty > 0 && (
                 <>
                   <Text style={styles.label}>Jumlah Diterima per Baris <Text style={styles.req}>*</Text></Text>
                   <Text style={styles.hint}>Isi jumlah untuk baris yang datang; kosongkan sisanya. Minimal satu baris.</Text>
@@ -646,9 +658,15 @@ export default function TerimaScreen() {
                 </>
               )}
 
-              {remainingQty <= 0 && (
-                <View style={[styles.doneBox]}>
-                  <Text style={[styles.doneText, { color: COLORS.ok }]}>PO ini sudah diterima sepenuhnya.</Text>
+              {!(isPoReceivable(selectedPO.status) && remainingQty > 0) && (
+                <View style={[styles.doneBox, selectedPO.status === 'CANCELLED' || selectedPO.status === 'CLOSED_SHORT' ? styles.closedBox : null]}>
+                  <Text style={[styles.doneText, { color: selectedPO.status === 'CANCELLED' ? COLORS.critical : selectedPO.status === 'CLOSED_SHORT' ? COLORS.warning : COLORS.ok }]}>
+                    {selectedPO.status === 'CANCELLED'
+                      ? 'PO ini telah dibatalkan.'
+                      : selectedPO.status === 'CLOSED_SHORT'
+                      ? 'PO ini ditutup sebagai penerimaan final walau kurang kirim.'
+                      : 'PO ini sudah diterima sepenuhnya.'}
+                  </Text>
                 </View>
               )}
             </>
@@ -723,7 +741,8 @@ const styles = StyleSheet.create({
   partialBtn: { backgroundColor: COLORS.accentDark },
   btnText:    { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase', letterSpacing: 0.3 },
 
-  // Done
-  doneBox:  { padding: SPACE.base, borderRadius: RADIUS, backgroundColor: COLORS.okBg, marginTop: SPACE.md, alignItems: 'center' },
-  doneText: { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.ok },
+  // Done / terminal (cancelled or short-closed)
+  doneBox:   { padding: SPACE.base, borderRadius: RADIUS, backgroundColor: COLORS.okBg, marginTop: SPACE.md, alignItems: 'center' },
+  closedBox: { backgroundColor: COLORS.surfaceAlt },
+  doneText:  { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.ok },
 });

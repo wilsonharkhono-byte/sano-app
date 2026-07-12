@@ -10,6 +10,7 @@ import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { supabase } from '../../tools/supabase';
 import { getNextPurchaseOrderNumber, getPurchaseOrderDisplayNumber } from '../../tools/purchaseOrders';
+import { isPoClosed } from '../../tools/poStatus';
 import { computeGate2, summarizeAhsBaselinePrices, type Gate2Result, type Gate2Input } from '../gates/gate2';
 import { buildMaterialScopeIndex, deriveAutomaticScopeTag, normalizeBoqRefToScopeTag } from '../../tools/procurementScope';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
@@ -209,7 +210,9 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       });
 
       const enriched: POWithLines[] = purchaseOrders
-        .filter(po => po.status !== 'CANCELLED' && po.status !== 'CLOSED')
+        // Hide terminally-closed POs (CANCELLED / CLOSED_SHORT, Task 2.7) from the
+        // active price-management list.
+        .filter(po => !isPoClosed(po.status))
         .map(po => {
           const poLines = linesByPO[po.id] ?? [];
           const gate2Results = poLines.map(line => {
@@ -668,6 +671,40 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     }
   };
 
+  // ── Admin: cancel an OPEN, receipt-free PO ─────────────────────────
+  // Terminal admin cancel (Task 2.7). The server RPC (cancel_purchase_order,
+  // migration 072) enforces office-only + status='OPEN' + no receipts and writes
+  // CANCELLED + an activity_log row; a CANCELLED PO drops out of total_ordered
+  // (envelope) and out of the receivable list. A PO with deliveries must be
+  // short-closed via a final receive instead — the RPC RAISEs, surfaced as a toast.
+  const handleCancelPO = (po: POWithLines) => {
+    Alert.alert(
+      'Batalkan PO?',
+      `${getPurchaseOrderDisplayNumber(po)} — ${po.material_name}\n\nPO yang dibatalkan tidak dapat dikembalikan. Hanya PO yang belum ada penerimaan yang dapat dibatalkan.`,
+      [
+        { text: 'Kembali', style: 'cancel' },
+        {
+          text: 'Batalkan PO',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const { error: cancelError } = await supabase.rpc('cancel_purchase_order', {
+                p_po_id: po.id,
+                p_reason: null,
+              });
+              if (cancelError) throw cancelError;
+              toast('PO dibatalkan', 'ok');
+              await refresh();
+              await loadData();
+            } catch (err: any) {
+              toast(err?.message ?? 'Gagal membatalkan PO', 'critical');
+            }
+          },
+        },
+      ],
+    );
+  };
+
   // ── Principal: approval action ─────────────────────────────────────
 
   const handleApprovalAction = async (taskId: string, action: 'APPROVE' | 'REJECT' | 'HOLD' | 'OVERRIDE', reason: string) => {
@@ -1123,6 +1160,20 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                       <Badge flag={po.status === 'OPEN' ? 'WARNING' : 'OK'} label={po.status} />
                     </View>
                   </View>
+                  {/* Admin cancel — only an OPEN PO (which, by construction, has no
+                      receipts yet) can be cancelled. A PO with deliveries is
+                      short-closed via a final receive instead (Task 2.7). */}
+                  {po.status === 'OPEN' && (
+                    <TouchableOpacity
+                      style={styles.cancelPoBtn}
+                      onPress={() => handleCancelPO(po)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Batalkan PO ${getPurchaseOrderDisplayNumber(po)}`}
+                    >
+                      <Ionicons name="close-circle-outline" size={16} color={COLORS.critical} />
+                      <Text style={styles.cancelPoBtnText}>Batalkan PO</Text>
+                    </TouchableOpacity>
+                  )}
                 </Card>
               </TouchableOpacity>
             );
@@ -1468,6 +1519,8 @@ const styles = StyleSheet.create({
   backRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: SPACE.sm, marginTop: SPACE.sm },
   backRowText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.primary },
   poRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  cancelPoBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderWidth: 1, borderColor: COLORS.critical, borderRadius: RADIUS, paddingVertical: 8, marginTop: SPACE.sm + 2 },
+  cancelPoBtnText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.critical, textTransform: 'uppercase', letterSpacing: 0.3 },
   poSupplier: { fontSize: TYPE.sm, fontFamily: FONTS.bold },
   poNumber: { fontSize: TYPE.xs, fontFamily: FONTS.bold, color: COLORS.primary, marginTop: 2 },
   lineBlock: { marginTop: SPACE.md },

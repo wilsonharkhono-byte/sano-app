@@ -335,7 +335,7 @@ export interface PurchaseOrder {
   status: POStatus;
 }
 
-export type POStatus = 'OPEN' | 'PARTIAL_RECEIVED' | 'FULLY_RECEIVED' | 'CLOSED' | 'CANCELLED';
+export type POStatus = 'OPEN' | 'PARTIAL_RECEIVED' | 'FULLY_RECEIVED' | 'CLOSED_SHORT' | 'CANCELLED';
 
 export interface PurchaseOrderLine {
   id: string;
