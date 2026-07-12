@@ -14,6 +14,13 @@ import { computeGate2, summarizeAhsBaselinePrices, type Gate2Result, type Gate2I
 import { buildMaterialScopeIndex, deriveAutomaticScopeTag, normalizeBoqRefToScopeTag } from '../../tools/procurementScope';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
 import { supplierToBase, displayQty } from '../../tools/materialUnitConversion';
+import {
+  evaluatePoQuantityGate,
+  buildOverridePayload,
+  checkOverrideCoverage,
+  type PoGateEnvelope,
+  type PoGateLine,
+} from '../../tools/poQuantityGate';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, FLAG_COLORS, FLAG_BG } from '../theme';
 import type {
   AhsLine,
@@ -91,6 +98,11 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
   const [materialOptions, setMaterialOptions] = useState<MaterialOption[]>([]);
   const [materialMasterLines, setMaterialMasterLines] = useState<ProjectMaterialMasterLine[]>([]);
   const [principalId, setPrincipalId] = useState<string | null>(null);
+  // Project-grain envelope figures (planned/ordered) for the hard PO quantity gate.
+  const [envelopeByMaterial, setEnvelopeByMaterial] = useState<Map<string, PoGateEnvelope>>(new Map());
+  // APPROVED po_qty_gate override tasks for this project — the admin picks one to retry a breaching PO.
+  const [approvedQtyOverrides, setApprovedQtyOverrides] = useState<ApprovalTask[]>([]);
+  const [selectedOverrideTaskId, setSelectedOverrideTaskId] = useState<string | null>(null);
 
   // Admin: PO entry state
   const [selectedPO, setSelectedPO] = useState<POWithLines | null>(null);
@@ -118,7 +130,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     setLoading(true);
     try {
       const poIds = purchaseOrders.map(po => po.id);
-      const [linesRes, priceRes, scorecardRes, materialRes, assignmentRes, profileRes, masterHeaderRes] = await Promise.all([
+      const [linesRes, priceRes, scorecardRes, materialRes, assignmentRes, profileRes, masterHeaderRes, envelopeRes, overrideRes] = await Promise.all([
         poIds.length > 0
           ? supabase.from('purchase_order_lines').select('*').in('po_id', poIds)
           : Promise.resolve({ data: [] as PurchaseOrderLine[] }),
@@ -133,12 +145,37 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
           .eq('project_id', project.id)
           .order('created_at', { ascending: false })
           .limit(1),
+        // Project-grain envelope figures for the hard PO quantity gate (lockstep
+        // with migration 071's create_purchase_order: remaining = planned − ordered).
+        supabase
+          .from('v_material_envelope_status')
+          .select('material_id, material_name, total_planned, total_ordered')
+          .eq('project_id', project.id),
+        // APPROVED quantity-override tasks the admin can retry a breaching PO with.
+        supabase
+          .from('approval_tasks')
+          .select('*')
+          .eq('project_id', project.id)
+          .eq('entity_type', 'po_qty_gate')
+          .eq('action', 'APPROVE'),
       ]);
 
       const assignmentIds = ((assignmentRes.data as any[]) ?? []).map(row => row.user_id);
       const projectProfiles = ((profileRes.data as any[]) ?? []).filter(row => assignmentIds.includes(row.id));
       setPrincipalId(projectProfiles.find(row => row.role === 'principal')?.id ?? null);
       setMaterialOptions((materialRes.data as MaterialOption[]) ?? []);
+
+      const envMap = new Map<string, PoGateEnvelope>();
+      for (const row of (envelopeRes.data as Array<{ material_id: string; material_name: string; total_planned: number; total_ordered: number }> ?? [])) {
+        envMap.set(row.material_id, {
+          material_id: row.material_id,
+          material_name: row.material_name,
+          total_planned: Number(row.total_planned ?? 0),
+          total_ordered: Number(row.total_ordered ?? 0),
+        });
+      }
+      setEnvelopeByMaterial(envMap);
+      setApprovedQtyOverrides((overrideRes.data as ApprovalTask[]) ?? []);
 
       const masterId = masterHeaderRes.data?.[0]?.id ?? null;
       const ahsVersionId = masterHeaderRes.data?.[0]?.ahs_version_id ?? null;
@@ -189,13 +226,14 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
 
       setPoList(enriched);
 
-      // Load approval tasks for principal
+      // Load approval tasks for principal — price escalations (po_line) AND the
+      // new PO-quantity-gate escalations (po_qty_gate, from migration 071).
       if (role === 'principal') {
         const { data: tasks } = await supabase
           .from('approval_tasks')
           .select('*')
           .eq('project_id', project.id)
-          .eq('entity_type', 'po_line')
+          .in('entity_type', ['po_line', 'po_qty_gate'])
           .is('action', null);
 
         const pendingApprovals: PendingApproval[] = (tasks ?? []).map(t => {
@@ -316,6 +354,42 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     return preview;
   }, [draftBoqMode, draftBoqSummary, draftLines, materialScopeIndex, selectedBoqItem]);
 
+  // ── Hard PO quantity gate (client mirror of migration 071) ─────────
+  // Convert each draft line to BASE units and evaluate against the project
+  // envelope. Breaching materials block the plain "Buat PO" path until the admin
+  // escalates and retries with an approved override. Free-text lines never block.
+  const draftGate = useMemo(() => {
+    const lines: PoGateLine[] = draftLines
+      .filter(line => line.material_id || line.material_name.trim())
+      .filter(line => isPositiveNumber(line.quantity))
+      .map(line => ({
+        material_id: line.material_id || null,
+        material_name: line.material_name,
+        quantity: supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit),
+      }));
+    return evaluatePoQuantityGate(lines, envelopeByMaterial);
+  }, [draftLines, envelopeByMaterial]);
+
+  const breachByMaterial = useMemo(
+    () => new Map(draftGate.breaches.map(b => [b.material_id, b])),
+    [draftGate],
+  );
+
+  // Approved override tasks whose payload actually covers the current breaches.
+  const applicableOverrides = useMemo(() => {
+    if (!draftGate.hasBreach) return [] as ApprovalTask[];
+    return approvedQtyOverrides.filter(task =>
+      checkOverrideCoverage(draftGate.breaches, task.override_payload ?? []).covered,
+    );
+  }, [approvedQtyOverrides, draftGate]);
+
+  // Drop a stale selection if it no longer covers the (edited) breach set.
+  useEffect(() => {
+    if (selectedOverrideTaskId && !applicableOverrides.some(t => t.id === selectedOverrideTaskId)) {
+      setSelectedOverrideTaskId(null);
+    }
+  }, [applicableOverrides, selectedOverrideTaskId]);
+
   const resolveLineScopeTag = useCallback((po: POWithLines, line: PurchaseOrderLine): string => {
     if (line.scope_tag) return line.scope_tag;
 
@@ -401,6 +475,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     setMaterialSearch('');
     setBoqPickerVisible(false);
     setBoqSearch('');
+    setSelectedOverrideTaskId(null);
     setShowCreateForm(false);
   };
 
@@ -460,6 +535,22 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       }
     }
 
+    // Hard quantity gate: a breaching PO may only be created with an approved
+    // override that covers every breaching material (mirrors migration 071 — the
+    // server RAISEs PO_QTY_BREACH otherwise). Without one, route to escalation.
+    if (draftGate.hasBreach) {
+      const selected = selectedOverrideTaskId
+        ? approvedQtyOverrides.find(t => t.id === selectedOverrideTaskId)
+        : null;
+      const covered = selected
+        ? checkOverrideCoverage(draftGate.breaches, selected.override_payload ?? []).covered
+        : false;
+      if (!covered) {
+        toast('PO melebihi alokasi — eskalasi ke prinsipal, lalu buat ulang dengan override yang disetujui', 'critical');
+        return;
+      }
+    }
+
     try {
       const poNumber = getNextPurchaseOrderNumber(project.code, purchaseOrders);
       // BASE-unit canonical: office types batang qty × Rp/batang for rebar;
@@ -490,7 +581,9 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         scope_tag: draftScopePreviewByLine.get(line.id) ?? null,
       }));
 
-      // Atomic: header + lines + price_history + activity_log in ONE transaction (migration 045).
+      // Atomic: header + lines + price_history + activity_log in ONE transaction
+      // (migration 045). Migration 071 adds the server-side quantity gate; pass the
+      // approved override task id when retrying a breaching PO (else NULL).
       const { data: newPoId, error: poError } = await supabase.rpc('create_purchase_order', {
         p_project_id: project.id,
         p_po_number: poNumber,
@@ -504,6 +597,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         p_user_id: profile.id,
         p_activity_label: `${poNumber} dibuat: ${sanitizeText(draftSupplier)} — ${headerMaterialName}`,
         p_lines: lineRecords,
+        p_override_task_id: selectedOverrideTaskId,
       });
       if (poError || !newPoId) throw poError ?? new Error('PO header gagal dibuat');
 
@@ -512,7 +606,36 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       toast('PO berhasil dibuat', 'ok');
       resetCreateForm();
     } catch (err: any) {
-      toast(err.message ?? 'Gagal membuat PO', 'critical');
+      // The server gate RAISEs with a stable 'PO_QTY_BREACH:' prefix — surface it clearly.
+      const msg: string = err?.message ?? 'Gagal membuat PO';
+      toast(msg.includes('PO_QTY_BREACH') ? `Ditolak server: PO melebihi alokasi. ${msg.replace(/^.*PO_QTY_BREACH:\s*/, '')}` : msg, 'critical');
+    }
+  };
+
+  // ── Admin: escalate a QUANTITY breach to the principal ─────────────
+  // Creates a po_qty_gate approval task carrying the override payload contract.
+  // entity_id = project.id: the PO does not exist yet (creation was blocked), so
+  // there is no po_line to reference — the task is project-scoped correlation.
+  const handleEscalateQuantity = async () => {
+    if (!project || !profile) return;
+    if (!principalId) {
+      toast('Belum ada user principal yang ter-assign di proyek ini', 'critical');
+      return;
+    }
+    if (!draftGate.hasBreach) return;
+    try {
+      const { error: escalateError } = await supabase.from('approval_tasks').insert({
+        project_id: project.id,
+        entity_type: 'po_qty_gate',
+        entity_id: project.id,
+        assigned_to: principalId,
+        override_payload: buildOverridePayload(draftGate.breaches),
+        created_at: new Date().toISOString(),
+      });
+      if (escalateError) throw escalateError;
+      toast('Eskalasi kuantitas ke Prinsipal terkirim — tunggu persetujuan, lalu buat ulang PO', 'ok');
+    } catch (err: any) {
+      toast(err.message, 'critical');
     }
   };
 
@@ -853,6 +976,38 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                     <Text style={styles.autoScopeValue}>{draftScopePreviewByLine.get(line.id) ?? 'BELUM TERPETAKAN'}</Text>
                   </View>
                 </View>
+
+                {/* Hard quantity gate signal (mirrors migration 071). */}
+                {(() => {
+                  if (!line.material_id && !line.material_name.trim()) return null;
+                  const breach = line.material_id ? breachByMaterial.get(line.material_id) : undefined;
+                  if (breach) {
+                    return (
+                      <View style={[styles.gateChip, styles.gateChipCritical]}>
+                        <Ionicons name="alert-circle" size={14} color={COLORS.critical} />
+                        <Text style={styles.gateChipCriticalText}>
+                          Melebihi alokasi — diminta {breach.attempted.toLocaleString('id-ID')}, sisa {breach.remaining.toLocaleString('id-ID')} (kelebihan {breach.over.toLocaleString('id-ID')})
+                        </Text>
+                      </View>
+                    );
+                  }
+                  const measured = line.material_id ? envelopeByMaterial.get(line.material_id) : undefined;
+                  if (!measured || !(measured.total_planned > 0)) {
+                    return (
+                      <View style={[styles.gateChip, styles.gateChipWarning]}>
+                        <Ionicons name="help-circle" size={14} color={COLORS.warning} />
+                        <Text style={styles.gateChipWarningText}>Tidak terukur — tanpa alokasi pembanding</Text>
+                      </View>
+                    );
+                  }
+                  const remaining = measured.total_planned - measured.total_ordered;
+                  return (
+                    <View style={[styles.gateChip, styles.gateChipOk]}>
+                      <Ionicons name="checkmark-circle" size={14} color={COLORS.ok} />
+                      <Text style={styles.gateChipOkText}>Sisa alokasi {remaining.toLocaleString('id-ID')}</Text>
+                    </View>
+                  );
+                })()}
               </View>
             ))}
 
@@ -860,9 +1015,62 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
               <Text style={styles.ghostBtnText}>Tambah Line Material</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.saveBtn} onPress={handleCreatePO}>
-              <Text style={styles.saveBtnText}>Buat PO</Text>
-            </TouchableOpacity>
+            {draftGate.hasBreach ? (
+              <View style={styles.breachPanel}>
+                <View style={styles.breachHeaderRow}>
+                  <Ionicons name="alert-circle" size={16} color={COLORS.critical} />
+                  <Text style={styles.breachHeaderText}>PO melebihi alokasi material</Text>
+                </View>
+                <Text style={styles.breachBody}>
+                  {draftGate.breaches.map(b => `${b.material_name} (kelebihan ${b.over.toLocaleString('id-ID')})`).join(' · ')}
+                </Text>
+                <Text style={styles.breachHint}>
+                  Butuh persetujuan prinsipal. Eskalasikan, lalu buat ulang PO ini dengan memilih task yang sudah disetujui.
+                </Text>
+
+                {applicableOverrides.length > 0 && (
+                  <>
+                    <Text style={styles.fieldLabel}>Override prinsipal (disetujui)</Text>
+                    {applicableOverrides.map(task => (
+                      <TouchableOpacity
+                        key={task.id}
+                        style={[styles.overrideRow, selectedOverrideTaskId === task.id && styles.overrideRowActive]}
+                        onPress={() => setSelectedOverrideTaskId(selectedOverrideTaskId === task.id ? null : task.id)}
+                      >
+                        <Ionicons
+                          name={selectedOverrideTaskId === task.id ? 'radio-button-on' : 'radio-button-off'}
+                          size={18}
+                          color={selectedOverrideTaskId === task.id ? COLORS.primary : COLORS.textSec}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.overrideTitle}>
+                            Disetujui{task.acted_at ? ` ${new Date(task.acted_at).toLocaleDateString('id-ID')}` : ''}
+                          </Text>
+                          <Text style={styles.overrideMeta}>
+                            Otorisasi: {(task.override_payload ?? []).map(e => e.attempted_qty.toLocaleString('id-ID')).join(' · ')}
+                            {task.reason ? ` — ${task.reason}` : ''}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    ))}
+                  </>
+                )}
+
+                {selectedOverrideTaskId ? (
+                  <TouchableOpacity style={styles.saveBtn} onPress={handleCreatePO}>
+                    <Text style={styles.saveBtnText}>Buat PO dengan Override</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity style={[styles.saveBtn, { backgroundColor: COLORS.high }]} onPress={handleEscalateQuantity}>
+                    <Text style={styles.saveBtnText}>Eskalasi ke Prinsipal</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            ) : (
+              <TouchableOpacity style={styles.saveBtn} onPress={handleCreatePO}>
+                <Text style={styles.saveBtnText}>Buat PO</Text>
+              </TouchableOpacity>
+            )}
           </Card>
         </>
       ) : (
@@ -936,6 +1144,36 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       )}
 
       {approvals.map(task => {
+        // PO-quantity-gate escalation (migration 071): no PO exists yet — render the
+        // breaching-material payload the admin submitted, not a price check.
+        if (task.entity_type === 'po_qty_gate') {
+          const payload = task.override_payload ?? [];
+          return (
+            <Card key={task.id} borderColor={COLORS.critical}>
+              <View style={styles.lineHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.lineName}>Override kuantitas PO</Text>
+                  <Text style={styles.hint}>Admin meminta melebihi alokasi material berikut:</Text>
+                </View>
+                <Badge flag="CRITICAL" />
+              </View>
+              <View style={[styles.checksBox, { backgroundColor: flagBg('CRITICAL') }]}>
+                {payload.map((e, i) => (
+                  <View style={styles.checkRow} key={i}>
+                    <View style={[styles.checkDot, { backgroundColor: COLORS.critical }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.checkLabel}>{materialById.get(e.material_id)?.name ?? e.material_id}</Text>
+                      <Text style={[styles.checkMsg, { color: COLORS.critical }]}>
+                        Otorisasi {e.attempted_qty.toLocaleString('id-ID')} · sisa saat eskalasi {e.remaining_at_escalation.toLocaleString('id-ID')}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+              <ApprovalActions taskId={task.id} onAction={handleApprovalAction} />
+            </Card>
+          );
+        }
         const line = task.po?.lines[task.lineIndex ?? 0];
         const g2 = task.gate2Result;
         return (
@@ -1287,6 +1525,22 @@ const styles = StyleSheet.create({
   removeLineText: { color: COLORS.critical, fontSize: TYPE.xs, fontFamily: FONTS.bold, textTransform: 'uppercase' },
   escalateBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: COLORS.high, borderRadius: RADIUS, padding: 10, marginTop: SPACE.sm + 2 },
   escalateBtnText: { color: COLORS.textInverse, fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
+  gateChip: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginTop: SPACE.sm, paddingHorizontal: SPACE.sm, paddingVertical: SPACE.xs, borderRadius: RADIUS },
+  gateChipCritical: { backgroundColor: FLAG_BG.CRITICAL },
+  gateChipCriticalText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.critical, flexShrink: 1 },
+  gateChipWarning: { backgroundColor: FLAG_BG.WARNING },
+  gateChipWarningText: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.warning, flexShrink: 1 },
+  gateChipOk: { backgroundColor: FLAG_BG.OK },
+  gateChipOkText: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.ok, flexShrink: 1 },
+  breachPanel: { marginTop: SPACE.base, padding: SPACE.md, borderRadius: RADIUS, borderWidth: 1, borderColor: COLORS.critical, backgroundColor: FLAG_BG.CRITICAL },
+  breachHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  breachHeaderText: { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.critical },
+  breachBody: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.text, marginTop: SPACE.xs },
+  breachHint: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: SPACE.xs },
+  overrideRow: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: SPACE.sm, borderRadius: RADIUS, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.surface, marginTop: SPACE.xs },
+  overrideRowActive: { borderColor: COLORS.primary, backgroundColor: 'rgba(20,18,16,0.06)' },
+  overrideTitle: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
+  overrideMeta: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2 },
   emptyApproval: { alignItems: 'center', paddingVertical: 20 },
   approvalBox: { marginTop: 12 },
   expandBtn: { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: 12, alignItems: 'center' },

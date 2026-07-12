@@ -600,6 +600,10 @@ export interface ApprovalTask {
   reason: string | null;
   acted_at: string | null;
   created_at: string;
+  /** PO-quantity-gate override contract (entity_type='po_qty_gate'). Survives the
+   *  principal's verdict UPDATE (which only writes action/reason/acted_at) so
+   *  create_purchase_order can read it. See migration 071 + tools/poQuantityGate.ts. */
+  override_payload?: import('./poQuantityGate').OverridePayloadEntry[] | null;
 }
 
 // ─── Gate 5: Reporting & Reconciliation ───────────────────────────────
