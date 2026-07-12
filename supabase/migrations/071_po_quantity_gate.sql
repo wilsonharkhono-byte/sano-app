@@ -21,7 +21,11 @@
 --      override task (entity_type='po_qty_gate'). A dedicated column (not `reason`)
 --      because the principal's verdict UPDATE overwrites `reason` — the payload
 --      must survive approval so this RPC can read it.
---   2. create_purchase_order re-created with a NEW trailing param
+--   2. approval_tasks_office_insert (060) re-created with the verdict columns
+--      pinned to NULL on INSERT — closes a forgery path where an assigned office
+--      user could INSERT an already-"APPROVED" po_qty_gate task via REST, skipping
+--      the principal entirely. See "Override contract" below.
+--   3. create_purchase_order re-created with a NEW trailing param
 --      p_override_task_id UUID DEFAULT NULL and a per-material quantity gate.
 --
 -- ── The gate (step-by-step) ────────────────────────────────────────────────
@@ -45,14 +49,34 @@
 --   p_override_task_id must reference an approval_tasks row that:
 --     - exists AND project_id = p_project_id
 --     - entity_type = 'po_qty_gate'
---     - action = 'APPROVE'   (the principal's verdict; see Gate2Screen)
+--     - action IN ('APPROVE', 'OVERRIDE')   (the principal's verdict; see
+--       Gate2Screen. OVERRIDE is accepted belt-and-suspenders for any legacy
+--       row written before Gate2Screen restricted po_qty_gate cards to
+--       Approve/Reject only — see post-review fix below.)
 --   and whose override_payload contains each breaching material with
 --   attempted_qty >= this PO's attempted qty for that material. A material not in
 --   the payload, or approved for a smaller qty, stays uncovered → RAISE.
 --   Known v1 limitation (documented): an APPROVED override is not consumed/marked
 --   single-use, so it authorises up to attempted_qty and could in principle back a
 --   second identical over-order until a future task adds single-use enforcement.
---   The audit trail (approval_tasks row + activity_log) records each use.
+--   The audit trail (approval_tasks row + activity_log) records each use. A
+--   related consequence: because the ceiling is attempted_qty-based and remaining
+--   is not rechecked at use time, an override approved when remaining was R still
+--   passes after remaining shrinks — the effective overage can exceed what the
+--   principal saw at escalation.
+--
+--   Post-review (genuinely principal-gated): approval_tasks_office_insert (060)
+--   is re-created below with the verdict columns pinned — WITH CHECK now requires
+--   action IS NULL AND acted_at IS NULL on INSERT. An assigned office user can
+--   therefore only create a *pending* po_qty_gate task; the verdict (action/
+--   acted_at) can be written ONLY through 060's approval_tasks_principal_update
+--   policy (principal + assigned). Before this fix, the INSERT policy had no
+--   column constraints, so an assigned admin/estimator could INSERT a task with
+--   action='APPROVE' and an arbitrary override_payload directly via REST and feed
+--   its id to this RPC — zero principal involvement. Residual (design-accepted)
+--   bypass: office can still insert PO lines directly via 002's
+--   po_lines_office_insert, which this gate does not touch — that path was never
+--   in scope for the quantity gate and remains a known, accepted gap.
 --
 -- ── Error contract ─────────────────────────────────────────────────────────
 --   On an uncovered breach the RPC RAISEs with the default errcode (P0001 /
@@ -71,13 +95,20 @@
 --   needed or wanted here (a definer gate reading an invoker view would run the
 --   view as the definer, decoupling it from RLS — avoided).
 --
--- ── Overload hygiene ───────────────────────────────────────────────────────
---   Adding a trailing param changes the signature (12 args → 13). CREATE OR REPLACE
---   would leave BOTH the old 12-arg and new 13-arg functions installed as an
---   overload; a bare positional call could route to the stale one. So we DROP the
---   exact 055 12-arg signature FIRST, then CREATE the 13-arg version (same pattern
---   as 055's submit_receipt drop). The new last param has a DEFAULT, so existing
---   named-arg callers that pass only the original 12 keep resolving.
+-- ── Overload hygiene / re-paste safety ─────────────────────────────────────
+--   Adding a trailing param changes the signature (12 args → 13). A bare
+--   `CREATE OR REPLACE FUNCTION` with the new 13-arg signature would leave BOTH
+--   the old 12-arg and new 13-arg functions installed as an overload (Postgres
+--   treats a different arg list as a different function); a bare positional call
+--   could then route to the stale one. So we DROP the exact 055 12-arg signature
+--   FIRST (removes that stale overload), then `CREATE OR REPLACE FUNCTION` the
+--   13-arg version — NOT a bare `CREATE FUNCTION`, which fails with 42723
+--   ("function already exists") the second time this migration is pasted (same
+--   mistake 0529a4c fixed for 055's submit_receipt — this migration's header
+--   claimed re-paste-safety while the body wasn't; now it is: the DROP is a no-op
+--   on repaste since the 12-arg signature no longer exists, and CREATE OR REPLACE
+--   on the 13-arg signature is idempotent). The new last param has a DEFAULT, so
+--   existing named-arg callers that pass only the original 12 keep resolving.
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- 1. approval_tasks.override_payload — survives the principal's verdict UPDATE.
@@ -89,7 +120,34 @@ ALTER TABLE approval_tasks
   ADD COLUMN IF NOT EXISTS override_payload JSONB;
 
 -- ═══════════════════════════════════════════════════════════════════════
--- 2. create_purchase_order — DROP the 055 12-arg signature, re-create with the
+-- 2. approval_tasks_office_insert — pin the verdict columns so an INSERT can
+--    never masquerade as an already-decided task. Re-created from 060's exact
+--    policy body (is_office_role() + assigned-project subquery), with two ANDed
+--    pins added: action IS NULL AND acted_at IS NULL. A verdict (action/
+--    acted_at) can then be written ONLY through 060's
+--    approval_tasks_principal_update policy (principal + assigned) — the only
+--    path that can turn a po_qty_gate task into something this RPC will accept
+--    as p_override_task_id. Both app escalation writers already insert without
+--    action/acted_at (Gate2Screen.tsx handleEscalate / handleEscalateQuantity),
+--    so this is a pure tightening — no legitimate insert changes behavior.
+--    Idempotent: DROP POLICY IF EXISTS + CREATE POLICY, safe to re-paste.
+-- ═══════════════════════════════════════════════════════════════════════
+
+DROP POLICY IF EXISTS "approval_tasks_office_insert" ON approval_tasks;
+CREATE POLICY "approval_tasks_office_insert" ON approval_tasks
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    is_office_role()
+    AND project_id IN (
+      SELECT project_id FROM project_assignments WHERE user_id = auth.uid()
+    )
+    AND action IS NULL
+    AND acted_at IS NULL
+  );
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 3. create_purchase_order — DROP the 055 12-arg signature, re-create with the
 --    quantity gate + p_override_task_id. Header/lines/price_history/activity_log
 --    bodies are byte-identical to 055 (including request_line_id plumbing).
 -- ═══════════════════════════════════════════════════════════════════════
@@ -98,7 +156,7 @@ DROP FUNCTION IF EXISTS create_purchase_order(
   UUID, TEXT, TEXT, TEXT, TEXT, NUMERIC, TEXT, NUMERIC, DATE, UUID, TEXT, JSONB
 );
 
-CREATE FUNCTION create_purchase_order(
+CREATE OR REPLACE FUNCTION create_purchase_order(
   p_project_id      UUID,
   p_po_number       TEXT,
   p_boq_ref         TEXT,
@@ -148,8 +206,12 @@ BEGIN
     AND i.attempted > (env.total_planned - env.total_ordered);
 
   IF v_breaches IS NOT NULL AND jsonb_array_length(v_breaches) > 0 THEN
-    -- Load the override payload only from a VALID, APPROVED po_qty_gate task for
-    -- THIS project. A missing/mismatched/unapproved task leaves v_payload NULL,
+    -- Load the override payload only from a VALID, decided-in-the-principal's-
+    -- favor po_qty_gate task for THIS project. action IN ('APPROVE', 'OVERRIDE')
+    -- — OVERRIDE accepted belt-and-suspenders for any legacy row (Gate2Screen now
+    -- renders only Approve/Reject for po_qty_gate cards, so new rows are always
+    -- APPROVE, but a pre-existing OVERRIDE-verdict row must still be usable, not
+    -- a dead end). A missing/mismatched/HOLD/REJECT task leaves v_payload NULL,
     -- so every breach stays uncovered and we RAISE below.
     IF p_override_task_id IS NOT NULL THEN
       SELECT override_payload
@@ -158,7 +220,7 @@ BEGIN
       WHERE id = p_override_task_id
         AND project_id = p_project_id
         AND entity_type = 'po_qty_gate'
-        AND action = 'APPROVE';
+        AND action IN ('APPROVE', 'OVERRIDE');
     END IF;
 
     -- A breaching material passes ONLY if the payload lists it with an authorised

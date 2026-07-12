@@ -151,13 +151,18 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
           .from('v_material_envelope_status')
           .select('material_id, material_name, total_planned, total_ordered')
           .eq('project_id', project.id),
-        // APPROVED quantity-override tasks the admin can retry a breaching PO with.
+        // Decided-in-favor quantity-override tasks the admin can retry a breaching
+        // PO with. Gate2Screen now renders only Approve/Reject for po_qty_gate
+        // cards, so new rows are always APPROVE — OVERRIDE is included
+        // belt-and-suspenders so a legacy OVERRIDE-verdict row (from before this
+        // fix) stays usable instead of dead-ending. Mirrors migration 071's RPC
+        // check (action IN ('APPROVE', 'OVERRIDE')).
         supabase
           .from('approval_tasks')
           .select('*')
           .eq('project_id', project.id)
           .eq('entity_type', 'po_qty_gate')
-          .eq('action', 'APPROVE'),
+          .in('action', ['APPROVE', 'OVERRIDE']),
       ]);
 
       const assignmentIds = ((assignmentRes.data as any[]) ?? []).map(row => row.user_id);
@@ -1170,7 +1175,10 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   </View>
                 ))}
               </View>
-              <ApprovalActions taskId={task.id} onAction={handleApprovalAction} />
+              {/* HOLD/OVERRIDE both dead-end a po_qty_gate task (071's RPC + the
+                  override picker only ever treat APPROVE — or legacy OVERRIDE —
+                  as authorizing), so this card offers only a binary verdict. */}
+              <ApprovalActions taskId={task.id} onAction={handleApprovalAction} actions={['APPROVE', 'REJECT']} />
             </Card>
           );
         }
@@ -1379,9 +1387,19 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
 
 // ── Approval Actions Sub-component ──────────────────────────────────
 
-function ApprovalActions({ taskId, onAction }: {
+function ApprovalActions({ taskId, onAction, actions = ['APPROVE', 'HOLD', 'REJECT', 'OVERRIDE'] }: {
   taskId: string;
   onAction: (id: string, action: 'APPROVE' | 'REJECT' | 'HOLD' | 'OVERRIDE', reason: string) => void;
+  /**
+   * Which verdict buttons to render, in order. Defaults to all four (price
+   * escalations, entity_type='po_line'). po_qty_gate cards pass a restricted
+   * ['APPROVE', 'REJECT'] — HOLD/OVERRIDE both write a non-null `action`, which
+   * pulls the task out of the pending queue, but migration 071's RPC (and the
+   * client override picker) only ever treat action='APPROVE' (or, legacy,
+   * 'OVERRIDE') as authorizing — a HOLD verdict on a po_qty_gate task would
+   * otherwise permanently dead-end it with no way to retry or re-escalate.
+   */
+  actions?: Array<'APPROVE' | 'REJECT' | 'HOLD' | 'OVERRIDE'>;
 }) {
   const [reason, setReason] = useState('');
   const [expanded, setExpanded] = useState(false);
@@ -1392,6 +1410,13 @@ function ApprovalActions({ taskId, onAction }: {
       return;
     }
     onAction(taskId, action, reason);
+  };
+
+  const BUTTON_STYLE: Record<'APPROVE' | 'REJECT' | 'HOLD' | 'OVERRIDE', { color: string; label: string }> = {
+    APPROVE: { color: COLORS.ok, label: 'Approve' },
+    HOLD: { color: COLORS.warning, label: 'Hold' },
+    REJECT: { color: COLORS.critical, label: 'Reject' },
+    OVERRIDE: { color: COLORS.high, label: 'Override' },
   };
 
   return (
@@ -1410,18 +1435,15 @@ function ApprovalActions({ taskId, onAction }: {
             multiline
           />
           <View style={styles.actionRow}>
-            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: COLORS.ok }]} onPress={() => act('APPROVE')}>
-              <Text style={styles.actionBtnText}>Approve</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: COLORS.warning }]} onPress={() => act('HOLD')}>
-              <Text style={styles.actionBtnText}>Hold</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: COLORS.critical }]} onPress={() => act('REJECT')}>
-              <Text style={styles.actionBtnText}>Reject</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.actionBtn, { backgroundColor: COLORS.high }]} onPress={() => act('OVERRIDE')}>
-              <Text style={styles.actionBtnText}>Override</Text>
-            </TouchableOpacity>
+            {actions.map(action => (
+              <TouchableOpacity
+                key={action}
+                style={[styles.actionBtn, { backgroundColor: BUTTON_STYLE[action].color }]}
+                onPress={() => act(action)}
+              >
+                <Text style={styles.actionBtnText}>{BUTTON_STYLE[action].label}</Text>
+              </TouchableOpacity>
+            ))}
           </View>
         </>
       )}
