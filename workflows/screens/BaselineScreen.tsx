@@ -25,6 +25,15 @@ import {
   resolveAnomaly,
   deleteImportSession,
 } from '../../tools/baseline';
+import { previewNewMasterTotals, type RevisionContext } from '../../tools/publishBaselineV2';
+import {
+  computePlanRevisionDiff,
+  lowerBelowOrderedPct,
+  type PlanRevisionClassification,
+  type PlanRevisionDiffResult,
+  type PlanRevisionSummary,
+  type MaterialActivity,
+} from '../../tools/planRevisionDiff';
 import { parseBoqWorkbook, applyBoqGrouping, type ParsedWorkbook } from '../../tools/excelParser';
 import { parseBoqV2 } from '../../tools/boqParserV2';
 import { applyAIBoqGrouping } from '../../tools/ai-assist';
@@ -75,6 +84,44 @@ const MATERIAL_DROPDOWNS: Record<string, string[]> = {
   tier: MATERIAL_TIER_OPTIONS.map(o => o.value),
   unit: MATERIAL_UNIT_OPTIONS,
   category: MATERIAL_CATEGORY_OPTIONS,
+};
+
+/**
+ * Copy + severity for the four spec §5 re-publish warning classes (the only
+ * ones that need an explicit acknowledgment tick). Order matches
+ * PLAN_REVISION_WARNING_CLASSES. REMOVED_WITH_ACTIVITY and
+ * RAISE_ABSOLVING_OVERAGE carry the strongest copy per the spec.
+ */
+const REVISION_WARNING_META: Record<
+  string,
+  { label: string; copy: string; severity: 'critical' | 'warning' }
+> = {
+  RAISE_ABSOLVING_OVERAGE: {
+    label: 'Menaikkan plafon material yang sudah melebihi order',
+    copy:
+      'Rencana dinaikkan untuk menutup jumlah yang SUDAH melebihi order lama. ' +
+      'Perubahan ini dicatat dan diberitahukan ke principal.',
+    severity: 'critical',
+  },
+  RAISE: {
+    label: 'Menaikkan plafon material',
+    copy: 'Plafon rencana material dinaikkan dari baseline sebelumnya.',
+    severity: 'warning',
+  },
+  LOWER_BELOW_ORDERED: {
+    label: 'Menurunkan rencana di bawah jumlah yang sudah di-order',
+    copy:
+      'Rencana baru lebih kecil dari yang sudah di-PO — material akan tercatat ' +
+      'melebihi alokasi baru.',
+    severity: 'warning',
+  },
+  REMOVED_WITH_ACTIVITY: {
+    label: 'Menghapus material yang masih punya permintaan / PO / penerimaan',
+    copy:
+      'Material hilang dari BoQ baru padahal komitmennya masih berjalan — ' +
+      'komitmen jadi yatim (orphaned). Peringatan terkuat.',
+    severity: 'critical',
+  },
 };
 
 /**
@@ -212,6 +259,13 @@ export default function BaselineScreen({
   const [editDraft, setEditDraft] = useState<Record<string, string>>({});
   const [parseProgress, setParseProgress] = useState('');
   const [publishedJustNow, setPublishedJustNow] = useState(false);
+  // Re-publish diff-and-acknowledge (Task 2.11). When a re-publish touches
+  // materials-with-activity, the diff is computed client-side and rendered as a
+  // blocking checklist; publish is held until every warning class is ticked.
+  const [preparingDiff, setPreparingDiff] = useState(false);
+  const [diffPreview, setDiffPreview] = useState<PlanRevisionDiffResult | null>(null);
+  const [acknowledgedClasses, setAcknowledgedClasses] = useState<Set<PlanRevisionClassification>>(new Set());
+  const [materialNames, setMaterialNames] = useState<Map<string, string>>(new Map());
   const [lastPreview, setLastPreview] = useState<ParsePreview | null>(null);
   const [lastImportIssue, setLastImportIssue] = useState<string | null>(null);
   const [showAuditModal, setShowAuditModal] = useState(false);
@@ -625,13 +679,79 @@ export default function BaselineScreen({
     [stagingRows],
   );
 
+  // A short Indonesian sentence summarizing the diff → the PLAN_REVISED
+  // notification body (supervisors + principal FYI).
+  const buildNotifySummary = (s: PlanRevisionSummary): string => {
+    const parts: string[] = [];
+    if (s.raisedAbsolvingOverage) parts.push(`${s.raisedAbsolvingOverage} kenaikan menutup over-order`);
+    if (s.raised) parts.push(`${s.raised} dinaikkan`);
+    if (s.loweredBelowOrdered) parts.push(`${s.loweredBelowOrdered} turun di bawah order`);
+    if (s.removedWithActivity) parts.push(`${s.removedWithActivity} dihapus (masih ada aktivitas)`);
+    if (s.added) parts.push(`${s.added} ditambah`);
+    if (s.lowered) parts.push(`${s.lowered} diturunkan`);
+    return parts.length
+      ? `Rencana material diperbarui: ${parts.join(', ')}.`
+      : 'Rencana material proyek diperbarui.';
+  };
+
+  // Fetch the CURRENT published master's per-(material) planned lines. Presence
+  // of a master row is the re-publish signal (a plan exists to diff against).
+  const fetchCurrentMaster = async (
+    projectId: string,
+  ): Promise<{ isRepublish: boolean; lines: Array<{ material_id: string; planned_quantity: number }> }> => {
+    const { data: master } = await supabase
+      .from('project_material_master')
+      .select('id')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!master) return { isRepublish: false, lines: [] };
+    const { data: lines } = await supabase
+      .from('project_material_master_lines')
+      .select('material_id, planned_quantity')
+      .eq('master_id', master.id);
+    const rows = (lines ?? [])
+      .filter((l): l is { material_id: string; planned_quantity: number } => !!l.material_id)
+      .map(l => ({ material_id: l.material_id as string, planned_quantity: Number(l.planned_quantity) || 0 }));
+    return { isRepublish: true, lines: rows };
+  };
+
+  // Per-material activity + names from the project envelope view. "Activity" =
+  // any non-cancelled PO (total_ordered), non-rejected request (total_requested),
+  // or receipt (total_received > 0). One view read covers all three.
+  const fetchProjectActivity = async (
+    projectId: string,
+  ): Promise<{ activity: Map<string, MaterialActivity>; names: Map<string, string> }> => {
+    const activity = new Map<string, MaterialActivity>();
+    const names = new Map<string, string>();
+    const { data } = await supabase
+      .from('v_material_envelope_status')
+      .select('material_id, material_name, total_ordered, total_requested, total_received')
+      .eq('project_id', projectId);
+    for (const r of data ?? []) {
+      if (!r.material_id) continue;
+      activity.set(r.material_id as string, {
+        ordered: Number(r.total_ordered) || 0,
+        requested: Number(r.total_requested) || 0,
+        receiptsExist: (Number(r.total_received) || 0) > 0,
+      });
+      if (r.material_name) names.set(r.material_id as string, r.material_name as string);
+    }
+    return { activity, names };
+  };
+
+  // Phase 1 — validate, then on a re-publish compute the diff. If any warning
+  // class is present, hold and render the blocking checklist (doPublish is
+  // deferred to the "Konfirmasi & Publish" tap). Otherwise publish straight
+  // through — first publishes with no context, no-warning re-publishes with a
+  // context so the audit row is still written.
   const handlePublish = async () => {
     if (!activeSession || !project) return;
-    // Hard re-entry guard: `disabled={publishing}` only takes effect after the
-    // next render, so a rapid second tap (or a retry) can run this again before
-    // the button disables — producing TWO publishes → duplicate ahs_versions +
-    // a corrupt second master that the work-group envelope then reads.
-    if (publishing) return;
+    // Hard re-entry guard: `disabled` only takes effect after the next render,
+    // so a rapid second tap could run this again before the button disables —
+    // producing TWO publishes → duplicate ahs_versions + a corrupt master.
+    if (publishing || preparingDiff) return;
 
     const pending = stagingRows.filter(r => r.needs_review && r.review_status === 'PENDING');
     if (pending.length > 0) {
@@ -645,14 +765,68 @@ export default function BaselineScreen({
       return;
     }
 
+    setPreparingDiff(true);
+    try {
+      const current = await fetchCurrentMaster(project.id);
+      if (!current.isRepublish) {
+        // First publish — nothing revised, no acknowledgment needed.
+        await doPublish(undefined);
+        return;
+      }
+      const [preview, activityInfo] = await Promise.all([
+        previewNewMasterTotals(activeSession.id),
+        fetchProjectActivity(project.id),
+      ]);
+      if (preview.error) {
+        toast(`Gagal menghitung perubahan rencana: ${preview.error}`, 'critical');
+        return;
+      }
+      const newRows = [...preview.totals].map(([material_id, planned_quantity]) => ({ material_id, planned_quantity }));
+      const diff = computePlanRevisionDiff(newRows, current.lines, activityInfo.activity);
+      setMaterialNames(activityInfo.names);
+
+      if (diff.warningClasses.length > 0) {
+        // Hold — render the checklist. doPublish fires on Konfirmasi.
+        setAcknowledgedClasses(new Set());
+        setDiffPreview(diff);
+      } else {
+        // No warnings — still record the audit revision (empty or non-warning).
+        await doPublish(buildRevisionContext(diff));
+      }
+    } catch (err: any) {
+      toast(err?.message ?? 'Gagal menyiapkan re-publish', 'critical');
+    } finally {
+      setPreparingDiff(false);
+    }
+  };
+
+  const buildRevisionContext = (diff: PlanRevisionDiffResult): RevisionContext => ({
+    diffLines: diff.lines,
+    summary: diff.summary,
+    acknowledgedAt: new Date().toISOString(),
+    acknowledgedBy: profile?.id ?? null,
+    notifySummaryText: buildNotifySummary(diff.summary),
+  });
+
+  // Phase 2 — the actual publish. revisionContext is undefined for a first
+  // publish, set (acknowledged) for a re-publish.
+  const doPublish = async (revisionContext?: RevisionContext) => {
+    if (!activeSession || !project) return;
+    if (publishing) return;
+
     setPublishing(true);
     try {
-      const result = await publishBaseline(activeSession.id, project.id);
+      const result = await publishBaseline(
+        activeSession.id,
+        project.id,
+        revisionContext ? { revisionContext } : undefined,
+      );
       if (!result.success) {
         toast(`Publish gagal: ${result.error}`, 'critical');
         return;
       }
 
+      setDiffPreview(null);
       toast(`Baseline published: ${result.boqCount} BoQ, ${result.ahsCount} AHS, ${result.materialCount} material`, 'ok');
       setPublishedJustNow(true);
 
@@ -664,6 +838,14 @@ export default function BaselineScreen({
         const shown = codes.slice(0, 5).join(', ');
         const more = codes.length > 5 ? ` +${codes.length - 5} lagi` : '';
         toast(`${codes.length} baris volume 0 dilewati (tidak masuk baseline): ${shown}${more}`, 'warning');
+      }
+
+      // Non-fatal publish warnings (snapshot / plan-revision audit / notify).
+      // Closes the 2.10 gap where these were type-erased and never shown.
+      if (result.warnings && result.warnings.length > 0) {
+        const shown = result.warnings.slice(0, 3).join('; ');
+        const more = result.warnings.length > 3 ? ` +${result.warnings.length - 3} lagi` : '';
+        toast(`Peringatan publish: ${shown}${more}`, 'warning');
       }
 
       // Generate material master
@@ -680,6 +862,103 @@ export default function BaselineScreen({
     } finally {
       setPublishing(false);
     }
+  };
+
+  const toggleAckClass = (cls: PlanRevisionClassification) => {
+    setAcknowledgedClasses(prev => {
+      const next = new Set(prev);
+      if (next.has(cls)) next.delete(cls);
+      else next.add(cls);
+      return next;
+    });
+  };
+
+  const matName = (id: string) => materialNames.get(id) ?? id;
+  const fmtQty = (n: number) => Number(n.toFixed(2)).toLocaleString('id-ID');
+
+  // Blocking re-publish acknowledgment checklist (spec §5). One tickable card
+  // per present warning class; "Konfirmasi & Publish" stays disabled until every
+  // warning class is acknowledged. No-activity changes + non-warning recorded
+  // changes collapse into a summary line.
+  const renderRevisionChecklist = () => {
+    if (!diffPreview) return null;
+    const { warningClasses, lines, summary } = diffPreview;
+    const allAcknowledged = warningClasses.every(c => acknowledgedClasses.has(c));
+    const collapsedCount = summary.noActivityChanged;
+    const recordedNonWarning = summary.added + summary.lowered;
+
+    return (
+      <View style={styles.revisionPanel}>
+        <Text style={styles.revisionTitle}>Konfirmasi perubahan rencana</Text>
+        <Text style={styles.revisionIntro}>
+          Re-publish ini mengubah rencana material yang sudah punya permintaan / PO / penerimaan.
+          Centang setiap peringatan untuk melanjutkan.
+        </Text>
+
+        {warningClasses.map(cls => {
+          const meta = REVISION_WARNING_META[cls];
+          const affected = lines.filter(l => l.classification === cls);
+          const checked = acknowledgedClasses.has(cls);
+          const isCritical = meta.severity === 'critical';
+          return (
+            <View
+              key={cls}
+              style={[styles.revisionClassCard, isCritical && styles.revisionClassCardCritical]}
+            >
+              <TouchableOpacity style={styles.revisionCheckboxRow} onPress={() => toggleAckClass(cls)}>
+                <View style={[styles.revisionCheckbox, checked && styles.revisionCheckboxChecked]}>
+                  {checked && <Ionicons name="checkmark" size={16} color="#fff" />}
+                </View>
+                <Text style={styles.revisionClassLabel}>{meta.label}</Text>
+              </TouchableOpacity>
+              <Text style={styles.revisionClassCopy}>{meta.copy}</Text>
+              {affected.map(l => {
+                const suffix =
+                  cls === 'LOWER_BELOW_ORDERED'
+                    ? ` — akan tercatat ${lowerBelowOrderedPct(l)}% melebihi alokasi baru`
+                    : cls === 'REMOVED_WITH_ACTIVITY'
+                      ? ` — order ${fmtQty(l.ordered_at_time)}, permintaan ${fmtQty(l.requested_at_time)}`
+                      : '';
+                return (
+                  <Text key={l.material_id} style={styles.revisionMatLine}>
+                    • {matName(l.material_id)}: {fmtQty(l.planned_before)} → {fmtQty(l.planned_after)}{suffix}
+                  </Text>
+                );
+              })}
+            </View>
+          );
+        })}
+
+        {(recordedNonWarning > 0 || collapsedCount > 0) && (
+          <Text style={styles.revisionSummaryLine}>
+            {recordedNonWarning > 0
+              ? `${recordedNonWarning} perubahan lain dengan aktivitas dicatat (tanpa peringatan). `
+              : ''}
+            {collapsedCount > 0
+              ? `${collapsedCount} material berubah tanpa aktivitas (diringkas).`
+              : ''}
+          </Text>
+        )}
+
+        <View style={styles.revisionBtnRow}>
+          <TouchableOpacity
+            style={styles.revisionCancelBtn}
+            onPress={() => setDiffPreview(null)}
+            disabled={publishing}
+          >
+            <Text style={styles.revisionCancelText}>Batal</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.revisionConfirmBtn, (!allAcknowledged || publishing) && styles.revisionConfirmBtnDisabled]}
+            onPress={() => doPublish(buildRevisionContext(diffPreview))}
+            disabled={!allAcknowledged || publishing}
+          >
+            <Ionicons name="checkmark-circle" size={18} color="#fff" />
+            <Text style={styles.revisionConfirmText}>{publishing ? 'Publishing...' : 'Konfirmasi & Publish'}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
   };
 
   const confirmDeleteSession = (session: ImportSession) => {
@@ -1267,10 +1546,18 @@ export default function BaselineScreen({
                 })
               : visibleReviewRows.map(renderReviewCard)}
 
-            {stagingRows.length > 0 && (
-              <TouchableOpacity style={styles.publishBtn} onPress={handlePublish} disabled={publishing}>
+            {diffPreview && renderRevisionChecklist()}
+
+            {stagingRows.length > 0 && !diffPreview && (
+              <TouchableOpacity
+                style={styles.publishBtn}
+                onPress={handlePublish}
+                disabled={publishing || preparingDiff}
+              >
                 <Ionicons name="checkmark-circle" size={20} color="#fff" />
-                <Text style={styles.publishText}>{publishing ? 'Publishing...' : 'Publish Baseline'}</Text>
+                <Text style={styles.publishText}>
+                  {preparingDiff ? 'Menghitung perubahan...' : publishing ? 'Publishing...' : 'Publish Baseline'}
+                </Text>
               </TouchableOpacity>
             )}
           </>
@@ -1472,6 +1759,25 @@ const styles = StyleSheet.create({
   flagSaran: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2 },
   publishBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.sm, backgroundColor: COLORS.ok, borderRadius: RADIUS, padding: SPACE.base, marginTop: SPACE.base },
   publishText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.bold, textTransform: 'uppercase' },
+  // ── Re-publish diff-and-acknowledge checklist (Task 2.11) ──
+  revisionPanel: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.warning, borderRadius: RADIUS, padding: SPACE.base, marginTop: SPACE.base, gap: SPACE.sm },
+  revisionTitle: { color: COLORS.text, fontSize: TYPE.base, fontFamily: FONTS.bold },
+  revisionIntro: { color: COLORS.textSec, fontSize: TYPE.xs, marginBottom: SPACE.xs },
+  revisionClassCard: { borderWidth: 1, borderColor: COLORS.warning, borderRadius: RADIUS, padding: SPACE.sm, gap: SPACE.xs, backgroundColor: COLORS.bg },
+  revisionClassCardCritical: { borderColor: COLORS.critical },
+  revisionCheckboxRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm },
+  revisionCheckbox: { width: 22, height: 22, borderRadius: 4, borderWidth: 2, borderColor: COLORS.textSec, alignItems: 'center', justifyContent: 'center' },
+  revisionCheckboxChecked: { backgroundColor: COLORS.ok, borderColor: COLORS.ok },
+  revisionClassLabel: { flex: 1, color: COLORS.text, fontSize: TYPE.sm, fontFamily: FONTS.bold },
+  revisionClassCopy: { color: COLORS.textSec, fontSize: TYPE.xs },
+  revisionMatLine: { color: COLORS.text, fontSize: TYPE.xs, marginLeft: SPACE.xs },
+  revisionSummaryLine: { color: COLORS.textSec, fontSize: TYPE.xs, fontStyle: 'italic' },
+  revisionBtnRow: { flexDirection: 'row', gap: SPACE.sm, marginTop: SPACE.xs },
+  revisionCancelBtn: { paddingVertical: SPACE.sm, paddingHorizontal: SPACE.base, borderRadius: RADIUS, borderWidth: 1, borderColor: COLORS.border },
+  revisionCancelText: { color: COLORS.textSec, fontSize: TYPE.sm, fontFamily: FONTS.bold },
+  revisionConfirmBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.sm, backgroundColor: COLORS.ok, borderRadius: RADIUS, paddingVertical: SPACE.sm },
+  revisionConfirmBtnDisabled: { opacity: 0.45 },
+  revisionConfirmText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.bold, textTransform: 'uppercase' },
   anomalyBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(255,152,0,0.08)', borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: 14, marginBottom: SPACE.md },
   anomalyBannerTitle: { fontSize: TYPE.sm, fontFamily: FONTS.bold },
   severityDot: { width: 8, height: 8, borderRadius: 4 },

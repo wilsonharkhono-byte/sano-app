@@ -375,7 +375,7 @@ export function needsReview(confidence: number): boolean {
 import { type ParsedWorkbook } from './excelParser';
 import { parseBoqV2 } from './boqParserV2';
 import { detectBoqSheetOptionFromBuffer } from './boqParserV2/multiSheetScanner';
-import { publishBaselineV2 } from './publishBaselineV2';
+import { publishBaselineV2, type RevisionContext } from './publishBaselineV2';
 import type { ImportAnomaly } from './types';
 
 /**
@@ -555,7 +555,8 @@ export async function resolveAnomaly(
 export async function publishBaseline(
   sessionId: string,
   projectId: string,
-): Promise<{ success: boolean; error?: string; boqCount?: number; ahsCount?: number; materialCount?: number; masterLineCount?: number; unresolvedComponentCount?: number; skippedZeroPlanned?: string[] }> {
+  options?: { revisionContext?: RevisionContext },
+): Promise<{ success: boolean; error?: string; boqCount?: number; ahsCount?: number; materialCount?: number; masterLineCount?: number; unresolvedComponentCount?: number; skippedZeroPlanned?: string[]; quarantinedRows?: string[]; warnings?: string[] }> {
   try {
     const { data: session } = await supabase
       .from('import_sessions')
@@ -563,7 +564,7 @@ export async function publishBaseline(
       .eq('id', sessionId)
       .single();
     if (session?.parser_version === 'v2') {
-      const result = await publishBaselineV2(sessionId, projectId);
+      const result = await publishBaselineV2(sessionId, projectId, options);
       // publishBaselineV2 writes the baseline rows but does not touch the
       // session row, and this v2 branch returns before the v1 path's
       // updateImportStatus(...'PUBLISHED') below. Without this, a successfully
