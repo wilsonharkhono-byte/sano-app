@@ -106,6 +106,81 @@ describe('auditCriticalGateEvent', () => {
   });
 });
 
+describe('gate2_qty_breach payload contract (review fix 3a/3b)', () => {
+  // Pins the shape Gate2Screen relies on for its two gate2_qty_breach legs:
+  // entity_type is 'project' (a PO never gets created on either leg — the
+  // pre-flight block and the server RAISE both abort creation), and metadata
+  // carries the richer detail the review asked for instead of a bare count.
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('pre-flight leg: entity_type "project" + per-material attempted/remaining/over metadata', async () => {
+    const { anomalyInsert } = makeSupabaseMock();
+
+    await auditCriticalGateEvent('CRITICAL', {
+      project_id: 'proj-1',
+      user_id: 'user-1',
+      event_type: 'gate2_qty_breach',
+      entity_type: 'project',
+      entity_id: 'proj-1',
+      description: 'PO melebihi alokasi tanpa override: Semen',
+      metadata: {
+        supplier: 'Toko A',
+        breaches: [
+          { material_id: 'mat-1', material_name: 'Semen', attempted: 120, remaining: 100, over: 20 },
+        ],
+      },
+    });
+
+    expect(anomalyInsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'gate2_qty_breach',
+        entity_type: 'project',
+        entity_id: 'proj-1',
+        metadata: expect.objectContaining({
+          breaches: [
+            expect.objectContaining({
+              material_id: 'mat-1',
+              material_name: 'Semen',
+              attempted: 120,
+              remaining: 100,
+              over: 20,
+            }),
+          ],
+        }),
+      }),
+    );
+  });
+
+  it('server-RAISE leg: entity_type "project" + parsed server detail metadata', async () => {
+    const { anomalyInsert } = makeSupabaseMock();
+
+    await auditCriticalGateEvent('CRITICAL', {
+      project_id: 'proj-1',
+      user_id: 'user-1',
+      event_type: 'gate2_qty_breach',
+      entity_type: 'project',
+      entity_id: 'proj-1',
+      description: 'Server menolak PO melebihi alokasi (PO_QTY_BREACH)',
+      metadata: { supplier: 'Toko A', server_detail: 'Semen: attempted 120 > remaining 100' },
+    });
+
+    expect(anomalyInsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event_type: 'gate2_qty_breach',
+        entity_type: 'project',
+        metadata: expect.objectContaining({
+          server_detail: 'Semen: attempted 120 > remaining 100',
+        }),
+      }),
+    );
+  });
+});
+
 describe('auditRequestSubmitIfCritical', () => {
   const PARAMS = { projectId: 'proj-1', userId: 'user-1', requestHeaderId: 'hdr-1', summary: 'Semen x10' };
 

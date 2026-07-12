@@ -366,23 +366,27 @@ export async function getOpenAuditCases(projectId: string) {
 //
 // anomaly_events has NO status/resolution column (see migration 002: id,
 // project_id, event_type, entity_type, entity_id, severity, description,
-// created_at). "Unresolved/open" is therefore not expressible, so we use a
-// recency window instead: CRITICAL-severity events in the last 7 days, over
-// the indexed (project_id, created_at DESC) path.
+// created_at, plus 080's user_id/metadata). "Unresolved/open" is therefore
+// not expressible, so we use a recency window instead: CRITICAL-severity
+// events in the last 7 days, over the indexed (project_id, created_at DESC)
+// path.
 const CRITICAL_ANOMALY_WINDOW_DAYS = 7;
 
-export async function getRecentCriticalAnomalies(projectId: string) {
+// The tile only ever needs the COUNT (BerandaScreen sets a number, it never
+// rendered the rows) — head:true skips fetching row bodies entirely and asks
+// PostgREST for the count alone, cheaper than select('*') for a number the
+// caller immediately reduces to .length.
+export async function getRecentCriticalAnomalies(projectId: string): Promise<number> {
   const since = new Date(
     Date.now() - CRITICAL_ANOMALY_WINDOW_DAYS * 24 * 60 * 60 * 1000,
   ).toISOString();
 
-  const { data } = await supabase
+  const { count } = await supabase
     .from('anomaly_events')
-    .select('*')
+    .select('*', { count: 'exact', head: true })
     .eq('project_id', projectId)
     .eq('severity', 'CRITICAL')
-    .gte('created_at', since)
-    .order('created_at', { ascending: false });
+    .gte('created_at', since);
 
-  return data ?? [];
+  return count ?? 0;
 }

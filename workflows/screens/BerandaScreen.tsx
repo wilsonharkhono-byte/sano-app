@@ -44,7 +44,8 @@ export default function BerandaScreen() {
     if (!project || profile?.role === 'supervisor') return;
     // Reads anomaly_events (CRITICAL, last 7 days) — the table the 3.4 gate
     // wiring actually populates. The old audit_cases source was permanently 0.
-    getRecentCriticalAnomalies(project.id).then(rows => setCriticalAnomalies(rows.length));
+    // count-only query (head:true) — the tile only needs the number.
+    getRecentCriticalAnomalies(project.id).then(setCriticalAnomalies);
   }, [project, profile]);
 
   // ── Derived metrics ─────────────────────────────────────────────────────

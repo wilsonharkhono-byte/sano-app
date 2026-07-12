@@ -676,15 +676,28 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       if (!covered) {
         // Task 3.4: an admin attempting an over-envelope PO without a covering
         // approved override IS the audit-worthy event. Non-fatal, entity is the
-        // project (the PO does not exist — creation is blocked here).
+        // project — honest entity_type, since no PO exists (creation is
+        // blocked here). Review fix (3a/3b): entity_type 'project' (was
+        // 'purchase_order', which claimed a PO that was never created), plus
+        // per-material attempted-vs-remaining quantities from draftGate.breaches
+        // so the audit record carries the actual overage, not just a count.
         await auditCriticalGateEvent('CRITICAL', {
           project_id: project.id,
           user_id: profile.id,
           event_type: 'gate2_qty_breach',
-          entity_type: 'purchase_order',
+          entity_type: 'project',
           entity_id: project.id,
           description: `PO melebihi alokasi tanpa override: ${draftGate.breaches.map(b => b.material_name).join(', ')}`,
-          metadata: { supplier: sanitizeText(draftSupplier), breaches: draftGate.breaches.length },
+          metadata: {
+            supplier: sanitizeText(draftSupplier),
+            breaches: draftGate.breaches.map(b => ({
+              material_id: b.material_id,
+              material_name: b.material_name,
+              attempted: b.attempted,
+              remaining: b.remaining,
+              over: b.over,
+            })),
+          },
         });
         toast('PO melebihi alokasi — eskalasi ke prinsipal, lalu buat ulang dengan override yang disetujui', 'critical');
         return;
@@ -768,14 +781,20 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       // Task 3.4: the server rejected an over-envelope PO the client thought was
       // covered (e.g. a stale override) — that server-side abort is audit-worthy.
       if (msg.includes('PO_QTY_BREACH')) {
+        // Review fix (3a/3b): parse the server's own detail text (everything
+        // after the stable 'PO_QTY_BREACH:' prefix — same extraction the toast
+        // below already uses) into the event metadata, and use entity_type
+        // 'project' (was 'purchase_order') — honest, since the server aborted
+        // creation and no PO row exists.
+        const serverDetail = msg.replace(/^.*PO_QTY_BREACH:\s*/, '').trim();
         await auditCriticalGateEvent('CRITICAL', {
           project_id: project.id,
           user_id: profile.id,
           event_type: 'gate2_qty_breach',
-          entity_type: 'purchase_order',
+          entity_type: 'project',
           entity_id: project.id,
           description: `Server menolak PO melebihi alokasi (PO_QTY_BREACH)`,
-          metadata: { supplier: sanitizeText(draftSupplier) },
+          metadata: { supplier: sanitizeText(draftSupplier), server_detail: serverDetail },
         });
       }
       toast(msg.includes('PO_QTY_BREACH') ? `Ditolak server: PO melebihi alokasi. ${msg.replace(/^.*PO_QTY_BREACH:\s*/, '')}` : msg, 'critical');

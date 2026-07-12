@@ -1,0 +1,67 @@
+-- 080 — anomaly_events: add user_id + metadata (Task 3.4 review fix, CRITICAL)
+--
+-- ── The problem ─────────────────────────────────────────────────────────
+--   tools/audit.ts's writeAuditEvent (the single write path for anomaly_events,
+--   present since the file's creation) has ALWAYS inserted `user_id` and
+--   `metadata` into anomaly_events. But 002_*.sql:432-441's CREATE TABLE never
+--   defined those columns, and no migration since has added them. Every insert
+--   therefore sends two columns PostgREST doesn't recognise → PostgREST
+--   rejects the request with PGRST204 ("column not found in schema cache").
+--
+--   This was invisible until Task 3.4, because writeAuditEvent had ZERO
+--   callers before that task wired auditCriticalGateEvent /
+--   auditRequestSubmitIfCritical into PermintaanScreen / Gate2Screen /
+--   TerimaScreen. Those wrappers are deliberately non-fatal (the business flow
+--   must never block on an audit write), so the PGRST204 error is caught,
+--   console.warn'd, and swallowed — the request/PO/receipt succeeds normally
+--   and nothing on screen looks wrong. But every anomaly_events row silently
+--   fails to insert, which means:
+--     - the audit_list report's anomaly half is permanently empty,
+--     - the Beranda "Anomali Kritikal (7 hari)" tile (getRecentCriticalAnomalies)
+--       is permanently 0,
+--     - AND writeAuditEvent returns early on the anomalyError branch (line ~77),
+--       so the activity_log companion write for HIGH/CRITICAL severities is
+--       ALSO skipped — the in-app activity feed loses these events too.
+--   No exception surfaces anywhere; this is a fully silent data-loss bug.
+--
+-- ── The fix ──────────────────────────────────────────────────────────────
+--   Add the two columns writeAuditEvent has always tried to write:
+--     user_id  — UUID, references profiles(id), nullable (existing rows, if
+--                any ever landed via a service-role/Dashboard path that only
+--                had the six original columns, stay valid with user_id NULL).
+--     metadata — JSONB, nullable (writeAuditEvent already passes
+--                `event.metadata ?? null`, so a NULL default matches the
+--                caller's own fallback).
+--
+-- ── Idempotency ──────────────────────────────────────────────────────────
+--   ADD COLUMN IF NOT EXISTS ×2 — safe to re-paste any number of times, safe
+--   to run whether or not a previous partial apply already added one column.
+--
+-- ── RLS (043) — checked, no change needed ─────────────────────────────────
+--   043's anomaly_events policies (`anomaly_events_assigned` FOR ALL USING
+--   project_id IN assignments; `anomaly_events_office_all` FOR ALL USING
+--   is_office_role()) key ONLY on project_id. Neither policy references
+--   user_id or metadata, so adding these columns does not change who can
+--   read/write which rows — the existing project-scoped / office-global
+--   access model is untouched.
+--
+-- ── Other writer expectations — checked ───────────────────────────────────
+--   Repo-wide grep: tools/audit.ts's writeAuditEvent is the ONLY INSERT into
+--   anomaly_events. tools/reports.ts (generateAuditList, the SLA report) only
+--   SELECTs pre-existing columns (id, created_at, event_type, entity_type,
+--   entity_id, severity, description) — this migration doesn't touch those,
+--   so no reader breaks. No other table/trigger/view references
+--   anomaly_events.user_id or .metadata today; this migration exists purely
+--   to let the already-written INSERT succeed.
+--
+-- ── DEPLOY ORDER (read before shipping) ────────────────────────────────────
+--   PASTE 080 BEFORE SHIPPING THIS BUILD. Until applied, every CRITICAL gate
+--   event from Task 3.4's wiring (gate1_auto_hold, gate2_qty_breach,
+--   gate2_override, gate3_quantity_over_po) keeps silently vanishing — the
+--   business flows themselves are unaffected (non-fatal by design), but the
+--   audit trail and the Beranda anomaly tile stay permanently empty until this
+--   migration is applied. Apply via the Dashboard SQL Editor (remote migration
+--   history diverged — see project memory "Migration history divergence").
+
+ALTER TABLE anomaly_events ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES profiles(id);
+ALTER TABLE anomaly_events ADD COLUMN IF NOT EXISTS metadata JSONB;

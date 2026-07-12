@@ -555,6 +555,17 @@ export default function LaporanScreen() {
                 { type: 'site_change_log' as ReportType, label: 'Catatan Perubahan', icon: 'create', filtered: false },
                 { type: 'schedule_variance' as ReportType, label: 'Varians Jadwal', icon: 'calendar', filtered: false },
                 { type: 'weekly_digest' as ReportType, label: 'Rangkuman Mingguan', icon: 'newspaper', filtered: false },
+                // Review fix (task 2): the Beranda "Anomali Kritikal" tile deep-links
+                // here but this Export Center had no audit surface — a dead end.
+                // Role-gated to estimator/admin/principal (reuses isEstimatorOrAdmin,
+                // same set the Beranda tile itself is gated to); supervisors don't see
+                // this entry. Mirrors OfficeReportsScreen's existing audit_list entry,
+                // except filtered: false here — unlike OfficeReportsScreen, this screen
+                // has no filterFrom/filterTo date-range UI wired up, so filtered: true
+                // would show a funnel icon that does nothing.
+                ...(isEstimatorOrAdmin ? [
+                  { type: 'audit_list' as ReportType, label: 'Daftar Audit & Anomali', icon: 'shield-checkmark', filtered: false },
+                ] : []),
               ]).map(r => (
                 <TouchableOpacity
                   key={r.type}
