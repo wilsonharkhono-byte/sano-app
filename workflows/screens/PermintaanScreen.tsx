@@ -17,6 +17,7 @@ import { sanitizeText, isPositiveNumber } from '../../tools/validation';
 import { supplierToBase } from '../../tools/materialUnitConversion';
 import { applyCatalogMaterialToLine } from '../../tools/materialSelection';
 import { supabase } from '../../tools/supabase';
+import { auditRequestSubmitIfCritical } from '../../tools/audit';
 import { getWorkGroupEnvelope, getMaterialBudget, getMaterialDrift } from '../../tools/envelopes';
 import { evaluateTier4Untracked, evaluateTier3BudgetSoft } from '../../tools/budgetGate';
 import {
@@ -735,8 +736,21 @@ export default function PermintaanScreen() {
         },
       );
 
-      const { error: submitErr } = await supabase.rpc('submit_material_request', payload);
+      const { data: newHeaderId, error: submitErr } = await supabase.rpc('submit_material_request', payload);
       if (submitErr) throw submitErr;
+
+      // Task 3.4: the 033 triggers compute overall_flag server-side and the RPC
+      // returns only the header id, so read the flag back and, if it landed
+      // CRITICAL (Tier-1 envelope breach → AUTO_HOLD), record an audit event.
+      // Non-fatal: never blocks the submit's success path.
+      if (typeof newHeaderId === 'string') {
+        await auditRequestSubmitIfCritical({
+          projectId: project.id,
+          userId: profile.id,
+          requestHeaderId: newHeaderId,
+          summary: materialSummary,
+        });
+      }
 
       toast(
         `Permintaan material dikirim — ${validLines.length} line`,

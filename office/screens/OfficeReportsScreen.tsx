@@ -130,12 +130,12 @@ export default function OfficeReportsScreen() {
     { type: 'schedule_variance', label: 'Varians Jadwal', icon: 'calendar' },
     { type: 'weekly_digest', label: 'Rangkuman Mingguan', icon: 'newspaper' },
     { type: 'audit_list', label: 'Daftar Audit & Anomali', icon: 'shield-checkmark', filtered: true },
+    // Task 3.4: launched principal reports (input tables live). The retired
+    // telemetry reports (ai_usage_summary, tool_usage_summary,
+    // exception_handling_load) were removed — see the task report.
     ...(isPrincipal ? [
-      { type: 'ai_usage_summary' as ReportType, label: 'Penggunaan AI per User', icon: 'sparkles', filtered: true },
       { type: 'approval_sla_user' as ReportType, label: 'Approval SLA per User', icon: 'time', filtered: true },
       { type: 'operational_entry_discipline' as ReportType, label: 'Disiplin Entry Operasional', icon: 'create', filtered: true },
-      { type: 'tool_usage_summary' as ReportType, label: 'Penggunaan Laporan & AI', icon: 'analytics', filtered: true },
-      { type: 'exception_handling_load' as ReportType, label: 'Beban Penanganan Exception', icon: 'warning', filtered: true },
     ] : []),
   ];
 

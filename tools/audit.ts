@@ -14,6 +14,7 @@ export type AuditEventType =
   | 'gate1_warning_submitted'
   | 'gate2_price_escalation'
   | 'gate2_override'
+  | 'gate2_qty_breach'
   | 'gate3_quantity_over_po'
   | 'gate3_accumulation_breach'
   | 'gate4_progress_over_planned'
@@ -100,6 +101,75 @@ export async function writeAuditEvent(event: AuditEvent): Promise<AuditWriteResu
     const message = err instanceof Error ? err.message : String(err);
     console.error('Audit write failed:', message);
     // Never throw — audit must not block main flow; report via result instead.
+    return { ok: false, error: message };
+  }
+}
+
+// ── Critical-gate audit wiring (Task 3.4) ────────────────────────────
+// Thin, non-fatal wrappers the gate screens call so a CRITICAL gate outcome
+// lands in anomaly_events (which powers the audit_list report + the Beranda
+// "Kasus Audit Terbuka" surface). Every path here is best-effort: a failed
+// audit write is logged and swallowed, NEVER thrown, so the business flow
+// (submit request / create PO / receive) is never blocked by audit trouble.
+
+/**
+ * Emit a CRITICAL-severity gate audit event, but ONLY when `observedFlag` is
+ * 'CRITICAL'. Any other flag (OK/INFO/WARNING/HIGH/null) is a no-op. Fully
+ * non-fatal: never throws; failures are console.warn'd and returned as
+ * { ok:false }. This is the single testable seam behind the three gate wirings.
+ */
+export async function auditCriticalGateEvent(
+  observedFlag: FlagLevel | string | null | undefined,
+  event: Omit<AuditEvent, 'severity'>,
+): Promise<AuditWriteResult> {
+  if (observedFlag !== 'CRITICAL') return { ok: true };
+  try {
+    const result = await writeAuditEvent({ ...event, severity: 'CRITICAL' });
+    if (!result.ok) {
+      console.warn(`Critical gate audit failed (${event.event_type}):`, result.error);
+    }
+    return result;
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`Critical gate audit threw (${event.event_type}):`, message);
+    return { ok: false, error: message };
+  }
+}
+
+/**
+ * Request-time (Gate 1) wiring: after a transactional submit_material_request
+ * (073) returns the header id, read the SERVER-computed overall_flag (033
+ * triggers set it; the RPC returns only the id) and, if it landed CRITICAL
+ * (a Tier-1 envelope breach → AUTO_HOLD, see migration 056), record an audit
+ * event. Cheap (one indexed select) and non-fatal — any failure is swallowed.
+ */
+export async function auditRequestSubmitIfCritical(params: {
+  projectId: string;
+  userId: string;
+  requestHeaderId: string;
+  summary?: string;
+}): Promise<AuditWriteResult> {
+  try {
+    const { data, error } = await supabase
+      .from('material_request_headers')
+      .select('overall_flag')
+      .eq('id', params.requestHeaderId)
+      .single();
+    if (error) {
+      console.warn('auditRequestSubmitIfCritical flag read failed:', error.message);
+      return { ok: false, error: error.message };
+    }
+    return await auditCriticalGateEvent(data?.overall_flag, {
+      project_id: params.projectId,
+      user_id: params.userId,
+      event_type: 'gate1_auto_hold',
+      entity_type: 'material_request',
+      entity_id: params.requestHeaderId,
+      description: `Permintaan material CRITICAL (AUTO_HOLD)${params.summary ? `: ${params.summary}` : ''}`,
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn('auditRequestSubmitIfCritical threw:', message);
     return { ok: false, error: message };
   }
 }
@@ -274,22 +344,6 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
   }
 
   return anomalies;
-}
-
-// ── Report Generation History ─────────────────────────────────────────
-
-export async function getReportHistory(
-  projectId: string,
-  limit = 20,
-): Promise<Array<{ report_type: string; generated_by: string; generated_at: string; filters: object }>> {
-  const { data } = await supabase
-    .from('report_exports')
-    .select('report_type, generated_by, generated_at, filters')
-    .eq('project_id', projectId)
-    .order('generated_at', { ascending: false })
-    .limit(limit);
-
-  return data ?? [];
 }
 
 // ── Open Audit Cases Summary ─────────────────────────────────────────

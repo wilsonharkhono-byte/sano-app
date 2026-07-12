@@ -9,6 +9,7 @@ import MaterialNamingAssist from '../components/MaterialNamingAssist';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { supabase } from '../../tools/supabase';
+import { auditCriticalGateEvent } from '../../tools/audit';
 import { getNextPurchaseOrderNumber, getPurchaseOrderDisplayNumber } from '../../tools/purchaseOrders';
 import { isPoClosed } from '../../tools/poStatus';
 import { POStatus } from '../../tools/constants';
@@ -673,6 +674,18 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         ? checkOverrideCoverage(draftGate.breaches, selected.override_payload ?? []).covered
         : false;
       if (!covered) {
+        // Task 3.4: an admin attempting an over-envelope PO without a covering
+        // approved override IS the audit-worthy event. Non-fatal, entity is the
+        // project (the PO does not exist — creation is blocked here).
+        await auditCriticalGateEvent('CRITICAL', {
+          project_id: project.id,
+          user_id: profile.id,
+          event_type: 'gate2_qty_breach',
+          entity_type: 'purchase_order',
+          entity_id: project.id,
+          description: `PO melebihi alokasi tanpa override: ${draftGate.breaches.map(b => b.material_name).join(', ')}`,
+          metadata: { supplier: sanitizeText(draftSupplier), breaches: draftGate.breaches.length },
+        });
         toast('PO melebihi alokasi — eskalasi ke prinsipal, lalu buat ulang dengan override yang disetujui', 'critical');
         return;
       }
@@ -731,6 +744,20 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       });
       if (poError || !newPoId) throw poError ?? new Error('PO header gagal dibuat');
 
+      // Task 3.4: a breaching PO that was created ANYWAY (via an approved
+      // principal override) is an audit-worthy exception. Non-fatal.
+      if (draftGate.hasBreach && selectedOverrideTaskId) {
+        await auditCriticalGateEvent('CRITICAL', {
+          project_id: project.id,
+          user_id: profile.id,
+          event_type: 'gate2_override',
+          entity_type: 'purchase_order',
+          entity_id: String(newPoId),
+          description: `PO over-alokasi dibuat dengan override prinsipal: ${draftGate.breaches.map(b => b.material_name).join(', ')}`,
+          metadata: { override_task_id: selectedOverrideTaskId, breaches: draftGate.breaches.length },
+        });
+      }
+
       await refresh();
       await loadData();
       toast('PO berhasil dibuat', 'ok');
@@ -738,6 +765,19 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     } catch (err: any) {
       // The server gate RAISEs with a stable 'PO_QTY_BREACH:' prefix — surface it clearly.
       const msg: string = err?.message ?? 'Gagal membuat PO';
+      // Task 3.4: the server rejected an over-envelope PO the client thought was
+      // covered (e.g. a stale override) — that server-side abort is audit-worthy.
+      if (msg.includes('PO_QTY_BREACH')) {
+        await auditCriticalGateEvent('CRITICAL', {
+          project_id: project.id,
+          user_id: profile.id,
+          event_type: 'gate2_qty_breach',
+          entity_type: 'purchase_order',
+          entity_id: project.id,
+          description: `Server menolak PO melebihi alokasi (PO_QTY_BREACH)`,
+          metadata: { supplier: sanitizeText(draftSupplier) },
+        });
+      }
       toast(msg.includes('PO_QTY_BREACH') ? `Ditolak server: PO melebihi alokasi. ${msg.replace(/^.*PO_QTY_BREACH:\s*/, '')}` : msg, 'critical');
     }
   };

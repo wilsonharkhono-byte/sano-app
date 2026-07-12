@@ -16,9 +16,9 @@ import type {
   SiteChangeLogData,
   ScheduleVarianceData,
   WeeklyDigestData,
-  PayrollSupportData,
-  ClientChargeData,
   AuditListData,
+  ApprovalSLAData,
+  OperationalDisciplineData,
   ReportPhoto,
 } from './reportDataTypes';
 
@@ -521,80 +521,87 @@ function buildWeeklyDigest(wb: XLSX.WorkBook, d: WeeklyDigestData) {
   }
 }
 
-function buildPayrollSupportSummary(wb: XLSX.WorkBook, d: PayrollSupportData) {
+// Task 3.4: launched report — Approval SLA per User (input tables are live:
+// approval_tasks + the per-module review timestamps). Sheets mirror the
+// summary + detail pattern used by the other builders.
+function buildApprovalSLAUser(wb: XLSX.WorkBook, d: ApprovalSLAData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
-    ['Tujuan', d.purpose ?? '—'],
-    ['Total Entri', String(d.total_entries ?? 0)],
-    ['Total Qty', String(d.total_qty ?? 0)],
-    ['Jumlah Pelapor', String((d.by_reporter ?? []).length)],
+    ['Event Ditangani', String(d.summary?.handled_events ?? 0)],
+    ['Reviewer Aktif', String(d.summary?.active_reviewers ?? 0)],
+    ['Rata-rata SLA (jam)', String(d.summary?.avg_hours ?? 0)],
+    ['Median SLA (jam)', String(d.summary?.median_hours ?? 0)],
+    ['Lebih dari 24 jam', String(d.summary?.over_24h ?? 0)],
+    ['Item Pending', String(d.summary?.pending_items ?? 0)],
   ];
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
   wsSummary['!cols'] = colWidths(summaryRows);
   applyHeaderStyle(wsSummary, 0, 2);
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Payroll');
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan SLA');
 
-  const groupHeader = ['Pelapor', 'Jumlah Entri', 'Total Qty'];
-  const groupRows: SheetRow[] = (d.by_reporter ?? []).map((group) => [
-    group.reporter_name ?? '—',
-    String(group.entry_count ?? 0),
-    String(group.total_qty ?? 0),
+  const queueHeader = ['Antrean', 'Pending'];
+  const queueRows: SheetRow[] = (d.pending_by_queue ?? []).map((row) => [
+    row.label ?? '—',
+    String(row.count ?? 0),
   ]);
-  appendSheet(wb, 'Rekap Pelapor', groupHeader, groupRows);
+  appendSheet(wb, 'Pending per Antrean', queueHeader, queueRows);
 
-  const entryHeader = ['Tanggal', 'Pelapor', 'Kode BoQ', 'Item', 'Qty', 'Satuan', 'Lokasi', 'Catatan'];
-  const entryRows: SheetRow[] = (d.entries ?? []).map((entry) => [
-    entry.created_at ? new Date(entry.created_at).toLocaleDateString('id-ID') : '—',
-    entry.reporter_name ?? '—',
-    entry.boq_code ?? '—',
-    entry.boq_label ?? '—',
-    String(entry.quantity ?? 0),
-    entry.unit ?? '—',
-    entry.location ?? '—',
-    entry.note ?? '—',
+  const userHeader = ['User', 'Peran', 'Ditangani', 'Avg (jam)', 'Median (jam)', '>24 jam', 'Pending', 'Terakhir Aksi'];
+  const userRows: SheetRow[] = (d.users ?? []).map((u) => [
+    u.full_name ?? '—',
+    u.role ?? '—',
+    String(u.handled_events ?? 0),
+    String(u.avg_hours ?? 0),
+    String(u.median_hours ?? 0),
+    String(u.over_24h ?? 0),
+    String(u.assigned_pending ?? 0),
+    u.last_acted_at ? new Date(u.last_acted_at).toLocaleString('id-ID') : '—',
   ]);
-  appendSheet(wb, 'Entri Payroll Support', entryHeader, entryRows);
+  appendSheet(wb, 'SLA per User', userHeader, userRows);
+
+  const entityHeader = ['Jenis Approval', 'Event', 'Avg (jam)', 'Median (jam)'];
+  const entityRows: SheetRow[] = (d.entity_sla ?? []).map((row) => [
+    row.entity ?? '—',
+    String(row.handled_events ?? 0),
+    String(row.avg_hours ?? 0),
+    String(row.median_hours ?? 0),
+  ]);
+  appendSheet(wb, 'SLA per Jenis', entityHeader, entityRows);
 }
 
-function buildClientChargeReport(wb: XLSX.WorkBook, d: ClientChargeData) {
+// Task 3.4: launched report — Operational Entry Discipline (input table live:
+// activity_log + per-module entry/photo tables).
+function buildOperationalEntryDiscipline(wb: XLSX.WorkBook, d: OperationalDisciplineData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
-    ['Tujuan', d.purpose ?? '—'],
-    ['Estimasi VO Tagih', fmtRp(d.grand_total_est_cost ?? 0)],
-    ['Jumlah VO Terkait Klien', String(d.vo_charges?.items?.length ?? 0)],
-    ['Jumlah Support Progress', String(d.progress_support?.total_entries ?? 0)],
-    ['Total Qty Support Progress', String(d.progress_support?.total_qty ?? 0)],
+    ['Total Entry', String(d.summary?.total_entries ?? 0)],
+    ['User Aktif', String(d.summary?.active_users ?? 0)],
+    ['Entry Eligible Foto', String(d.summary?.photo_eligible_entries ?? 0)],
+    ['Foto Lengkap', String(d.summary?.photo_backed_entries ?? 0)],
+    ['Cakupan Foto', `${d.summary?.photo_coverage_pct ?? 0}%`],
   ];
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
   wsSummary['!cols'] = colWidths(summaryRows);
   applyHeaderStyle(wsSummary, 0, 2);
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Tagihan');
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Disiplin');
 
-  const voHeader = ['Tanggal', 'Lokasi', 'Deskripsi', 'Pemohon', 'Penyebab', 'Material Estimasi', 'Est. Biaya (Rp)', 'Status'];
-  const voRows: SheetRow[] = (d.vo_charges?.items ?? []).map((item) => [
-    item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID') : '—',
-    item.location ?? '—',
-    item.description ?? '—',
-    item.requested_by_name ?? '—',
-    (item.cause ?? '—').replace(/_/g, ' '),
-    item.est_material ?? '—',
-    item.est_cost != null ? String(item.est_cost) : '—',
-    (item.status ?? '—').replace(/_/g, ' '),
+  const moduleHeader = ['Modul', 'Jumlah Entry'];
+  const moduleRows: SheetRow[] = (d.by_module ?? []).map((row) => [
+    row.module ?? '—',
+    String(row.count ?? 0),
   ]);
-  appendSheet(wb, 'VO Tagihan Klien', voHeader, voRows);
+  appendSheet(wb, 'Distribusi Modul', moduleHeader, moduleRows);
 
-  const progressHeader = ['Tanggal', 'Pelapor', 'Kode BoQ', 'Item', 'Qty', 'Satuan', 'Lokasi', 'Catatan'];
-  const progressRows: SheetRow[] = (d.progress_support?.items ?? []).map((item) => [
-    item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID') : '—',
-    item.reporter_name ?? '—',
-    item.boq_code ?? '—',
-    item.boq_label ?? '—',
-    String(item.quantity ?? 0),
-    item.unit ?? '—',
-    item.location ?? '—',
-    item.note ?? '—',
+  const userHeader = ['User', 'Peran', 'Total Entry', 'Hari Aktif', 'Cakupan Foto', 'Aktivitas Terakhir'];
+  const userRows: SheetRow[] = (d.users ?? []).map((u) => [
+    u.full_name ?? '—',
+    u.role ?? '—',
+    String(u.total_entries ?? 0),
+    String(u.active_days ?? 0),
+    u.photo_coverage_pct != null ? `${u.photo_coverage_pct}%` : '—',
+    u.last_activity ? new Date(u.last_activity).toLocaleString('id-ID') : '—',
   ]);
-  appendSheet(wb, 'Support Progress', progressHeader, progressRows);
+  appendSheet(wb, 'Disiplin per User', userHeader, userRows);
 }
 
 function buildAuditList(wb: XLSX.WorkBook, d: AuditListData) {
@@ -650,9 +657,9 @@ export async function exportReportToExcel(
     case 'site_change_log':    buildSiteChangeLog(wb, payload.data as SiteChangeLogData); break;
     case 'schedule_variance':  buildScheduleVariance(wb, payload.data as ScheduleVarianceData); break;
     case 'weekly_digest':      buildWeeklyDigest(wb, payload.data as WeeklyDigestData); break;
-    case 'payroll_support_summary': buildPayrollSupportSummary(wb, payload.data as PayrollSupportData); break;
-    case 'client_charge_report': buildClientChargeReport(wb, payload.data as ClientChargeData); break;
     case 'audit_list':         buildAuditList(wb, payload.data as AuditListData); break;
+    case 'approval_sla_user':  buildApprovalSLAUser(wb, payload.data as ApprovalSLAData); break;
+    case 'operational_entry_discipline': buildOperationalEntryDiscipline(wb, payload.data as OperationalDisciplineData); break;
   }
 
   const baseWorkbookBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });

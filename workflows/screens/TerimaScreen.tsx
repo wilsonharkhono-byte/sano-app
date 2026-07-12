@@ -19,6 +19,7 @@ import { buildReceiptLinesPayload, type ReceiveLineDraft } from '../../tools/rec
 import { generateClientReceiptId } from '../../tools/receiptIdempotency';
 import { poStatusLabel, isPoReceivable, isPoClosed } from '../../tools/poStatus';
 import { supabase } from '../../tools/supabase';
+import { auditCriticalGateEvent } from '../../tools/audit';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import type { GateResult, PurchaseOrder } from '../../tools/types';
 
@@ -442,6 +443,18 @@ export default function TerimaScreen() {
         p_activity_label: `${selectedPO!.material_name} — ${linePayload.length} baris (${receivedBase.toLocaleString('id-ID')} ${selectedPO!.unit}) diterima (${isFinal ? 'Final' : 'Parsial'})`,
       });
       if (rcptErr || !receiptId) throw rcptErr || new Error('Receipt insert failed');
+
+      // Task 3.4: a CRITICAL gate-3 outcome (received qty over the PO) is an
+      // audit-worthy over-receive. Non-fatal — never blocks the receipt.
+      await auditCriticalGateEvent(gateResult?.flag, {
+        project_id: project!.id,
+        user_id: profile!.id,
+        event_type: 'gate3_quantity_over_po',
+        entity_type: 'receipt',
+        entity_id: String(receiptId),
+        description: `Penerimaan melebihi PO ${getPurchaseOrderDisplayNumber(selectedPO!)} — ${selectedPO!.material_name}`,
+        metadata: { po_id: poId, gate3: gateResult ?? null },
+      });
 
       resetForm();
       await loadReceiptHistory(poId);

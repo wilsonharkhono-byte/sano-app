@@ -173,66 +173,6 @@ export interface WeeklyDigestData {
   overall_progress: number;
 }
 
-// ── Payroll Support Summary ────────────────────────────────────────
-export interface PayrollSupportData {
-  purpose: string;
-  total_entries: number;
-  total_qty: number;
-  by_reporter: Array<{
-    reporter_name: string;
-    total_qty: number;
-    entry_count: number;
-  }>;
-  entries: Array<{
-    id: string;
-    created_at: string;
-    boq_code: string;
-    boq_label: string;
-    quantity: number;
-    unit: string;
-    location: string | null;
-    note: string | null;
-    reporter_name: string;
-  }>;
-  date_range: { from: string | null; to: string | null };
-}
-
-// ── Client Charge Report ───────────────────────────────────────────
-export interface ClientChargeData {
-  purpose: string;
-  vo_charges: {
-    items: Array<{
-      id: string;
-      created_at: string;
-      location: string | null;
-      description: string | null;
-      requested_by_name: string | null;
-      cause: string;
-      est_material: number | null;
-      est_cost: number | null;
-      status: string;
-    }>;
-    total_est_cost: number;
-  };
-  progress_support: {
-    items: Array<{
-      id: string;
-      created_at: string;
-      boq_code: string;
-      boq_label: string;
-      quantity: number;
-      unit: string;
-      location: string | null;
-      reporter_name: string;
-      note?: string | null;
-    }>;
-    total_entries: number;
-    total_qty: number;
-  };
-  grand_total_est_cost: number;
-  date_range: { from: string | null; to: string | null };
-}
-
 // ── Audit List ─────────────────────────────────────────────────────
 export interface AuditListData {
   anomalies: {
@@ -261,40 +201,6 @@ export interface AuditListData {
       notes: string | null;
     }>;
   };
-  date_range: { from: string | null; to: string | null };
-}
-
-// ── AI Usage Summary ───────────────────────────────────────────────
-export interface AIUsageData {
-  summary: {
-    total_interactions: number;
-    active_users: number;
-    total_input_tokens: number;
-    total_output_tokens: number;
-    total_tokens: number;
-    haiku_count: number;
-    sonnet_count: number;
-  };
-  users: Array<{
-    user_id: string;
-    full_name: string;
-    role: string;
-    interaction_count: number;
-    input_tokens: number;
-    output_tokens: number;
-    total_tokens: number;
-    haiku_count: number;
-    sonnet_count: number;
-    active_days: number;
-    last_used_at: string | null;
-  }>;
-  usage_by_day: Array<{
-    date: string;
-    interaction_count: number;
-    input_tokens: number;
-    output_tokens: number;
-    total_tokens: number;
-  }>;
   date_range: { from: string | null; to: string | null };
 }
 
@@ -355,57 +261,6 @@ export interface OperationalDisciplineData {
   date_range: { from: string | null; to: string | null };
 }
 
-// ── Tool Usage Summary ─────────────────────────────────────────────
-export interface ToolUsageData {
-  summary: {
-    total_exports: number;
-    export_users: number;
-    total_ai_chats: number;
-    ai_users: number;
-    total_ai_tokens: number;
-  };
-  top_report_types: Array<{ report_type: string; count: number }>;
-  users: Array<{
-    user_id: string;
-    full_name: string;
-    role: string;
-    export_count: number;
-    ai_chat_count: number;
-    total_tokens: number;
-    haiku_count: number;
-    sonnet_count: number;
-    last_seen: string | null;
-  }>;
-  note: string;
-  date_range: { from: string | null; to: string | null };
-}
-
-// ── Exception Handling Load ────────────────────────────────────────
-export interface ExceptionHandlingData {
-  summary: {
-    auto_hold_requests: number;
-    rejected_requests: number;
-    rejected_vo: number;
-    rejected_mtn: number;
-    hold_reject_override_actions: number;
-    anomalies_total: number;
-    anomalies_high_or_critical: number;
-    audit_cases_open: number;
-  };
-  users: Array<{
-    user_id: string;
-    full_name: string;
-    role: string;
-    generated_count: number;
-    handled_count: number;
-    hold_reject_override: number;
-    last_touch: string | null;
-  }>;
-  anomaly_breakdown: Array<{ event_type: string; count: number }>;
-  note: string;
-  date_range: { from: string | null; to: string | null };
-}
-
 /**
  * Union of all report data types. Use as a discriminated lookup:
  *   type DataFor<T extends ReportType> = ReportDataMap[T]
@@ -417,12 +272,7 @@ export interface ReportDataMap {
   site_change_log: SiteChangeLogData;
   schedule_variance: ScheduleVarianceData;
   weekly_digest: WeeklyDigestData;
-  payroll_support_summary: PayrollSupportData;
-  client_charge_report: ClientChargeData;
   audit_list: AuditListData;
-  ai_usage_summary: AIUsageData;
   approval_sla_user: ApprovalSLAData;
   operational_entry_discipline: OperationalDisciplineData;
-  tool_usage_summary: ToolUsageData;
-  exception_handling_load: ExceptionHandlingData;
 }

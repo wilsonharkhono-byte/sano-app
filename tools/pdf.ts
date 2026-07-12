@@ -14,14 +14,9 @@ import type {
   SiteChangeLogData,
   ScheduleVarianceData,
   WeeklyDigestData,
-  PayrollSupportData,
-  ClientChargeData,
   AuditListData,
-  AIUsageData,
   ApprovalSLAData,
   OperationalDisciplineData,
-  ToolUsageData,
-  ExceptionHandlingData,
   ReportPhoto,
 } from './reportDataTypes';
 import { SanoDoc, C, FS, PDF } from './pdf-layout';
@@ -347,129 +342,6 @@ async function buildWeeklyDigest(sd: SanoDoc, d: WeeklyDigestData): Promise<void
   }
 }
 
-async function buildPayrollSupportSummary(sd: SanoDoc, d: PayrollSupportData): Promise<void> {
-  sd.kpiRow([
-    { value: String(d.total_entries ?? 0), label: 'Total Entri', color: C.info },
-    { value: String(d.total_qty ?? 0), label: 'Total Qty', color: C.accent },
-    { value: String((d.by_reporter ?? []).length), label: 'Jumlah Pelapor', color: C.ok },
-  ]);
-
-  sd.sectionTitle('Ringkasan');
-  sd.metricRow('Tujuan', d.purpose ?? '—');
-  sd.metricRow('Total Entri', String(d.total_entries ?? 0));
-  sd.metricRow('Total Qty', String(d.total_qty ?? 0));
-
-  if ((d.by_reporter ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Rekap per Pelapor');
-    sd.table(
-      [
-        { header: 'Pelapor', width: 0.50 },
-        { header: 'Jumlah Entri', width: 0.25, align: 'right' },
-        { header: 'Total Qty', width: 0.25, align: 'right' },
-      ],
-      (d.by_reporter ?? []).map((g) => [
-        g.reporter_name ?? '—',
-        String(g.entry_count ?? 0),
-        String(g.total_qty ?? 0),
-      ]),
-    );
-  }
-
-  if ((d.entries ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Detail Entri');
-    sd.table(
-      [
-        { header: 'Tgl', width: 0.08 },
-        { header: 'Pelapor', width: 0.14 },
-        { header: 'Kode', width: 0.09 },
-        { header: 'Item', width: 0.22 },
-        { header: 'Qty', width: 0.07, align: 'right' },
-        { header: 'Sat.', width: 0.06 },
-        { header: 'Lokasi', width: 0.14 },
-        { header: 'Catatan', width: 0.20 },
-      ],
-      (d.entries ?? []).slice(0, 100).map((e) => [
-        fmtDateShort(e.created_at),
-        e.reporter_name ?? '—',
-        e.boq_code ?? '—',
-        e.boq_label ?? '—',
-        String(e.quantity ?? 0),
-        e.unit ?? '—',
-        e.location ?? '—',
-        e.note ?? '—',
-      ]),
-    );
-  }
-}
-
-async function buildClientChargeReport(sd: SanoDoc, d: ClientChargeData): Promise<void> {
-  sd.kpiRow([
-    { value: fmtRp(d.grand_total_est_cost ?? 0), label: 'Est. Tagihan VO', color: C.critical },
-    { value: String(d.vo_charges?.items?.length ?? 0), label: 'VO Klien', color: C.warning },
-    { value: String(d.progress_support?.total_entries ?? 0), label: 'Support Entries', color: C.info },
-  ]);
-
-  sd.sectionTitle('Ringkasan Tagihan');
-  sd.metricRow('Tujuan', d.purpose ?? '—');
-  sd.metricRow('Estimasi VO Tagih', fmtRp(d.grand_total_est_cost ?? 0), { valueColor: C.critical });
-  sd.metricRow('Jumlah VO Terkait Klien', String(d.vo_charges?.items?.length ?? 0));
-  sd.metricRow('Support Progress Entries', String(d.progress_support?.total_entries ?? 0));
-
-  if ((d.vo_charges?.items ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('VO Tagihan Klien');
-    sd.table(
-      [
-        { header: 'Tgl', width: 0.08 },
-        { header: 'Lokasi', width: 0.14 },
-        { header: 'Deskripsi', width: 0.26 },
-        { header: 'Pemohon', width: 0.13 },
-        { header: 'Penyebab', width: 0.11 },
-        { header: 'Est. Biaya', width: 0.14, align: 'right' },
-        { header: 'Status', width: 0.14 },
-      ],
-      (d.vo_charges.items ?? []).map((item) => [
-        fmtDateShort(item.created_at),
-        item.location ?? '—',
-        item.description ?? '—',
-        item.requested_by_name ?? '—',
-        (item.cause ?? '—').replace(/_/g, ' '),
-        item.est_cost != null ? fmtRp(item.est_cost) : '—',
-        (item.status ?? '—').replace(/_/g, ' '),
-      ]),
-    );
-  }
-
-  if ((d.progress_support?.items ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Support Progress');
-    sd.table(
-      [
-        { header: 'Tgl', width: 0.08 },
-        { header: 'Pelapor', width: 0.14 },
-        { header: 'Kode', width: 0.09 },
-        { header: 'Item', width: 0.22 },
-        { header: 'Qty', width: 0.07, align: 'right' },
-        { header: 'Sat.', width: 0.06 },
-        { header: 'Lokasi', width: 0.14 },
-        { header: 'Catatan', width: 0.20 },
-      ],
-      (d.progress_support.items ?? []).slice(0, 80).map((item) => [
-        fmtDateShort(item.created_at),
-        item.reporter_name ?? '—',
-        item.boq_code ?? '—',
-        item.boq_label ?? '—',
-        String(item.quantity ?? 0),
-        item.unit ?? '—',
-        item.location ?? '—',
-        item.note ?? '—',
-      ]),
-    );
-  }
-}
-
 async function buildAuditList(sd: SanoDoc, d: AuditListData): Promise<void> {
   sd.kpiRow([
     { value: String(d.anomalies?.total ?? 0), label: 'Total Anomali', color: C.warning },
@@ -524,56 +396,6 @@ async function buildAuditList(sd: SanoDoc, d: AuditListData): Promise<void> {
         item.entity_id ?? '—',
         (item.status ?? '—').replace(/_/g, ' '),
         item.notes ?? '—',
-      ]),
-    );
-  }
-}
-
-async function buildAIUsageSummary(sd: SanoDoc, d: AIUsageData): Promise<void> {
-  sd.kpiRow([
-    { value: String(d.summary.total_interactions ?? 0), label: 'Total Chat', color: C.info },
-    { value: String(d.summary.active_users ?? 0), label: 'User Aktif', color: C.ok },
-    { value: `${Math.round((d.summary.total_tokens ?? 0) / 1000)}k`, label: 'Total Token', color: C.accent },
-  ]);
-
-  sd.sectionTitle('Ringkasan Penggunaan AI');
-  sd.metricRow('Total Chat (30 hari)', String(d.summary.total_interactions ?? 0));
-  sd.metricRow('User Aktif', String(d.summary.active_users ?? 0));
-  sd.metricRow('Total Token', `${Math.round((d.summary.total_tokens ?? 0) / 1000)}k`);
-  sd.metricRow('Chat Sonnet', String(d.summary.sonnet_count ?? 0));
-
-  if ((d.users ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Penggunaan per User');
-    sd.table(
-      [
-        { header: 'User', width: 0.30 },
-        { header: 'Jumlah Chat', width: 0.20, align: 'right' },
-        { header: 'Total Token', width: 0.25, align: 'right' },
-        { header: 'Chat Sonnet', width: 0.25, align: 'right' },
-      ],
-      (d.users ?? []).map((u) => [
-        u.full_name ?? '—',
-        String(u.interaction_count ?? 0),
-        String(u.total_tokens ?? 0),
-        String(u.sonnet_count ?? 0),
-      ]),
-    );
-  }
-
-  if ((d.usage_by_day ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Tren Harian');
-    sd.table(
-      [
-        { header: 'Tanggal', width: 0.30 },
-        { header: 'Jumlah Chat', width: 0.35, align: 'right' },
-        { header: 'Token', width: 0.35, align: 'right' },
-      ],
-      (d.usage_by_day ?? []).slice(0, 30).map((row) => [
-        fmtDate(row.date),
-        String(row.interaction_count ?? 0),
-        String(row.total_tokens ?? 0),
       ]),
     );
   }
@@ -648,87 +470,6 @@ async function buildOperationalEntryDiscipline(sd: SanoDoc, d: OperationalDiscip
     );
   }
 }
-
-async function buildToolUsageSummary(sd: SanoDoc, d: ToolUsageData): Promise<void> {
-  sd.kpiRow([
-    { value: String(d.summary.total_exports ?? 0), label: 'Total Export', color: C.info },
-    { value: String(d.summary.total_ai_chats ?? 0), label: 'AI Chat', color: C.accent },
-    { value: String(d.summary.export_users ?? 0), label: 'User Export', color: C.ok },
-  ]);
-
-  sd.sectionTitle('Penggunaan Laporan & AI');
-  sd.metricRow('Total Export Laporan', String(d.summary.total_exports ?? 0));
-  sd.metricRow('Total AI Chat', String(d.summary.total_ai_chats ?? 0));
-  sd.metricRow('User yang Pernah Export', String(d.summary.export_users ?? 0));
-
-  if ((d.top_report_types ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Export per Tipe Laporan');
-    sd.table(
-      [
-        { header: 'Tipe Laporan', width: 0.50 },
-        { header: 'Jumlah Export', width: 0.50, align: 'right' },
-      ],
-      (d.top_report_types ?? []).map((r) => [
-        r.report_type ?? '—',
-        String(r.count ?? 0),
-      ]),
-    );
-  }
-}
-
-async function buildExceptionHandlingLoad(sd: SanoDoc, d: ExceptionHandlingData): Promise<void> {
-  sd.kpiRow([
-    { value: String(d.summary.auto_hold_requests ?? 0), label: 'Hold', color: C.warning },
-    { value: String((d.summary.rejected_requests ?? 0) + (d.summary.rejected_vo ?? 0) + (d.summary.rejected_mtn ?? 0)), label: 'Reject', color: C.critical },
-    { value: String(d.summary.hold_reject_override_actions ?? 0), label: 'Override', color: C.info },
-  ]);
-
-  sd.sectionTitle('Beban Penanganan Exception');
-  sd.metricRow('Total Hold', String(d.summary.auto_hold_requests ?? 0), { valueColor: C.warning });
-  sd.metricRow('Total Reject', String((d.summary.rejected_requests ?? 0) + (d.summary.rejected_vo ?? 0) + (d.summary.rejected_mtn ?? 0)), { valueColor: C.critical });
-  sd.metricRow('Total Override', String(d.summary.hold_reject_override_actions ?? 0));
-
-  if ((d.anomaly_breakdown ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Anomali per Tipe');
-    sd.table(
-      [
-        { header: 'Tipe Anomali', width: 0.40 },
-        { header: 'Jumlah', width: 0.30, align: 'right' },
-        { header: 'Severity Avg', width: 0.30, align: 'right' },
-      ],
-      (d.anomaly_breakdown ?? []).map((a) => [
-        a.event_type ?? '—',
-        String(a.count ?? 0),
-        '—',
-      ]),
-    );
-  }
-
-  if ((d.users ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Beban per User');
-    sd.table(
-      [
-        { header: 'User', width: 0.30 },
-        { header: 'Hold', width: 0.17, align: 'right' },
-        { header: 'Reject', width: 0.18, align: 'right' },
-        { header: 'Override', width: 0.18, align: 'right' },
-        { header: 'Total', width: 0.17, align: 'right' },
-      ],
-      (d.users ?? []).map((u) => [
-        u.full_name ?? '—',
-        String(u.generated_count ?? 0),
-        String(u.handled_count ?? 0),
-        String(u.hold_reject_override ?? 0),
-        String((u.generated_count ?? 0) + (u.handled_count ?? 0) + (u.hold_reject_override ?? 0)),
-      ]),
-    );
-  }
-}
-
-// ── Site Change Log ───────────────────────────────────────────────────
 
 async function buildSiteChangeLog(sd: SanoDoc, d: SiteChangeLogData): Promise<void> {
   const s = d.summary ?? {};
@@ -829,21 +570,16 @@ async function buildSiteChangeLog(sd: SanoDoc, d: SiteChangeLogData): Promise<vo
 // forward declarations populated below
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous builder map requires flexible data param
 const BUILDERS: Partial<Record<string, (sd: SanoDoc, d: any) => Promise<void>>> = {};
-type AnyReportData = ProgressSummaryData | MaterialBalanceData | ReceiptLogData | SiteChangeLogData | ScheduleVarianceData | WeeklyDigestData | PayrollSupportData | ClientChargeData | AuditListData | AIUsageData | ApprovalSLAData | OperationalDisciplineData | ToolUsageData | ExceptionHandlingData;
+type AnyReportData = ProgressSummaryData | MaterialBalanceData | ReceiptLogData | SiteChangeLogData | ScheduleVarianceData | WeeklyDigestData | AuditListData | ApprovalSLAData | OperationalDisciplineData;
 
 BUILDERS['progress_summary'] = buildProgressSummary;
 BUILDERS['material_balance'] = buildMaterialBalance;
 BUILDERS['receipt_log'] = buildReceiptLog;
 BUILDERS['schedule_variance'] = buildScheduleVariance;
 BUILDERS['weekly_digest'] = buildWeeklyDigest;
-BUILDERS['payroll_support_summary'] = buildPayrollSupportSummary;
-BUILDERS['client_charge_report'] = buildClientChargeReport;
 BUILDERS['audit_list'] = buildAuditList;
-BUILDERS['ai_usage_summary'] = buildAIUsageSummary;
 BUILDERS['approval_sla_user'] = buildApprovalSLAUser;
 BUILDERS['operational_entry_discipline'] = buildOperationalEntryDiscipline;
-BUILDERS['tool_usage_summary'] = buildToolUsageSummary;
-BUILDERS['exception_handling_load'] = buildExceptionHandlingLoad;
 BUILDERS['site_change_log'] = buildSiteChangeLog;
 
 // ── Main export function ──────────────────────────────────────────────
@@ -877,29 +613,14 @@ export async function exportReportToPdf(
     case 'weekly_digest':
       await buildWeeklyDigest(sd, payload.data as WeeklyDigestData);
       break;
-    case 'payroll_support_summary':
-      await buildPayrollSupportSummary(sd, payload.data as PayrollSupportData);
-      break;
-    case 'client_charge_report':
-      await buildClientChargeReport(sd, payload.data as ClientChargeData);
-      break;
     case 'audit_list':
       await buildAuditList(sd, payload.data as AuditListData);
-      break;
-    case 'ai_usage_summary':
-      await buildAIUsageSummary(sd, payload.data as AIUsageData);
       break;
     case 'approval_sla_user':
       await buildApprovalSLAUser(sd, payload.data as ApprovalSLAData);
       break;
     case 'operational_entry_discipline':
       await buildOperationalEntryDiscipline(sd, payload.data as OperationalDisciplineData);
-      break;
-    case 'tool_usage_summary':
-      await buildToolUsageSummary(sd, payload.data as ToolUsageData);
-      break;
-    case 'exception_handling_load':
-      await buildExceptionHandlingLoad(sd, payload.data as ExceptionHandlingData);
       break;
     default:
       // Fallback: render raw JSON preview
