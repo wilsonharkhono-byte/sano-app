@@ -16,8 +16,16 @@ import { getEnvelopesByMaterialIds, type EnvelopeWithPrice } from '../../tools/e
 import { displayQty } from '../../tools/materialUnitConversion';
 import { MaterialUsagePanel } from './components/MaterialUsagePanel';
 import type { OverageReason } from '../../tools/types';
+import type { CeilingRaisePayloadEntry } from '../../tools/ceilingRaiseGate';
 
-type Tab = 'mtn' | 'perubahan' | 'requests';
+type Tab = 'mtn' | 'perubahan' | 'requests' | 'ceiling';
+
+/** A pending plan_ceiling_raise escalation (Task 2.12) awaiting the principal. */
+interface CeilingRaiseTask {
+  id: string;
+  created_at: string;
+  override_payload: CeilingRaisePayloadEntry[] | null;
+}
 type MTNFilter = 'ALL' | 'AWAITING' | 'APPROVED' | 'REJECTED' | 'RECEIVED';
 type PerubahanFilter = 'ALL' | 'pending' | 'disetujui' | 'ditolak' | 'selesai';
 type RequestFilter = 'ALL' | 'PENDING' | 'UNDER_REVIEW' | 'APPROVED' | 'REJECTED' | 'AUTO_HOLD';
@@ -159,6 +167,7 @@ export default function ApprovalsScreen() {
   const [mtns, setMtns] = useState<MTNRequest[]>([]);
   const [changes, setChanges] = useState<SiteChange[]>([]);
   const [requests, setRequests] = useState<MaterialRequest[]>([]);
+  const [ceilingTasks, setCeilingTasks] = useState<CeilingRaiseTask[]>([]);
   const [profileNames, setProfileNames] = useState<Record<string, string>>({});
   const [boqLabels, setBoqLabels] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
@@ -169,7 +178,7 @@ export default function ApprovalsScreen() {
     if (!project) return;
     setLoading(true);
     try {
-      const [mtnRes, changesRes, reqRes, boqRes] = await Promise.all([
+      const [mtnRes, changesRes, reqRes, boqRes, ceilingRes] = await Promise.all([
         supabase.from('mtn_requests').select('*').eq('project_id', project.id).order('created_at', { ascending: false }),
         supabase
           .from('site_changes')
@@ -202,6 +211,14 @@ export default function ApprovalsScreen() {
           .eq('project_id', project.id)
           .order('created_at', { ascending: false }),
         supabase.from('boq_items').select('id, code, label').eq('project_id', project.id),
+        // Task 2.12 — pending plan_ceiling_raise escalations for the principal.
+        supabase
+          .from('approval_tasks')
+          .select('id, created_at, override_payload')
+          .eq('project_id', project.id)
+          .eq('entity_type', 'plan_ceiling_raise')
+          .is('action', null)
+          .order('created_at', { ascending: false }),
       ]);
 
       const nextMtns = (mtnRes.data as MTNRequest[]) ?? [];
@@ -219,6 +236,7 @@ export default function ApprovalsScreen() {
       setMtns(nextMtns);
       setChanges(nextChanges);
       setRequests(nextRequests);
+      setCeilingTasks((ceilingRes.data as CeilingRaiseTask[]) ?? []);
       setBoqLabels(Object.fromEntries(((boqRes.data as any[]) ?? []).map((item) => [item.id, `${item.code} — ${item.label}`])));
 
       const profileIds = Array.from(new Set([
@@ -327,6 +345,24 @@ export default function ApprovalsScreen() {
     } catch (err: any) { toast(err.message, 'critical'); }
   };
 
+  // Task 2.12 — principal verdict on a plan_ceiling_raise escalation. APPROVE
+  // lets the estimator attach this task and re-publish (migration 079's gate
+  // re-verifies coverage); REJECT kills it (the estimator's alternative is to
+  // revert the raise in the workbook and re-publish). RLS 060 restricts the
+  // verdict UPDATE to the principal, so a non-principal tap is denied server-side.
+  const handleCeilingRaise = async (id: string, action: 'APPROVE' | 'REJECT') => {
+    if (!profile) return;
+    try {
+      const { error } = await supabase.from('approval_tasks').update({
+        action,
+        acted_at: new Date().toISOString(),
+      }).eq('id', id);
+      if (error) throw error;
+      toast(action === 'APPROVE' ? 'Kenaikan plafon disetujui' : 'Kenaikan plafon ditolak', action === 'APPROVE' ? 'ok' : 'warning');
+      await loadData();
+    } catch (err: any) { toast(err.message, 'critical'); }
+  };
+
   const countBy = <T extends { status?: string; overall_status?: string }>(rows: T[], value: string, key: 'status' | 'overall_status') =>
     rows.filter(row => (row[key] ?? '') === value).length;
 
@@ -397,6 +433,7 @@ export default function ApprovalsScreen() {
     { key: 'mtn', label: 'MTN', count: mtnCounts.AWAITING },
     { key: 'perubahan', label: 'Perubahan', count: changeCounts.pending },
     { key: 'requests', label: 'Permintaan', count: requestCounts.PENDING + requestCounts.UNDER_REVIEW + requestCounts.AUTO_HOLD },
+    { key: 'ceiling', label: 'Plafon', count: ceilingTasks.length },
   ];
 
   const renderFilterChips = <T extends string>(
@@ -436,7 +473,10 @@ export default function ApprovalsScreen() {
 
       <ScrollView style={styles.scroll} contentContainerStyle={[styles.content, contentMaxWidth != null && { alignSelf: 'center', width: '100%', maxWidth: contentMaxWidth }]}>
         <Text style={styles.sectionHead}>
-          {activeTab === 'mtn' ? 'Daftar MTN' : activeTab === 'perubahan' ? 'Catatan Perubahan' : 'Permintaan Material'}
+          {activeTab === 'mtn' ? 'Daftar MTN'
+            : activeTab === 'perubahan' ? 'Catatan Perubahan'
+            : activeTab === 'ceiling' ? 'Kenaikan Plafon Material'
+            : 'Permintaan Material'}
         </Text>
 
         {activeTab === 'mtn' && (
@@ -610,6 +650,50 @@ export default function ApprovalsScreen() {
                 )}
               </Card>
             ))}
+          </>
+        )}
+
+        {activeTab === 'ceiling' && (
+          <>
+            {ceilingTasks.length === 0 ? (
+              <Card><Text style={styles.empty}>{loading ? 'Memuat...' : 'Tidak ada permintaan kenaikan plafon.'}</Text></Card>
+            ) : ceilingTasks.map(task => {
+              const payload = task.override_payload ?? [];
+              return (
+                <Card key={task.id} borderColor={COLORS.critical}>
+                  <View style={styles.itemHeader}>
+                    <View style={{ flex: 1, gap: 6 }}>
+                      <Badge flag="CRITICAL" label="KENAIKAN PLAFON" />
+                      <Text style={styles.itemTitle}>Re-publish menaikkan plafon material over-order</Text>
+                    </View>
+                    <Text style={styles.meta}>{formatDate(task.created_at)}</Text>
+                  </View>
+                  <Text style={styles.itemSub}>
+                    Estimator menaikkan rencana material yang jumlah order-nya sudah melebihi rencana lama.
+                    Setujui hanya jika kenaikan plafon ini memang sah.
+                  </Text>
+                  {payload.map((e, i) => (
+                    <Text key={`${e.material_id}-${i}`} style={styles.itemSub}>
+                      • {e.material_name || e.material_id}: rencana lama {Number(e.planned_before).toLocaleString('id-ID')}
+                      {' '}→ diusulkan {Number(e.proposed_qty).toLocaleString('id-ID')}
+                      {' '}(sudah order {Number(e.ordered).toLocaleString('id-ID')})
+                    </Text>
+                  ))}
+                  {profile?.role === 'principal' ? (
+                    <View style={styles.actionRow}>
+                      <TouchableOpacity style={[styles.actionBtn, styles.rejectBtn]} onPress={() => handleCeilingRaise(task.id, 'REJECT')}>
+                        <Text style={[styles.actionText, { color: COLORS.critical }]}>Tolak</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.actionBtn, styles.approveBtn]} onPress={() => handleCeilingRaise(task.id, 'APPROVE')}>
+                        <Text style={[styles.actionText, { color: '#fff' }]}>Setujui</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <Text style={styles.meta}>Menunggu keputusan prinsipal.</Text>
+                  )}
+                </Card>
+              );
+            })}
           </>
         )}
       </ScrollView>

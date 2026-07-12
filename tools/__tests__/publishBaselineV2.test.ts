@@ -782,9 +782,11 @@ describe('publishBaselineV2 — re-publish wiring', () => {
 
     expect(result.success).toBe(true);
     expect(result.warnings?.some(w => /plan_revisions header failed/i.test(w))).toBe(true);
-    // Header failed → no lines written, no notification dispatched.
+    // Header failed → no lines written, no notification dispatched. (The 2.12
+    // ceiling gate RPC still runs on any re-publish; assert notify specifically
+    // was not dispatched rather than "no rpc at all".)
     expect(h.tablesTouched.has('plan_revision_lines')).toBe(false);
-    expect(mockRpc).not.toHaveBeenCalled();
+    expect(mockRpc).not.toHaveBeenCalledWith('notify_plan_revised', expect.anything());
   });
 
   it('(c) excludes a failed-master-line material from the baseline snapshot (2.10 gating)', async () => {
@@ -840,5 +842,110 @@ describe('publishBaselineV2 — re-publish wiring', () => {
       'notify_plan_revised',
       expect.objectContaining({ p_project_id: 'proj-1', p_raise_count: 3 }),
     );
+  });
+});
+
+// Task 2.12 — the principal ceiling-raise gate wiring in publishBaselineV2:
+//   (f) the gate RPC runs on a RE-PUBLISH with the proposed per-material totals.
+//   (g) a PLAN_CEILING_BREACH RAISE aborts the publish BEFORE the version flip —
+//       zero rows written — and flags ceilingApprovalRequired.
+//   (h) an approved-task pass-through threads p_approval_task_id and proceeds.
+//   (i) a FIRST publish never calls the gate (nothing to raise a ceiling over).
+describe('publishBaselineV2 — ceiling-raise gate wiring (Task 2.12)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRpc.mockResolvedValue({ data: null, error: null });
+  });
+
+  it('(f) calls assert_ceiling_raise_gate with the proposed per-material totals on a re-publish', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: { id: 'ahsv-old' },
+      latestVersion: { version: 1 },
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1', {
+      revisionContext: revCtx(0, 1, [REV_LINE]),
+    });
+
+    expect(result.success).toBe(true);
+    // Proposed = the would-be new master aggregation: A.1 (2×10) id-d13=20, A.2 (3×5) id-pcc=15.
+    expect(mockRpc).toHaveBeenCalledWith(
+      'assert_ceiling_raise_gate',
+      expect.objectContaining({
+        p_project_id: 'proj-1',
+        p_approval_task_id: null,
+        p_proposed: expect.arrayContaining([
+          { material_id: 'id-d13', planned_qty: 20 },
+          { material_id: 'id-pcc', planned_qty: 15 },
+        ]),
+      }),
+    );
+  });
+
+  it('(g) aborts with zero writes when the gate RAISEs PLAN_CEILING_BREACH', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: { id: 'ahsv-old' },
+      latestVersion: { version: 1 },
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+    mockRpc.mockImplementation((fn: string) =>
+      fn === 'assert_ceiling_raise_gate'
+        ? Promise.resolve({ data: null, error: { message: 'PLAN_CEILING_BREACH: Besi (rencana lama 10, diusulkan 20, sudah order 15)' } })
+        : Promise.resolve({ data: null, error: null }),
+    );
+
+    const result = await publishBaselineV2('sess-1', 'proj-1', {
+      revisionContext: revCtx(1, 0, [REV_LINE]),
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.ceilingApprovalRequired).toBe(true);
+    expect(result.error).toMatch(/PLAN_CEILING_BREACH/);
+    // Gate runs BEFORE demote/insert — nothing was written.
+    expect(h.mutations).toHaveLength(0);
+    expect(h.tablesTouched.has('plan_revisions')).toBe(false);
+    // notify is never reached once the gate aborts.
+    expect(mockRpc).not.toHaveBeenCalledWith('notify_plan_revised', expect.anything());
+  });
+
+  it('(h) threads p_approval_task_id and proceeds when the gate passes with an approved task', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: { id: 'ahsv-old' },
+      latestVersion: { version: 1 },
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1', {
+      revisionContext: revCtx(1, 0, [REV_LINE]),
+      ceilingApprovalTaskId: 'task-approved-1',
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockRpc).toHaveBeenCalledWith(
+      'assert_ceiling_raise_gate',
+      expect.objectContaining({ p_approval_task_id: 'task-approved-1' }),
+    );
+  });
+
+  it('(i) a first publish never calls the ceiling gate', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: null,
+      latestVersion: null,
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1');
+
+    expect(result.success).toBe(true);
+    expect(mockRpc).not.toHaveBeenCalledWith('assert_ceiling_raise_gate', expect.anything());
   });
 });

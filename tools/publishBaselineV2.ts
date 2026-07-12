@@ -6,6 +6,7 @@ import { resilientWrite } from './resilientWrite';
 import { normalizeUnit, toBaseQty } from './materialUnitConversion';
 import { aggregatePlannedByMaterial } from './planRevisionDiff';
 import type { PlanRevisionLine, PlanRevisionSummary } from './planRevisionDiff';
+import { proposedAggregatesToArray } from './ceilingRaiseGate';
 
 /**
  * Re-publish acknowledgment payload (Task 2.11 / spec §5). Computed AND
@@ -671,15 +672,51 @@ export function buildSessionLineInputs(
 }
 
 /**
+ * Aggregate the per-material planned totals the NEXT publish of these staging
+ * rows WOULD write — the would-be new master, summed to one figure per material
+ * (base units). Pure over the already-loaded catalog: no I/O. Shared by
+ * previewNewMasterTotals (the 2.11 re-publish diff) AND publishBaselineV2's 2.12
+ * ceiling-raise gate (its p_proposed), so the gate compares the EXACT numbers the
+ * publish will land.
+ *
+ * Mirrors the publish's skip logic (zero-planned rows, and rows buildBoqItemInsert
+ * would quarantine, are excluded) via the publishable-codes set, so membership
+ * matches the real boq_items membership (modulo rare DB insert failures, which
+ * surface post-publish as `warnings`). Keying master lines by BoQ code rather than
+ * the real boq_item UUID is irrelevant to the result — aggregatePlannedByMaterial
+ * sums by material_id only.
+ */
+export function buildProposedAggregatesFromStaging(
+  rows: StagingRowV2[],
+  catalog: CatalogRow[],
+  catalogById: Map<string, CatalogRow>,
+  aliasMap: Map<string, string>,
+): Map<string, number> {
+  const skipSet = new Set(zeroPlannedBoqCodes(rows));
+  const publishable = new Set<string>();
+  for (const r of rows) {
+    if (r.row_type !== 'boq') continue;
+    const code = (r.parsed_data as { code?: string }).code ?? '';
+    if (!code || skipSet.has(code)) continue;
+    if (buildBoqItemInsert(r, '') != null) publishable.add(code);
+  }
+  const { masterLineInputs } = buildSessionLineInputs(
+    rows,
+    catalog,
+    catalogById,
+    aliasMap,
+    null,
+    (code) => (publishable.has(code) ? code : undefined),
+  );
+  const masterLines = buildMasterLinesV2(masterLineInputs, 'proposed');
+  return aggregatePlannedByMaterial(masterLines);
+}
+
+/**
  * Read-only preview of the per-material planned totals the NEXT publish of this
  * session WOULD write — WITHOUT mutating anything. The client (BaselineScreen)
  * uses it as `newMasterRows` for computePlanRevisionDiff on a re-publish, so the
  * diff-and-acknowledge checklist reflects exactly what the publish will land.
- *
- * Mirrors the publish's skip logic (zero-planned rows, and rows buildBoqItemInsert
- * would quarantine, are excluded) via the publishable-codes set, so preview
- * membership matches the real boq_items membership (modulo rare DB insert
- * failures, which surface post-publish as `warnings`).
  */
 export async function previewNewMasterTotals(sessionId: string): Promise<{
   totals: Map<string, number>;
@@ -702,34 +739,13 @@ export async function previewNewMasterTotals(sessionId: string): Promise<{
     return { totals: new Map(), error: err instanceof Error ? err.message : String(err) };
   }
   const catalogById = new Map(catalog.map(c => [c.id, c]));
-
-  // Publishable codes = same filter the publish applies: skip zero-planned and
-  // rows buildBoqItemInsert would reject (missing code/label/unit/planned).
-  const skipSet = new Set(zeroPlannedBoqCodes(rows));
-  const publishable = new Set<string>();
-  for (const r of rows) {
-    if (r.row_type !== 'boq') continue;
-    const code = (r.parsed_data as { code?: string }).code ?? '';
-    if (!code || skipSet.has(code)) continue;
-    if (buildBoqItemInsert(r, '') != null) publishable.add(code);
-  }
-
-  const { masterLineInputs } = buildSessionLineInputs(
-    rows,
-    catalog,
-    catalogById,
-    aliasMap,
-    null,
-    (code) => (publishable.has(code) ? code : undefined),
-  );
-  const masterLines = buildMasterLinesV2(masterLineInputs, 'preview');
-  return { totals: aggregatePlannedByMaterial(masterLines) };
+  return { totals: buildProposedAggregatesFromStaging(rows, catalog, catalogById, aliasMap) };
 }
 
 export async function publishBaselineV2(
   sessionId: string,
   projectId: string,
-  options?: { revisionContext?: RevisionContext },
+  options?: { revisionContext?: RevisionContext; ceilingApprovalTaskId?: string },
 ): Promise<{
   success: boolean;
   error?: string;
@@ -741,6 +757,12 @@ export async function publishBaselineV2(
   skippedZeroPlanned?: string[];
   quarantinedRows?: string[];
   warnings?: string[];
+  /**
+   * True when the abort was the Task 2.12 principal ceiling-raise gate
+   * (server RAISE 'PLAN_CEILING_BREACH:') rather than an ordinary failure — the
+   * screen branches on it to render the breach panel + escalation path.
+   */
+  ceilingApprovalRequired?: boolean;
 }> {
   const revisionContext = options?.revisionContext;
   const { data: stagingRowsDB, error: fetchErr } = await supabase
@@ -877,6 +899,45 @@ export async function publishBaselineV2(
         'Perubahan rencana belum di-acknowledge — hitung & konfirmasi diff sebelum re-publish ' +
         '(plan revision diff not acknowledged).',
     };
+  }
+
+  // ── Task 2.12 — principal gate on overage-absolving ceiling raises ──────
+  // On a RE-PUBLISH, before the version flip, the SERVER recomputes whether this
+  // publish raises the ceiling of any material currently in overage (ordered >
+  // current planned). This NEVER trusts the client's 2.11 diff classification (a
+  // hostile caller could omit RAISE_ABSOLVING_OVERAGE lines) — the classification
+  // AND the approval verification are computed server-side by
+  // assert_ceiling_raise_gate from DB state (current master plan + envelope
+  // ordered). The one client-supplied input is p_proposed: the aggregated
+  // per-material planned of the would-be new master — the SAME numbers this
+  // publish is about to write (buildProposedAggregatesFromStaging), computed
+  // BEFORE the demote so a breach aborts with ZERO rows written.
+  //
+  // HONESTY BOUNDARY (same accepted residual as 2.11's acknowledge guard above):
+  // this gate is enforced only on the app publish path. The publish is
+  // client-orchestrated across many statements with no server publish endpoint,
+  // so a direct-REST / service-role writer that bypasses this function can still
+  // rewrite the master without the gate. Migration 079's header documents this;
+  // closing it requires a server-side publish transaction (out of scope).
+  if (isRepublish) {
+    const proposedAggregates = buildProposedAggregatesFromStaging(rows, catalog, catalogById, aliasMap);
+    const { error: gateErr } = await supabase.rpc('assert_ceiling_raise_gate', {
+      p_project_id: projectId,
+      p_proposed: proposedAggregatesToArray(proposedAggregates),
+      p_approval_task_id: options?.ceilingApprovalTaskId ?? null,
+    });
+    if (gateErr) {
+      const msg = gateErr.message ?? String(gateErr);
+      return {
+        success: false,
+        error: msg,
+        // 'PLAN_CEILING_BREACH:' → the principal gate held the publish; the
+        // screen renders the breach panel + escalation. Any OTHER RPC error is a
+        // genuine failure (the gate could not be verified) → abort loudly, never
+        // proceed past an unverified ceiling gate (truth-correctness contract).
+        ceilingApprovalRequired: /PLAN_CEILING_BREACH/i.test(msg),
+      };
+    }
   }
 
   const { data: latestVersion, error: latestVersionErr } = await supabase

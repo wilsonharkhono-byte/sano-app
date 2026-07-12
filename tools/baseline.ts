@@ -555,8 +555,8 @@ export async function resolveAnomaly(
 export async function publishBaseline(
   sessionId: string,
   projectId: string,
-  options?: { revisionContext?: RevisionContext },
-): Promise<{ success: boolean; error?: string; boqCount?: number; ahsCount?: number; materialCount?: number; masterLineCount?: number; unresolvedComponentCount?: number; skippedZeroPlanned?: string[]; quarantinedRows?: string[]; warnings?: string[] }> {
+  options?: { revisionContext?: RevisionContext; ceilingApprovalTaskId?: string },
+): Promise<{ success: boolean; error?: string; boqCount?: number; ahsCount?: number; materialCount?: number; masterLineCount?: number; unresolvedComponentCount?: number; skippedZeroPlanned?: string[]; quarantinedRows?: string[]; warnings?: string[]; ceilingApprovalRequired?: boolean }> {
   try {
     const { data: session } = await supabase
       .from('import_sessions')
