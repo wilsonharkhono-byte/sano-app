@@ -15,8 +15,11 @@ import type {
   ScheduleVarianceData,
   WeeklyDigestData,
   AuditListData,
+  AIUsageData,
   ApprovalSLAData,
   OperationalDisciplineData,
+  ToolUsageData,
+  ExceptionHandlingData,
   ReportPhoto,
 } from './reportDataTypes';
 import { SanoDoc, C, FS, PDF } from './pdf-layout';
@@ -401,6 +404,56 @@ async function buildAuditList(sd: SanoDoc, d: AuditListData): Promise<void> {
   }
 }
 
+async function buildAIUsageSummary(sd: SanoDoc, d: AIUsageData): Promise<void> {
+  sd.kpiRow([
+    { value: String(d.summary.total_interactions ?? 0), label: 'Total Chat', color: C.info },
+    { value: String(d.summary.active_users ?? 0), label: 'User Aktif', color: C.ok },
+    { value: `${Math.round((d.summary.total_tokens ?? 0) / 1000)}k`, label: 'Total Token', color: C.accent },
+  ]);
+
+  sd.sectionTitle('Ringkasan Penggunaan AI');
+  sd.metricRow('Total Chat (30 hari)', String(d.summary.total_interactions ?? 0));
+  sd.metricRow('User Aktif', String(d.summary.active_users ?? 0));
+  sd.metricRow('Total Token', `${Math.round((d.summary.total_tokens ?? 0) / 1000)}k`);
+  sd.metricRow('Chat Sonnet', String(d.summary.sonnet_count ?? 0));
+
+  if ((d.users ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Penggunaan per User');
+    sd.table(
+      [
+        { header: 'User', width: 0.30 },
+        { header: 'Jumlah Chat', width: 0.20, align: 'right' },
+        { header: 'Total Token', width: 0.25, align: 'right' },
+        { header: 'Chat Sonnet', width: 0.25, align: 'right' },
+      ],
+      (d.users ?? []).map((u) => [
+        u.full_name ?? '—',
+        String(u.interaction_count ?? 0),
+        String(u.total_tokens ?? 0),
+        String(u.sonnet_count ?? 0),
+      ]),
+    );
+  }
+
+  if ((d.usage_by_day ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Tren Harian');
+    sd.table(
+      [
+        { header: 'Tanggal', width: 0.30 },
+        { header: 'Jumlah Chat', width: 0.35, align: 'right' },
+        { header: 'Token', width: 0.35, align: 'right' },
+      ],
+      (d.usage_by_day ?? []).slice(0, 30).map((row) => [
+        fmtDate(row.date),
+        String(row.interaction_count ?? 0),
+        String(row.total_tokens ?? 0),
+      ]),
+    );
+  }
+}
+
 async function buildApprovalSLAUser(sd: SanoDoc, d: ApprovalSLAData): Promise<void> {
   sd.kpiRow([
     { value: String(d.summary.pending_items ?? 0), label: 'Total Queued', color: C.info },
@@ -470,6 +523,87 @@ async function buildOperationalEntryDiscipline(sd: SanoDoc, d: OperationalDiscip
     );
   }
 }
+
+async function buildToolUsageSummary(sd: SanoDoc, d: ToolUsageData): Promise<void> {
+  sd.kpiRow([
+    { value: String(d.summary.total_exports ?? 0), label: 'Total Export', color: C.info },
+    { value: String(d.summary.total_ai_chats ?? 0), label: 'AI Chat', color: C.accent },
+    { value: String(d.summary.export_users ?? 0), label: 'User Export', color: C.ok },
+  ]);
+
+  sd.sectionTitle('Penggunaan Laporan & AI');
+  sd.metricRow('Total Export Laporan', String(d.summary.total_exports ?? 0));
+  sd.metricRow('Total AI Chat', String(d.summary.total_ai_chats ?? 0));
+  sd.metricRow('User yang Pernah Export', String(d.summary.export_users ?? 0));
+
+  if ((d.top_report_types ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Export per Tipe Laporan');
+    sd.table(
+      [
+        { header: 'Tipe Laporan', width: 0.50 },
+        { header: 'Jumlah Export', width: 0.50, align: 'right' },
+      ],
+      (d.top_report_types ?? []).map((r) => [
+        r.report_type ?? '—',
+        String(r.count ?? 0),
+      ]),
+    );
+  }
+}
+
+async function buildExceptionHandlingLoad(sd: SanoDoc, d: ExceptionHandlingData): Promise<void> {
+  sd.kpiRow([
+    { value: String(d.summary.auto_hold_requests ?? 0), label: 'Hold', color: C.warning },
+    { value: String((d.summary.rejected_requests ?? 0) + (d.summary.rejected_vo ?? 0) + (d.summary.rejected_mtn ?? 0)), label: 'Reject', color: C.critical },
+    { value: String(d.summary.hold_reject_override_actions ?? 0), label: 'Override', color: C.info },
+  ]);
+
+  sd.sectionTitle('Beban Penanganan Exception');
+  sd.metricRow('Total Hold', String(d.summary.auto_hold_requests ?? 0), { valueColor: C.warning });
+  sd.metricRow('Total Reject', String((d.summary.rejected_requests ?? 0) + (d.summary.rejected_vo ?? 0) + (d.summary.rejected_mtn ?? 0)), { valueColor: C.critical });
+  sd.metricRow('Total Override', String(d.summary.hold_reject_override_actions ?? 0));
+
+  if ((d.anomaly_breakdown ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Anomali per Tipe');
+    sd.table(
+      [
+        { header: 'Tipe Anomali', width: 0.40 },
+        { header: 'Jumlah', width: 0.30, align: 'right' },
+        { header: 'Severity Avg', width: 0.30, align: 'right' },
+      ],
+      (d.anomaly_breakdown ?? []).map((a) => [
+        a.event_type ?? '—',
+        String(a.count ?? 0),
+        '—',
+      ]),
+    );
+  }
+
+  if ((d.users ?? []).length > 0) {
+    sd.gap(6);
+    sd.sectionTitle('Beban per User');
+    sd.table(
+      [
+        { header: 'User', width: 0.30 },
+        { header: 'Hold', width: 0.17, align: 'right' },
+        { header: 'Reject', width: 0.18, align: 'right' },
+        { header: 'Override', width: 0.18, align: 'right' },
+        { header: 'Total', width: 0.17, align: 'right' },
+      ],
+      (d.users ?? []).map((u) => [
+        u.full_name ?? '—',
+        String(u.generated_count ?? 0),
+        String(u.handled_count ?? 0),
+        String(u.hold_reject_override ?? 0),
+        String((u.generated_count ?? 0) + (u.handled_count ?? 0) + (u.hold_reject_override ?? 0)),
+      ]),
+    );
+  }
+}
+
+// ── Site Change Log ───────────────────────────────────────────────────
 
 async function buildSiteChangeLog(sd: SanoDoc, d: SiteChangeLogData): Promise<void> {
   const s = d.summary ?? {};
@@ -570,7 +704,7 @@ async function buildSiteChangeLog(sd: SanoDoc, d: SiteChangeLogData): Promise<vo
 // forward declarations populated below
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous builder map requires flexible data param
 const BUILDERS: Partial<Record<string, (sd: SanoDoc, d: any) => Promise<void>>> = {};
-type AnyReportData = ProgressSummaryData | MaterialBalanceData | ReceiptLogData | SiteChangeLogData | ScheduleVarianceData | WeeklyDigestData | AuditListData | ApprovalSLAData | OperationalDisciplineData;
+type AnyReportData = ProgressSummaryData | MaterialBalanceData | ReceiptLogData | SiteChangeLogData | ScheduleVarianceData | WeeklyDigestData | AuditListData | AIUsageData | ApprovalSLAData | OperationalDisciplineData | ToolUsageData | ExceptionHandlingData;
 
 BUILDERS['progress_summary'] = buildProgressSummary;
 BUILDERS['material_balance'] = buildMaterialBalance;
@@ -578,8 +712,11 @@ BUILDERS['receipt_log'] = buildReceiptLog;
 BUILDERS['schedule_variance'] = buildScheduleVariance;
 BUILDERS['weekly_digest'] = buildWeeklyDigest;
 BUILDERS['audit_list'] = buildAuditList;
+BUILDERS['ai_usage_summary'] = buildAIUsageSummary;
 BUILDERS['approval_sla_user'] = buildApprovalSLAUser;
 BUILDERS['operational_entry_discipline'] = buildOperationalEntryDiscipline;
+BUILDERS['tool_usage_summary'] = buildToolUsageSummary;
+BUILDERS['exception_handling_load'] = buildExceptionHandlingLoad;
 BUILDERS['site_change_log'] = buildSiteChangeLog;
 
 // ── Main export function ──────────────────────────────────────────────
@@ -616,11 +753,20 @@ export async function exportReportToPdf(
     case 'audit_list':
       await buildAuditList(sd, payload.data as AuditListData);
       break;
+    case 'ai_usage_summary':
+      await buildAIUsageSummary(sd, payload.data as AIUsageData);
+      break;
     case 'approval_sla_user':
       await buildApprovalSLAUser(sd, payload.data as ApprovalSLAData);
       break;
     case 'operational_entry_discipline':
       await buildOperationalEntryDiscipline(sd, payload.data as OperationalDisciplineData);
+      break;
+    case 'tool_usage_summary':
+      await buildToolUsageSummary(sd, payload.data as ToolUsageData);
+      break;
+    case 'exception_handling_load':
+      await buildExceptionHandlingLoad(sd, payload.data as ExceptionHandlingData);
       break;
     default:
       // Fallback: render raw JSON preview

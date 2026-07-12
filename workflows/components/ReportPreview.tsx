@@ -332,6 +332,52 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
     );
   }
 
+  if (payload.type === 'ai_usage_summary') {
+    const fmtTokens = (value: number) => value.toLocaleString('id-ID');
+    return (
+      <>
+        <SLabel>Ringkasan</SLabel>
+        <RRow label="Total Interaksi" value={d.summary?.total_interactions ?? 0} />
+        <RRow label="User Aktif" value={d.summary?.active_users ?? 0} />
+        <RRow label="Total Token" value={fmtTokens(d.summary?.total_tokens ?? 0)} color={COLORS.accent} />
+        <RRow label="Haiku" value={d.summary?.haiku_count ?? 0} />
+        <RRow label="Sonnet" value={d.summary?.sonnet_count ?? 0} color={COLORS.warning} />
+        {d.error ? (
+          <Text style={{ fontSize: 13, color: COLORS.warning, lineHeight: 19, marginTop: 8 }}>
+            Data penggunaan AI belum bisa dibaca: {d.error}
+          </Text>
+        ) : null}
+        <SLabel>Per User</SLabel>
+        {(d.users ?? []).map((user: any, index: number) => (
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+            <Text style={{ fontSize: 13, fontWeight: '600' }}>{user.full_name}</Text>
+            <Text style={{ fontSize: 12, color: COLORS.textSec }}>
+              {user.role ?? '—'} · {user.interaction_count} chat · {user.active_days} hari aktif
+            </Text>
+            <Text style={{ fontSize: 12, color: COLORS.textSec }}>
+              Token: {fmtTokens(user.total_tokens ?? 0)} · Haiku {user.haiku_count ?? 0} · Sonnet {user.sonnet_count ?? 0}
+            </Text>
+            {user.last_used_at ? (
+              <Text style={{ fontSize: 12, color: COLORS.textSec }}>
+                Terakhir pakai: {new Date(user.last_used_at).toLocaleString('id-ID')}
+              </Text>
+            ) : null}
+          </View>
+        ))}
+        {(d.users ?? []).length === 0 && <Text style={{ fontSize: 13, color: COLORS.textSec }}>Belum ada penggunaan AI pada filter ini.</Text>}
+        <SLabel>Tren Harian</SLabel>
+        {(d.usage_by_day ?? []).slice(-10).reverse().map((row: any, index: number) => (
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+            <Text style={{ fontSize: 13, fontWeight: '600' }}>{new Date(row.date).toLocaleDateString('id-ID')}</Text>
+            <Text style={{ fontSize: 12, color: COLORS.textSec }}>
+              {row.interaction_count} chat · {fmtTokens(row.total_tokens ?? 0)} token
+            </Text>
+          </View>
+        ))}
+      </>
+    );
+  }
+
   if (payload.type === 'approval_sla_user') {
     return (
       <>
@@ -397,6 +443,74 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
             ) : null}
             {user.last_activity ? <Text style={{ fontSize: 12, color: COLORS.textSec }}>Aktivitas terakhir: {new Date(user.last_activity).toLocaleString('id-ID')}</Text> : null}
           </View>
+        ))}
+      </>
+    );
+  }
+
+  if (payload.type === 'tool_usage_summary') {
+    const fmtTokens = (value: number) => value.toLocaleString('id-ID');
+    return (
+      <>
+        <SLabel>Ringkasan</SLabel>
+        <RRow label="Total Export" value={d.summary?.total_exports ?? 0} />
+        <RRow label="User Export Aktif" value={d.summary?.export_users ?? 0} />
+        <RRow label="Total Chat AI" value={d.summary?.total_ai_chats ?? 0} color={COLORS.accent} />
+        <RRow label="User AI Aktif" value={d.summary?.ai_users ?? 0} />
+        <RRow label="Total Token AI" value={fmtTokens(d.summary?.total_ai_tokens ?? 0)} />
+        <SLabel>Report Paling Sering</SLabel>
+        {(d.top_report_types ?? []).map((row: any, index: number) => (
+          <RRow key={index} label={row.report_type} value={row.count} />
+        ))}
+        <SLabel>Per User</SLabel>
+        {(d.users ?? []).map((user: any, index: number) => (
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+            <Text style={{ fontSize: 13, fontWeight: '600' }}>{user.full_name}</Text>
+            <Text style={{ fontSize: 12, color: COLORS.textSec }}>
+              {user.role ?? '—'} · {user.export_count} export · {user.ai_chat_count} chat AI
+            </Text>
+            <Text style={{ fontSize: 12, color: COLORS.textSec }}>
+              Token AI: {fmtTokens(user.total_tokens ?? 0)} · Haiku {user.haiku_count ?? 0} · Sonnet {user.sonnet_count ?? 0}
+            </Text>
+            {user.last_seen ? <Text style={{ fontSize: 12, color: COLORS.textSec }}>Aktivitas terakhir: {new Date(user.last_seen).toLocaleString('id-ID')}</Text> : null}
+          </View>
+        ))}
+        {d.note ? <Text style={{ fontSize: 12, color: COLORS.textSec, lineHeight: 18 }}>{d.note}</Text> : null}
+      </>
+    );
+  }
+
+  if (payload.type === 'exception_handling_load') {
+    return (
+      <>
+        <SLabel>Ringkasan</SLabel>
+        <RRow label="AUTO_HOLD Request" value={d.summary?.auto_hold_requests ?? 0} color={COLORS.warning} />
+        <RRow label="Request Ditolak" value={d.summary?.rejected_requests ?? 0} />
+        <RRow label="Perubahan Ditolak" value={d.summary?.rejected_vo ?? 0} />
+        <RRow label="MTN Ditolak" value={d.summary?.rejected_mtn ?? 0} />
+        <RRow label="Hold / Reject / Override" value={d.summary?.hold_reject_override_actions ?? 0} color={COLORS.critical} />
+        <RRow label="Anomali High/Critical" value={d.summary?.anomalies_high_or_critical ?? 0} color={COLORS.critical} />
+        <RRow label="Audit Case Open" value={d.summary?.audit_cases_open ?? 0} color={COLORS.critical} />
+        <SLabel>Per User</SLabel>
+        {(d.users ?? []).map((user: any, index: number) => (
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+            <Text style={{ fontSize: 13, fontWeight: '600' }}>{user.full_name}</Text>
+            <Text style={{ fontSize: 12, color: COLORS.textSec }}>
+              {user.role ?? '—'} · generated {user.generated_count ?? 0} · handled {user.handled_count ?? 0}
+            </Text>
+            <Text style={{ fontSize: 12, color: COLORS.textSec }}>
+              Hold/Reject/Override: {user.hold_reject_override ?? 0}
+            </Text>
+            {user.last_touch ? <Text style={{ fontSize: 12, color: COLORS.textSec }}>Terakhir sentuh: {new Date(user.last_touch).toLocaleString('id-ID')}</Text> : null}
+          </View>
+        ))}
+        <SLabel>Breakdown Anomali</SLabel>
+        {(d.anomaly_breakdown ?? []).map((row: any, index: number) => (
+          <RRow key={index} label={row.event_type} value={row.count} />
+        ))}
+        <SLabel>Breakdown Audit Case</SLabel>
+        {(d.audit_breakdown ?? []).map((row: any, index: number) => (
+          <RRow key={index} label={`${row.trigger_type} · ${row.status}`} value={row.count} />
         ))}
       </>
     );

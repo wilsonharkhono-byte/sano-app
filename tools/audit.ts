@@ -358,3 +358,31 @@ export async function getOpenAuditCases(projectId: string) {
 
   return data ?? [];
 }
+
+// ── Recent Critical Anomalies (Beranda tile) ─────────────────────────
+// The Beranda audit tile used to read audit_cases (written only by the still-
+// uncalled openAuditCase → permanently 0). The critical-gate wiring (3.4)
+// populates anomaly_events instead, so the tile now reads from there.
+//
+// anomaly_events has NO status/resolution column (see migration 002: id,
+// project_id, event_type, entity_type, entity_id, severity, description,
+// created_at). "Unresolved/open" is therefore not expressible, so we use a
+// recency window instead: CRITICAL-severity events in the last 7 days, over
+// the indexed (project_id, created_at DESC) path.
+const CRITICAL_ANOMALY_WINDOW_DAYS = 7;
+
+export async function getRecentCriticalAnomalies(projectId: string) {
+  const since = new Date(
+    Date.now() - CRITICAL_ANOMALY_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+  ).toISOString();
+
+  const { data } = await supabase
+    .from('anomaly_events')
+    .select('*')
+    .eq('project_id', projectId)
+    .eq('severity', 'CRITICAL')
+    .gte('created_at', since)
+    .order('created_at', { ascending: false });
+
+  return data ?? [];
+}

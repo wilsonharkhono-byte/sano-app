@@ -17,8 +17,11 @@ import type {
   ScheduleVarianceData,
   WeeklyDigestData,
   AuditListData,
+  AIUsageData,
   ApprovalSLAData,
   OperationalDisciplineData,
+  ToolUsageData,
+  ExceptionHandlingData,
   ReportPhoto,
 } from './reportDataTypes';
 
@@ -521,6 +524,50 @@ function buildWeeklyDigest(wb: XLSX.WorkBook, d: WeeklyDigestData) {
   }
 }
 
+// Restored (post-3.4): AI Usage Summary — live principal report. Excel builder
+// added to satisfy the surviving-type invariant (was meta-sheet-only before).
+function buildAIUsageSummary(wb: XLSX.WorkBook, d: AIUsageData) {
+  const summaryRows: string[][] = [
+    ['Indikator', 'Nilai'],
+    ['Total Interaksi', String(d.summary?.total_interactions ?? 0)],
+    ['User Aktif', String(d.summary?.active_users ?? 0)],
+    ['Total Token', String(d.summary?.total_tokens ?? 0)],
+    ['Token Input', String(d.summary?.total_input_tokens ?? 0)],
+    ['Token Output', String(d.summary?.total_output_tokens ?? 0)],
+    ['Chat Haiku', String(d.summary?.haiku_count ?? 0)],
+    ['Chat Sonnet', String(d.summary?.sonnet_count ?? 0)],
+  ];
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+  wsSummary['!cols'] = colWidths(summaryRows);
+  applyHeaderStyle(wsSummary, 0, 2);
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan AI');
+
+  const userHeader = ['User', 'Peran', 'Chat', 'Token Input', 'Token Output', 'Total Token', 'Haiku', 'Sonnet', 'Hari Aktif', 'Terakhir Pakai'];
+  const userRows: SheetRow[] = (d.users ?? []).map((u) => [
+    u.full_name ?? '—',
+    u.role ?? '—',
+    String(u.interaction_count ?? 0),
+    String(u.input_tokens ?? 0),
+    String(u.output_tokens ?? 0),
+    String(u.total_tokens ?? 0),
+    String(u.haiku_count ?? 0),
+    String(u.sonnet_count ?? 0),
+    String(u.active_days ?? 0),
+    u.last_used_at ? new Date(u.last_used_at).toLocaleString('id-ID') : '—',
+  ]);
+  appendSheet(wb, 'AI per User', userHeader, userRows);
+
+  const dayHeader = ['Tanggal', 'Chat', 'Token Input', 'Token Output', 'Total Token'];
+  const dayRows: SheetRow[] = (d.usage_by_day ?? []).map((row) => [
+    row.date ?? '—',
+    String(row.interaction_count ?? 0),
+    String(row.input_tokens ?? 0),
+    String(row.output_tokens ?? 0),
+    String(row.total_tokens ?? 0),
+  ]);
+  appendSheet(wb, 'Tren Harian', dayHeader, dayRows);
+}
+
 // Task 3.4: launched report — Approval SLA per User (input tables are live:
 // approval_tasks + the per-module review timestamps). Sheets mirror the
 // summary + detail pattern used by the other builders.
@@ -639,6 +686,81 @@ function buildAuditList(wb: XLSX.WorkBook, d: AuditListData) {
   appendSheet(wb, 'Audit Case', auditHeader, auditRows);
 }
 
+// Restored (post-3.4): Tool Usage Summary — live principal report. Excel builder
+// added to satisfy the surviving-type invariant (was meta-sheet-only before).
+function buildToolUsageSummary(wb: XLSX.WorkBook, d: ToolUsageData) {
+  const summaryRows: string[][] = [
+    ['Indikator', 'Nilai'],
+    ['Total Export', String(d.summary?.total_exports ?? 0)],
+    ['User Export', String(d.summary?.export_users ?? 0)],
+    ['Total Chat AI', String(d.summary?.total_ai_chats ?? 0)],
+    ['User AI', String(d.summary?.ai_users ?? 0)],
+    ['Total Token AI', String(d.summary?.total_ai_tokens ?? 0)],
+  ];
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+  wsSummary['!cols'] = colWidths(summaryRows);
+  applyHeaderStyle(wsSummary, 0, 2);
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Tool');
+
+  const typeHeader = ['Tipe Laporan', 'Jumlah Export'];
+  const typeRows: SheetRow[] = (d.top_report_types ?? []).map((row) => [
+    row.report_type ?? '—',
+    String(row.count ?? 0),
+  ]);
+  appendSheet(wb, 'Export per Tipe', typeHeader, typeRows);
+
+  const userHeader = ['User', 'Peran', 'Export', 'Chat AI', 'Total Token', 'Haiku', 'Sonnet', 'Aktivitas Terakhir'];
+  const userRows: SheetRow[] = (d.users ?? []).map((u) => [
+    u.full_name ?? '—',
+    u.role ?? '—',
+    String(u.export_count ?? 0),
+    String(u.ai_chat_count ?? 0),
+    String(u.total_tokens ?? 0),
+    String(u.haiku_count ?? 0),
+    String(u.sonnet_count ?? 0),
+    u.last_seen ? new Date(u.last_seen).toLocaleString('id-ID') : '—',
+  ]);
+  appendSheet(wb, 'Tool per User', userHeader, userRows);
+}
+
+// Restored (post-3.4): Exception Handling Load — live principal report. Excel
+// builder added to satisfy the surviving-type invariant.
+function buildExceptionHandlingLoad(wb: XLSX.WorkBook, d: ExceptionHandlingData) {
+  const summaryRows: string[][] = [
+    ['Indikator', 'Nilai'],
+    ['AUTO_HOLD Request', String(d.summary?.auto_hold_requests ?? 0)],
+    ['Request Ditolak', String(d.summary?.rejected_requests ?? 0)],
+    ['Perubahan Ditolak', String(d.summary?.rejected_vo ?? 0)],
+    ['MTN Ditolak', String(d.summary?.rejected_mtn ?? 0)],
+    ['Hold/Reject/Override', String(d.summary?.hold_reject_override_actions ?? 0)],
+    ['Total Anomali', String(d.summary?.anomalies_total ?? 0)],
+    ['Anomali High/Critical', String(d.summary?.anomalies_high_or_critical ?? 0)],
+    ['Audit Case Open', String(d.summary?.audit_cases_open ?? 0)],
+  ];
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+  wsSummary['!cols'] = colWidths(summaryRows);
+  applyHeaderStyle(wsSummary, 0, 2);
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Exception');
+
+  const userHeader = ['User', 'Peran', 'Generated', 'Handled', 'Hold/Reject/Override', 'Terakhir Sentuh'];
+  const userRows: SheetRow[] = (d.users ?? []).map((u) => [
+    u.full_name ?? '—',
+    u.role ?? '—',
+    String(u.generated_count ?? 0),
+    String(u.handled_count ?? 0),
+    String(u.hold_reject_override ?? 0),
+    u.last_touch ? new Date(u.last_touch).toLocaleString('id-ID') : '—',
+  ]);
+  appendSheet(wb, 'Beban per User', userHeader, userRows);
+
+  const anomalyHeader = ['Tipe Anomali', 'Jumlah'];
+  const anomalyRows: SheetRow[] = (d.anomaly_breakdown ?? []).map((row) => [
+    row.event_type ?? '—',
+    String(row.count ?? 0),
+  ]);
+  appendSheet(wb, 'Breakdown Anomali', anomalyHeader, anomalyRows);
+}
+
 // ── main export function ─────────────────────────────────────────────
 
 export async function exportReportToExcel(
@@ -658,8 +780,11 @@ export async function exportReportToExcel(
     case 'schedule_variance':  buildScheduleVariance(wb, payload.data as ScheduleVarianceData); break;
     case 'weekly_digest':      buildWeeklyDigest(wb, payload.data as WeeklyDigestData); break;
     case 'audit_list':         buildAuditList(wb, payload.data as AuditListData); break;
+    case 'ai_usage_summary':   buildAIUsageSummary(wb, payload.data as AIUsageData); break;
     case 'approval_sla_user':  buildApprovalSLAUser(wb, payload.data as ApprovalSLAData); break;
     case 'operational_entry_discipline': buildOperationalEntryDiscipline(wb, payload.data as OperationalDisciplineData); break;
+    case 'tool_usage_summary': buildToolUsageSummary(wb, payload.data as ToolUsageData); break;
+    case 'exception_handling_load': buildExceptionHandlingLoad(wb, payload.data as ExceptionHandlingData); break;
   }
 
   const baseWorkbookBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });

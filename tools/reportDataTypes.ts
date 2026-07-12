@@ -204,6 +204,40 @@ export interface AuditListData {
   date_range: { from: string | null; to: string | null };
 }
 
+// ── AI Usage Summary ───────────────────────────────────────────────
+export interface AIUsageData {
+  summary: {
+    total_interactions: number;
+    active_users: number;
+    total_input_tokens: number;
+    total_output_tokens: number;
+    total_tokens: number;
+    haiku_count: number;
+    sonnet_count: number;
+  };
+  users: Array<{
+    user_id: string;
+    full_name: string;
+    role: string;
+    interaction_count: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    haiku_count: number;
+    sonnet_count: number;
+    active_days: number;
+    last_used_at: string | null;
+  }>;
+  usage_by_day: Array<{
+    date: string;
+    interaction_count: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+  }>;
+  date_range: { from: string | null; to: string | null };
+}
+
 // ── Approval SLA per User ──────────────────────────────────────────
 export interface ApprovalSLAData {
   summary: {
@@ -261,6 +295,57 @@ export interface OperationalDisciplineData {
   date_range: { from: string | null; to: string | null };
 }
 
+// ── Tool Usage Summary ─────────────────────────────────────────────
+export interface ToolUsageData {
+  summary: {
+    total_exports: number;
+    export_users: number;
+    total_ai_chats: number;
+    ai_users: number;
+    total_ai_tokens: number;
+  };
+  top_report_types: Array<{ report_type: string; count: number }>;
+  users: Array<{
+    user_id: string;
+    full_name: string;
+    role: string;
+    export_count: number;
+    ai_chat_count: number;
+    total_tokens: number;
+    haiku_count: number;
+    sonnet_count: number;
+    last_seen: string | null;
+  }>;
+  note: string;
+  date_range: { from: string | null; to: string | null };
+}
+
+// ── Exception Handling Load ────────────────────────────────────────
+export interface ExceptionHandlingData {
+  summary: {
+    auto_hold_requests: number;
+    rejected_requests: number;
+    rejected_vo: number;
+    rejected_mtn: number;
+    hold_reject_override_actions: number;
+    anomalies_total: number;
+    anomalies_high_or_critical: number;
+    audit_cases_open: number;
+  };
+  users: Array<{
+    user_id: string;
+    full_name: string;
+    role: string;
+    generated_count: number;
+    handled_count: number;
+    hold_reject_override: number;
+    last_touch: string | null;
+  }>;
+  anomaly_breakdown: Array<{ event_type: string; count: number }>;
+  note: string;
+  date_range: { from: string | null; to: string | null };
+}
+
 /**
  * Union of all report data types. Use as a discriminated lookup:
  *   type DataFor<T extends ReportType> = ReportDataMap[T]
@@ -273,6 +358,9 @@ export interface ReportDataMap {
   schedule_variance: ScheduleVarianceData;
   weekly_digest: WeeklyDigestData;
   audit_list: AuditListData;
+  ai_usage_summary: AIUsageData;
   approval_sla_user: ApprovalSLAData;
   operational_entry_discipline: OperationalDisciplineData;
+  tool_usage_summary: ToolUsageData;
+  exception_handling_load: ExceptionHandlingData;
 }
