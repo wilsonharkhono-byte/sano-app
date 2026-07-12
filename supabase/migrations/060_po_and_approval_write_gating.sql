@@ -314,6 +314,10 @@ CREATE POLICY "approval_tasks_office_read" ON approval_tasks
   TO authenticated
   USING (is_office_role());
 
+-- SUPERSEDED BY 071: 071 re-creates this policy with the verdict columns
+-- pinned (AND action IS NULL AND acted_at IS NULL) so an APPROVE can only
+-- arrive via the principal-only UPDATE path. If you re-paste 060, re-paste
+-- 071 after it — this unpinned version alone reopens the override-forge path.
 DROP POLICY IF EXISTS "approval_tasks_office_insert" ON approval_tasks;
 CREATE POLICY "approval_tasks_office_insert" ON approval_tasks
   FOR INSERT
