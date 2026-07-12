@@ -9,12 +9,13 @@ import Badge from '../components/Badge';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { computeGate3Flag } from '../gates/gate3';
-import { sanitizeText, isPositiveNumber } from '../../tools/validation';
+import { sanitizeText } from '../../tools/validation';
 import { pickAndUploadPhoto } from '../../tools/storage';
 import { requestGps } from '../../tools/gps';
 import { getPurchaseOrderDisplayNumber } from '../../tools/purchaseOrders';
 import { supplierToBase, displayQty } from '../../tools/materialUnitConversion';
 import { buildUnambiguousCatalogNameMap, normalizeCatalogName } from '../../tools/catalogNameIndex';
+import { buildReceiptLinesPayload, type ReceiveLineDraft } from '../../tools/receiptLinesPayload';
 import { generateClientReceiptId } from '../../tools/receiptIdempotency';
 import { supabase } from '../../tools/supabase';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
@@ -46,12 +47,39 @@ interface CatalogRow {
   base_qty_per_supplier_unit: number | null;
 }
 
+// A purchase_order_lines row for the selected PO (base-unit qty/unit as stored).
+interface PoLine {
+  id: string;
+  material_id: string | null;
+  material_name: string;
+  quantity: number;
+  unit: string;
+}
+
+// One receivable line resolved for the UI: the PO line (or a synthesized header
+// line for legacy header-only POs) plus its catalog-derived factor/input unit.
+interface EffectiveLine {
+  key: string;                 // stable React key + lineQtys index
+  po_line_id: string | null;   // real PO line id, or null for the header synthesis
+  material_id: string | null;  // resolved catalog id for the payload/join
+  material_name: string;
+  quantity: number;            // ordered qty (base)
+  baseUnit: string;            // stored/base unit
+  factor: number | null;       // base per supplier unit; null ⇒ 1:1
+  inputUnit: string;           // unit the supervisor types in (supplier or base)
+  catalog: CatalogRow | null;  // for per-line display formatting
+}
+
 export default function TerimaScreen() {
   const { purchaseOrders, project, profile, refresh } = useProject();
   const { show: toast } = useToast();
 
   const [poId, setPoId] = useState('');
-  const [qtyActual, setQtyActual] = useState('');
+  // Per-line received quantities, keyed by EffectiveLine.key. The supervisor
+  // types SUPPLIER units per line (batang for rebar); each is converted to base
+  // (kg) before submit. Replaces the old single header-level qty (line-grain,
+  // migration 070).
+  const [lineQtys, setLineQtys] = useState<Record<string, string>>({});
   const [vehicleRef, setVehicleRef] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -72,6 +100,10 @@ export default function TerimaScreen() {
   // Receipt history for selected PO
   const [receiptHistory, setReceiptHistory] = useState<ReceiptRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  // Per-PO-line received totals (base units), summed from receipt_lines.po_line_id
+  // (migration 070). Legacy lines with NULL po_line_id aren't attributed to any
+  // line — the per-line hint is best-effort; the header totals stay exact.
+  const [receivedByLine, setReceivedByLine] = useState<Map<string, number>>(new Map());
 
   // Inbound MTN — approved transfers targeting this project
   const [inboundMtns, setInboundMtns] = useState<InboundMTN[]>([]);
@@ -85,15 +117,37 @@ export default function TerimaScreen() {
   // Same contract as migration 055's own receipt_lines.material_id backfill
   // (055:56-73, "catalog has known duplicate names — never guess").
   const [catalogByName, setCatalogByName] = useState<Map<string, CatalogRow | null>>(new Map());
+  // By-id lookup for line-grain: a PO line already carries material_id, so we
+  // resolve its factor by id (exact) and only fall back to the name map for
+  // lines with NULL material_id (migration 070). id lookups never hit the
+  // duplicate-name ambiguity that forces the name map to null.
+  const [catalogById, setCatalogById] = useState<Map<string, CatalogRow>>(new Map());
 
   useEffect(() => {
     supabase
       .from('material_catalog')
       .select('id, name, unit, supplier_unit, base_qty_per_supplier_unit')
       .then(({ data }) => {
-        setCatalogByName(buildUnambiguousCatalogNameMap((data as CatalogRow[]) ?? []));
+        const rows = (data as CatalogRow[]) ?? [];
+        setCatalogByName(buildUnambiguousCatalogNameMap(rows));
+        setCatalogById(new Map(rows.map(r => [r.id, r])));
       });
   }, []);
+
+  // Purchase-order lines for the selected PO — the unit of receiving now (each
+  // line settled separately with its own material identity). Supervisors have
+  // SELECT on purchase_order_lines for POs in their assigned project
+  // (002:962-971 po_lines_assigned_select).
+  const [poLines, setPoLines] = useState<PoLine[]>([]);
+  useEffect(() => {
+    if (!poId) { setPoLines([]); return; }
+    supabase
+      .from('purchase_order_lines')
+      .select('id, material_id, material_name, quantity, unit')
+      .eq('po_id', poId)
+      .order('created_at', { ascending: true })
+      .then(({ data }) => setPoLines((data as PoLine[]) ?? []));
+  }, [poId]);
 
   useEffect(() => {
     if (!project) return;
@@ -108,14 +162,11 @@ export default function TerimaScreen() {
 
   const selectedPO = useMemo(() => purchaseOrders.find(p => p.id === poId), [purchaseOrders, poId]);
 
-  // Factor for the selected PO's material (null → 1:1, everything stays base).
-  // `?? null` collapses BOTH "no match" (get → undefined) and "ambiguous
-  // name" (get → null, see buildUnambiguousCatalogNameMap) to the same
-  // unlinked state — an ambiguous name gets no id and no rebar factor,
-  // never a guessed duplicate.
+  // HEADER-level catalog match (by the PO header name) — used ONLY for the
+  // header summary metrics + history formatting. Per-line receiving resolves
+  // its own catalog per line below. `?? null` collapses BOTH "no match" and
+  // "ambiguous name" (buildUnambiguousCatalogNameMap → null) to unlinked.
   const poCatalog = selectedPO ? catalogByName.get(normalizeCatalogName(selectedPO.material_name)) ?? null : null;
-  const poFactor = poCatalog?.base_qty_per_supplier_unit ?? null;
-  const poInputUnit = poFactor != null ? (poCatalog?.supplier_unit || 'batang') : selectedPO?.unit ?? '';
   /** Format a BASE-unit (kg) PO quantity for display — batang for rebar. */
   const formatPoQty = (qtyBase: number) => {
     const d = displayQty(qtyBase, poCatalog ?? { unit: selectedPO?.unit ?? '' });
@@ -123,9 +174,60 @@ export default function TerimaScreen() {
       ? `${d.qty.toLocaleString('id-ID')} ${d.unit} (≈ ${d.baseQty.toLocaleString('id-ID')} ${d.baseUnit})`
       : `${d.qty.toLocaleString('id-ID')} ${d.unit}`;
   };
-  // The supervisor types SUPPLIER units (batang for rebar); receipts, gate
-  // checks and PO totals are BASE-unit (kg) math.
-  const qtyActualBase = supplierToBase(parseFloat(qtyActual), poFactor);
+
+  // The receivable lines for the selected PO. Normally the PO's own
+  // purchase_order_lines; if a (legacy) PO has none, synthesize ONE line from
+  // the header so receiving still works (po_line_id null → stored NULL). Each
+  // line resolves its factor by material_id (exact) and only falls back to the
+  // unambiguous name map when material_id is NULL.
+  const effectiveLines: EffectiveLine[] = useMemo(() => {
+    if (!selectedPO) return [];
+    const rawLines: Array<Omit<EffectiveLine, 'factor' | 'inputUnit' | 'catalog'>> =
+      poLines.length > 0
+        ? poLines.map(l => ({
+            key: l.id,
+            po_line_id: l.id,
+            material_id: l.material_id,
+            material_name: l.material_name,
+            quantity: l.quantity,
+            baseUnit: l.unit,
+          }))
+        : [{
+            key: '__header__',
+            po_line_id: null,
+            material_id: null,
+            material_name: selectedPO.material_name,
+            quantity: selectedPO.quantity,
+            baseUnit: selectedPO.unit,
+          }];
+    return rawLines.map(l => {
+      const catalog = l.material_id
+        ? catalogById.get(l.material_id) ?? null
+        : catalogByName.get(normalizeCatalogName(l.material_name)) ?? null;
+      const factor = catalog?.base_qty_per_supplier_unit ?? null;
+      const inputUnit = factor != null ? (catalog?.supplier_unit || 'batang') : l.baseUnit;
+      return {
+        ...l,
+        // Prefer the PO line's own id; else the name-map-resolved id so the
+        // envelope/balance join can still credit a free-text line.
+        material_id: l.material_id ?? catalog?.id ?? null,
+        catalog,
+        factor,
+        inputUnit,
+      };
+    });
+  }, [selectedPO, poLines, catalogById, catalogByName]);
+
+  // Total BASE qty across all typed lines — feeds the gate check + optimistic
+  // status (gate semantics unchanged: it compares this receipt's whole against
+  // the whole PO; per-line-vs-PO refinement is a known separate issue).
+  const totalBaseQty = useMemo(() => {
+    return effectiveLines.reduce((sum, l) => {
+      const raw = parseFloat(lineQtys[l.key] ?? '');
+      if (!Number.isFinite(raw) || raw <= 0) return sum;
+      return sum + supplierToBase(raw, l.factor);
+    }, 0);
+  }, [effectiveLines, lineQtys]);
 
   const isReadymix = selectedPO?.material_name.toLowerCase().includes('readymix') ?? false;
   const requiredPhotos = isReadymix ? 4 : 3;
@@ -137,7 +239,7 @@ export default function TerimaScreen() {
 
   // Load receipt history when PO changes
   const loadReceiptHistory = useCallback(async (poIdVal: string) => {
-    if (!poIdVal) { setReceiptHistory([]); return; }
+    if (!poIdVal) { setReceiptHistory([]); setReceivedByLine(new Map()); return; }
     setLoadingHistory(true);
     try {
       // Query from old material_receipts (backward compat) and new receipts table
@@ -149,28 +251,35 @@ export default function TerimaScreen() {
 
       const { data: newReceipts } = await supabase
         .from('receipts')
-        .select('id, vehicle_ref, created_at, receipt_lines(quantity_actual)')
+        .select('id, vehicle_ref, created_at, receipt_lines(quantity_actual, po_line_id)')
         .eq('po_id', poIdVal)
         .order('created_at', { ascending: false });
 
       const combined: ReceiptRecord[] = [];
+      const byLine = new Map<string, number>();
 
       // Old receipts
       for (const r of (oldReceipts ?? [])) {
         combined.push({ id: r.id, quantity_actual: r.quantity_actual, vehicle_ref: null, created_at: r.created_at });
       }
 
-      // New receipts — sum lines
+      // New receipts — sum lines (and accumulate per PO line for the per-line hint)
       for (const r of (newReceipts ?? [])) {
-        const totalQty = ((r as any).receipt_lines ?? []).reduce((s: number, l: any) => s + (l.quantity_actual ?? 0), 0);
+        const lines = ((r as any).receipt_lines ?? []) as Array<{ quantity_actual: number | null; po_line_id: string | null }>;
+        const totalQty = lines.reduce((s, l) => s + (l.quantity_actual ?? 0), 0);
+        for (const l of lines) {
+          if (l.po_line_id) byLine.set(l.po_line_id, (byLine.get(l.po_line_id) ?? 0) + (l.quantity_actual ?? 0));
+        }
         combined.push({ id: r.id, quantity_actual: totalQty, vehicle_ref: r.vehicle_ref, created_at: r.created_at });
       }
 
       // Sort descending
       combined.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
       setReceiptHistory(combined);
+      setReceivedByLine(byLine);
     } catch {
       setReceiptHistory([]);
+      setReceivedByLine(new Map());
     } finally {
       setLoadingHistory(false);
     }
@@ -189,15 +298,15 @@ export default function TerimaScreen() {
     'PARTIAL';
 
   const gateResult: GateResult | null = useMemo(() => {
-    if (!selectedPO || !qtyActual) return null;
-    const q = supplierToBase(parseFloat(qtyActual), poFactor);
-    if (isNaN(q) || q <= 0) return null;
-    return computeGate3Flag(selectedPO, q, null, {
+    if (!selectedPO || totalBaseQty <= 0) return null;
+    // Gate 3 evaluates this receipt's TOTAL base qty (sum of all lines) against
+    // the whole PO — same per-receipt-vs-whole semantics as before line-grain.
+    return computeGate3Flag(selectedPO, totalBaseQty, null, {
       total_received: totalReceived,
       total_planned: selectedPO.quantity,
       unit: selectedPO.unit,
     });
-  }, [selectedPO, qtyActual, totalReceived, poFactor]);
+  }, [selectedPO, totalBaseQty, totalReceived]);
 
   const handlePhoto = async (type: string) => {
     try {
@@ -217,7 +326,7 @@ export default function TerimaScreen() {
   };
 
   const resetForm = () => {
-    setQtyActual(''); setVehicleRef(''); setNotes('');
+    setLineQtys({}); setVehicleRef(''); setNotes('');
     setPhotos({ surat_jalan: null, material_site: null, vehicle: null, tiket_timbang: null });
     setVehicleGps(null);
     // End the idempotency session: the next receipt is a distinct delivery and
@@ -226,8 +335,21 @@ export default function TerimaScreen() {
   };
 
   const handleSubmit = async (isFinal: boolean) => {
-    if (!poId || !isPositiveNumber(qtyActual)) {
-      toast('Pilih PO dan masukkan jumlah', 'critical'); return;
+    if (!poId) { toast('Pilih PO', 'critical'); return; }
+
+    // Convert every typed line to base units, dropping zero/blank/invalid lines.
+    // A multi-line PO can mix a rebar line (batang→kg) with a 1:1 line here.
+    const drafts: ReceiveLineDraft[] = effectiveLines.map(l => ({
+      po_line_id: l.po_line_id,
+      material_id: l.material_id,
+      material_name: l.material_name,
+      qtyInput: lineQtys[l.key] ?? '',
+      factor: l.factor,
+      baseUnit: l.baseUnit,
+    }));
+    const linePayload = buildReceiptLinesPayload(drafts);
+    if (linePayload.length === 0) {
+      toast('Masukkan jumlah untuk minimal satu baris', 'critical'); return;
     }
     if (capturedCount < requiredPhotos) {
       toast(`Ambil semua ${requiredPhotos} foto`, 'critical'); return;
@@ -248,26 +370,20 @@ export default function TerimaScreen() {
           gps_lon: key === 'vehicle' ? vehicleGps?.lon ?? null : null,
         }));
 
-      // Optimistic-UI PO status only. As of migration 055 the server recomputes
-      // status authoritatively inside submit_receipt (summing all receipt_lines +
-      // legacy material_receipts under a row lock), so p_new_po_status below is
-      // ignored server-side — we still send it so pre-055 databases keep working.
-      // qtyActual is typed in SUPPLIER units (batang for rebar); PO totals are base (kg).
-      const newTotal = totalReceived + qtyActualBase;
-      const newPoStatus = (isFinal || newTotal >= selectedPO!.quantity)
-        ? 'FULLY_RECEIVED'
-        : 'PARTIAL_RECEIVED';
-
       // Mint the idempotency key once per session (migration 062): a retry after
-      // a timeout reuses the ref, so submit_receipt returns the already-created
-      // receipt instead of double-booking. Null on runtimes without a CSPRNG →
-      // server falls back to its legacy non-idempotent path.
+      // a timeout reuses the ref, so submit_receipt_lines returns the already-
+      // created receipt instead of double-booking. Null on runtimes without a
+      // CSPRNG → server falls back to its legacy non-idempotent path.
       if (!clientReceiptIdRef.current) {
         clientReceiptIdRef.current = generateClientReceiptId();
       }
 
-      // Atomic: receipt + line + photos + PO status update + activity_log in ONE transaction (migration 045).
-      const { data: receiptId, error: rcptErr } = await supabase.rpc('submit_receipt', {
+      const receivedBase = linePayload.reduce((s, l) => s + l.quantity, 0);
+
+      // Atomic line-grain receive (migration 070): receipt + N lines (each with
+      // its po_line_id + material_id) + photos + server-authoritative PO status
+      // + activity_log in ONE transaction. Status is computed server-side.
+      const { data: receiptId, error: rcptErr } = await supabase.rpc('submit_receipt_lines', {
         p_po_id: poId,
         p_project_id: project!.id,
         p_received_by: profile!.id,
@@ -275,21 +391,17 @@ export default function TerimaScreen() {
         p_gate3_flag: gateResult?.flag ?? 'OK',
         p_gate3_details: gateResult,
         p_notes: notes ? sanitizeText(notes) : null,
-        p_line_material_name: selectedPO!.material_name,
-        p_line_quantity: qtyActualBase,
-        p_line_unit: selectedPO!.unit,
+        p_lines: linePayload,
         p_photos: photoRecords,
-        p_new_po_status: newPoStatus,
-        p_line_material_id: poCatalog?.id ?? null,
         p_client_receipt_id: clientReceiptIdRef.current,
-        p_activity_label: `${selectedPO!.material_name} ${qtyActual} ${poInputUnit}${poFactor != null ? ` (≈ ${qtyActualBase.toFixed(1)} ${selectedPO!.unit})` : ''} diterima (${isFinal ? 'Final' : 'Parsial'})`,
+        p_activity_label: `${selectedPO!.material_name} — ${linePayload.length} baris (${receivedBase.toLocaleString('id-ID')} ${selectedPO!.unit}) diterima (${isFinal ? 'Final' : 'Parsial'})`,
       });
       if (rcptErr || !receiptId) throw rcptErr || new Error('Receipt insert failed');
 
       resetForm();
       await loadReceiptHistory(poId);
       await refresh();
-      toast(`${isFinal ? 'Penerimaan final' : 'Penerimaan parsial'} dicatat — ${qtyActual} ${poInputUnit}`, 'ok');
+      toast(`${isFinal ? 'Penerimaan final' : 'Penerimaan parsial'} dicatat — ${linePayload.length} baris`, 'ok');
     } catch (err: any) {
       console.warn('Receipt submit failed:', err?.message ?? err);
       toast(err?.message ?? 'Gagal menyimpan penerimaan', 'critical');
@@ -397,17 +509,41 @@ export default function TerimaScreen() {
               {/* New receipt form */}
               {remainingQty > 0 && (
                 <>
-                  <Text style={styles.label}>Jumlah Diterima <Text style={styles.req}>*</Text></Text>
-                  <View style={styles.row2}>
-                    <TextInput style={[styles.input, { flex: 1 }]} keyboardType="numeric" value={qtyActual} onChangeText={setQtyActual} placeholder="0" />
-                    <TextInput style={[styles.input, styles.disabled, { flex: 1 }]} value={poInputUnit} editable={false} />
-                  </View>
-                  {poFactor != null && isPositiveNumber(qtyActual) && (
-                    <Text style={styles.fieldHint}>
-                      ≈ {qtyActualBase.toFixed(1)} {selectedPO.unit} · 1 {poInputUnit} = {poFactor} {selectedPO.unit}
-                    </Text>
-                  )}
-                  <Text style={styles.fieldHint}>Sisa yang harus diterima: {formatPoQty(remainingQty)}</Text>
+                  <Text style={styles.label}>Jumlah Diterima per Baris <Text style={styles.req}>*</Text></Text>
+                  <Text style={styles.hint}>Isi jumlah untuk baris yang datang; kosongkan sisanya. Minimal satu baris.</Text>
+                  {effectiveLines.map((l) => {
+                    const received = l.po_line_id ? (receivedByLine.get(l.po_line_id) ?? 0) : totalReceived;
+                    const lineRemaining = Math.max(0, l.quantity - received);
+                    const remD = displayQty(lineRemaining, l.catalog ?? { unit: l.baseUnit });
+                    const remStr = remD.converted
+                      ? `${remD.qty.toLocaleString('id-ID')} ${remD.unit} (≈ ${remD.baseQty.toLocaleString('id-ID')} ${remD.baseUnit})`
+                      : `${remD.qty.toLocaleString('id-ID')} ${remD.unit}`;
+                    const raw = parseFloat(lineQtys[l.key] ?? '');
+                    const showConv = l.factor != null && Number.isFinite(raw) && raw > 0;
+                    return (
+                      <View key={l.key} style={styles.lineBox}>
+                        <Text style={styles.lineName}>{l.material_name}</Text>
+                        <View style={styles.row2}>
+                          <TextInput
+                            style={[styles.input, { flex: 1 }]}
+                            keyboardType="numeric"
+                            value={lineQtys[l.key] ?? ''}
+                            onChangeText={t => setLineQtys(prev => ({ ...prev, [l.key]: t }))}
+                            placeholder="0"
+                            accessibilityLabel={`Jumlah diterima untuk ${l.material_name}`}
+                          />
+                          <TextInput style={[styles.input, styles.disabled, { flex: 1 }]} value={l.inputUnit} editable={false} />
+                        </View>
+                        {showConv && (
+                          <Text style={styles.fieldHint}>
+                            ≈ {supplierToBase(raw, l.factor).toFixed(1)} {l.baseUnit} · 1 {l.inputUnit} = {l.factor} {l.baseUnit}
+                          </Text>
+                        )}
+                        <Text style={styles.fieldHint}>Sisa: {remStr}</Text>
+                      </View>
+                    );
+                  })}
+                  <Text style={styles.fieldHint}>Sisa total PO: {formatPoQty(Math.max(0, remainingQty))}</Text>
 
                   <Text style={styles.label}>Referensi Kendaraan</Text>
                   <TextInput style={styles.input} value={vehicleRef} onChangeText={setVehicleRef} placeholder="Plat nomor / ID shipment" />
@@ -491,6 +627,10 @@ const styles = StyleSheet.create({
   fieldHint:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs, lineHeight: 17 },
   row2:       { flexDirection: 'row', gap: SPACE.sm },
   photoGrid:  { flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.sm, marginBottom: SPACE.sm },
+
+  // Per-line receive input (line-grain, migration 070)
+  lineBox:  { backgroundColor: 'rgba(20,18,16,0.03)', borderRadius: RADIUS, padding: SPACE.md, marginTop: SPACE.sm },
+  lineName: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text, marginBottom: SPACE.xs },
 
   // PO detail card
   poCard:        { backgroundColor: 'rgba(20,18,16,0.03)', borderRadius: RADIUS, padding: SPACE.md, marginTop: SPACE.md },
