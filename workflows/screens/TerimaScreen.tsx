@@ -139,15 +139,36 @@ export default function TerimaScreen() {
   // SELECT on purchase_order_lines for POs in their assigned project
   // (002:962-971 po_lines_assigned_select).
   const [poLines, setPoLines] = useState<PoLine[]>([]);
-  useEffect(() => {
-    if (!poId) { setPoLines([]); return; }
-    supabase
-      .from('purchase_order_lines')
-      .select('id, material_id, material_name, quantity, unit')
-      .eq('po_id', poId)
-      .order('created_at', { ascending: true })
-      .then(({ data }) => setPoLines((data as PoLine[]) ?? []));
-  }, [poId]);
+  // Tri-state fetch status: 'loading' while in flight, 'error' on a failed
+  // fetch (network/RLS), 'loaded' once the query settles successfully —
+  // including a genuinely empty (legacy, line-less) PO. This is load-bearing
+  // for effectiveLines below: a fetch error must NOT look like "poLines = []",
+  // or the header-grain synthesis fires for a multi-line PO on a transient
+  // failure, recreating the "N item material"/'mixed' bug this task fixed —
+  // silently, since the old code ignored `error` entirely.
+  const [poLinesStatus, setPoLinesStatus] = useState<'loading' | 'error' | 'loaded'>('loaded');
+
+  const loadPoLines = useCallback(async (poIdVal: string) => {
+    if (!poIdVal) { setPoLines([]); setPoLinesStatus('loaded'); return; }
+    setPoLinesStatus('loading');
+    try {
+      const { data, error } = await supabase
+        .from('purchase_order_lines')
+        .select('id, material_id, material_name, quantity, unit')
+        .eq('po_id', poIdVal)
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      setPoLines((data as PoLine[]) ?? []);
+      setPoLinesStatus('loaded');
+    } catch (err: any) {
+      console.warn('PO lines load failed:', err?.message ?? err);
+      setPoLines([]);
+      setPoLinesStatus('error');
+      toast('Gagal memuat baris PO — coba lagi', 'critical');
+    }
+  }, [toast]);
+
+  useEffect(() => { loadPoLines(poId); }, [poId, loadPoLines]);
 
   useEffect(() => {
     if (!project) return;
@@ -182,6 +203,10 @@ export default function TerimaScreen() {
   // unambiguous name map when material_id is NULL.
   const effectiveLines: EffectiveLine[] = useMemo(() => {
     if (!selectedPO) return [];
+    // Block: never synthesize the header-grain line while the fetch is still
+    // in flight or has failed — only a CONFIRMED 'loaded' + zero-rows result
+    // means a genuinely line-less legacy PO. See poLinesStatus above.
+    if (poLinesStatus !== 'loaded') return [];
     const rawLines: Array<Omit<EffectiveLine, 'factor' | 'inputUnit' | 'catalog'>> =
       poLines.length > 0
         ? poLines.map(l => ({
@@ -216,18 +241,31 @@ export default function TerimaScreen() {
         inputUnit,
       };
     });
-  }, [selectedPO, poLines, catalogById, catalogByName]);
+  }, [selectedPO, poLines, poLinesStatus, catalogById, catalogByName]);
+
+  // Base-unit receipt lines for the currently typed quantities — the SINGLE
+  // source of truth for both the submit payload (handleSubmit) and the gate-3
+  // total below. Both consume this same array so they can never diverge: the
+  // parse/skip/convert rules live in buildReceiptLinesPayload only.
+  const linePayload = useMemo(() => {
+    const drafts: ReceiveLineDraft[] = effectiveLines.map(l => ({
+      po_line_id: l.po_line_id,
+      material_id: l.material_id,
+      material_name: l.material_name,
+      qtyInput: lineQtys[l.key] ?? '',
+      factor: l.factor,
+      baseUnit: l.baseUnit,
+    }));
+    return buildReceiptLinesPayload(drafts);
+  }, [effectiveLines, lineQtys]);
 
   // Total BASE qty across all typed lines — feeds the gate check + optimistic
   // status (gate semantics unchanged: it compares this receipt's whole against
   // the whole PO; per-line-vs-PO refinement is a known separate issue).
-  const totalBaseQty = useMemo(() => {
-    return effectiveLines.reduce((sum, l) => {
-      const raw = parseFloat(lineQtys[l.key] ?? '');
-      if (!Number.isFinite(raw) || raw <= 0) return sum;
-      return sum + supplierToBase(raw, l.factor);
-    }, 0);
-  }, [effectiveLines, lineQtys]);
+  const totalBaseQty = useMemo(
+    () => linePayload.reduce((sum, l) => sum + l.quantity, 0),
+    [linePayload],
+  );
 
   const isReadymix = selectedPO?.material_name.toLowerCase().includes('readymix') ?? false;
   const requiredPhotos = isReadymix ? 4 : 3;
@@ -336,18 +374,17 @@ export default function TerimaScreen() {
 
   const handleSubmit = async (isFinal: boolean) => {
     if (!poId) { toast('Pilih PO', 'critical'); return; }
+    // Defense-in-depth: the submit buttons are disabled while poLinesStatus
+    // isn't 'loaded', but guard here too in case of a race between a PO
+    // reselect and a stale tap. Never submit against unconfirmed/failed lines.
+    if (poLinesStatus !== 'loaded') {
+      toast('Baris PO belum termuat — coba lagi', 'critical'); return;
+    }
 
-    // Convert every typed line to base units, dropping zero/blank/invalid lines.
-    // A multi-line PO can mix a rebar line (batang→kg) with a 1:1 line here.
-    const drafts: ReceiveLineDraft[] = effectiveLines.map(l => ({
-      po_line_id: l.po_line_id,
-      material_id: l.material_id,
-      material_name: l.material_name,
-      qtyInput: lineQtys[l.key] ?? '',
-      factor: l.factor,
-      baseUnit: l.baseUnit,
-    }));
-    const linePayload = buildReceiptLinesPayload(drafts);
+    // linePayload (base units, zero/blank/invalid lines already dropped) is
+    // the same value driving totalBaseQty above — single source of truth, see
+    // its definition. A multi-line PO can mix a rebar line (batang→kg) with a
+    // 1:1 line here.
     if (linePayload.length === 0) {
       toast('Masukkan jumlah untuk minimal satu baris', 'critical'); return;
     }
@@ -511,7 +548,28 @@ export default function TerimaScreen() {
                 <>
                   <Text style={styles.label}>Jumlah Diterima per Baris <Text style={styles.req}>*</Text></Text>
                   <Text style={styles.hint}>Isi jumlah untuk baris yang datang; kosongkan sisanya. Minimal satu baris.</Text>
-                  {effectiveLines.map((l) => {
+
+                  {poLinesStatus === 'loading' && (
+                    <Text style={styles.hint}>Memuat baris PO...</Text>
+                  )}
+
+                  {poLinesStatus === 'error' && (
+                    <View style={styles.poLinesErrorBox}>
+                      <Text style={styles.poLinesErrorText}>
+                        Gagal memuat baris PO. Form penerimaan dinonaktifkan sampai berhasil dimuat ulang.
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.retryBtn}
+                        onPress={() => loadPoLines(poId)}
+                        accessibilityRole="button"
+                        accessibilityLabel="Coba lagi memuat baris PO"
+                      >
+                        <Text style={styles.retryBtnText}>Coba Lagi</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
+                  {poLinesStatus === 'loaded' && effectiveLines.map((l) => {
                     const received = l.po_line_id ? (receivedByLine.get(l.po_line_id) ?? 0) : totalReceived;
                     const lineRemaining = Math.max(0, l.quantity - received);
                     const remD = displayQty(lineRemaining, l.catalog ?? { unit: l.baseUnit });
@@ -567,20 +625,20 @@ export default function TerimaScreen() {
                     <TouchableOpacity
                       style={[styles.btn, styles.partialBtn]}
                       onPress={() => handleSubmit(false)}
-                      disabled={submitting}
+                      disabled={submitting || poLinesStatus !== 'loaded'}
                       accessibilityRole="button"
                       accessibilityLabel="Simpan penerimaan parsial"
-                      accessibilityState={{ disabled: submitting, busy: submitting }}
+                      accessibilityState={{ disabled: submitting || poLinesStatus !== 'loaded', busy: submitting }}
                     >
                       <Text style={styles.btnText}>{submitting ? '...' : 'Simpan Parsial'}</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={styles.btn}
                       onPress={() => handleSubmit(true)}
-                      disabled={submitting}
+                      disabled={submitting || poLinesStatus !== 'loaded'}
                       accessibilityRole="button"
                       accessibilityLabel="Konfirmasi penerimaan final"
-                      accessibilityState={{ disabled: submitting, busy: submitting }}
+                      accessibilityState={{ disabled: submitting || poLinesStatus !== 'loaded', busy: submitting }}
                     >
                       <Text style={styles.btnText}>{submitting ? '...' : 'Terima Final'}</Text>
                     </TouchableOpacity>
@@ -631,6 +689,12 @@ const styles = StyleSheet.create({
   // Per-line receive input (line-grain, migration 070)
   lineBox:  { backgroundColor: 'rgba(20,18,16,0.03)', borderRadius: RADIUS, padding: SPACE.md, marginTop: SPACE.sm },
   lineName: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text, marginBottom: SPACE.xs },
+
+  // poLines fetch-failure block (blocks the receive form until retried)
+  poLinesErrorBox:  { padding: SPACE.base, borderRadius: RADIUS, backgroundColor: COLORS.criticalBg, marginTop: SPACE.sm, alignItems: 'center', gap: SPACE.sm },
+  poLinesErrorText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.critical, textAlign: 'center' },
+  retryBtn:         { backgroundColor: COLORS.critical, borderRadius: RADIUS, paddingVertical: SPACE.sm, paddingHorizontal: SPACE.base },
+  retryBtnText:     { color: COLORS.textInverse, fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', letterSpacing: 0.3 },
 
   // PO detail card
   poCard:        { backgroundColor: 'rgba(20,18,16,0.03)', borderRadius: RADIUS, padding: SPACE.md, marginTop: SPACE.md },
