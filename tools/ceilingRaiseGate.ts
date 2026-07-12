@@ -18,10 +18,6 @@
 // ALL quantities are BASE units (kg for rebar), matching the master lines and
 // the envelope view both sides compare against.
 
-// Float-subtraction guard, mirroring tools/poQuantityGate.ts: never treat IEEE
-// rounding dust (e.g. 1000 vs 1000.0000000001) as an uncovered breach.
-const EPSILON = 1e-9;
-
 /**
  * One breaching material, exactly as migration 079's compute_ceiling_breaches
  * returns it (the ONLY source escalation payloads and gate checks may use):
@@ -138,9 +134,14 @@ export function checkCeilingRaiseCoverage(
     );
   }
 
+  // Exact `>=`, matching migration 079's assert_ceiling_raise_gate
+  // (`proposed_qty >= b.proposed`) with NO epsilon slack. Fail-closed alignment:
+  // an epsilon here would let the client call a hair-short approval "covered" and
+  // attach it, only for the server to reject on publish. Mirroring the server
+  // exactly means the client never offers a task the server will refuse.
   const uncovered = breaches.filter(b => {
     const approved = byMaterial.get(b.material_id);
-    return approved === undefined || b.proposed > approved + EPSILON;
+    return approved === undefined || b.proposed > approved;
   });
 
   return { covered: uncovered.length === 0, uncovered };

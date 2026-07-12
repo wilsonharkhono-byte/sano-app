@@ -106,12 +106,25 @@ describe('checkCeilingRaiseCoverage', () => {
     expect(res.uncovered).toHaveLength(1);
   });
 
-  it('tolerates float dust at the coverage boundary (no spurious uncovered)', () => {
+  it('covers when the approved ceiling exactly equals the proposed (boundary >=)', () => {
     const res = checkCeilingRaiseCoverage(
       [breach({ proposed: 1300 })],
-      [cover({ proposed_qty: 1300 - 1e-12 })],
+      [cover({ proposed_qty: 1300 })],
     );
     expect(res.covered).toBe(true);
+  });
+
+  it('is fail-closed: an approval a hair below the proposed is UNCOVERED (no epsilon slack, mirrors server exact >=)', () => {
+    // Post-review 3(a): dropped the 1e-9 epsilon so the client matches migration
+    // 079's exact `proposed_qty >= b.proposed`. A hair-short approval the client
+    // once called "covered" would be rejected by the server on publish — so the
+    // client must refuse to attach it too (fail-closed alignment).
+    const res = checkCeilingRaiseCoverage(
+      [breach({ proposed: 1300 })],
+      [cover({ proposed_qty: 1300 - 1e-9 })],
+    );
+    expect(res.covered).toBe(false);
+    expect(res.uncovered).toHaveLength(1);
   });
 
   it('takes the largest authorised ceiling when a material is listed twice', () => {

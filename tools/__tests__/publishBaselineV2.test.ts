@@ -948,4 +948,68 @@ describe('publishBaselineV2 — ceiling-raise gate wiring (Task 2.12)', () => {
     expect(result.success).toBe(true);
     expect(mockRpc).not.toHaveBeenCalledWith('assert_ceiling_raise_gate', expect.anything());
   });
+
+  // Task 2.12 post-review (single-use approvals): a successful re-publish that
+  // USED a ceiling approval burns it via consume_approval_task, so the same "yes"
+  // can't back a second re-publish. Consumed AFTER success, and NON-FATAL.
+  it('(j) consumes the ceiling approval after a successful re-publish that used it', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: { id: 'ahsv-old' },
+      latestVersion: { version: 1 },
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1', {
+      revisionContext: revCtx(1, 0, [REV_LINE]),
+      ceilingApprovalTaskId: 'task-approved-1',
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockRpc).toHaveBeenCalledWith(
+      'consume_approval_task',
+      { p_task_id: 'task-approved-1' },
+    );
+  });
+
+  it('(j2) a re-publish WITHOUT a ceiling approval never consumes anything', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: { id: 'ahsv-old' },
+      latestVersion: { version: 1 },
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1', {
+      revisionContext: revCtx(0, 1, [REV_LINE]),
+    });
+
+    expect(result.success).toBe(true);
+    expect(mockRpc).not.toHaveBeenCalledWith('consume_approval_task', expect.anything());
+  });
+
+  it('(k) a consume_approval_task failure is NON-FATAL — publish still succeeds, warning recorded', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: { id: 'ahsv-old' },
+      latestVersion: { version: 1 },
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+    mockRpc.mockImplementation((fn: string) =>
+      fn === 'consume_approval_task'
+        ? Promise.resolve({ data: null, error: { message: 'consume boom' } })
+        : Promise.resolve({ data: null, error: null }),
+    );
+
+    const result = await publishBaselineV2('sess-1', 'proj-1', {
+      revisionContext: revCtx(1, 0, [REV_LINE]),
+      ceilingApprovalTaskId: 'task-approved-1',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.warnings?.some(w => /consume_approval_task failed/i.test(w))).toBe(true);
+  });
 });

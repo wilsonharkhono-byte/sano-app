@@ -280,7 +280,7 @@ export default function BaselineScreen({
   // behind a plan_ceiling_raise principal approval.
   const [proposedTotals, setProposedTotals] = useState<Map<string, number>>(new Map());
   const [ceilingBreaches, setCeilingBreaches] = useState<CeilingBreach[] | null>(null);
-  const [approvedCeilingTasks, setApprovedCeilingTasks] = useState<Array<{ id: string; override_payload: CeilingRaisePayloadEntry[] }>>([]);
+  const [approvedCeilingTasks, setApprovedCeilingTasks] = useState<Array<{ id: string; created_at: string; override_payload: CeilingRaisePayloadEntry[] }>>([]);
   const [selectedCeilingTaskId, setSelectedCeilingTaskId] = useState<string | null>(null);
   const [principalId, setPrincipalId] = useState<string | null>(null);
   const [checkingCeiling, setCheckingCeiling] = useState(false);
@@ -971,26 +971,43 @@ export default function BaselineScreen({
     return mapCeilingBreachRows((data ?? []) as Array<Record<string, unknown>>);
   };
 
-  // APPROVED plan_ceiling_raise tasks the estimator can attach + the project's
-  // principal (escalation assignee). Mirrors Gate2Screen's override loading.
+  // APPROVED, STILL-UNCONSUMED plan_ceiling_raise tasks the estimator can attach +
+  // the project's principal (escalation assignee). Mirrors Gate2Screen's override
+  // loading. consumed_at IS NULL is the client mirror of migration 079's single-use
+  // gate: a task already spent by an earlier re-publish is filtered out here so the
+  // picker never offers it (the server would reject it anyway).
   const loadApprovedCeilingTasks = async (projectId: string) => {
     const [taskRes, assignRes, profRes] = await Promise.all([
       supabase
         .from('approval_tasks')
-        .select('id, override_payload')
+        .select('id, created_at, override_payload')
         .eq('project_id', projectId)
         .eq('entity_type', 'plan_ceiling_raise')
-        .in('action', ['APPROVE', 'OVERRIDE']),
+        .in('action', ['APPROVE', 'OVERRIDE'])
+        .is('consumed_at', null),
       supabase.from('project_assignments').select('user_id').eq('project_id', projectId),
-      supabase.from('profiles').select('id, role'),
+      supabase.from('profiles').select('id').eq('role', 'principal'),
     ]);
-    const tasks = ((taskRes.data ?? []) as Array<{ id: string; override_payload: CeilingRaisePayloadEntry[] | null }>)
-      .map(t => ({ id: t.id, override_payload: t.override_payload ?? [] }));
+    const tasks = ((taskRes.data ?? []) as Array<{ id: string; created_at: string; override_payload: CeilingRaisePayloadEntry[] | null }>)
+      .map(t => ({ id: t.id, created_at: t.created_at, override_payload: t.override_payload ?? [] }));
     setApprovedCeilingTasks(tasks);
     const assignmentIds = ((assignRes.data as Array<{ user_id: string }>) ?? []).map(r => r.user_id);
-    const principal = ((profRes.data as Array<{ id: string; role: string }>) ?? [])
-      .find(p => assignmentIds.includes(p.id) && p.role === 'principal');
+    const principal = ((profRes.data as Array<{ id: string }>) ?? [])
+      .find(p => assignmentIds.includes(p.id));
     setPrincipalId(principal?.id ?? null);
+  };
+
+  // Human-readable picker label for an approved ceiling task: creation date +
+  // the first authorised material, with a "+N lainnya" tail (e.g.
+  // "12 Jul — Besi D13 +2 lainnya"), so the estimator can tell approvals apart.
+  const ceilingTaskLabel = (t: { created_at: string; override_payload: CeilingRaisePayloadEntry[] }) => {
+    const date = t.created_at
+      ? new Date(t.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })
+      : '—';
+    const names = t.override_payload.map(e => e.material_name || e.material_id).filter(Boolean);
+    const first = names[0] ?? `${t.override_payload.length} material`;
+    const extra = names.length > 1 ? ` +${names.length - 1} lainnya` : '';
+    return `${date} — ${first}${extra}`;
   };
 
   // Confirm tap on the acknowledgment checklist. When the diff raises the ceiling
@@ -1289,8 +1306,8 @@ export default function BaselineScreen({
                 onValueChange={(v) => setSelectedCeilingTaskId(v ? String(v) : null)}
               >
                 <Picker.Item label="— pilih task yang disetujui —" value="" />
-                {approvedCeilingTasks.map((t, i) => (
-                  <Picker.Item key={t.id} label={`Persetujuan #${i + 1} (${t.override_payload.length} material)`} value={t.id} />
+                {approvedCeilingTasks.map((t) => (
+                  <Picker.Item key={t.id} label={ceilingTaskLabel(t)} value={t.id} />
                 ))}
               </Picker>
             </View>

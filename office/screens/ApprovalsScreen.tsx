@@ -168,6 +168,17 @@ export default function ApprovalsScreen() {
   const [changes, setChanges] = useState<SiteChange[]>([]);
   const [requests, setRequests] = useState<MaterialRequest[]>([]);
   const [ceilingTasks, setCeilingTasks] = useState<CeilingRaiseTask[]>([]);
+  // Task 2.12 (post-review) — LIVE decision inputs for the Plafon card. The
+  // override_payload is attacker-authored (an escalating office user can write it
+  // via direct REST; 071's pinned policy only pins action/acted_at), so the
+  // principal must NOT decide on payload-rendered material name / before / ordered.
+  // These are re-resolved server-authoritatively by material_id: name from
+  // material_catalog, planned_before/ordered from v_material_envelope_status. Only
+  // proposed_qty (the ceiling actually being authorised, which the gate enforces)
+  // stays payload-sourced. ceilingLiveVerified=false ⇒ the live fetch failed ⇒
+  // fail-honest: show payload values flagged "tidak terverifikasi", never block.
+  const [ceilingLiveMap, setCeilingLiveMap] = useState<Map<string, { name: string | null; planned_before: number; ordered: number }>>(new Map());
+  const [ceilingLiveVerified, setCeilingLiveVerified] = useState(true);
   const [profileNames, setProfileNames] = useState<Record<string, string>>({});
   const [boqLabels, setBoqLabels] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
@@ -233,11 +244,51 @@ export default function ApprovalsScreen() {
         profiles: undefined,
       }));
       const nextRequests = (reqRes.data as MaterialRequest[]) ?? [];
+      const nextCeilingTasks = (ceilingRes.data as CeilingRaiseTask[]) ?? [];
       setMtns(nextMtns);
       setChanges(nextChanges);
       setRequests(nextRequests);
-      setCeilingTasks((ceilingRes.data as CeilingRaiseTask[]) ?? []);
+      setCeilingTasks(nextCeilingTasks);
       setBoqLabels(Object.fromEntries(((boqRes.data as any[]) ?? []).map((item) => [item.id, `${item.code} — ${item.label}`])));
+
+      // Task 2.12 (post-review) — resolve the Plafon card's decision inputs LIVE
+      // by material_id, so the principal never decides on attacker-authored payload
+      // values. Name ← material_catalog; planned_before/ordered ← the authoritative
+      // v_material_envelope_status. On any fetch error → fail-honest (mark
+      // unverified, keep showing payload values, never block the decision).
+      const ceilingMaterialIds = Array.from(new Set(
+        nextCeilingTasks.flatMap(t => (t.override_payload ?? []).map(e => e.material_id).filter(Boolean)),
+      )) as string[];
+      if (ceilingMaterialIds.length > 0) {
+        const [envRes, matRes] = await Promise.all([
+          supabase.from('v_material_envelope_status')
+            .select('material_id, total_planned, total_ordered')
+            .eq('project_id', project.id)
+            .in('material_id', ceilingMaterialIds),
+          supabase.from('material_catalog').select('id, name').in('id', ceilingMaterialIds),
+        ]);
+        if (envRes.error || matRes.error) {
+          setCeilingLiveMap(new Map());
+          setCeilingLiveVerified(false);
+        } else {
+          const nameById = new Map<string, string>(
+            ((matRes.data as Array<{ id: string; name: string }>) ?? []).map(m => [m.id, m.name]),
+          );
+          const liveMap = new Map<string, { name: string | null; planned_before: number; ordered: number }>();
+          for (const row of ((envRes.data as Array<{ material_id: string; total_planned: number; total_ordered: number }>) ?? [])) {
+            liveMap.set(row.material_id, {
+              name: nameById.get(row.material_id) ?? null,
+              planned_before: Number(row.total_planned) || 0,
+              ordered: Number(row.total_ordered) || 0,
+            });
+          }
+          setCeilingLiveMap(liveMap);
+          setCeilingLiveVerified(true);
+        }
+      } else {
+        setCeilingLiveMap(new Map());
+        setCeilingLiveVerified(true);
+      }
 
       const profileIds = Array.from(new Set([
         ...nextMtns.flatMap(row => [row.requested_by, row.reviewed_by]),
@@ -672,13 +723,45 @@ export default function ApprovalsScreen() {
                     Estimator menaikkan rencana material yang jumlah order-nya sudah melebihi rencana lama.
                     Setujui hanya jika kenaikan plafon ini memang sah.
                   </Text>
-                  {payload.map((e, i) => (
-                    <Text key={`${e.material_id}-${i}`} style={styles.itemSub}>
-                      • {e.material_name || e.material_id}: rencana lama {Number(e.planned_before).toLocaleString('id-ID')}
-                      {' '}→ diusulkan {Number(e.proposed_qty).toLocaleString('id-ID')}
-                      {' '}(sudah order {Number(e.ordered).toLocaleString('id-ID')})
+                  {!ceilingLiveVerified && (
+                    <Text style={styles.ceilingUnverified}>
+                      ⚠ Data live gagal dimuat — angka di bawah berasal dari eskalasi dan BELUM terverifikasi
+                      terhadap rencana / order terkini. Periksa ulang sebelum menyetujui.
                     </Text>
-                  ))}
+                  )}
+                  {payload.map((e, i) => {
+                    // Live-resolved by material_id (authoritative); payload only supplies
+                    // proposed_qty (the ceiling being authorised). live===undefined when
+                    // the fetch failed OR the material is no longer in the current plan.
+                    const live = ceilingLiveVerified ? ceilingLiveMap.get(e.material_id) : undefined;
+                    const name = live?.name ?? e.material_name ?? e.material_id;
+                    const before = live ? live.planned_before : Number(e.planned_before);
+                    const ordered = live ? live.ordered : Number(e.ordered);
+                    const proposed = Number(e.proposed_qty);
+                    const disagrees = !!live && (
+                      Math.abs(before - Number(e.planned_before)) > 1e-6 ||
+                      Math.abs(ordered - Number(e.ordered)) > 1e-6
+                    );
+                    return (
+                      <View key={`${e.material_id}-${i}`}>
+                        <Text style={styles.itemSub}>
+                          • {name}: rencana lama {before.toLocaleString('id-ID')}
+                          {' '}→ diusulkan {proposed.toLocaleString('id-ID')}
+                          {' '}(sudah order {ordered.toLocaleString('id-ID')})
+                        </Text>
+                        {ceilingLiveVerified && !live && (
+                          <Text style={styles.ceilingUnverified}>
+                            ⚠ Material ini tidak lagi ada di rencana berjalan — angka dari eskalasi, belum terverifikasi.
+                          </Text>
+                        )}
+                        {disagrees && (
+                          <Text style={styles.ceilingLiveNote}>
+                            Rencana lama / order diperbarui dari data live (berbeda dari saat eskalasi dibuat).
+                          </Text>
+                        )}
+                      </View>
+                    );
+                  })}
                   {profile?.role === 'principal' ? (
                     <View style={styles.actionRow}>
                       <TouchableOpacity style={[styles.actionBtn, styles.rejectBtn]} onPress={() => handleCeilingRaise(task.id, 'REJECT')}>
@@ -785,6 +868,23 @@ const styles = StyleSheet.create({
   itemNote: { fontSize: TYPE.sm, fontFamily: FONTS.regular, fontStyle: 'italic', color: COLORS.textSec, marginTop: 4, lineHeight: 18 },
   meta: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 2 },
   cost: { fontSize: TYPE.base, fontFamily: FONTS.bold, color: COLORS.primary, marginTop: SPACE.sm - 2 },
+  ceilingUnverified: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.semibold,
+    color: COLORS.critical,
+    marginTop: 2,
+    marginBottom: 4,
+    lineHeight: 16,
+  },
+  ceilingLiveNote: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.regular,
+    fontStyle: 'italic',
+    color: COLORS.textSec,
+    marginTop: 1,
+    marginBottom: 4,
+    lineHeight: 15,
+  },
   actionRow: { flexDirection: 'row', gap: SPACE.sm, marginTop: SPACE.md },
   actionBtn: {
     flex: 1,

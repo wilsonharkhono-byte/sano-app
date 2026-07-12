@@ -11,6 +11,14 @@
 --   "Migration history divergence"). Idempotent / re-paste-safe throughout
 --   (CREATE OR REPLACE, DROP … IF EXISTS, GRANT re-issued, DO-block CHECK swap).
 --
+-- ── DEPLOY ORDER (read before shipping) ─────────────────────────────────
+--   PASTE 079 BEFORE SHIPPING THIS CLIENT BUILD. The client (tools/
+--   publishBaselineV2 + BaselineScreen) fails CLOSED against this migration:
+--   every re-publish calls assert_ceiling_raise_gate, and consume_approval_task
+--   / the consumed_at column are referenced on the success path and in the
+--   BaselineScreen picker query. Without 079 applied, those RPCs/columns 404 and
+--   re-publish errors out. Apply 079 first, then ship the build.
+--
 -- ── The problem ─────────────────────────────────────────────────────────
 --   The estimator both approves material requests AND publishes the plan. Without
 --   this gate the estimator can "approve" an existing overage by simply
@@ -56,6 +64,25 @@
 --   THIS task's scope; it is called out so the inconsistency is a known, recorded
 --   decision, not an oversight.
 --
+-- ── Single-use approvals (Task 2.12 post-review) ────────────────────────
+--   An APPROVED plan_ceiling_raise task authorises ONE re-publish, not a
+--   standing licence. Without this an estimator could keep re-publishing ever-
+--   larger ceilings forever under a single "yes". Section 1b adds a consumed_at
+--   marker; the gate ignores consumed tasks (Section 2b: AND consumed_at IS NULL);
+--   consume_approval_task (Section 2c) burns the task and publishBaselineV2 calls
+--   it AFTER a successful re-publish that used the approval. Consuming AFTER
+--   success (not at gate-pass time) is deliberate: consuming at gate time would
+--   burn the approval on a publish that then fails downstream, stranding the
+--   estimator. The residual is a small crash window — if the process dies between
+--   the master flip and the consume call, the task stays usable for one more
+--   re-publish — accepted as fail-open-but-audited (the plan_revisions trail
+--   records every re-publish, so a double-use is visible after the fact).
+--
+--   ASYMMETRY (logged, deliberately NOT fixed here): 071's po_qty_gate approval
+--   task is STILL multi-use — the same approved over-order task can back multiple
+--   PO edits. Making po_qty_gate single-use is the same shape of change but out of
+--   THIS task's scope; recorded so the inconsistency is a known decision.
+--
 -- ── entity_type is free TEXT — nothing to widen ─────────────────────────
 --   approval_tasks.entity_type is a plain TEXT column with no CHECK (002:412);
 --   071 introduced 'po_qty_gate' the same way. This migration uses
@@ -92,6 +119,16 @@ BEGIN
       'PLAN_CEILING_RAISE'
     ));
 END $$;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 1b. Single-use marker for approval tasks (consumed_at).
+--    NULL = unused; a timestamp = spent by exactly one successful re-publish.
+--    Nullable, no default → re-paste-safe and inert for every existing task
+--    (all stay NULL / usable). Currently only plan_ceiling_raise consumes it;
+--    po_qty_gate leaves it NULL (see header ASYMMETRY note).
+-- ═══════════════════════════════════════════════════════════════════════════
+
+ALTER TABLE approval_tasks ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMPTZ;
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 2a. compute_ceiling_breaches — the ONLY source of the breach set.
@@ -217,9 +254,12 @@ DECLARE
 BEGIN
   PERFORM assert_project_access(p_project_id);
 
-  -- Load the override payload only from a VALID, decided-in-the-principal's-favor
-  -- plan_ceiling_raise task for THIS project. A missing / mismatched / HOLD /
-  -- REJECT / NULL task leaves v_payload NULL, so every breach stays uncovered.
+  -- Load the override payload only from a VALID, decided-in-the-principal's-favor,
+  -- STILL-UNCONSUMED plan_ceiling_raise task for THIS project. A missing /
+  -- mismatched / HOLD / REJECT / already-consumed / NULL task leaves v_payload
+  -- NULL, so every breach stays uncovered. consumed_at IS NULL enforces single
+  -- use: once a re-publish burned this approval (consume_approval_task), it can
+  -- no longer back another publish (see header "Single-use approvals").
   IF p_approval_task_id IS NOT NULL THEN
     SELECT override_payload
     INTO v_payload
@@ -227,7 +267,8 @@ BEGIN
     WHERE id = p_approval_task_id
       AND project_id = p_project_id
       AND entity_type = 'plan_ceiling_raise'
-      AND action IN ('APPROVE', 'OVERRIDE');
+      AND action IN ('APPROVE', 'OVERRIDE')
+      AND consumed_at IS NULL;
   END IF;
 
   -- Recompute the breach set (server-side, from DB state) and collect any
@@ -258,6 +299,61 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION assert_ceiling_raise_gate(UUID, JSONB, UUID) TO authenticated;
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- 2c. consume_approval_task — burn a single-use approval after it is spent.
+--
+--   SECURITY DEFINER. Called by publishBaselineV2 AFTER a successful re-publish
+--   that used p_approval_task_id, so the same approval cannot authorise a second
+--   publish (see header "Single-use approvals" for the after-success rationale
+--   and its accepted crash-window residual).
+--
+--   Authorization: office role (is_office_role — the estimator who publishes) AND
+--   assert_project_access on the task's OWN project (resolved server-side from the
+--   row, never trusted from the caller). A non-office caller, or one without
+--   access to the task's project, is rejected before any write. A missing task id
+--   is a silent no-op (nothing to consume — never surface as a publish failure).
+--
+--   Idempotent: sets consumed_at = now() only WHERE consumed_at IS NULL, so a
+--   second call (retry / double-fire) is a no-op that still returns cleanly.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+CREATE OR REPLACE FUNCTION consume_approval_task(p_task_id UUID)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_project_id UUID;
+BEGIN
+  IF p_task_id IS NULL THEN
+    RETURN;  -- nothing to consume
+  END IF;
+
+  SELECT project_id INTO v_project_id
+  FROM approval_tasks
+  WHERE id = p_task_id;
+
+  IF v_project_id IS NULL THEN
+    RETURN;  -- unknown task — no-op (don't fail the publish over a stale id)
+  END IF;
+
+  -- Office role only, AND access to the task's own project (server-resolved).
+  IF NOT is_office_role() THEN
+    RAISE EXCEPTION 'not authorized to consume approval task'
+      USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  PERFORM assert_project_access(v_project_id);
+
+  UPDATE approval_tasks
+  SET consumed_at = now()
+  WHERE id = p_task_id
+    AND consumed_at IS NULL;  -- idempotent: second call is a no-op
+END;
+$$;
+
+GRANT EXECUTE ON FUNCTION consume_approval_task(UUID) TO authenticated;
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- 3. Principal notification on escalation insert.

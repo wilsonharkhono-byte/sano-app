@@ -1209,6 +1209,26 @@ export async function publishBaselineV2(
     }
   }
 
+  // ── Task 2.12 — burn the single-use ceiling approval (post-review) ──────
+  // Only after a SUCCESSFUL re-publish that USED a principal approval do we
+  // consume it, so the same "yes" can't authorise a second, larger re-publish
+  // (migration 079: assert_ceiling_raise_gate rejects consumed tasks). Consuming
+  // AFTER success (not at gate-pass time) is deliberate — see 079's "Single-use
+  // approvals" header for the rationale + the accepted crash-window residual.
+  // NON-FATAL: the plan is already committed; a consume failure surfaces as a
+  // warning (the residual is one reusable approval, audited by plan_revisions),
+  // never sinks the publish.
+  if (isRepublish && options?.ceilingApprovalTaskId) {
+    const { error: consumeErr } = await supabase.rpc('consume_approval_task', {
+      p_task_id: options.ceilingApprovalTaskId,
+    });
+    if (consumeErr) {
+      warnings.push(
+        `consume_approval_task failed (non-fatal — approval may remain reusable): ${consumeErr.message}`,
+      );
+    }
+  }
+
   if (unresolvedComponents.length > 0) {
     console.warn(
       `publishBaselineV2: ${unresolvedComponents.length} components unresolved to catalog ` +
