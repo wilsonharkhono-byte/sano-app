@@ -15,6 +15,7 @@ import {
   inviteUser, updateUserRole,
   type TeamMember, type ProfileOption, ROLE_LABELS,
 } from '../../tools/projectManagement';
+import { computeOverallProgress } from '../../tools/progressMath';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE, BREAKPOINTS, MAX_CONTENT_WIDTH } from '../../workflows/theme';
 
 interface PendingCounts {
@@ -73,9 +74,9 @@ export default function OfficeHomeScreen() {
     });
   }, [project]);
 
-  const overallProgress = boqItems.length > 0
-    ? Math.round(boqItems.reduce((s, b) => s + b.progress, 0) / boqItems.length)
-    : 0;
+  // Task 3.2: volume-weighted over active, planned>0 items (tools/progressMath.ts)
+  // — same number as the Progress Summary report and every other surface.
+  const overallProgress = Math.round(computeOverallProgress(boqItems));
   const openDefects = defects.filter(d => !['VERIFIED', 'ACCEPTED_BY_PRINCIPAL'].includes(d.status)).length;
   const criticalDefects = defects.filter(d => d.severity === 'Critical' && !['VERIFIED', 'ACCEPTED_BY_PRINCIPAL'].includes(d.status)).length;
   const atRiskMilestones = milestones.filter(m => m.status === 'AT_RISK' || m.status === 'DELAYED').length;

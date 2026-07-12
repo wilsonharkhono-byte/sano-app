@@ -4,6 +4,7 @@
 
 import { supabase } from './supabase';
 import type { Milestone, MilestoneStatus, BoqItem, CreateMilestoneInput, UpdateMilestoneInput } from './types';
+import { computeOverallProgress } from './progressMath';
 
 // ── Status Engine ────────────────────────────────────────────────────
 
@@ -181,20 +182,18 @@ export interface ProjectHealthSummary {
 export async function computeProjectHealth(projectId: string): Promise<ProjectHealthSummary> {
   const statuses = await deriveMilestoneStatuses(projectId);
 
-  // Task 3.1: active-plan-only — this averages `progress` across every row
-  // returned, so a code a later re-publish superseded would otherwise dilute
-  // overallProgress exactly like the Progress Summary symptom (see migration
-  // 074_boq_items_supersede.sql).
+  // Task 3.1: active-plan-only, so a code a later re-publish superseded
+  // doesn't dilute overallProgress (see migration 074_boq_items_supersede.sql).
+  // Task 3.2: volume-weighted over active, planned>0 items — see
+  // tools/progressMath.ts for the formula + rationale. This replaces the old
+  // unweighted mean of the `progress` column.
   const { data: boqItems } = await supabase
     .from('boq_items')
-    .select('progress')
+    .select('planned, installed, superseded_at')
     .eq('project_id', projectId)
     .is('superseded_at', null);
 
-  const items = boqItems ?? [];
-  const overallProgress = items.length > 0
-    ? Math.round(items.reduce((s: number, b: { progress: number }) => s + b.progress, 0) / items.length)
-    : 0;
+  const overallProgress = Math.round(computeOverallProgress(boqItems ?? []));
 
   const counts = {
     on_track: statuses.filter(s => s.computed_status === 'ON_TRACK').length,

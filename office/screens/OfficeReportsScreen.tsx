@@ -24,6 +24,7 @@ import { ReportPreview } from '../../workflows/components/ReportPreview';
 import ClientReportBuilderScreen from '../../workflows/screens/ClientReportBuilderScreen';
 import { getMaterialDrift } from '../../tools/envelopes';
 import { aggregateDriftRollup, formatRollupTile, type DriftRollup } from '../../tools/planDrift';
+import { computeOverallProgress } from '../../tools/progressMath';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE, BREAKPOINTS, MAX_CONTENT_WIDTH } from '../../workflows/theme';
 
 
@@ -83,9 +84,9 @@ export default function OfficeReportsScreen() {
     getKasbonAging(project.id).then(setKasbonAging);
   }, [project, profile?.role]);
 
-  const overallProgress = boqItems.length > 0
-    ? Math.round(boqItems.reduce((s, b) => s + b.progress, 0) / boqItems.length)
-    : 0;
+  // Task 3.2: volume-weighted over active, planned>0 items (tools/progressMath.ts)
+  // — same number as the Progress Summary report and every other surface.
+  const overallProgress = Math.round(computeOverallProgress(boqItems));
   const pendingBerat = changeSummary?.pending_berat ?? 0;
   const openRework = changeSummary?.open_rework ?? 0;
   const handoverEligible = pendingBerat === 0 && openRework === 0;

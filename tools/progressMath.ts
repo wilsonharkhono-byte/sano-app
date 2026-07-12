@@ -35,6 +35,15 @@
 // exact; only the aggregate mixes units, same as any RAB progress curve.
 //
 // Edge case: Σ planned = 0 (no active item has planned > 0) → 0.
+//
+// Reviewer note: tools/reports.ts feeds this formula a derived `installed`
+// (summed from progress_entries), while every screen surface (Beranda,
+// Laporan, OfficeHomeScreen, OfficeReportsScreen, PrincipalHomeScreen,
+// GlobalAIChatLauncher, schedule.ts computeProjectHealth) feeds it the
+// cached `boq_items.installed` column. Same formula, same source-of-truth
+// module — but if the cache lags behind progress_entries, the two families
+// of callers can still diverge at the data level. Pre-existing, not
+// introduced by this unification.
 
 export interface ProgressAggregable {
   planned: number;

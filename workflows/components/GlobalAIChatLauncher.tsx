@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AIChatModal from './AIChatModal';
 import { useProject } from '../hooks/useProject';
+import { computeOverallProgress } from '../../tools/progressMath';
 import { COLORS, SPACE } from '../theme';
 
 export default function GlobalAIChatLauncher() {
@@ -12,9 +13,9 @@ export default function GlobalAIChatLauncher() {
   const [visible, setVisible] = useState(false);
 
   const context = useMemo(() => {
-    const overallProgress = boqItems.length > 0
-      ? Math.round(boqItems.reduce((sum, item) => sum + item.progress, 0) / boqItems.length)
-      : 0;
+    // Task 3.2: volume-weighted over active, planned>0 items (tools/progressMath.ts)
+    // — same number as the Progress Summary report and every other surface.
+    const overallProgress = Math.round(computeOverallProgress(boqItems));
     const openDefects = defects.filter(defect => !['VERIFIED', 'ACCEPTED_BY_PRINCIPAL'].includes(defect.status)).length;
     const criticalDefects = defects.filter(
       defect => defect.severity === 'Critical' && !['VERIFIED', 'ACCEPTED_BY_PRINCIPAL'].includes(defect.status),

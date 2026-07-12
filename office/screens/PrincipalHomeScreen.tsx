@@ -16,6 +16,7 @@ import {
   type TeamMember, type ProfileOption, ROLE_LABELS,
 } from '../../tools/projectManagement';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE, BREAKPOINTS, MAX_CONTENT_WIDTH } from '../../workflows/theme';
+import { computeOverallProgress } from '../../tools/progressMath';
 import { getKasbonAging, kasbonStatusLabel } from '../../tools/kasbon';
 import type { KasbonAging } from '../../tools/types';
 import { formatRp } from '../../tools/opname';
@@ -489,9 +490,9 @@ export default function PrincipalHomeScreen() {
   };
 
   // ── Computed KPIs ────────────────────────────────────────────────────
-  const overallProgress = boqItems.length > 0
-    ? Math.round(boqItems.reduce((s, b) => s + b.progress, 0) / boqItems.length)
-    : 0;
+  // Task 3.2: volume-weighted over active, planned>0 items (tools/progressMath.ts)
+  // — same number as the Progress Summary report and every other surface.
+  const overallProgress = Math.round(computeOverallProgress(boqItems));
 
   const overProgressItems = boqItems.filter(b => b.progress > 100);
 
