@@ -239,3 +239,24 @@ describe('MaterialUsagePanel — Tier 3', () => {
     expect(getByText(/Estimasi biaya tidak tersedia/i)).toBeTruthy();
   });
 });
+
+// material_request_lines.tier has allowed 4 (untracked consumable) since
+// migration 053_tier4_request_lines.sql, and PermintaanScreen already lets
+// estimators submit tier-4 request lines (commit 21cde48) — this office
+// review side must render them without crashing or falling into the
+// generic "tier tidak terdefinisi" warning branch.
+describe('MaterialUsagePanel — Tier 4', () => {
+  it('renders the untracked-consumable notice, not the unknown-tier fallback', () => {
+    const { getByText, queryByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-oli"
+        tier={4}
+        requestedQuantity={2}
+        requestedUnit="liter"
+        envelope={tier2Envelope({ tier: 4, material_name: 'Oli bekisting', unit: 'liter' })}
+      />,
+    );
+    expect(getByText(/Tier 4 consumable — tidak dilacak anggaran/i)).toBeTruthy();
+    expect(queryByText(/Material tier tidak terdefinisi/i)).toBeNull();
+  });
+});

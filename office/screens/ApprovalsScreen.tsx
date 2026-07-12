@@ -72,7 +72,11 @@ interface MaterialRequestLineSummary {
   id: string;
   material_id: string | null;
   custom_material_name: string | null;
-  tier: 1 | 2 | 3;
+  // material_request_lines.tier allows 4 (untracked consumable) since
+  // migration 053_tier4_request_lines.sql — tier-4 materials are already
+  // requestable from PermintaanScreen (commit 21cde48), so this office
+  // review side must be able to read them too.
+  tier: 1 | 2 | 3 | 4;
   /** BASE units (kg for rebar) — what triggers/envelopes compare against. */
   quantity: number;
   unit: string;
@@ -147,6 +151,7 @@ function describeRequestScope(request: MaterialRequest, boqLabels: Record<string
     const line = lines[0];
     if (line.tier === 2) return `Envelope ${getLineMaterialName(line)}`;
     if (line.tier === 3) return `Stok Umum — ${getLineMaterialName(line)}`;
+    if (line.tier === 4) return `Konsumsi — ${getLineMaterialName(line)}`;
     return `${getLineMaterialName(line)} — BoQ spesifik`;
   }
   return `${lines.length} material lintas BoQ`;

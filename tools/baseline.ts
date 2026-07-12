@@ -331,6 +331,10 @@ export interface ParsedAhsRow {
   material_code?: string | null;
   material_name: string;
   material_spec: string | null;
+  // NOT 1|2|3|4: this feeds ahs_lines eventually, whose tier CHECK is still
+  // (1,2,3) — see tools/types.ts AhsLine.tier for the full DB-scope note.
+  // determineTier() (excelParser.ts) never returns 4 either, so this stays
+  // accurate to what the parser actually produces.
   tier: 1 | 2 | 3;
   usage_rate: number;
   unit: string;
@@ -341,7 +345,9 @@ export interface ParsedMaterialRow {
   code: string;
   name: string;
   category: string;
-  tier: 1 | 2 | 3;
+  // material_catalog.tier allows 4 (untracked consumable) since migration
+  // 047_material_tier_budget_control.sql.
+  tier: 1 | 2 | 3 | 4;
   unit: string;
   supplier_unit?: string;
   /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */

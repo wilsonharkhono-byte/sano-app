@@ -1194,7 +1194,10 @@ export interface CatalogEntry {
   code: string;
   name: string;
   category: string;
-  tier: 1 | 2 | 3;
+  // material_catalog.tier allows 4 (untracked consumable) since migration
+  // 047_material_tier_budget_control.sql — this is loaded from the live
+  // catalog for fuzzy matching, so it must accept whatever the DB has.
+  tier: 1 | 2 | 3 | 4;
   unit: string;
   aliases: string[];
 }

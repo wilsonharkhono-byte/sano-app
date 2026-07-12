@@ -44,7 +44,11 @@ export interface CatalogRow {
   code: string;
   name: string;
   category: string;
-  tier: 1 | 2 | 3;
+  // material_catalog.tier allows 4 (untracked consumable) since migration
+  // 047_material_tier_budget_control.sql. This row is fetched FROM
+  // material_catalog (see fetchCatalog below), so it must reflect the full
+  // DB domain, not just the tiers this publish path assigns to new lines.
+  tier: 1 | 2 | 3 | 4;
   unit: string;
   supplier_unit?: string | null;
   base_qty_per_supplier_unit?: number | null;

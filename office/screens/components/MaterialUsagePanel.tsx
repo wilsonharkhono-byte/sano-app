@@ -8,7 +8,9 @@ import type { OverageReason } from '../../../tools/types';
 export interface MaterialUsagePanelProps {
   materialId: string | null;
   customMaterialName?: string | null;
-  tier: 1 | 2 | 3 | null;
+  // material_request_lines.tier allows 4 (untracked consumable) since
+  // migration 053_tier4_request_lines.sql.
+  tier: 1 | 2 | 3 | 4 | null;
   requestedQuantity: number;
   requestedUnit: string;
   boqItemId?: string | null;
@@ -218,6 +220,16 @@ function renderTierDetail(props: MaterialUsagePanelProps, env: EnvelopeWithPrice
         {overCap && (
           <Text style={styles.criticalText}>⚠ Melampaui cap per request</Text>
         )}
+      </View>
+    );
+  }
+
+  if (props.tier === 4) {
+    return (
+      <View style={styles.panel}>
+        <Text style={[styles.lineSub, styles.muted]}>
+          Tier 4 consumable — tidak dilacak anggaran, dicatat sebagai stok umum.
+        </Text>
       </View>
     );
   }

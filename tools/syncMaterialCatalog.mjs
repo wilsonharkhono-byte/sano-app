@@ -159,7 +159,9 @@ function optionalValue(row, index) {
 
 function parseTier(rawTier) {
   const tier = Number.parseInt(String(rawTier).trim(), 10);
-  if (![1, 2, 3].includes(tier)) {
+  // material_catalog.tier has allowed 4 (untracked consumable) since
+  // migration 047_material_tier_budget_control.sql.
+  if (![1, 2, 3, 4].includes(tier)) {
     throw new Error(`Invalid tier "${rawTier}"`);
   }
   return tier;

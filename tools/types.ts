@@ -124,7 +124,9 @@ export interface AhsVersion {
   published_at: string;
 }
 
-export type AhsLineType = 'material' | 'labor' | 'equipment' | 'subkon';
+// Includes 'prelim': migration 065 widened ahs_lines.line_type's CHECK to
+// accept it (publishBaselineV2 already emits it for prelim cost residue).
+export type AhsLineType = 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
 
 export interface AhsLine {
   id: string;
@@ -132,6 +134,13 @@ export interface AhsLine {
   boq_item_id: string;
   material_id: string | null;
   material_spec: string | null;
+  // NOT 1|2|3|4: ahs_lines.tier is a separate inline CHECK (tier IN (1,2,3))
+  // added in 002_baseline_tables.sql, explicitly left un-widened by both 053
+  // and 065 ("ahs_lines.tier and other tier CHECKs untouched"). The v2
+  // publish path also hardcodes tier: 1 for every ahs_lines insert
+  // (publishBaselineV2.ts — "tier has no meaning for a disaggregated line").
+  // Do not widen this to match Material.tier without also widening the DB
+  // CHECK, or a tier-4 write here will fail at insert time.
   tier: 1 | 2 | 3;
   usage_rate: number;
   unit: string;
@@ -149,7 +158,9 @@ export interface Material {
   code: string | null;
   name: string;
   category: string | null;
-  tier: 1 | 2 | 3;
+  // material_catalog.tier allows 4 (untracked consumable) since migration
+  // 047_material_tier_budget_control.sql.
+  tier: 1 | 2 | 3 | 4;
   unit: string;
   supplier_unit: string;
   /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */

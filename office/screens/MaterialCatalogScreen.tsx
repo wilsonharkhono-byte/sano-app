@@ -17,7 +17,7 @@ interface MaterialEntry {
   code: string | null;
   name: string;
   category: string | null;
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   unit: string;
   supplier_unit: string;
   /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
@@ -33,13 +33,20 @@ interface PriceEntry {
   recorded_at: string;
 }
 
-const TIER_LABELS: Record<number, string> = {
+// Record<1|2|3|4, ...> (not Record<number, ...>) is deliberate: a missing
+// tier key is then a COMPILE error, not a silent "undefined" render — this
+// screen used to type tier as 1|2|3 while material_catalog.tier has allowed
+// 4 since migration 047, so a tier-4 row rendered a blank label / bad badge.
+const TIER_LABELS: Record<1 | 2 | 3 | 4, string> = {
   1: 'Tier 1 - Precise',
   2: 'Tier 2 - Bulk',
   3: 'Tier 3 - Consumables',
+  4: 'Tier 4 - Consumable (untracked)',
 };
 
-const TIER_FLAGS = { 1: 'OK', 2: 'INFO', 3: 'WARNING' } as const;
+const TIER_FLAGS: Record<1 | 2 | 3 | 4, 'OK' | 'INFO' | 'WARNING'> = {
+  1: 'OK', 2: 'INFO', 3: 'WARNING', 4: 'INFO',
+};
 
 export default function MaterialCatalogScreen() {
   const { project, profile } = useProject();
@@ -112,7 +119,7 @@ export default function MaterialCatalogScreen() {
         code: cleanCode,
         name: sanitizeText(newName),
         category: sanitizeText(newCategory),
-        tier: parseInt(newTier) as 1 | 2 | 3,
+        tier: parseInt(newTier) as 1 | 2 | 3 | 4,
         unit: cleanUnit,
         supplier_unit: cleanSupplierUnit || cleanUnit,
         base_qty_per_supplier_unit: factor,
@@ -242,6 +249,7 @@ export default function MaterialCatalogScreen() {
                 <Picker.Item label={TIER_LABELS[1]} value="1" />
                 <Picker.Item label={TIER_LABELS[2]} value="2" />
                 <Picker.Item label={TIER_LABELS[3]} value="3" />
+                <Picker.Item label={TIER_LABELS[4]} value="4" />
               </Picker>
             </View>
 

@@ -882,6 +882,12 @@ export default function PermintaanScreen() {
                           });
                         }}
                       />
+                      {/* Manual tier chips only ever offer 1-3, by design: this
+                          block is for CUSTOM/free-text materials with no catalog
+                          link. Tier 4 (untracked consumable) is a catalog-only
+                          classification carried automatically via
+                          onSelectCatalogMaterial → material.tier — a free-text
+                          line has no catalog id to derive it from. */}
                       <View style={styles.inlineTierRow}>
                         {[1, 2, 3].map(rawTier => {
                           const tier = rawTier as 1 | 2 | 3;
