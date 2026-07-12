@@ -22,6 +22,11 @@ import {
   type PoGateEnvelope,
   type PoGateLine,
 } from '../../tools/poQuantityGate';
+import {
+  getRequestLineLinkCandidates,
+  candidateDisplayName,
+  type RequestLineLinkCandidate,
+} from '../../tools/requestLineLinkCandidates';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, FLAG_COLORS, FLAG_BG } from '../theme';
 import type {
   AhsLine,
@@ -71,6 +76,11 @@ interface DraftPOLine {
   base_qty_per_supplier_unit: number | null;
   /** Typed per SUPPLIER unit (Rp/batang for rebar); submit converts to Rp/base. */
   unit_price: string;
+  /** Optional request→PO traceability link (Task 2.8): the APPROVED
+      material_request_lines.id this PO line fulfills. null = unlinked. */
+  request_line_id: string | null;
+  /** Display label for the linked request ("<name> <qty> <unit>") — chip text. */
+  request_line_label: string | null;
 }
 
 type DraftBoqMode = 'single' | 'multi' | 'general';
@@ -115,12 +125,17 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
   const [draftBoqMode, setDraftBoqMode] = useState<DraftBoqMode>('multi');
   const [draftBoqSummary, setDraftBoqSummary] = useState('');
   const [draftLines, setDraftLines] = useState<DraftPOLine[]>([
-    { id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, unit_price: '' },
+    { id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, unit_price: '', request_line_id: null, request_line_label: null },
   ]);
   const [materialPickerLineId, setMaterialPickerLineId] = useState<string | null>(null);
   const [materialSearch, setMaterialSearch] = useState('');
   const [boqPickerVisible, setBoqPickerVisible] = useState(false);
   const [boqSearch, setBoqSearch] = useState('');
+  // Optional request→PO link (Task 2.8): APPROVED request lines for this project
+  // and the set of request_line_ids already consumed by existing PO lines.
+  const [requestLineCandidates, setRequestLineCandidates] = useState<RequestLineLinkCandidate[]>([]);
+  const [linkedRequestLineIds, setLinkedRequestLineIds] = useState<Set<string>>(new Set());
+  const [requestPickerLineId, setRequestPickerLineId] = useState<string | null>(null);
 
   // Principal: approval queue
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
@@ -131,7 +146,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     setLoading(true);
     try {
       const poIds = purchaseOrders.map(po => po.id);
-      const [linesRes, priceRes, scorecardRes, materialRes, assignmentRes, profileRes, masterHeaderRes, envelopeRes, overrideRes] = await Promise.all([
+      const [linesRes, priceRes, scorecardRes, materialRes, assignmentRes, profileRes, masterHeaderRes, envelopeRes, overrideRes, requestLinesRes] = await Promise.all([
         poIds.length > 0
           ? supabase.from('purchase_order_lines').select('*').in('po_id', poIds)
           : Promise.resolve({ data: [] as PurchaseOrderLine[] }),
@@ -164,6 +179,15 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
           .eq('project_id', project.id)
           .eq('entity_type', 'po_qty_gate')
           .in('action', ['APPROVE', 'OVERRIDE']),
+        // Task 2.8 — APPROVED request lines for the optional request→PO link
+        // picker. Server-side filter to APPROVED headers; the pure helper
+        // (getRequestLineLinkCandidates) re-checks status and handles the
+        // already-linked / material-match filters.
+        supabase
+          .from('material_request_lines')
+          .select('id, material_id, custom_material_name, quantity, unit, material_request_headers!inner(project_id, overall_status, target_date)')
+          .eq('material_request_headers.project_id', project.id)
+          .eq('material_request_headers.overall_status', 'APPROVED'),
       ]);
 
       const assignmentIds = ((assignmentRes.data as any[]) ?? []).map(row => row.user_id);
@@ -195,6 +219,34 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       ]);
 
       const lines = (linesRes.data as PurchaseOrderLine[]) ?? [];
+
+      // Task 2.8 — flatten the joined header fields into flat candidates, and
+      // collect the request_line_ids already consumed by ANY existing PO line
+      // (lockstep with migration 069's fulfilled-line exclusion, which counts
+      // every purchase_order_lines.request_line_id regardless of PO status).
+      type RequestLineRow = {
+        id: string;
+        material_id: string | null;
+        custom_material_name: string | null;
+        quantity: number;
+        unit: string;
+        material_request_headers: { project_id: string; overall_status: string; target_date: string } | null;
+      };
+      setRequestLineCandidates(
+        (((requestLinesRes.data as unknown) as RequestLineRow[]) ?? []).map(row => ({
+          id: row.id,
+          material_id: row.material_id,
+          custom_material_name: row.custom_material_name,
+          quantity: Number(row.quantity ?? 0),
+          unit: row.unit,
+          target_date: row.material_request_headers?.target_date ?? '',
+          overall_status: row.material_request_headers?.overall_status ?? '',
+        })),
+      );
+      setLinkedRequestLineIds(new Set(
+        lines.map(l => l.request_line_id).filter((id): id is string => Boolean(id)),
+      ));
+
       const masterLines = (masterLinesRes.data as ProjectMaterialMasterLine[]) ?? [];
       const priceHist = (priceRes.data as PriceHistory[]) ?? [];
       const scorecards = (scorecardRes.data as VendorScorecard[]) ?? [];
@@ -419,6 +471,58 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     [materialOptions],
   );
 
+  // ── Optional request→PO link picker (Task 2.8) ─────────────────────
+  const catalogNameById = useMemo(
+    () => new Map(materialOptions.map(m => [m.id, m.name])),
+    [materialOptions],
+  );
+
+  const activeRequestDraftLine = useMemo(
+    () => draftLines.find(line => line.id === requestPickerLineId) ?? null,
+    [draftLines, requestPickerLineId],
+  );
+
+  // Lookup for rendering the "↔ Permintaan …" chip on STORED PO lines.
+  const requestLineById = useMemo(
+    () => new Map(requestLineCandidates.map(c => [c.id, c])),
+    [requestLineCandidates],
+  );
+
+  const storedRequestLinkLabel = useCallback((requestLineId: string): string => {
+    const rl = requestLineById.get(requestLineId);
+    if (!rl) return 'tertaut';
+    return `${candidateDisplayName(rl, catalogNameById)} · ${rl.quantity.toLocaleString('id-ID')} ${rl.unit}`;
+  }, [requestLineById, catalogNameById]);
+
+  // Candidates for the OPEN picker: APPROVED-only + not already linked (in the
+  // DB via existing PO lines, or on another draft line of this same form) +
+  // material-matched when the draft line is a catalog material. Free-text draft
+  // lines see every eligible request line — admin judgment.
+  const requestCandidatesForActiveLine = useMemo(() => {
+    if (!activeRequestDraftLine) return [] as RequestLineLinkCandidate[];
+    const taken = new Set(linkedRequestLineIds);
+    for (const line of draftLines) {
+      if (line.id !== activeRequestDraftLine.id && line.request_line_id) taken.add(line.request_line_id);
+    }
+    return getRequestLineLinkCandidates(requestLineCandidates, {
+      draftMaterialId: activeRequestDraftLine.material_id || null,
+      linkedRequestLineIds: taken,
+    });
+  }, [activeRequestDraftLine, draftLines, linkedRequestLineIds, requestLineCandidates]);
+
+  const selectRequestLink = (lineId: string, candidate: RequestLineLinkCandidate) => {
+    const name = candidateDisplayName(candidate, catalogNameById);
+    updateDraftLine(lineId, {
+      request_line_id: candidate.id,
+      request_line_label: `${name} · ${candidate.quantity.toLocaleString('id-ID')} ${candidate.unit}`,
+    });
+    setRequestPickerLineId(null);
+  };
+
+  const clearRequestLink = (lineId: string) => {
+    updateDraftLine(lineId, { request_line_id: null, request_line_label: null });
+  };
+
   /** Stored PO lines are BASE-unit (kg); show batang for rebar with kg note. */
   const formatStoredLineQty = useCallback((line: Pick<PurchaseOrderLine, 'quantity' | 'unit' | 'material_id'>) => {
     const mat = line.material_id ? materialById.get(line.material_id) : undefined;
@@ -446,12 +550,16 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       unit: material.supplier_unit || material.unit,
       base_unit: material.unit,
       base_qty_per_supplier_unit: material.base_qty_per_supplier_unit ?? null,
+      // Material changed → a previously linked request line may no longer
+      // match; drop the optional link rather than carry a stale one.
+      request_line_id: null,
+      request_line_label: null,
     });
     closeMaterialPicker();
   };
 
   const clearCatalogMaterial = (lineId: string) => {
-    updateDraftLine(lineId, { material_id: '', material_name: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null });
+    updateDraftLine(lineId, { material_id: '', material_name: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, request_line_id: null, request_line_label: null });
     closeMaterialPicker();
   };
 
@@ -464,7 +572,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
   const addDraftLine = () => {
     setDraftLines(prev => [
       ...prev,
-      { id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, unit_price: '' },
+      { id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, unit_price: '', request_line_id: null, request_line_label: null },
     ]);
   };
 
@@ -478,11 +586,12 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     setDraftBoqId('');
     setDraftBoqMode('multi');
     setDraftBoqSummary('');
-    setDraftLines([{ id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, unit_price: '' }]);
+    setDraftLines([{ id: nextDraftLineId(), material_id: '', material_name: '', quantity: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, unit_price: '', request_line_id: null, request_line_label: null }]);
     setMaterialPickerLineId(null);
     setMaterialSearch('');
     setBoqPickerVisible(false);
     setBoqSearch('');
+    setRequestPickerLineId(null);
     setSelectedOverrideTaskId(null);
     setShowCreateForm(false);
   };
@@ -587,6 +696,9 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         unit: line.baseUnit,
         unit_price: line.basePrice,
         scope_tag: draftScopePreviewByLine.get(line.id) ?? null,
+        // Optional request→PO traceability link (Task 2.8) — migration 055's
+        // create_purchase_order extracts it per line (NULL when unlinked).
+        request_line_id: line.request_line_id || null,
       }));
 
       // Atomic: header + lines + price_history + activity_log in ONE transaction
@@ -770,6 +882,12 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                     <Ionicons name="layers-outline" size={12} color={COLORS.primary} />
                     <Text style={styles.scopeTagText}>{scopeTag}</Text>
                   </View>
+                  {line.request_line_id ? (
+                    <View style={styles.requestLinkChip}>
+                      <Ionicons name="link-outline" size={12} color={COLORS.primary} />
+                      <Text style={styles.requestLinkChipText}>↔ Permintaan {storedRequestLinkLabel(line.request_line_id)}</Text>
+                    </View>
+                  ) : null}
 
                   <Text style={styles.fieldLabel}>Harga Satuan (Rp per {line.unit || 'unit'})</Text>
                   <TextInput
@@ -1018,6 +1136,27 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                     <Text style={styles.autoScopeValue}>{draftScopePreviewByLine.get(line.id) ?? 'BELUM TERPETAKAN'}</Text>
                   </View>
                 </View>
+
+                {/* Optional request→PO traceability link (Task 2.8). Non-blocking:
+                    an unlinked line is created with request_line_id NULL. */}
+                {line.request_line_id ? (
+                  <View style={styles.requestLinkChip}>
+                    <Ionicons name="link-outline" size={12} color={COLORS.primary} />
+                    <Text style={styles.requestLinkChipText}>↔ Permintaan {line.request_line_label}</Text>
+                    <TouchableOpacity
+                      onPress={() => clearRequestLink(line.id)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Hapus tautan permintaan"
+                    >
+                      <Ionicons name="close-circle" size={16} color={COLORS.textSec} />
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <TouchableOpacity style={styles.requestLinkBtn} onPress={() => setRequestPickerLineId(line.id)}>
+                    <Ionicons name="link-outline" size={14} color={COLORS.textSec} />
+                    <Text style={styles.requestLinkBtnText}>Tautkan ke permintaan (opsional)</Text>
+                  </TouchableOpacity>
+                )}
 
                 {/* Hard quantity gate signal (mirrors migration 071). */}
                 {(() => {
@@ -1432,6 +1571,52 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
           </View>
         </View>
       </Modal>
+
+      {/* Optional request→PO link picker (Task 2.8): APPROVED, not-yet-linked
+          request lines — filtered to the draft line's material when it is a
+          catalog material; free-text draft lines see all (admin judgment). */}
+      <Modal visible={!!requestPickerLineId} transparent animationType="slide" onRequestClose={() => setRequestPickerLineId(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modalTitle}>Tautkan ke Permintaan</Text>
+                <Text style={styles.modalSubtitle}>
+                  {activeRequestDraftLine?.material_id
+                    ? `Permintaan APPROVED untuk ${activeRequestDraftLine.material_name} yang belum dibuatkan PO.`
+                    : 'Permintaan APPROVED yang belum dibuatkan PO — pilih sesuai penilaian Anda.'}
+                </Text>
+              </View>
+              <TouchableOpacity style={styles.modalCloseBtn} onPress={() => setRequestPickerLineId(null)}>
+                <Ionicons name="close" size={18} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+
+            <FlatList
+              data={requestCandidatesForActiveLine}
+              keyExtractor={(item) => item.id}
+              keyboardShouldPersistTaps="handled"
+              style={styles.optionList}
+              ListEmptyComponent={<Text style={styles.modalEmpty}>Tidak ada permintaan APPROVED yang dapat ditautkan. Tautan bersifat opsional — PO tetap dapat dibuat tanpa tautan.</Text>}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={styles.optionRow}
+                  onPress={() => requestPickerLineId && selectRequestLink(requestPickerLineId, item)}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.optionTitle}>{candidateDisplayName(item, catalogNameById)}</Text>
+                    <Text style={styles.optionMeta}>
+                      {item.quantity.toLocaleString('id-ID')} {item.unit}
+                      {item.target_date ? ` · butuh ${new Date(item.target_date).toLocaleDateString('id-ID')}` : ''}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={16} color={COLORS.textSec} />
+                </TouchableOpacity>
+              )}
+            />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1600,6 +1785,20 @@ const styles = StyleSheet.create({
   removeLineText: { color: COLORS.critical, fontSize: TYPE.xs, fontFamily: FONTS.bold, textTransform: 'uppercase' },
   escalateBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: COLORS.high, borderRadius: RADIUS, padding: 10, marginTop: SPACE.sm + 2 },
   escalateBtnText: { color: COLORS.textInverse, fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
+  requestLinkChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    marginTop: SPACE.sm,
+    paddingHorizontal: SPACE.sm,
+    paddingVertical: SPACE.xs,
+    borderRadius: 999,
+    backgroundColor: 'rgba(20,18,16,0.06)',
+  },
+  requestLinkChipText: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.primary, flexShrink: 1 },
+  requestLinkBtn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 6, marginTop: SPACE.sm, paddingVertical: SPACE.xs },
+  requestLinkBtnText: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.textSec, textDecorationLine: 'underline' },
   gateChip: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginTop: SPACE.sm, paddingHorizontal: SPACE.sm, paddingVertical: SPACE.xs, borderRadius: RADIUS },
   gateChipCritical: { backgroundColor: FLAG_BG.CRITICAL },
   gateChipCriticalText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.critical, flexShrink: 1 },

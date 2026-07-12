@@ -346,6 +346,10 @@ export interface PurchaseOrderLine {
   unit: string;
   unit_price: number | null;
   scope_tag: string | null;
+  /** Optional request→PO traceability link (migration 055; populated by
+      Gate2Screen since Task 2.8): the APPROVED material_request_lines.id this
+      PO line fulfills. null/absent = unlinked. */
+  request_line_id?: string | null;
 }
 
 export interface PriceHistory {
