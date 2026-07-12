@@ -218,6 +218,14 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
         ];
       }),
     );
+    // Task 3.3 review: the PDF omits the Terpasang/On-Site columns (width
+    // budget above), so the Status column is not derivable from the visible
+    // Rencana/Diterima pair — explain the rule in a footnote.
+    sd.text(
+      'Status "Perlu Pengadaan": estimasi saldo on-site (diterima − terpasang) ≤ 10% dari rencana. ' +
+        'Saldo on-site adalah estimasi (terpasang dihitung dari progres BoQ), bukan hitungan stok tersertifikasi.',
+      { size: FS.xs },
+    );
   }
 }
 
