@@ -1,5 +1,5 @@
 /**
- * Static guard for migration 069 (attendance → payroll audit fixes).
+ * Static guard for migration 081 (attendance → payroll audit fixes).
  *
  * This suite does NOT touch a database. It asserts that the SQL file contains
  * the frozen public-contract surface other agents' smoke tests depend on:
@@ -11,11 +11,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const SQL = fs.readFileSync(
-  path.join(__dirname, '../../supabase/migrations/069_attendance_payroll_audit_fixes.sql'),
+  path.join(__dirname, '../../supabase/migrations/081_attendance_payroll_audit_fixes.sql'),
   'utf8',
 );
 
-describe('migration 069 — frozen contract surface', () => {
+describe('migration 081 — frozen contract surface', () => {
   it('is marked re-paste-safe for the Dashboard SQL Editor', () => {
     expect(SQL).toContain(
       'Apply by pasting into Supabase Dashboard SQL Editor; safe to re-paste.',

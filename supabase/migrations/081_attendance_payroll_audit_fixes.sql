@@ -1,4 +1,4 @@
--- Migration 068: Attendance → Payroll Audit Remediation (SQL side)
+-- Migration 081: Attendance → Payroll Audit Remediation (SQL side)
 --
 -- Fixes from docs/audits/2026-07-11-attendance-payroll-flow-ui-audit.md:
 --

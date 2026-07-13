@@ -3,7 +3,7 @@
 // Post-deployment smoke test for migration 069 (attendance/payroll audit
 // fixes — see docs/audits/2026-07-11-attendance-payroll-flow-ui-audit.md).
 //
-// Run AFTER pasting supabase/migrations/069_attendance_payroll_audit_fixes.sql
+// Run AFTER pasting supabase/migrations/081_attendance_payroll_audit_fixes.sql
 // into the Supabase Dashboard SQL Editor:
 //
 //   node tmp/smoke-attendance-fixes.mjs
@@ -333,7 +333,7 @@ async function main() {
   console.log('[GATE] sano_wib_today() probe:', gate.fnProbe.error ? `ERROR: ${gate.fnProbe.error.message}` : `OK (${gate.fnProbe.data})`);
   console.log('[GATE] opname_headers.verified_gross_total probe:', gate.colProbe.error ? `ERROR: ${gate.colProbe.error.message}` : 'OK');
   if (!gate.applied) {
-    console.log('\nMIGRATION 069 NOT APPLIED — paste supabase/migrations/069_attendance_payroll_audit_fixes.sql into the Dashboard SQL Editor first');
+    console.log('\nMIGRATION 081 NOT APPLIED — paste supabase/migrations/081_attendance_payroll_audit_fixes.sql into the Dashboard SQL Editor first');
     process.exit(2);
   }
   console.log('[GATE] migration 069 detected as applied — proceeding.\n');
