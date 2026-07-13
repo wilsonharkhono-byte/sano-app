@@ -890,12 +890,16 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
 
   const handleApprovalAction = async (taskId: string, action: 'APPROVE' | 'REJECT' | 'HOLD' | 'OVERRIDE', reason: string) => {
     try {
-      const { error: actionError } = await supabase.from('approval_tasks').update({
+      const { data, error: actionError } = await supabase.from('approval_tasks').update({
         action,
         reason: reason || null,
         acted_at: new Date().toISOString(),
-      }).eq('id', taskId);
+      }).eq('id', taskId).select('id');
       if (actionError) throw actionError;
+      if (!data || data.length === 0) {
+        toast('Anda tidak ditugaskan ke proyek ini — verdict tidak tersimpan', 'critical');
+        return;
+      }
       toast(`${action} — disimpan`, 'ok');
       setApprovals(prev => prev.filter(a => a.id !== taskId));
     } catch (err: any) {

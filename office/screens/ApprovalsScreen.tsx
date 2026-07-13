@@ -375,12 +375,16 @@ export default function ApprovalsScreen() {
   const handleRequest = async (id: string, action: 'APPROVED' | 'REJECTED') => {
     if (!profile) return;
     try {
-      const { error } = await supabase.from('material_request_headers').update({
+      const { data, error } = await supabase.from('material_request_headers').update({
         overall_status: action,
         reviewed_by: profile.id,
         reviewed_at: new Date().toISOString(),
-      }).eq('id', id);
+      }).eq('id', id).select('id');
       if (error) throw error;
+      if (!data || data.length === 0) {
+        toast('Anda tidak ditugaskan ke proyek ini — verdict tidak tersimpan', 'critical');
+        return;
+      }
       toast(`Permintaan ${action === 'APPROVED' ? 'disetujui' : 'ditolak'}`, action === 'APPROVED' ? 'ok' : 'warning');
       await loadData();
     } catch (err: any) { toast(err.message, 'critical'); }
@@ -390,12 +394,16 @@ export default function ApprovalsScreen() {
   const handleRequestHold = async (id: string) => {
     if (!profile) return;
     try {
-      const { error } = await supabase.from('material_request_headers').update({
+      const { data, error } = await supabase.from('material_request_headers').update({
         overall_status: 'AUTO_HOLD',
         reviewed_by: profile.id,
         reviewed_at: new Date().toISOString(),
-      }).eq('id', id);
+      }).eq('id', id).select('id');
       if (error) throw error;
+      if (!data || data.length === 0) {
+        toast('Anda tidak ditugaskan ke proyek ini — verdict tidak tersimpan', 'critical');
+        return;
+      }
       toast('Permintaan ditahan', 'warning');
       await loadData();
     } catch (err: any) { toast(err.message, 'critical'); }
@@ -409,11 +417,15 @@ export default function ApprovalsScreen() {
   const handleCeilingRaise = async (id: string, action: 'APPROVE' | 'REJECT') => {
     if (!profile) return;
     try {
-      const { error } = await supabase.from('approval_tasks').update({
+      const { data, error } = await supabase.from('approval_tasks').update({
         action,
         acted_at: new Date().toISOString(),
-      }).eq('id', id);
+      }).eq('id', id).select('id');
       if (error) throw error;
+      if (!data || data.length === 0) {
+        toast('Anda tidak ditugaskan ke proyek ini — verdict tidak tersimpan', 'critical');
+        return;
+      }
       toast(action === 'APPROVE' ? 'Kenaikan plafon disetujui' : 'Kenaikan plafon ditolak', action === 'APPROVE' ? 'ok' : 'warning');
       await loadData();
     } catch (err: any) { toast(err.message, 'critical'); }
