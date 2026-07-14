@@ -14,7 +14,7 @@ The key architectural insight: `publishBaselineV2` already builds material-maste
 
 - **Client-facing Rp progress valuation.** The Tier-1 sheet carries no money by design; physical progress is quantity-only (volume installed ÷ planned), and mandor opname uses a labor borongan rate that is neither material cost nor present in this format. Out of scope.
 - **Catalog cleanup.** The catalog has overlapping/duplicate material names during transition. This parser *reconciles to* existing entries and *flags* conflicts; the user performs the cleanup separately later.
-- **Reworking the RAB rebar path.** Making rebar batang-native has a downstream consequence for RAB re-publishes (§7); that fix is a tracked follow-up, not built here.
+- **Reworking the RAB rebar path or the existing kg rebar rows.** The simplified format links to *new, isolated* batang rebar catalog rows (§5.4); the existing kg rows and the RAB path are left exactly as they are. Consolidating the two rebar sets is the user's later catalog cleanup, not this build.
 - **±1 Rp reconciliation.** There is no source unit cost to reconcile against — the team *is* the source. Validation is structural, not arithmetic (§6).
 
 ## 3. The input format
@@ -107,7 +107,7 @@ Each data row → one `boq` staging row. `parsed_data`:
 - **unit**: `m³`. **planned**: col B (beton volume). This is the progress denominator (m³ installed ÷ m³ planned). `planned > 0` is required by the `boq_items` CHECK; a Tier-1 row with zero beton is quarantined to review (§6), never force-published.
 - **recipe** (`BoqRowRecipe`): `components` =
   - **Beton Readymix**: `quantityPerUnit = 1.0`, `unit = 'm³'`, `materialName = 'Beton Readymix'`, `lineType = 'material'`, `unitPrice = 0` (no price in the sheet; Tier-1 material cost is not tracked). `master_planned = betonM³ × 1.0 = betonM³`.
-  - **Rebar per diameter** (cols C–H, one component per **nonzero** cell): `materialName` = canonical rebar name for the diameter, `unit = 'btg'`, `quantityPerUnit = lonjor / betonM³` (batang per m³), `lineType = 'material'`, `unitPrice = 0`. `master_planned = betonM³ × (lonjor/betonM³) = lonjor` (whole batang preserved). Diameter→catalog mapping (via `tools/rebarBatang.ts` `DIAMETER_BY_CODE`): ø8→`REB-PL08` (plain/polos), ø10→`REB-DE10`, ø13→`REB-DE13`, ø16→`REB-DE16`, ø19→`REB-DE19`, ø22→`REB-DE22` (deformed/ulir). The link still goes through fuzzy match; an unresolved diameter goes to review, never guessed.
+  - **Rebar per diameter** (cols C–H, one component per **nonzero** cell): `materialName` = the **exact name of the isolated batang rebar catalog row** for the diameter (see §5.4), `unit = 'btg'`, `quantityPerUnit = lonjor / betonM³` (batang per m³), `lineType = 'material'`, `unitPrice = 0`. `master_planned = betonM³ × (lonjor/betonM³) = lonjor` (whole batang preserved). Diameter→batang-row mapping: ø8→`REB-PL08-BTG`, ø10→`REB-DE10-BTG`, ø13→`REB-DE13-BTG`, ø16→`REB-DE16-BTG`, ø19→`REB-DE19-BTG`, ø22→`REB-DE22-BTG`. The parser emits the **exact** catalog name so `reconcileMaterials`' exact-match tier links it deterministically to the batang row (not the near-identical kg row); an unresolved diameter goes to review, never guessed.
 
 **Chosen defaults (locked in brainstorm):**
 - Beton coefficient is exactly `1.0` — col B is taken literally; no invented 1.05 waste (truth contract: if the team wanted waste it would be in the number).
@@ -122,20 +122,33 @@ Each data row → one `boq` staging row. `parsed_data`:
 
 Shows as one extra clearly-labeled BoQ line. No schema change. (Considered and rejected: nullable `boq_item_id` — touches envelope views + a Dashboard-pasted migration, higher blast radius.)
 
-### 5.4 Rebar batang end-to-end + catalog migration
+### 5.4 Rebar batang end-to-end — isolated batang catalog rows
 
 Rebar must stay in native batang; no kg round-trip. Publish's `normalizeComponentQty` (`publishBaselineV2.ts:66–87`) passes a batang quantity through **unchanged iff the linked catalog material's base unit is batang** (line 81–82); if the base unit is kg it converts batang→kg. Today the rebar rows are kg-based (migration 052).
 
-**Therefore this design includes a migration** (`0XX_rebar_batang_base_unit.sql`, number assigned at implementation) flipping the 10 rebar `material_catalog` rows to base unit `batang`. Migration 052 already stored the batang↔kg factor in `base_qty_per_supplier_unit`, so the conversion knowledge is retained (the factor's role inverts: batang becomes base, kg becomes the derived/reporting unit). Idempotent (`UPDATE … WHERE unit <> 'batang'`), Dashboard-pasteable (per the migration-history-divergence constraint). After it applies, publish keeps rebar in batang automatically — **zero publish-code change**.
+**Why not flip the existing rows.** A live probe (2026-07-14) found **887 `project_material_master_lines` across 3 projects, plus 887 `ahs_lines`, storing rebar in kg**. `v_material_envelopes` reads `mc.unit` **live** and sums `planned_quantity`; flipping the shared rebar rows to `unit='batang'` would instantly relabel those 3 projects' kg sums as batang — a wrong-number corruption the truth contract (§1.1) forbids. So the shared rows are **not** touched.
 
-**Tracked consequence (follow-up, not in this build):** the RAB rebar disaggregator emits rebar in kg (from REKAP weights). Once the catalog rebar base unit is batang, a future RAB *re-publish* would store kg against a batang-unit material and mis-sum in the envelope views. The follow-up is to have the RAB rebar path emit batang (via the same `rebarBatang.ts` factor) so both import paths agree. Recorded here so it is not silently broken; the spec's rollout (§9) notes RAB rebar re-publishes are paused until that lands. Existing already-published RAB master lines (historical kg data) are unaffected unless re-published.
+**Therefore this design adds 6 isolated batang-native rebar rows** via migration (`0XX_rebar_batang_catalog.sql`, number assigned at implementation) — one per diameter the simplified format uses:
+
+| Code | Name (exact) | unit | supplier_unit | base_qty_per_supplier_unit |
+|---|---|---|---|---|
+| `REB-PL08-BTG` | `Besi beton polos 8 mm (batang)` | `batang` | `batang` | `1` |
+| `REB-DE10-BTG` | `Besi beton ulir 10 mm (batang)` | `batang` | `batang` | `1` |
+| `REB-DE13-BTG` | `Besi beton ulir 13 mm (batang)` | `batang` | `batang` | `1` |
+| `REB-DE16-BTG` | `Besi beton ulir 16 mm (batang)` | `batang` | `batang` | `1` |
+| `REB-DE19-BTG` | `Besi beton ulir 19 mm (batang)` | `batang` | `batang` | `1` |
+| `REB-DE22-BTG` | `Besi beton ulir 22 mm (batang)` | `batang` | `batang` | `1` |
+
+Tier 1, category `Struktur`. Idempotent (`INSERT … ON CONFLICT (code) DO NOTHING`), Dashboard-pasteable (per the migration-history-divergence constraint). The names deliberately differ from the kg rows (` (batang)` suffix) so the parser's **exact-match** resolution never confuses a batang component with the kg row. Publish keeps these in batang automatically — **zero publish-code change**.
+
+**Transitional state (by design, resolved in the user's later catalog cleanup):** the catalog now carries two rebar sets — kg rows (used by the 3 existing RAB projects, untouched and uncorrupted) and batang rows (used by simplified-format projects). This is the accepted trade-off for keeping rebar batang *without* corrupting existing data. The RAB import path is unaffected: it emits kg and links to the kg rows exactly as before. Consolidation (and any migration of existing projects to batang) is the user's separate cleanup, out of scope here.
 
 ### 5.5 Material reconciliation (file wins + flag)
 
 Every material name (beton, each rebar diameter, each Others row) is reconciled to the catalog using the **existing** `resolveCatalogId` → `reconcileMaterials` exact→alias→fuzzy cascade (`publishBaselineV2.ts:98`), the same matcher the RAB path uses.
 
 - **Matched** → reuse that catalog id. The line links; the file's quantity is authoritative.
-- **Unmatched** → the parser emits a `material` staging row so publish creates a new catalog entry, seeded with the file's tier + price + unit.
+- **Unmatched** → the component keeps `material_id = null` and is flagged `needs_review: true` as unresolved (the file's tier/price/unit are captured on the row for the reviewer). **No catalog entry is auto-created** — the import/publish path has no catalog-write step (the catalog is seeded only by `003_seed.sql`), and silently inventing a catalog row is exactly the kind of unverified write §1.1 forbids. The reviewer adds the material to the catalog (or the user does so in the later cleanup), then re-publishes; this matches how the RAB path already handles unresolved materials.
 - **File wins on tier + price.** For a **matched existing** material whose tier or price disagrees with the catalog, the row is flagged `needs_review: true` with the discrepancy surfaced (file value vs catalog value), so it is visible in staging before publish and during the later catalog cleanup. The shared catalog row is **not** silently mutated (it may be referenced by other projects); the file value is captured on the staging row and, per "file wins," governs this import's behavior. (This is the safe reading of "file wins" chosen in brainstorm; flipping to overwrite-catalog-now is a one-line change if the user later wants it.)
 
 Reconciliation results (which file material → which catalog id, at what confidence, with what conflicts) are captured on each staging row's `parsed_data`/`raw_data` so the review UI and the eventual cleanup can see them.
@@ -157,9 +170,9 @@ Nothing is auto-corrected; every uncertainty is a visible review item.
 - **Unit — detection**: `isSimplifiedInputWorkbook` true for the sample, false for a RAB workbook and for a breakdown-normalized workbook.
 - **Unit — Tier-1 mapping**: a known row (e.g. `Lt. Basement ; Kolom`, beton 39.0227…, ø10=517, ø16=174, ø19=91, ø22=60) → correct `code/label/chapter/sub_chapter/unit/planned` and a recipe whose beton coefficient is 1.0 and whose rebar coefficients reproduce the exact lonjor counts after `master_planned = planned × coefficient`.
 - **Unit — Others anchor**: anchor `planned=1`, each component `master_planned = Volume`, tier/price carried from the file; a Tier-3 row's budget equals `Volume × Harga`.
-- **Unit — reconciliation/flags**: matched material reuses id; unmatched emits a `material` row; tier/price conflict flags `needs_review`.
-- **Integration — parse→publish** against a disposable test project: run the sample through `parseSimplifiedInput` → `publishBaselineV2`, assert `v_material_envelopes` per-material `total_planned` equals the sheet (beton m³ per work area summed; rebar in batang per diameter; Others volumes), and that rebar rows carry unit `batang` (proves no kg conversion). Guarded so it is skippable without live DB creds.
-- **Migration**: rebar rows read back `unit = 'batang'`; re-running the migration is a no-op.
+- **Unit — reconciliation/flags**: matched material reuses id; unmatched keeps `material_id` null + flags `needs_review` (no catalog row invented); tier/price conflict flags `needs_review`.
+- **Integration — parse→publish** against a disposable test project: run the sample through `parseSimplifiedInput` → `publishBaselineV2`, assert `v_material_envelopes` per-material `total_planned` equals the sheet (beton m³ per work area summed; rebar in batang per diameter; Others volumes), and that rebar rows carry unit `batang` (proves the batang rows were linked, no kg conversion). Guarded so it is skippable without live DB creds.
+- **Migration**: the 6 batang rebar rows read back with `unit = 'batang'`; re-running the migration is a no-op; the existing kg rebar rows are unchanged (still `unit = 'kg'`).
 
 ## 8. Codebase touch-points
 
@@ -168,17 +181,18 @@ Nothing is auto-corrected; every uncertainty is a visible review item.
 | `tools/simplifiedInput/index.ts` | New. `parseSimplifiedInput`, `isSimplifiedInputWorkbook`. |
 | `tools/simplifiedInput/tier1.ts` | New. Tier-1 rows → `boq` staging rows + recipes. |
 | `tools/simplifiedInput/others.ts` | New. Others rows → `MATERIAL-UMUM` anchor row. |
-| `tools/simplifiedInput/rebar.ts` | New. Diameter→catalog-code + batang component builder (uses `rebarBatang.ts`). |
+| `tools/simplifiedInput/rebar.ts` | New. Diameter→batang-row (code + exact name) + batang component builder. |
 | `tools/simplifiedInput/__tests__/` | New. Unit + integration tests. |
 | `tools/baseline.ts` | Add detection branch at ~line 435. |
-| `supabase/migrations/0XX_rebar_batang_base_unit.sql` | New. Flip rebar catalog base unit → batang. Idempotent. |
+| `supabase/migrations/0XX_rebar_batang_catalog.sql` | New. Insert 6 isolated batang rebar rows. Idempotent, no change to existing rows. |
 
 No change to `publishBaselineV2.ts`, the envelope views, the Tier gates, or the work-group classifier.
 
 ## 9. Rollout & risks
 
-- **Deploy order:** paste the rebar-batang migration before publishing a simplified workbook (else rebar converts to kg). Add to the Dashboard checklist per the migration-history-divergence process.
-- **RAB rebar pause:** hold RAB rebar *re-publishes* until the follow-up (§5.4) lands. New RAB imports of projects with no batang expectation are unaffected until re-published.
+- **Deploy order:** paste the batang-rebar migration before publishing a simplified workbook (else the batang rebar rows don't exist and every rebar component flags unresolved). Add to the Dashboard checklist per the migration-history-divergence process.
+- **No impact on existing projects:** the 3 kg-rebar projects and the RAB import path are untouched — the migration only INSERTs new rows. No RAB pause needed.
+- **Transitional two-rebar-set catalog:** kg rows + batang rows coexist until the user's catalog cleanup; documented so it is expected, not mistaken for duplication drift.
 - **Anchor visibility:** `Material Umum` appears as a BoQ line; documented so reviewers expect it.
 - **Risk — misclassified `;` split:** a label without `;` yields a null sub_chapter (classifier degrades gracefully, as it already does for pre-064 imports). Acceptable.
 - **Risk — file basis quirks** (Semen sak size, kayu usuk unit): caught as review items (§6), not silently ingested.
