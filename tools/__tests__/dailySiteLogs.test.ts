@@ -1,4 +1,4 @@
-import { getDailyLog, upsertDailyLog, aggregatePeriod } from '../dailySiteLogs';
+import { getDailyLog, upsertDailyLog, aggregatePeriod, toggleFeaturedPhoto, type DailyLogPhoto } from '../dailySiteLogs';
 import { supabase } from '../supabase';
 
 jest.mock('../supabase', () => ({
@@ -141,5 +141,37 @@ describe('dailySiteLogs', () => {
     expect(agg.highlights.map(h => h.area)).toEqual(['Listrik', 'Tangga']); // by log_date asc
     expect(agg.highlights[0].log_date).toBe('2026-06-08');
     expect(agg.featuredPhotos).toHaveLength(1);
+  });
+});
+
+// Task 3.7: the featured filter was vacuous because DailyLogScreen force-set
+// is_featured: true on every photo (aggregatePeriod's `.eq('is_featured',
+// true)` filter was correct all along — it just never excluded anything).
+// toggleFeaturedPhoto is the extracted pure state-update the screen's toggle
+// button calls; this covers the flip logic without mounting the screen.
+describe('toggleFeaturedPhoto', () => {
+  const photo = (path: string, featured: boolean): DailyLogPhoto => ({
+    storage_path: path, caption: null, is_featured: featured, captured_at: null,
+  });
+
+  it('flips only the targeted photo, leaving the rest untouched', () => {
+    const photos = [photo('a.jpg', false), photo('b.jpg', false), photo('c.jpg', true)];
+    const result = toggleFeaturedPhoto(photos, 1);
+    expect(result.map((p) => p.is_featured)).toEqual([false, true, true]);
+    // original array/objects untouched (immutable update)
+    expect(photos[1].is_featured).toBe(false);
+  });
+
+  it('toggling twice returns to the original state', () => {
+    const photos = [photo('a.jpg', false)];
+    const once = toggleFeaturedPhoto(photos, 0);
+    const twice = toggleFeaturedPhoto(once, 0);
+    expect(twice[0].is_featured).toBe(false);
+  });
+
+  it('un-stars a photo that was featured', () => {
+    const photos = [photo('a.jpg', true)];
+    const result = toggleFeaturedPhoto(photos, 0);
+    expect(result[0].is_featured).toBe(false);
   });
 });

@@ -13,6 +13,7 @@ import {
   computeWeeklyProgressDelta,
   listClientReports,
   getClientReportSnapshot,
+  nextRevisionNo,
   type ClientReportDraft,
   type ClientReportPhoto,
   type IssuedClientReport,
@@ -165,12 +166,22 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
     }
   };
 
-  const startRevision = () => {
-    if (!viewing) return;
-    setDraft({ ...viewing.snapshot, reportNo: viewing.meta.report_no, revision: viewing.meta.revision + 1 });
-    setViewing(null);
-    setWeeklyDelta(null);
-    toast(`Draf revisi R${viewing.meta.revision + 1} dari Laporan #${String(viewing.meta.report_no).padStart(2, '0')}`, 'ok');
+  // Task 3.7: `viewing.meta` is whichever history row the user tapped — NOT
+  // necessarily the highest revision for that report_no (a user can open an
+  // older revision from Riwayat Laporan). Trusting `viewing.meta.revision +
+  // 1` there could recreate a revision number that already exists. Query the
+  // true max(revision) for this report_no instead.
+  const startRevision = async () => {
+    if (!viewing || !project) return;
+    try {
+      const rev = await nextRevisionNo(project.id, viewing.meta.report_no);
+      setDraft({ ...viewing.snapshot, reportNo: viewing.meta.report_no, revision: rev });
+      setViewing(null);
+      setWeeklyDelta(null);
+      toast(`Draf revisi R${rev} dari Laporan #${String(viewing.meta.report_no).padStart(2, '0')}`, 'ok');
+    } catch (err: any) {
+      toast(err.message ?? 'Gagal membuat revisi', 'critical');
+    }
   };
 
   const exportPdf = async (d: ClientReportDraft) => {
@@ -185,9 +196,15 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
     if (!draft || !project || !profile) return;
     setBusy(true);
     try {
-      await issueClientReport(draft, project.id, profile.id);
-      const rev = (draft.revision ?? 1) > 1 ? ` (R${draft.revision})` : '';
-      toast(`Laporan #${String(draft.reportNo).padStart(2, '0')}${rev} diterbitkan`, 'ok');
+      // Toast the number ACTUALLY issued (returned by issueClientReport),
+      // not draft.reportNo/draft.revision — a lost numbering race + retry
+      // inside issueClientReport can bump either past what the draft held,
+      // and toasting the stale pre-retry value tells the user the wrong
+      // report number was issued. Same return covers both the new-issue and
+      // "Buat Revisi" paths.
+      const { reportNo, revision } = await issueClientReport(draft, project.id, profile.id);
+      const rev = revision > 1 ? ` (R${revision})` : '';
+      toast(`Laporan #${String(reportNo).padStart(2, '0')}${rev} diterbitkan`, 'ok');
       setDraft(null);
       await loadHistory();
     } catch (err: any) {

@@ -86,6 +86,20 @@ function parsePresence(raw: unknown): boolean {
   return ['y', 'ya', 'yes', '1', 'true', 'ada', 'hadir'].includes(str);
 }
 
+/**
+ * Tri-state presence for the Excel path (mirrors the grid, U2):
+ *   blank / empty  → 'unmarked'  (no assertion — the caller SKIPS the row)
+ *   Y/Ya/1/hadir…  → 'present'
+ *   anything else  → 'absent'    (explicit N/Tidak/0/absen…)
+ * A blank cell must NEVER be imported as present OR absent — it is simply not
+ * an assertion, so it is dropped and stays unmarked in the grid.
+ */
+function parsePresenceCell(raw: unknown): 'present' | 'absent' | 'unmarked' {
+  if (raw === null || raw === undefined) return 'unmarked';
+  if (String(raw).trim() === '') return 'unmarked';
+  return parsePresence(raw) ? 'present' : 'absent';
+}
+
 // ─── Overtime parsing ──────────────────────────────────────────────────────
 
 function parseOvertimeHours(raw: unknown): number {
@@ -173,12 +187,14 @@ function parseWideFormat(headers: string[], rows: unknown[][], dataStart: number
     const desc = String(row[descCol] ?? '').trim() || null;
 
     for (const { date, presentCol, otCol } of dayCols) {
+      const presence = parsePresenceCell(row[presentCol]);
+      if (presence === 'unmarked') continue; // blank = no assertion → skip (U2)
       parsed.push({
         rowNumber: i + 1,
         workerName: name,
         attendanceDate: date,
-        isPresent: parsePresence(row[presentCol]),
-        overtimeHours: parseOvertimeHours(row[otCol]),
+        isPresent: presence === 'present',
+        overtimeHours: presence === 'present' ? parseOvertimeHours(row[otCol]) : 0,
         workDescription: desc,
       });
     }
@@ -215,6 +231,9 @@ export function parseAttendanceExcel(buffer: ArrayBuffer): ParsedAttendanceRow[]
         const name = String(row[colMap.name] ?? '').trim();
         if (!name) continue;
 
+        const presence = parsePresenceCell(row[colMap.present]);
+        if (presence === 'unmarked') continue; // blank = no assertion → skip (U2)
+
         const dateStr = parseDate(row[colMap.date]);
         if (!dateStr) {
           parsed.push({ rowNumber: r + 1, workerName: name, attendanceDate: '', isPresent: false, overtimeHours: 0, workDescription: null, error: 'Tanggal tidak valid' });
@@ -224,8 +243,8 @@ export function parseAttendanceExcel(buffer: ArrayBuffer): ParsedAttendanceRow[]
           rowNumber: r + 1,
           workerName: name,
           attendanceDate: dateStr,
-          isPresent: parsePresence(row[colMap.present]),
-          overtimeHours: colMap.ot >= 0 ? parseOvertimeHours(row[colMap.ot]) : 0,
+          isPresent: presence === 'present',
+          overtimeHours: presence === 'present' && colMap.ot >= 0 ? parseOvertimeHours(row[colMap.ot]) : 0,
           workDescription: colMap.desc >= 0 ? (String(row[colMap.desc] ?? '').trim() || null) : null,
         });
       }

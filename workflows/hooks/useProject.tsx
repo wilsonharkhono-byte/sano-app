@@ -104,7 +104,13 @@ export function ProjectProvider({ userId, children }: { userId: string; children
   const loadProjectData = useCallback(async (pid: string) => {
     try {
       const results = await Promise.all([
-        supabase.from('boq_items').select('*').eq('project_id', pid).order('code'),
+        // Task 3.1: exclude codes a later re-publish superseded (dropped from
+        // the workbook) — this single filter flows into every downstream
+        // consumer of `boqItems` (work-group building, Permintaan pickers,
+        // Progres lists, Beranda/office overall-progress %, etc.), since they
+        // all read this context state rather than querying boq_items
+        // themselves. See migration 074_boq_items_supersede.sql.
+        supabase.from('boq_items').select('*').eq('project_id', pid).is('superseded_at', null).order('code'),
         supabase.from('purchase_orders').select('*').eq('project_id', pid),
         supabase.from('envelopes').select('*').eq('project_id', pid),
         supabase.from('milestones')

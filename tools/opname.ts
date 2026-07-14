@@ -428,10 +428,13 @@ export async function getContractRates(contractId: string): Promise<MandorContra
   const tradeCategories = ((contract?.trade_categories ?? []) as TradeCategory[]).filter(Boolean);
   let laborRows: ContractRateCandidateRow[] = [];
   if (contract?.project_id && tradeCategories.length > 0) {
+    // Task 3.1: candidate-picker — new labor rates should only be offered
+    // against ACTIVE plan rows, not a code a later re-publish superseded.
     const { data: boqRows } = await supabase
       .from('boq_items')
       .select('id')
-      .eq('project_id', contract.project_id);
+      .eq('project_id', contract.project_id)
+      .is('superseded_at', null);
 
     const boqIds = (boqRows ?? []).map((row: { id: string }) => row.id);
     if (boqIds.length > 0) {
@@ -1222,10 +1225,13 @@ export async function getHarianAllocationBoqCandidates(
 
   if (!contract?.project_id) return [];
 
+  // Task 3.1: candidate-picker — harian cost should only be allocable
+  // against ACTIVE plan rows, not a code a later re-publish superseded.
   const { data: boqRows } = await supabase
     .from('boq_items')
     .select('id, code, label, unit, planned, progress')
     .eq('project_id', contract.project_id)
+    .is('superseded_at', null)
     .order('code');
 
   const tradeCategories = ((contract.trade_categories ?? []) as TradeCategory[]).filter(Boolean);

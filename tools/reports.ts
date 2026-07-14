@@ -3,9 +3,13 @@
 // In production, PDF/Excel rendering would happen server-side via edge function.
 
 import { supabase } from './supabase';
+import { wibStartOfDayIso, wibEndOfDayExclusiveIso } from './timeWindow';
 import { getPurchaseOrderDisplayNumber } from './purchaseOrders';
 import { deriveBoqInstalledTotals, derivePoReceivedTotals, deriveMaterialBalanceWithControl } from './derivation';
 import { resolvePhotoUrl } from './storage';
+import { getMaterialDrift } from './envelopes';
+import { computeOverallProgress } from './progressMath';
+import { needsProcurement } from './materialThresholds';
 import {
   CHANGE_TYPE_LABELS,
   COST_BEARER_LABELS,
@@ -30,8 +34,6 @@ export type ReportType =
   | 'site_change_log'
   | 'weekly_digest'
   | 'schedule_variance'
-  | 'payroll_support_summary'
-  | 'client_charge_report'
   | 'audit_list'
   | 'ai_usage_summary'
   | 'approval_sla_user'
@@ -58,14 +60,21 @@ export interface ReportGenerationOptions {
   viewerRole?: string | null;
 }
 
+// Task 3.5: date-window filters were previously built with an offset-less-in-
+// spirit-but-`Z`-suffixed literal (`T00:00:00.000Z` / `T23:59:59.999Z`) —
+// anchored to UTC midnight, not WIB midnight, so for a site operating in
+// Asia/Jakarta (UTC+7) the reported "day" started and ended 7 hours early.
+// Both now route through tools/timeWindow.ts. `toEndOfDayExclusive` returns
+// an EXCLUSIVE upper bound (start of the next WIB day) — every call site
+// below uses `.lt()`, never `.lte()`, against it.
 function toStartOfDay(date?: string): string | null {
   if (!date) return null;
-  return `${date}T00:00:00.000Z`;
+  return wibStartOfDayIso(date);
 }
 
-function toEndOfDay(date?: string): string | null {
+function toEndOfDayExclusive(date?: string): string | null {
   if (!date) return null;
-  return `${date}T23:59:59.999Z`;
+  return wibEndOfDayExclusiveIso(date);
 }
 
 async function getProfileDirectory(userIds: string[]) {
@@ -165,19 +174,6 @@ interface SiteChangeRow {
   profiles?: { full_name: string } | null;
 }
 
-/** Payroll/progress entry row (generatePayrollSupportSummary) */
-interface PayrollEntryRow {
-  id: string;
-  created_at: string;
-  boq_item_id: string;
-  quantity: number;
-  unit: string;
-  location: string | null;
-  note: string | null;
-  reported_by: string;
-  payroll_support: boolean;
-}
-
 /** BoQ lookup row (used in multiple reports) */
 interface BoqLookupRow {
   id: string;
@@ -189,32 +185,6 @@ interface BoqLookupRow {
 interface ProfileLookupRow {
   id: string;
   full_name: string;
-}
-
-/** VO entry row (generateClientChargeReport) */
-interface VoEntryRow {
-  id: string;
-  created_at: string;
-  location: string | null;
-  description: string | null;
-  requested_by_name: string | null;
-  cause: string;
-  est_material: number | null;
-  est_cost: number | null;
-  status: string;
-}
-
-/** Client-charge progress entry row */
-interface ClientChargeEntryRow {
-  id: string;
-  created_at: string;
-  boq_item_id: string;
-  quantity: number;
-  unit: string;
-  location: string | null;
-  note: string | null;
-  reported_by: string;
-  client_charge_support: boolean;
 }
 
 /** Audit case row (generateAuditList) */
@@ -344,25 +314,6 @@ interface AuditCaseMinRow {
   created_at: string;
 }
 
-function assignSequenceCodes<T extends { id: string; created_at: string }>(items: T[], prefix: string) {
-  const ordered = [...items].sort((a, b) => {
-    const timeDiff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-    return timeDiff !== 0 ? timeDiff : a.id.localeCompare(b.id);
-  });
-
-  const codeMap = new Map(
-    ordered.map((item, index) => [
-      item.id,
-      `${prefix}-${String(index + 1).padStart(3, '0')}`,
-    ]),
-  );
-
-  return items.map(item => ({
-    ...item,
-    entry_code: codeMap.get(item.id) ?? `${prefix}-000`,
-  }));
-}
-
 async function resolvePhotoCollection(
   rawPhotos: Array<{
     storage_path: string;
@@ -451,11 +402,20 @@ export async function generateProgressSummary(projectId: string): Promise<Report
       .order('created_at', { ascending: false }),
   ]);
 
+  // Task 3.1: the query above is intentionally UNFILTERED — `boqMap` below
+  // resolves progress_entries.boq_item_id by FK (an entry logged against a
+  // code that a LATER re-publish superseded must still show its code/label,
+  // same as reports.ts's payroll/client-charge FK resolution). Only the
+  // ACTIVE-plan enumeration (`enriched`/`overall_progress`/the item counts —
+  // the surface that actually pollutes/dilutes, per migration
+  // 074_boq_items_supersede.sql) is filtered, in-memory, to non-superseded
+  // rows.
   const boqItems: BoqItem[] = items ?? [];
+  const activeBoqItems = boqItems.filter(b => b.superseded_at == null);
   const totalMap = new Map(totals.map(t => [t.boq_item_id, t.total_installed]));
   const boqMap = new Map(boqItems.map(item => [item.id, item]));
 
-  const enriched = boqItems.map(b => ({
+  const enriched = activeBoqItems.map(b => ({
     code: b.code,
     label: b.label,
     planned: b.planned,
@@ -464,9 +424,11 @@ export async function generateProgressSummary(projectId: string): Promise<Report
     progress: b.planned > 0 ? Math.min(100, Math.round(((totalMap.get(b.id) ?? b.installed) / b.planned) * 100)) : 0,
   }));
 
-  const overall = enriched.length > 0
-    ? Math.round(enriched.reduce((s, i) => s + i.progress, 0) / enriched.length)
-    : 0;
+  // Task 3.2: volume-weighted over active, planned>0 items — see
+  // tools/progressMath.ts for the formula + rationale. This replaces the old
+  // unweighted mean-of-per-item-% (which counted planned=0 items as 0% and
+  // let many tiny items dilute a near-done large one).
+  const overall = Math.round(computeOverallProgress(enriched));
 
   const data: ProgressSummaryData = {
     overall_progress: overall,
@@ -506,8 +468,40 @@ export async function generateProgressSummary(projectId: string): Promise<Report
 
 // ── Material Balance ────────────────────────────────────────────────
 
-export async function generateMaterialBalanceReport(projectId: string): Promise<ReportPayload> {
+export async function generateMaterialBalanceReport(
+  projectId: string,
+  options: ReportGenerationOptions = {},
+): Promise<ReportPayload> {
   const balances = await deriveMaterialBalanceWithControl(projectId);
+
+  // Fail closed: missing/null viewerRole is treated as supervisor.
+  const showCosts = options.viewerRole != null && options.viewerRole !== 'supervisor';
+
+  // Signal-2 plan drift (Task 2.13, spec §4): "estimator/principal see
+  // per-material drift"; supervisors get the badge in Permintaan instead of a
+  // report column. Drift is quantity-based, not Rp, but this report rides the
+  // same show_costs decision point as the budget fields below (controller
+  // decision — show drift to office only, consistent with the Rp gate) so
+  // exporters (excel/pdf/preview) react to one flag instead of re-deriving
+  // viewerRole logic per column. Only fetched when it will actually be used.
+  const driftByMaterial = showCosts
+    ? new Map((await getMaterialDrift(projectId)).map(d => [d.material_id, d]))
+    : new Map<string, Awaited<ReturnType<typeof getMaterialDrift>>[number]>();
+
+  const withDrift = showCosts
+    ? balances.map((b) => {
+        const drift = b.material_id ? driftByMaterial.get(b.material_id) : undefined;
+        return {
+          ...b,
+          drift_pct: drift?.drift_pct ?? null,
+          baseline_planned_qty: drift?.baseline_planned_qty ?? null,
+        };
+      })
+    : balances;
+
+  const rows = showCosts
+    ? withDrift
+    : withDrift.map(({ budget_total_rupiah, committed_rupiah, benchmark_unit_price, ...rest }) => rest);
 
   return {
     type: 'material_balance',
@@ -515,18 +509,27 @@ export async function generateMaterialBalanceReport(projectId: string): Promise<
     generated_at: new Date().toISOString(),
     project_id: projectId,
     data: {
+      show_costs: showCosts,
       total_materials: balances.length,
       over_received: balances.filter(b => b.received > b.planned).length,
-      under_received: balances.filter(b => b.received < b.planned * 0.8).length,
+      // Task 3.3: shared on_site-based predicate — same rule as the
+      // LaporanScreen tile and the per-row Status column below.
+      needs_procurement: balances.filter(b => needsProcurement({ planned: b.planned, on_site: b.on_site })).length,
       over_budget: balances.filter(b => b.control === 'RP' && (b.burn_pct ?? 0) > 100).length,
-      balances,
+      balances: rows,
     },
   };
 }
 
 // ── Receipt Log ─────────────────────────────────────────────────────
 
-export async function generateReceiptLog(projectId: string): Promise<ReportPayload> {
+export async function generateReceiptLog(
+  projectId: string,
+  options: ReportGenerationOptions = {},
+): Promise<ReportPayload> {
+  // Fail closed: missing/null viewerRole is treated as supervisor.
+  const showCosts = options.viewerRole != null && options.viewerRole !== 'supervisor';
+
   const [poTotals, { data: pos }, { data: receipts }] = await Promise.all([
     derivePoReceivedTotals(projectId),
     supabase
@@ -552,7 +555,7 @@ export async function generateReceiptLog(projectId: string): Promise<ReportPaylo
       received_qty: received?.total_received ?? 0,
       receipt_count: received?.receipt_count ?? 0,
       unit: po.unit,
-      unit_price: po.unit_price ?? null,
+      ...(showCosts ? { unit_price: po.unit_price ?? null } : {}),
       status: po.status,
       ordered_date: po.ordered_date,
       last_receipt: received?.last_receipt_at ?? null,
@@ -565,6 +568,7 @@ export async function generateReceiptLog(projectId: string): Promise<ReportPaylo
     generated_at: new Date().toISOString(),
     project_id: projectId,
     data: {
+      show_costs: showCosts,
       total_pos: entries.length,
       fully_received: entries.filter(e => e.status === 'FULLY_RECEIVED').length,
       entries,
@@ -613,9 +617,9 @@ export async function generateSiteChangeLog(
     .order('created_at', { ascending: false });
 
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
   if (dateFrom) query = query.gte('created_at', dateFrom);
-  if (dateTo) query = query.lte('created_at', dateTo);
+  if (dateTo) query = query.lt('created_at', dateTo);
 
   const { data: rows, error } = await query;
   if (error) throw new Error(error.message);
@@ -800,13 +804,10 @@ export async function generateWeeklyDigest(projectId: string): Promise<ReportPay
     overall_progress: (progressReport.data as ProgressSummaryData).overall_progress,
   };
 
-  // Save to weekly_digests table
-  await supabase.from('weekly_digests').insert({
-    project_id: projectId,
-    week_start: digest.week_start,
-    week_end: digest.week_end,
-    summary: digest,
-  });
+  // Task 3.4: the per-preview `weekly_digests` insert was removed. The table is
+  // write-only (no reader) and every preview duplicated a row, so the digest is
+  // now computed and returned on the fly. The table itself is left in place; a
+  // reader (or a DROP) is a separate migration decision.
 
   return {
     type: 'weekly_digest',
@@ -817,180 +818,6 @@ export async function generateWeeklyDigest(projectId: string): Promise<ReportPay
   };
 }
 
-// ── Payroll Support Summary ─────────────────────────────────────────
-// Lists all progress entries flagged for payroll, grouped by worker/subcontractor
-
-async function generatePayrollSupportSummary(
-  projectId: string,
-  filters: ReportFilters = {},
-): Promise<ReportPayload> {
-  let query = supabase
-    .from('progress_entries')
-    .select('id, created_at, boq_item_id, quantity, unit, location, note, reported_by, payroll_support')
-    .eq('project_id', projectId)
-    .eq('payroll_support', true)
-    .order('created_at', { ascending: false });
-
-  if (filters.date_from) query = query.gte('created_at', filters.date_from);
-  if (filters.date_to)   query = query.lte('created_at', filters.date_to + 'T23:59:59');
-  if (filters.boq_ids?.length) query = query.in('boq_item_id', filters.boq_ids);
-
-  const { data: entries, error } = await query;
-  if (error) throw new Error(error.message);
-
-  const boqIds = Array.from(new Set((entries ?? []).map((entry: PayrollEntryRow) => entry.boq_item_id).filter(Boolean)));
-  const reporterIds = Array.from(new Set((entries ?? []).map((entry: PayrollEntryRow) => entry.reported_by).filter(Boolean)));
-
-  const [boqRes, profileRes] = await Promise.all([
-    boqIds.length > 0
-      ? supabase.from('boq_items').select('id, code, label').in('id', boqIds)
-      : Promise.resolve(emptyResult<BoqLookupRow>()),
-    reporterIds.length > 0
-      ? supabase.from('profiles').select('id, full_name').in('id', reporterIds)
-      : Promise.resolve(emptyResult<ProfileLookupRow>()),
-  ]);
-
-  if (boqRes.error) throw new Error(boqRes.error.message);
-  if (profileRes.error) throw new Error(profileRes.error.message);
-
-  const boqMap = new Map<string, { code: string; label: string }>(
-    (boqRes.data ?? []).map((item: BoqLookupRow) => [item.id, { code: item.code ?? '—', label: item.label ?? '—' }]),
-  );
-  const profileMap = new Map((profileRes.data ?? []).map((item: ProfileLookupRow) => [item.id, item.full_name]));
-
-  const normalizedEntries = (entries ?? []).map((entry: PayrollEntryRow) => {
-    const boq = boqMap.get(entry.boq_item_id);
-    return {
-      ...entry,
-      boq_code: boq?.code ?? '—',
-      boq_label: boq?.label ?? '—',
-      reporter_name: profileMap.get(entry.reported_by) ?? 'Supervisor',
-    };
-  });
-
-  type NormalizedEntry = PayrollEntryRow & { boq_code: string; boq_label: string; reporter_name: string };
-  const byReporterMap = new Map<string, { reporter_name: string; total_qty: number; entry_count: number; entries: NormalizedEntry[] }>();
-  normalizedEntries.forEach((entry) => {
-    const current: { reporter_name: string; total_qty: number; entry_count: number; entries: NormalizedEntry[] } = byReporterMap.get(entry.reporter_name) ?? {
-      reporter_name: entry.reporter_name,
-      total_qty: 0,
-      entry_count: 0,
-      entries: [],
-    };
-    current.total_qty += entry.quantity ?? 0;
-    current.entry_count += 1;
-    current.entries.push(entry);
-    byReporterMap.set(entry.reporter_name, current);
-  });
-
-  const byReporter = Array.from(byReporterMap.values()).sort((a, b) => b.entry_count - a.entry_count);
-
-  return {
-    type: 'payroll_support_summary',
-    title: 'Ringkasan Dukungan Penggajian',
-    generated_at: new Date().toISOString(),
-    project_id: projectId,
-    filters,
-    data: {
-      purpose: 'Dokumen pendukung untuk rekap penggajian pekerjaan lapangan yang ditandai payroll support.',
-      total_entries: normalizedEntries.length,
-      total_qty: normalizedEntries.reduce((sum: number, entry: NormalizedEntry) => sum + (entry.quantity ?? 0), 0),
-      by_reporter: byReporter,
-      entries: normalizedEntries,
-      date_range: { from: filters.date_from ?? null, to: filters.date_to ?? null },
-    },
-  };
-}
-
-// ── Client Charge Report ────────────────────────────────────────────
-// VO items caused by client requests + progress entries tagged for client billing
-
-async function generateClientChargeReport(
-  projectId: string,
-  filters: ReportFilters = {},
-): Promise<ReportPayload> {
-  // VO entries chargeable to client
-  let voQuery = supabase
-    .from('vo_entries')
-    .select('id, created_at, location, description, requested_by_name, cause, est_material, est_cost, status')
-    .eq('project_id', projectId)
-    .eq('cause', 'client_request')
-    .order('created_at', { ascending: false });
-
-  if (filters.date_from) voQuery = voQuery.gte('created_at', filters.date_from);
-  if (filters.date_to)   voQuery = voQuery.lte('created_at', filters.date_to + 'T23:59:59');
-
-  // Progress entries tagged for client charging
-  let peQuery = supabase
-    .from('progress_entries')
-    .select('id, created_at, boq_item_id, quantity, unit, location, note, reported_by, client_charge_support')
-    .eq('project_id', projectId)
-    .eq('client_charge_support', true)
-    .order('created_at', { ascending: false });
-
-  if (filters.date_from) peQuery = peQuery.gte('created_at', filters.date_from);
-  if (filters.date_to)   peQuery = peQuery.lte('created_at', filters.date_to + 'T23:59:59');
-  if (filters.boq_ids?.length) peQuery = peQuery.in('boq_item_id', filters.boq_ids);
-
-  const [voRes, peRes] = await Promise.all([voQuery, peQuery]);
-  if (voRes.error) throw new Error(voRes.error.message);
-  if (peRes.error) throw new Error(peRes.error.message);
-
-  const voEntries = voRes.data ?? [];
-  const peEntries = peRes.data ?? [];
-
-  const boqIds = Array.from(new Set(peEntries.map((entry: ClientChargeEntryRow) => entry.boq_item_id).filter(Boolean)));
-  const reporterIds = Array.from(new Set(peEntries.map((entry: ClientChargeEntryRow) => entry.reported_by).filter(Boolean)));
-
-  const [boqRes, profileRes] = await Promise.all([
-    boqIds.length > 0
-      ? supabase.from('boq_items').select('id, code, label').in('id', boqIds)
-      : Promise.resolve(emptyResult<BoqLookupRow>()),
-    reporterIds.length > 0
-      ? supabase.from('profiles').select('id, full_name').in('id', reporterIds)
-      : Promise.resolve(emptyResult<ProfileLookupRow>()),
-  ]);
-
-  if (boqRes.error) throw new Error(boqRes.error.message);
-  if (profileRes.error) throw new Error(profileRes.error.message);
-
-  const boqMap = new Map<string, { code: string; label: string }>(
-    (boqRes.data ?? []).map((item: BoqLookupRow) => [item.id, { code: item.code ?? '—', label: item.label ?? '—' }]),
-  );
-  const profileMap = new Map((profileRes.data ?? []).map((item: ProfileLookupRow) => [item.id, item.full_name]));
-
-  const normalizedProgressEntries = peEntries.map((entry: ClientChargeEntryRow) => {
-    const boq = boqMap.get(entry.boq_item_id);
-    return {
-      ...entry,
-      boq_code: boq?.code ?? '—',
-      boq_label: boq?.label ?? '—',
-      reporter_name: profileMap.get(entry.reported_by) ?? 'Supervisor',
-    };
-  });
-
-  const voTotal = voEntries.reduce((s, v: VoEntryRow) => s + (v.est_cost ?? 0), 0);
-
-  return {
-    type: 'client_charge_report',
-    title: 'Laporan Tagihan Klien',
-    generated_at: new Date().toISOString(),
-    project_id: projectId,
-    filters,
-    data: {
-      purpose: 'Ringkasan item yang berpotensi ditagihkan ke klien. Nilai final tetap dikonfirmasi office dari VO yang disetujui.',
-      vo_charges: { items: voEntries, total_est_cost: voTotal },
-      progress_support: {
-        items: normalizedProgressEntries,
-        total_entries: normalizedProgressEntries.length,
-        total_qty: normalizedProgressEntries.reduce((sum, entry) => sum + (entry.quantity ?? 0), 0),
-      },
-      grand_total_est_cost: voTotal,
-      date_range: { from: filters.date_from ?? null, to: filters.date_to ?? null },
-    },
-  };
-}
-
 // ── Audit List ──────────────────────────────────────────────────────
 // Anomaly events and open audit cases for compliance review
 
@@ -998,14 +825,24 @@ async function generateAuditList(
   projectId: string,
   filters: ReportFilters = {},
 ): Promise<ReportPayload> {
+  // Task 3.5: this report used to be the THIRD, independently-wrong date-
+  // window convention in this file — a raw `filters.date_from` (no time-of-
+  // day, cast ambiguously by Postgres) and `filters.date_to + 'T23:59:59'`
+  // (no timezone marker AND an inclusive bound that drops the last
+  // second-fraction of the day). Now routes through the same
+  // toStartOfDay/toEndOfDayExclusive WIB helpers as every other report below,
+  // with `.lt()` against the exclusive end.
+  const dateFrom = toStartOfDay(filters.date_from);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
+
   let anomalyQuery = supabase
     .from('anomaly_events')
     .select('id, created_at, event_type, entity_type, entity_id, severity, description')
     .eq('project_id', projectId)
     .order('created_at', { ascending: false });
 
-  if (filters.date_from) anomalyQuery = anomalyQuery.gte('created_at', filters.date_from);
-  if (filters.date_to)   anomalyQuery = anomalyQuery.lte('created_at', filters.date_to + 'T23:59:59');
+  if (dateFrom) anomalyQuery = anomalyQuery.gte('created_at', dateFrom);
+  if (dateTo)   anomalyQuery = anomalyQuery.lt('created_at', dateTo);
 
   let auditQuery = supabase
     .from('audit_cases')
@@ -1013,8 +850,8 @@ async function generateAuditList(
     .eq('project_id', projectId)
     .order('created_at', { ascending: false });
 
-  if (filters.date_from) auditQuery = auditQuery.gte('created_at', filters.date_from);
-  if (filters.date_to)   auditQuery = auditQuery.lte('created_at', filters.date_to + 'T23:59:59');
+  if (dateFrom) auditQuery = auditQuery.gte('created_at', dateFrom);
+  if (dateTo)   auditQuery = auditQuery.lt('created_at', dateTo);
 
   const [anomalyRes, auditRes] = await Promise.all([anomalyQuery, auditQuery]);
 
@@ -1078,9 +915,9 @@ export async function generateAIUsageSummary(
     .order('created_at', { ascending: false });
 
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
   if (dateFrom) query = query.gte('created_at', dateFrom);
-  if (dateTo) query = query.lte('created_at', dateTo);
+  if (dateTo) query = query.lt('created_at', dateTo);
 
   const { data: logs, error } = await query;
 
@@ -1251,7 +1088,7 @@ export async function generateApprovalSLAUser(
   filters: ReportFilters = {},
 ): Promise<ReportPayload> {
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
 
   let requestQuery = supabase
     .from('material_request_headers')
@@ -1292,13 +1129,13 @@ export async function generateApprovalSLAUser(
     kasbonQuery = kasbonQuery.gte('created_at', dateFrom);
   }
   if (dateTo) {
-    requestQuery = requestQuery.lte('created_at', dateTo);
-    voQuery = voQuery.lte('created_at', dateTo);
-    mtnQuery = mtnQuery.lte('created_at', dateTo);
-    taskQuery = taskQuery.lte('created_at', dateTo);
-    opnameQuery = opnameQuery.lte('submitted_at', dateTo);
-    attendanceQuery = attendanceQuery.lte('created_at', dateTo);
-    kasbonQuery = kasbonQuery.lte('created_at', dateTo);
+    requestQuery = requestQuery.lt('created_at', dateTo);
+    voQuery = voQuery.lt('created_at', dateTo);
+    mtnQuery = mtnQuery.lt('created_at', dateTo);
+    taskQuery = taskQuery.lt('created_at', dateTo);
+    opnameQuery = opnameQuery.lt('submitted_at', dateTo);
+    attendanceQuery = attendanceQuery.lt('created_at', dateTo);
+    kasbonQuery = kasbonQuery.lt('created_at', dateTo);
   }
 
   const [
@@ -1478,7 +1315,7 @@ export async function generateOperationalEntryDiscipline(
   filters: ReportFilters = {},
 ): Promise<ReportPayload> {
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
 
   let requestQuery = supabase.from('material_request_headers').select('id, requested_by, created_at').eq('project_id', projectId);
   let receiptQuery = supabase.from('receipts').select('id, received_by, created_at').eq('project_id', projectId);
@@ -1502,15 +1339,15 @@ export async function generateOperationalEntryDiscipline(
     kasbonQuery = kasbonQuery.gte('created_at', dateFrom);
   }
   if (dateTo) {
-    requestQuery = requestQuery.lte('created_at', dateTo);
-    receiptQuery = receiptQuery.lte('created_at', dateTo);
-    progressQuery = progressQuery.lte('created_at', dateTo);
-    defectQuery = defectQuery.lte('created_at', dateTo);
-    voQuery = voQuery.lte('created_at', dateTo);
-    reworkQuery = reworkQuery.lte('created_at', dateTo);
-    mtnQuery = mtnQuery.lte('created_at', dateTo);
-    attendanceQuery = attendanceQuery.lte('created_at', dateTo);
-    kasbonQuery = kasbonQuery.lte('created_at', dateTo);
+    requestQuery = requestQuery.lt('created_at', dateTo);
+    receiptQuery = receiptQuery.lt('created_at', dateTo);
+    progressQuery = progressQuery.lt('created_at', dateTo);
+    defectQuery = defectQuery.lt('created_at', dateTo);
+    voQuery = voQuery.lt('created_at', dateTo);
+    reworkQuery = reworkQuery.lt('created_at', dateTo);
+    mtnQuery = mtnQuery.lt('created_at', dateTo);
+    attendanceQuery = attendanceQuery.lt('created_at', dateTo);
+    kasbonQuery = kasbonQuery.lt('created_at', dateTo);
   }
 
   const [
@@ -1686,7 +1523,7 @@ export async function generateToolUsageSummary(
   filters: ReportFilters = {},
 ): Promise<ReportPayload> {
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
 
   let exportQuery = supabase
     .from('report_exports')
@@ -1704,8 +1541,8 @@ export async function generateToolUsageSummary(
     aiQuery = aiQuery.gte('created_at', dateFrom);
   }
   if (dateTo) {
-    exportQuery = exportQuery.lte('generated_at', dateTo);
-    aiQuery = aiQuery.lte('created_at', dateTo);
+    exportQuery = exportQuery.lt('generated_at', dateTo);
+    aiQuery = aiQuery.lt('created_at', dateTo);
   }
 
   const [exportRes, aiRes] = await Promise.all([exportQuery, aiQuery]);
@@ -1805,7 +1642,7 @@ export async function generateExceptionHandlingLoad(
   filters: ReportFilters = {},
 ): Promise<ReportPayload> {
   const dateFrom = toStartOfDay(filters.date_from);
-  const dateTo = toEndOfDay(filters.date_to);
+  const dateTo = toEndOfDayExclusive(filters.date_to);
 
   let taskQuery = supabase
     .from('approval_tasks')
@@ -1841,12 +1678,12 @@ export async function generateExceptionHandlingLoad(
     auditQuery = auditQuery.gte('created_at', dateFrom);
   }
   if (dateTo) {
-    taskQuery = taskQuery.lte('created_at', dateTo);
-    requestQuery = requestQuery.lte('created_at', dateTo);
-    voQuery = voQuery.lte('created_at', dateTo);
-    mtnQuery = mtnQuery.lte('created_at', dateTo);
-    anomalyQuery = anomalyQuery.lte('created_at', dateTo);
-    auditQuery = auditQuery.lte('created_at', dateTo);
+    taskQuery = taskQuery.lt('created_at', dateTo);
+    requestQuery = requestQuery.lt('created_at', dateTo);
+    voQuery = voQuery.lt('created_at', dateTo);
+    mtnQuery = mtnQuery.lt('created_at', dateTo);
+    anomalyQuery = anomalyQuery.lt('created_at', dateTo);
+    auditQuery = auditQuery.lt('created_at', dateTo);
   }
 
   const [taskRes, requestRes, voRes, mtnRes, anomalyRes, auditRes] = await Promise.all([
@@ -2005,13 +1842,11 @@ export async function generateReport(
 ): Promise<ReportPayload> {
   switch (type) {
     case 'progress_summary':      return generateProgressSummary(projectId);
-    case 'material_balance':      return generateMaterialBalanceReport(projectId);
-    case 'receipt_log':           return generateReceiptLog(projectId);
+    case 'material_balance':      return generateMaterialBalanceReport(projectId, options);
+    case 'receipt_log':           return generateReceiptLog(projectId, options);
     case 'site_change_log':       return generateSiteChangeLog(projectId, filters, options);
     case 'weekly_digest':         return generateWeeklyDigest(projectId);
     case 'schedule_variance':     return generateScheduleVariance(projectId);
-    case 'payroll_support_summary': return generatePayrollSupportSummary(projectId, filters);
-    case 'client_charge_report':  return generateClientChargeReport(projectId, filters);
     case 'audit_list':            return generateAuditList(projectId, filters);
     case 'ai_usage_summary':      return generateAIUsageSummary(projectId, filters);
     case 'approval_sla_user':     return generateApprovalSLAUser(projectId, filters);

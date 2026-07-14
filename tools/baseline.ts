@@ -3,6 +3,7 @@
 
 import { supabase } from './supabase';
 import { BaselineReviewStatus, AnomalyResolution } from './constants';
+import { fetchAllPaged } from './queryHelpers';
 
 /**
  * Resolve a file input to an ArrayBuffer for parsers that can't read paths.
@@ -187,22 +188,29 @@ export async function getStagingRows(
   sessionId: string,
   options?: { needsReview?: boolean; rowType?: string },
 ): Promise<ImportStagingRow[]> {
-  let query = supabase
-    .from('import_staging_rows')
-    .select('*')
-    .eq('session_id', sessionId)
-    .order('row_number');
+  // A single unpaginated select silently truncates at Supabase's 1000-row
+  // cap — for a large multi-building baseline the Audit Trace pivot would
+  // undercount without any error. Page through all rows instead. fetchAllPaged
+  // throws on a query error rather than swallowing it as an empty session
+  // (see below — this used to `if (error) return []`).
+  return fetchAllPaged<ImportStagingRow>((from, to) => {
+    let query = supabase
+      .from('import_staging_rows')
+      .select('*')
+      .eq('session_id', sessionId);
 
-  if (options?.needsReview !== undefined) {
-    query = query.eq('needs_review', options.needsReview);
-  }
-  if (options?.rowType) {
-    query = query.eq('row_type', options.rowType);
-  }
+    if (options?.needsReview !== undefined) {
+      query = query.eq('needs_review', options.needsReview);
+    }
+    if (options?.rowType) {
+      query = query.eq('row_type', options.rowType);
+    }
 
-  const { data, error } = await query;
-  if (error) return [];
-  return data ?? [];
+    return query.order('row_number').range(from, to) as unknown as PromiseLike<{
+      data: ImportStagingRow[] | null;
+      error: { message?: string } | null;
+    }>;
+  });
 }
 
 export async function reviewStagingRow(
@@ -323,6 +331,10 @@ export interface ParsedAhsRow {
   material_code?: string | null;
   material_name: string;
   material_spec: string | null;
+  // NOT 1|2|3|4: this feeds ahs_lines eventually, whose tier CHECK is still
+  // (1,2,3) — see tools/types.ts AhsLine.tier for the full DB-scope note.
+  // determineTier() (excelParser.ts) never returns 4 either, so this stays
+  // accurate to what the parser actually produces.
   tier: 1 | 2 | 3;
   usage_rate: number;
   unit: string;
@@ -333,7 +345,9 @@ export interface ParsedMaterialRow {
   code: string;
   name: string;
   category: string;
-  tier: 1 | 2 | 3;
+  // material_catalog.tier allows 4 (untracked consumable) since migration
+  // 047_material_tier_budget_control.sql.
+  tier: 1 | 2 | 3 | 4;
   unit: string;
   supplier_unit?: string;
   /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
@@ -367,7 +381,7 @@ export function needsReview(confidence: number): boolean {
 import { type ParsedWorkbook } from './excelParser';
 import { parseBoqV2 } from './boqParserV2';
 import { detectBoqSheetOptionFromBuffer } from './boqParserV2/multiSheetScanner';
-import { publishBaselineV2 } from './publishBaselineV2';
+import { publishBaselineV2, type RevisionContext } from './publishBaselineV2';
 import type { ImportAnomaly } from './types';
 
 /**
@@ -547,7 +561,8 @@ export async function resolveAnomaly(
 export async function publishBaseline(
   sessionId: string,
   projectId: string,
-): Promise<{ success: boolean; error?: string; boqCount?: number; ahsCount?: number; materialCount?: number; masterLineCount?: number; unresolvedComponentCount?: number; skippedZeroPlanned?: string[] }> {
+  options?: { revisionContext?: RevisionContext; ceilingApprovalTaskId?: string },
+): Promise<{ success: boolean; error?: string; boqCount?: number; ahsCount?: number; materialCount?: number; masterLineCount?: number; unresolvedComponentCount?: number; skippedZeroPlanned?: string[]; quarantinedRows?: string[]; warnings?: string[]; ceilingApprovalRequired?: boolean }> {
   try {
     const { data: session } = await supabase
       .from('import_sessions')
@@ -555,7 +570,7 @@ export async function publishBaseline(
       .eq('id', sessionId)
       .single();
     if (session?.parser_version === 'v2') {
-      const result = await publishBaselineV2(sessionId, projectId);
+      const result = await publishBaselineV2(sessionId, projectId, options);
       // publishBaselineV2 writes the baseline rows but does not touch the
       // session row, and this v2 branch returns before the v1 path's
       // updateImportStatus(...'PUBLISHED') below. Without this, a successfully

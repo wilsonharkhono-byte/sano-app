@@ -19,7 +19,7 @@ interface CatalogMaterial {
   code: string;
   name: string;
   category: string | null;
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   unit: string;
   supplier_unit: string;
   /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
@@ -35,16 +35,23 @@ interface MaterialAlias {
 
 type ViewMode = 'catalog' | 'detail';
 
-const TIER_LABELS: Record<1 | 2 | 3, string> = {
+// Record<1|2|3|4, ...> (not Record<number, ...>) is deliberate: it makes a
+// missing tier key a COMPILE error instead of a runtime crash the next time
+// the DB tier domain changes (migration 047 already widened material_catalog
+// to allow tier 4 — this Record shape is what would have caught that at
+// build time instead of on a live tier-4 catalog row).
+const TIER_LABELS: Record<1 | 2 | 3 | 4, string> = {
   1: 'Tier 1 — Presisi',
   2: 'Tier 2 — Bulk',
   3: 'Tier 3 — Habis Pakai',
+  4: 'Tier 4 — Consumable',
 };
 
-const TIER_COLORS: Record<1 | 2 | 3, { bg: string; text: string }> = {
+const TIER_COLORS: Record<1 | 2 | 3 | 4, { bg: string; text: string }> = {
   1: { bg: COLORS.infoBg,     text: COLORS.info },
   2: { bg: COLORS.warningBg,  text: COLORS.warning },
   3: { bg: COLORS.okBg,       text: COLORS.ok },
+  4: { bg: COLORS.accentBg,   text: COLORS.accentDark },
 };
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -58,7 +65,7 @@ export default function MaterialCatalogScreen({ onBack }: { onBack: () => void }
   const [aliases, setAliases] = useState<MaterialAlias[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [filterTier, setFilterTier] = useState<1 | 2 | 3 | null>(null);
+  const [filterTier, setFilterTier] = useState<1 | 2 | 3 | 4 | null>(null);
 
   // Detail view state
   const [selectedMaterial, setSelectedMaterial] = useState<CatalogMaterial | null>(null);
@@ -315,7 +322,7 @@ export default function MaterialCatalogScreen({ onBack }: { onBack: () => void }
         >
           <Text style={[styles.filterText, !filterTier && styles.filterTextActive]}>Semua</Text>
         </TouchableOpacity>
-        {([1, 2, 3] as const).map(t => (
+        {([1, 2, 3, 4] as const).map(t => (
           <TouchableOpacity
             key={t}
             style={[styles.filterChip, filterTier === t && styles.filterChipActive]}

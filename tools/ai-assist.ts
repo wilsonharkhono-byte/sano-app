@@ -54,6 +54,10 @@ export interface MaterialNamingAISuggestion {
   suggested_code: string;
   suggested_name: string;
   suggested_category: string;
+  // NOT 1|2|3|4 by design: the prompt below only ever asks the AI to choose
+  // among tiers 1-3. Tier 4 (untracked consumable) is a deliberate catalog
+  // classification, not something inferred from a raw material name — see
+  // normalizeTier() below, which also defaults unknown values to 3, never 4.
   suggested_tier: 1 | 2 | 3;
   suggested_unit: string;
   confidence: 'high' | 'medium' | 'low';
@@ -113,7 +117,7 @@ interface MaterialNamingAIInput {
     name: string;
     unit: string;
     category: string | null;
-    tier: 1 | 2 | 3 | null;
+    tier: 1 | 2 | 3 | 4 | null;
     score: number;
   }>;
 }

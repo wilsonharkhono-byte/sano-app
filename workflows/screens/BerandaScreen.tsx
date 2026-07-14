@@ -11,7 +11,8 @@ import StatTile    from '../components/StatTile';
 import Badge       from '../components/Badge';
 import { useProject } from '../hooks/useProject';
 import { signOut }    from '../../tools/auth';
-import { getOpenAuditCases } from '../../tools/audit';
+import { getRecentCriticalAnomalies } from '../../tools/audit';
+import { computeOverallProgress } from '../../tools/progressMath';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -37,17 +38,20 @@ function relativeTime(isoDate: string): string {
 export default function BerandaScreen() {
   const navigation = useNavigation<any>();
   const { boqItems, purchaseOrders, defects, milestones, activityLog, project, profile } = useProject();
-  const [openCases, setOpenCases]   = useState(0);
+  const [criticalAnomalies, setCriticalAnomalies] = useState(0);
 
   useEffect(() => {
     if (!project || profile?.role === 'supervisor') return;
-    getOpenAuditCases(project.id).then(cases => setOpenCases(cases.length));
+    // Reads anomaly_events (CRITICAL, last 7 days) — the table the 3.4 gate
+    // wiring actually populates. The old audit_cases source was permanently 0.
+    // count-only query (head:true) — the tile only needs the number.
+    getRecentCriticalAnomalies(project.id).then(setCriticalAnomalies);
   }, [project, profile]);
 
   // ── Derived metrics ─────────────────────────────────────────────────────
-  const overallProgress = boqItems.length > 0
-    ? Math.round(boqItems.reduce((s, b) => s + b.progress, 0) / boqItems.length)
-    : 0;
+  // Task 3.2: volume-weighted over active, planned>0 items (tools/progressMath.ts)
+  // — same number as the Progress Summary report and every other surface.
+  const overallProgress = Math.round(computeOverallProgress(boqItems));
 
   const pendingDeliveries = purchaseOrders.filter(
     po => po.status === 'OPEN' || po.status === 'PARTIAL_RECEIVED',
@@ -82,7 +86,7 @@ export default function BerandaScreen() {
 
   // ── Alert helper ────────────────────────────────────────────────────────
   const hasAlerts = pendingDeliveries > 0 || criticalDefects > 0 || atRiskMilestones > 0 ||
-    (openCases > 0 && profile?.role !== 'supervisor');
+    (criticalAnomalies > 0 && profile?.role !== 'supervisor');
 
   return (
     <View style={styles.flex}>
@@ -193,16 +197,16 @@ export default function BerandaScreen() {
           </Card>
         )}
 
-        {openCases > 0 &&
+        {criticalAnomalies > 0 &&
           (profile?.role === 'estimator' || profile?.role === 'admin' || profile?.role === 'principal') && (
-          <Card title="Kasus Audit Terbuka" borderColor={COLORS.high}>
+          <Card title="Anomali Kritikal (7 hari)" borderColor={COLORS.high}>
             <Text style={styles.alertBody}>
-              {openCases} kasus audit memerlukan tindakan.
+              {criticalAnomalies} anomali kritikal dalam 7 hari terakhir memerlukan tindakan.
             </Text>
             <TouchableOpacity
               style={styles.alertBtn}
               onPress={() => navigation.navigate('Laporan')}
-              accessibilityLabel={`Lihat ${openCases} kasus audit di Laporan`}
+              accessibilityLabel={`Lihat ${criticalAnomalies} anomali kritikal di Laporan`}
               accessibilityRole="button"
             >
               <Text style={[styles.alertBtnText, { color: COLORS.high }]}>Buka Laporan</Text>

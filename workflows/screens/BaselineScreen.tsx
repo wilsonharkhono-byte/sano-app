@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Alert, ActivityIndicator, Platform, TextInput } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -25,6 +25,23 @@ import {
   resolveAnomaly,
   deleteImportSession,
 } from '../../tools/baseline';
+import { previewNewMasterTotals, type RevisionContext } from '../../tools/publishBaselineV2';
+import {
+  computePlanRevisionDiff,
+  lowerBelowOrderedPct,
+  type PlanRevisionClassification,
+  type PlanRevisionDiffResult,
+  type PlanRevisionSummary,
+  type MaterialActivity,
+} from '../../tools/planRevisionDiff';
+import {
+  mapCeilingBreachRows,
+  buildCeilingRaisePayload,
+  checkCeilingRaiseCoverage,
+  proposedAggregatesToArray,
+  type CeilingBreach,
+  type CeilingRaisePayloadEntry,
+} from '../../tools/ceilingRaiseGate';
 import { parseBoqWorkbook, applyBoqGrouping, type ParsedWorkbook } from '../../tools/excelParser';
 import { parseBoqV2 } from '../../tools/boqParserV2';
 import { applyAIBoqGrouping } from '../../tools/ai-assist';
@@ -75,6 +92,44 @@ const MATERIAL_DROPDOWNS: Record<string, string[]> = {
   tier: MATERIAL_TIER_OPTIONS.map(o => o.value),
   unit: MATERIAL_UNIT_OPTIONS,
   category: MATERIAL_CATEGORY_OPTIONS,
+};
+
+/**
+ * Copy + severity for the four spec §5 re-publish warning classes (the only
+ * ones that need an explicit acknowledgment tick). Order matches
+ * PLAN_REVISION_WARNING_CLASSES. REMOVED_WITH_ACTIVITY and
+ * RAISE_ABSOLVING_OVERAGE carry the strongest copy per the spec.
+ */
+const REVISION_WARNING_META: Record<
+  string,
+  { label: string; copy: string; severity: 'critical' | 'warning' }
+> = {
+  RAISE_ABSOLVING_OVERAGE: {
+    label: 'Menaikkan plafon material yang sudah melebihi order',
+    copy:
+      'Rencana dinaikkan untuk menutup jumlah yang SUDAH melebihi order lama. ' +
+      'Perubahan ini dicatat dan diberitahukan ke principal.',
+    severity: 'critical',
+  },
+  RAISE: {
+    label: 'Menaikkan plafon material',
+    copy: 'Plafon rencana material dinaikkan dari baseline sebelumnya.',
+    severity: 'warning',
+  },
+  LOWER_BELOW_ORDERED: {
+    label: 'Menurunkan rencana di bawah jumlah yang sudah di-order',
+    copy:
+      'Rencana baru lebih kecil dari yang sudah di-PO — material akan tercatat ' +
+      'melebihi alokasi baru.',
+    severity: 'warning',
+  },
+  REMOVED_WITH_ACTIVITY: {
+    label: 'Menghapus material yang masih punya permintaan / PO / penerimaan',
+    copy:
+      'Material hilang dari BoQ baru padahal komitmennya masih berjalan — ' +
+      'komitmen jadi yatim (orphaned). Peringatan terkuat.',
+    severity: 'critical',
+  },
 };
 
 /**
@@ -212,6 +267,24 @@ export default function BaselineScreen({
   const [editDraft, setEditDraft] = useState<Record<string, string>>({});
   const [parseProgress, setParseProgress] = useState('');
   const [publishedJustNow, setPublishedJustNow] = useState(false);
+  // Re-publish diff-and-acknowledge (Task 2.11). When a re-publish touches
+  // materials-with-activity, the diff is computed client-side and rendered as a
+  // blocking checklist; publish is held until every warning class is ticked.
+  const [preparingDiff, setPreparingDiff] = useState(false);
+  const [diffPreview, setDiffPreview] = useState<PlanRevisionDiffResult | null>(null);
+  const [acknowledgedClasses, setAcknowledgedClasses] = useState<Set<PlanRevisionClassification>>(new Set());
+  const [materialNames, setMaterialNames] = useState<Map<string, string>>(new Map());
+  // Task 2.12 — principal ceiling-raise gate. When the acknowledged diff raises
+  // the ceiling of a material currently in overage, the SERVER recomputes the
+  // breach set (compute_ceiling_breaches); a non-empty set holds the publish
+  // behind a plan_ceiling_raise principal approval.
+  const [proposedTotals, setProposedTotals] = useState<Map<string, number>>(new Map());
+  const [ceilingBreaches, setCeilingBreaches] = useState<CeilingBreach[] | null>(null);
+  const [approvedCeilingTasks, setApprovedCeilingTasks] = useState<Array<{ id: string; created_at: string; override_payload: CeilingRaisePayloadEntry[] }>>([]);
+  const [selectedCeilingTaskId, setSelectedCeilingTaskId] = useState<string | null>(null);
+  const [principalId, setPrincipalId] = useState<string | null>(null);
+  const [checkingCeiling, setCheckingCeiling] = useState(false);
+  const [escalatingCeiling, setEscalatingCeiling] = useState(false);
   const [lastPreview, setLastPreview] = useState<ParsePreview | null>(null);
   const [lastImportIssue, setLastImportIssue] = useState<string | null>(null);
   const [showAuditModal, setShowAuditModal] = useState(false);
@@ -233,6 +306,35 @@ export default function BaselineScreen({
   }, [project]);
 
   useEffect(() => { loadSessions(); }, [loadSessions]);
+
+  // ── Stale-diff invalidation (review CRITICAL) ────────────────────────────
+  // The acknowledgment checklist is computed from a SNAPSHOT of stagingRows.
+  // While it is displayed the review cards stay editable, so an estimator could
+  // see a warning, EDIT the offending staged row, tick, and publish — landing
+  // the edited rows while the audit persists the STALE planned_after /
+  // classification (the row would lie). Any change to stagingRows while a
+  // preview exists therefore drops the preview + the acknowledged ticks, forcing
+  // a recompute. The publish path can then only be reached via handlePublish
+  // again (the checklist is unmounted once diffPreview is null), which re-fetches
+  // the current master and recomputes the diff — and publishBaselineV2's
+  // fail-loud guard refuses any re-publish without a fresh revisionContext.
+  //
+  // Keyed on stagingRows ONLY. diffPreview is read through a ref so setting the
+  // preview (which does not change stagingRows) never re-runs this effect and
+  // self-clears the checklist it just rendered.
+  const diffPreviewRef = useRef<PlanRevisionDiffResult | null>(null);
+  useEffect(() => { diffPreviewRef.current = diffPreview; }, [diffPreview]);
+  useEffect(() => {
+    if (!diffPreviewRef.current) return;
+    setDiffPreview(null);
+    setAcknowledgedClasses(new Set());
+    // Also drop any pending ceiling-breach panel + attached approval: the breach
+    // set is computed from the same staging snapshot, so an edit invalidates it.
+    setCeilingBreaches(null);
+    setSelectedCeilingTaskId(null);
+    toast('Baris berubah — hitung ulang diff', 'warning');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stagingRows]);
 
   const handleDryRunV2 = async () => {
     if (!__DEV__) return;
@@ -376,15 +478,23 @@ export default function BaselineScreen({
   const openReview = async (session: ImportSession) => {
     setActiveSession(session);
     setLoading(true);
-    const [rows, anomalyData] = await Promise.all([
-      getStagingRows(session.id),
-      getImportAnomalies(session.id),
-    ]);
-    setStagingRows(rows);
-    setCollapsedGroups({});
-    setAnomalies(anomalyData);
-    setLoading(false);
-    setView('review');
+    try {
+      // getStagingRows now throws on a query error (instead of silently
+      // returning []), so a failed load surfaces here rather than opening
+      // review on a session that looks empty.
+      const [rows, anomalyData] = await Promise.all([
+        getStagingRows(session.id),
+        getImportAnomalies(session.id),
+      ]);
+      setStagingRows(rows);
+      setCollapsedGroups({});
+      setAnomalies(anomalyData);
+      setView('review');
+    } catch (err: any) {
+      toast(`Gagal memuat staging rows: ${err.message}`, 'critical');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleResolveAnomaly = async (id: string, resolution: 'ACCEPTED' | 'CORRECTED' | 'DISMISSED') => {
@@ -617,13 +727,149 @@ export default function BaselineScreen({
     [stagingRows],
   );
 
+  // A short Indonesian sentence summarizing the diff → the PLAN_REVISED
+  // notification body (supervisors + principal FYI).
+  const buildNotifySummary = (s: PlanRevisionSummary): string => {
+    const parts: string[] = [];
+    if (s.raisedAbsolvingOverage) parts.push(`${s.raisedAbsolvingOverage} kenaikan menutup over-order`);
+    if (s.raised) parts.push(`${s.raised} dinaikkan`);
+    if (s.loweredBelowOrdered) parts.push(`${s.loweredBelowOrdered} turun di bawah order`);
+    if (s.removedWithActivity) parts.push(`${s.removedWithActivity} dihapus (masih ada aktivitas)`);
+    if (s.added) parts.push(`${s.added} ditambah`);
+    if (s.lowered) parts.push(`${s.lowered} diturunkan`);
+    return parts.length
+      ? `Rencana material diperbarui: ${parts.join(', ')}.`
+      : 'Rencana material proyek diperbarui.';
+  };
+
+  // Fetch the CURRENT published master's per-(material) planned lines. Presence
+  // of a master row is the re-publish signal (a plan exists to diff against).
+  const fetchCurrentMaster = async (
+    projectId: string,
+  ): Promise<{ isRepublish: boolean; lines: Array<{ material_id: string; planned_quantity: number }> }> => {
+    const { data: master } = await supabase
+      .from('project_material_master')
+      .select('id')
+      .eq('project_id', projectId)
+      // id DESC is the tiebreak (054 convention): a re-publish batch can create
+      // more than one master within the same wall-clock second, so created_at
+      // alone is not a deterministic "latest". Match the view's ordering exactly
+      // (v_material_envelopes: ORDER BY created_at DESC, id DESC) so the client
+      // diffs against the SAME master the envelope view scopes to.
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!master) return { isRepublish: false, lines: [] };
+    const { data: lines } = await supabase
+      .from('project_material_master_lines')
+      .select('material_id, planned_quantity')
+      .eq('master_id', master.id);
+    const rows = (lines ?? [])
+      .filter((l): l is { material_id: string; planned_quantity: number } => !!l.material_id)
+      .map(l => ({ material_id: l.material_id as string, planned_quantity: Number(l.planned_quantity) || 0 }));
+    return { isRepublish: true, lines: rows };
+  };
+
+  // Per-material activity + names from the project envelope view. "Activity" =
+  // any non-cancelled PO (total_ordered), non-rejected request (total_requested),
+  // or receipt (total_received > 0). One view read covers all three.
+  const fetchProjectActivity = async (
+    projectId: string,
+  ): Promise<{ activity: Map<string, MaterialActivity>; names: Map<string, string> }> => {
+    const activity = new Map<string, MaterialActivity>();
+    const names = new Map<string, string>();
+    const { data } = await supabase
+      .from('v_material_envelope_status')
+      .select('material_id, material_name, total_ordered, total_requested, total_received')
+      .eq('project_id', projectId);
+    for (const r of data ?? []) {
+      if (!r.material_id) continue;
+      activity.set(r.material_id as string, {
+        ordered: Number(r.total_ordered) || 0,
+        requested: Number(r.total_requested) || 0,
+        receiptsExist: (Number(r.total_received) || 0) > 0,
+      });
+      if (r.material_name) names.set(r.material_id as string, r.material_name as string);
+    }
+    return { activity, names };
+  };
+
+  // Supplementary activity probe for materials NEW to the plan (review Fix 2).
+  // v_material_envelope_status is scoped to the CURRENT master, so a material
+  // that is new to the about-to-publish plan (not in the current master) has NO
+  // view row — its prior activity (tier-4 requests, since 053; id-linked
+  // receipts; POs placed against a name-matched line) is therefore invisible to
+  // fetchProjectActivity and would wrongly collapse it into noActivityChanged
+  // instead of surfacing as an ADDED line with true figures. Probe those exact
+  // material_ids directly. Three cheap IN-list selects, joined to their headers
+  // for the project + status filter (mirrors v_material_envelope_status's
+  // laterals: non-REJECTED requests / non-CANCELLED POs / any receipt).
+  //
+  // Scope note: receipts are matched by material_id only (id-linked). Unlinked,
+  // name-only receipts are not probed here — keeping this to three IN-list
+  // selects — so a name-only receipt against a brand-new material stays
+  // invisible; acceptable because the diff still records the material (via its
+  // request/PO activity, or as a no-activity summary line) and never invents a
+  // figure (CLAUDE.md §1.1).
+  const fetchActivityForNewMaterials = async (
+    projectId: string,
+    materialIds: string[],
+  ): Promise<Map<string, MaterialActivity>> => {
+    const out = new Map<string, MaterialActivity>();
+    if (materialIds.length === 0) return out;
+    const bump = (id: string): MaterialActivity => {
+      let a = out.get(id);
+      if (!a) { a = { ordered: 0, requested: 0, receiptsExist: false }; out.set(id, a); }
+      return a;
+    };
+
+    const [reqRes, poRes, rcptRes] = await Promise.all([
+      supabase
+        .from('material_request_lines')
+        .select('material_id, quantity, material_request_headers!inner(project_id, overall_status)')
+        .in('material_id', materialIds)
+        .eq('material_request_headers.project_id', projectId)
+        .neq('material_request_headers.overall_status', 'REJECTED'),
+      supabase
+        .from('purchase_order_lines')
+        .select('material_id, quantity, purchase_orders!inner(project_id, status)')
+        .in('material_id', materialIds)
+        .eq('purchase_orders.project_id', projectId)
+        .neq('purchase_orders.status', 'CANCELLED'),
+      supabase
+        .from('receipt_lines')
+        .select('material_id, receipts!inner(project_id)')
+        .in('material_id', materialIds)
+        .eq('receipts.project_id', projectId),
+    ]);
+
+    for (const r of (reqRes.data ?? []) as Array<{ material_id: string | null; quantity: unknown }>) {
+      if (!r.material_id) continue;
+      bump(r.material_id).requested += Number(r.quantity) || 0;
+    }
+    for (const r of (poRes.data ?? []) as Array<{ material_id: string | null; quantity: unknown }>) {
+      if (!r.material_id) continue;
+      bump(r.material_id).ordered += Number(r.quantity) || 0;
+    }
+    for (const r of (rcptRes.data ?? []) as Array<{ material_id: string | null }>) {
+      if (!r.material_id) continue;
+      bump(r.material_id).receiptsExist = true;
+    }
+    return out;
+  };
+
+  // Phase 1 — validate, then on a re-publish compute the diff. If any warning
+  // class is present, hold and render the blocking checklist (doPublish is
+  // deferred to the "Konfirmasi & Publish" tap). Otherwise publish straight
+  // through — first publishes with no context, no-warning re-publishes with a
+  // context so the audit row is still written.
   const handlePublish = async () => {
     if (!activeSession || !project) return;
-    // Hard re-entry guard: `disabled={publishing}` only takes effect after the
-    // next render, so a rapid second tap (or a retry) can run this again before
-    // the button disables — producing TWO publishes → duplicate ahs_versions +
-    // a corrupt second master that the work-group envelope then reads.
-    if (publishing) return;
+    // Hard re-entry guard: `disabled` only takes effect after the next render,
+    // so a rapid second tap could run this again before the button disables —
+    // producing TWO publishes → duplicate ahs_versions + a corrupt master.
+    if (publishing || preparingDiff) return;
 
     const pending = stagingRows.filter(r => r.needs_review && r.review_status === 'PENDING');
     if (pending.length > 0) {
@@ -637,14 +883,251 @@ export default function BaselineScreen({
       return;
     }
 
+    setPreparingDiff(true);
+    try {
+      const current = await fetchCurrentMaster(project.id);
+      if (!current.isRepublish) {
+        // First publish — nothing revised, no acknowledgment needed.
+        await doPublish(undefined);
+        return;
+      }
+      const [preview, activityInfo] = await Promise.all([
+        previewNewMasterTotals(activeSession.id),
+        fetchProjectActivity(project.id),
+      ]);
+      if (preview.error) {
+        toast(`Gagal menghitung perubahan rencana: ${preview.error}`, 'critical');
+        return;
+      }
+      // Stash the would-be new master's per-material totals — the exact p_proposed
+      // the 2.12 ceiling gate (server) and its pre-check compute_ceiling_breaches
+      // key off. Reset any prior breach panel; a fresh handlePublish recomputes.
+      setProposedTotals(preview.totals);
+      setCeilingBreaches(null);
+      setSelectedCeilingTaskId(null);
+      const newRows = [...preview.totals].map(([material_id, planned_quantity]) => ({ material_id, planned_quantity }));
+
+      // Fix 2: materials new to this plan have no envelope-view row, so their
+      // prior activity is missing from activityInfo. Probe those specific ids so
+      // they classify as ADDED (with real ordered/requested) rather than
+      // collapsing into the no-activity summary — the audit line then tells the
+      // truth. Only the new-to-plan ids (absent from the view activity map).
+      const newMaterialIds = newRows
+        .map(r => r.material_id)
+        .filter(id => id && !activityInfo.activity.has(id));
+      if (newMaterialIds.length > 0) {
+        try {
+          const probed = await fetchActivityForNewMaterials(project.id, newMaterialIds);
+          for (const [id, a] of probed) activityInfo.activity.set(id, a);
+        } catch (probeErr) {
+          // Non-fatal: a probe failure must not block the re-publish diff. Worst
+          // case a new material with prior activity is under-classified (falls
+          // into the no-activity summary), never over-classified — the diff is
+          // still shown and nothing is fabricated.
+          console.warn('fetchActivityForNewMaterials failed (non-fatal):', probeErr);
+        }
+      }
+
+      const diff = computePlanRevisionDiff(newRows, current.lines, activityInfo.activity);
+      setMaterialNames(activityInfo.names);
+
+      if (diff.warningClasses.length > 0) {
+        // Hold — render the checklist. doPublish fires on Konfirmasi.
+        setAcknowledgedClasses(new Set());
+        setDiffPreview(diff);
+      } else {
+        // No warnings — still record the audit revision (empty or non-warning).
+        await doPublish(buildRevisionContext(diff));
+      }
+    } catch (err: any) {
+      toast(err?.message ?? 'Gagal menyiapkan re-publish', 'critical');
+    } finally {
+      setPreparingDiff(false);
+    }
+  };
+
+  const buildRevisionContext = (diff: PlanRevisionDiffResult): RevisionContext => ({
+    diffLines: diff.lines,
+    summary: diff.summary,
+    acknowledgedAt: new Date().toISOString(),
+    acknowledgedBy: profile?.id ?? null,
+    notifySummaryText: buildNotifySummary(diff.summary),
+  });
+
+  // ── Task 2.12 — ceiling-raise gate (client pre-check + escalation) ──────
+  // The SERVER is authoritative: compute_ceiling_breaches recomputes the breach
+  // set from DB state (current plan + envelope ordered) and assert_ceiling_raise_
+  // gate re-verifies on publish. The client calls compute_ceiling_breaches only
+  // to decide whether to hold the publish and to render the breach panel.
+  const fetchCeilingBreaches = async (
+    projectId: string,
+    totals: Map<string, number>,
+  ): Promise<CeilingBreach[]> => {
+    const { data, error } = await supabase.rpc('compute_ceiling_breaches', {
+      p_project_id: projectId,
+      p_proposed: proposedAggregatesToArray(totals),
+    });
+    if (error) throw new Error(error.message);
+    return mapCeilingBreachRows((data ?? []) as Array<Record<string, unknown>>);
+  };
+
+  // APPROVED, STILL-UNCONSUMED plan_ceiling_raise tasks the estimator can attach +
+  // the project's principal (escalation assignee). Mirrors Gate2Screen's override
+  // loading. consumed_at IS NULL is the client mirror of migration 079's single-use
+  // gate: a task already spent by an earlier re-publish is filtered out here so the
+  // picker never offers it (the server would reject it anyway).
+  const loadApprovedCeilingTasks = async (projectId: string) => {
+    const [taskRes, assignRes, profRes] = await Promise.all([
+      supabase
+        .from('approval_tasks')
+        .select('id, created_at, override_payload')
+        .eq('project_id', projectId)
+        .eq('entity_type', 'plan_ceiling_raise')
+        .in('action', ['APPROVE', 'OVERRIDE'])
+        .is('consumed_at', null),
+      supabase.from('project_assignments').select('user_id').eq('project_id', projectId),
+      supabase.from('profiles').select('id').eq('role', 'principal'),
+    ]);
+    const tasks = ((taskRes.data ?? []) as Array<{ id: string; created_at: string; override_payload: CeilingRaisePayloadEntry[] | null }>)
+      .map(t => ({ id: t.id, created_at: t.created_at, override_payload: t.override_payload ?? [] }));
+    setApprovedCeilingTasks(tasks);
+    const assignmentIds = ((assignRes.data as Array<{ user_id: string }>) ?? []).map(r => r.user_id);
+    const principal = ((profRes.data as Array<{ id: string }>) ?? [])
+      .find(p => assignmentIds.includes(p.id));
+    setPrincipalId(principal?.id ?? null);
+  };
+
+  // Human-readable picker label for an approved ceiling task: creation date +
+  // the first authorised material, with a "+N lainnya" tail (e.g.
+  // "12 Jul — Besi D13 +2 lainnya"), so the estimator can tell approvals apart.
+  const ceilingTaskLabel = (t: { created_at: string; override_payload: CeilingRaisePayloadEntry[] }) => {
+    const date = t.created_at
+      ? new Date(t.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' })
+      : '—';
+    const names = t.override_payload.map(e => e.material_name || e.material_id).filter(Boolean);
+    const first = names[0] ?? `${t.override_payload.length} material`;
+    const extra = names.length > 1 ? ` +${names.length - 1} lainnya` : '';
+    return `${date} — ${first}${extra}`;
+  };
+
+  // Confirm tap on the acknowledgment checklist. When the diff raises the ceiling
+  // of a material already in overage (client hint — RAISE_ABSOLVING_OVERAGE), the
+  // SERVER recomputes the breach set first. Empty → publish. Non-empty + an
+  // attached covering approval → publish with the task id (server re-verifies).
+  // Otherwise hold and render the breach panel (escalate / attach approved task /
+  // revert-and-republish). No RAISE_ABSOLVING lines → straight publish.
+  const confirmRepublish = async (diff: PlanRevisionDiffResult) => {
+    if (!project) return;
+    if (publishing || checkingCeiling) return;
+    const revCtx = buildRevisionContext(diff);
+    const raisesOverage = diff.lines.some(l => l.classification === 'RAISE_ABSOLVING_OVERAGE');
+    if (!raisesOverage) {
+      await doPublish(revCtx);
+      return;
+    }
+    setCheckingCeiling(true);
+    try {
+      const breaches = await fetchCeilingBreaches(project.id, proposedTotals);
+      if (breaches.length === 0) {
+        // Server disagrees with the client hint (e.g. ordering changed) — no gate.
+        await doPublish(revCtx);
+        return;
+      }
+      const selected = selectedCeilingTaskId
+        ? approvedCeilingTasks.find(t => t.id === selectedCeilingTaskId)
+        : null;
+      if (selected && checkCeilingRaiseCoverage(breaches, selected.override_payload).covered) {
+        await doPublish(revCtx, selected.id);
+        return;
+      }
+      // Hold: surface the breach panel + load any approved tasks to attach.
+      setCeilingBreaches(breaches);
+      await loadApprovedCeilingTasks(project.id);
+    } catch (err: any) {
+      toast(err?.message ?? 'Gagal memeriksa plafon material', 'critical');
+    } finally {
+      setCheckingCeiling(false);
+    }
+  };
+
+  // Create the plan_ceiling_raise approval task with the SERVER-computed payload
+  // (buildCeilingRaisePayload over compute_ceiling_breaches output — never the
+  // client diff). The 079 AFTER INSERT trigger notifies the principal.
+  const handleEscalateCeiling = async () => {
+    if (!project || !ceilingBreaches) return;
+    if (!principalId) {
+      toast('Belum ada user principal yang ter-assign di proyek ini', 'critical');
+      return;
+    }
+    setEscalatingCeiling(true);
+    try {
+      const { error } = await supabase.from('approval_tasks').insert({
+        project_id: project.id,
+        entity_type: 'plan_ceiling_raise',
+        entity_id: project.id,
+        assigned_to: principalId,
+        override_payload: buildCeilingRaisePayload(ceilingBreaches),
+        created_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+      toast('Eskalasi terkirim — menunggu persetujuan prinsipal, lalu publish ulang', 'ok');
+    } catch (err: any) {
+      toast(err?.message ?? 'Gagal mengirim eskalasi', 'critical');
+    } finally {
+      setEscalatingCeiling(false);
+    }
+  };
+
+  // Phase 2 — the actual publish. revisionContext is undefined for a first
+  // publish, set (acknowledged) for a re-publish. ceilingApprovalTaskId is the
+  // attached principal approval when re-publishing an overage-absolving raise.
+  const doPublish = async (revisionContext?: RevisionContext, ceilingApprovalTaskId?: string) => {
+    if (!activeSession || !project) return;
+    if (publishing) return;
+
     setPublishing(true);
     try {
-      const result = await publishBaseline(activeSession.id, project.id);
+      const result = await publishBaseline(
+        activeSession.id,
+        project.id,
+        revisionContext ? { revisionContext, ceilingApprovalTaskId } : undefined,
+      );
       if (!result.success) {
+        // Server-side ceiling gate backstop (Task 2.12): the client pre-check
+        // passed (or was skipped) but assert_ceiling_raise_gate RAISEd. Surface
+        // the breach panel from a fresh server recompute instead of a raw error.
+        if (result.ceilingApprovalRequired) {
+          try {
+            const breaches = await fetchCeilingBreaches(project.id, proposedTotals);
+            if (breaches.length > 0) {
+              setCeilingBreaches(breaches);
+              await loadApprovedCeilingTasks(project.id);
+            }
+          } catch { /* fall through to the toast below */ }
+          toast('Kenaikan plafon perlu persetujuan prinsipal — eskalasi lalu publish ulang', 'critical');
+          return;
+        }
+        // Partial-prior-publish dead end (review 5c): the server refuses the
+        // re-publish as "belum di-acknowledge" because a current ahs_version
+        // exists, yet the client took the first-publish path (revisionContext
+        // undefined) because fetchCurrentMaster found NO master to diff — i.e. a
+        // prior publish created the version but not the master. The user would
+        // otherwise be stuck on an opaque error with no diff to acknowledge.
+        if (!revisionContext && /acknowledge|di-acknowledge/i.test(result.error ?? '')) {
+          toast(
+            'Publish sebelumnya tidak tuntas (versi baseline ada tanpa master material). ' +
+            'Tutup lalu buka ulang sesi ini untuk menghitung ulang diff, kemudian publish lagi.',
+            'critical',
+          );
+          return;
+        }
         toast(`Publish gagal: ${result.error}`, 'critical');
         return;
       }
 
+      setDiffPreview(null);
+      setCeilingBreaches(null);
+      setSelectedCeilingTaskId(null);
       toast(`Baseline published: ${result.boqCount} BoQ, ${result.ahsCount} AHS, ${result.materialCount} material`, 'ok');
       setPublishedJustNow(true);
 
@@ -656,6 +1139,14 @@ export default function BaselineScreen({
         const shown = codes.slice(0, 5).join(', ');
         const more = codes.length > 5 ? ` +${codes.length - 5} lagi` : '';
         toast(`${codes.length} baris volume 0 dilewati (tidak masuk baseline): ${shown}${more}`, 'warning');
+      }
+
+      // Non-fatal publish warnings (snapshot / plan-revision audit / notify).
+      // Closes the 2.10 gap where these were type-erased and never shown.
+      if (result.warnings && result.warnings.length > 0) {
+        const shown = result.warnings.slice(0, 3).join('; ');
+        const more = result.warnings.length > 3 ? ` +${result.warnings.length - 3} lagi` : '';
+        toast(`Peringatan publish: ${shown}${more}`, 'warning');
       }
 
       // Generate material master
@@ -672,6 +1163,185 @@ export default function BaselineScreen({
     } finally {
       setPublishing(false);
     }
+  };
+
+  const toggleAckClass = (cls: PlanRevisionClassification) => {
+    setAcknowledgedClasses(prev => {
+      const next = new Set(prev);
+      if (next.has(cls)) next.delete(cls);
+      else next.add(cls);
+      return next;
+    });
+  };
+
+  const matName = (id: string) => materialNames.get(id) ?? id;
+  const fmtQty = (n: number) => Number(n.toFixed(2)).toLocaleString('id-ID');
+
+  // Blocking re-publish acknowledgment checklist (spec §5). One tickable card
+  // per present warning class; "Konfirmasi & Publish" stays disabled until every
+  // warning class is acknowledged. No-activity changes + non-warning recorded
+  // changes collapse into a summary line.
+  const renderRevisionChecklist = () => {
+    if (!diffPreview) return null;
+    const { warningClasses, lines, summary } = diffPreview;
+    const allAcknowledged = warningClasses.every(c => acknowledgedClasses.has(c));
+    const collapsedCount = summary.noActivityChanged;
+    const recordedNonWarning = summary.added + summary.lowered;
+
+    return (
+      <View style={styles.revisionPanel}>
+        <Text style={styles.revisionTitle}>Konfirmasi perubahan rencana</Text>
+        <Text style={styles.revisionIntro}>
+          Re-publish ini mengubah rencana material yang sudah punya permintaan / PO / penerimaan.
+          Centang setiap peringatan untuk melanjutkan.
+        </Text>
+
+        {warningClasses.map(cls => {
+          const meta = REVISION_WARNING_META[cls];
+          const affected = lines.filter(l => l.classification === cls);
+          const checked = acknowledgedClasses.has(cls);
+          const isCritical = meta.severity === 'critical';
+          return (
+            <View
+              key={cls}
+              style={[styles.revisionClassCard, isCritical && styles.revisionClassCardCritical]}
+            >
+              <TouchableOpacity style={styles.revisionCheckboxRow} onPress={() => toggleAckClass(cls)}>
+                <View style={[styles.revisionCheckbox, checked && styles.revisionCheckboxChecked]}>
+                  {checked && <Ionicons name="checkmark" size={16} color="#fff" />}
+                </View>
+                <Text style={styles.revisionClassLabel}>{meta.label}</Text>
+              </TouchableOpacity>
+              <Text style={styles.revisionClassCopy}>{meta.copy}</Text>
+              {affected.map(l => {
+                // lowerBelowOrderedPct returns Infinity when the new plan is 0
+                // (fully absorbed) — render "—" rather than "Infinity%" (Fix 5d).
+                const pct = lowerBelowOrderedPct(l);
+                const pctLabel = Number.isFinite(pct) ? `${pct}%` : '—';
+                const suffix =
+                  cls === 'LOWER_BELOW_ORDERED'
+                    ? ` — akan tercatat ${pctLabel} melebihi alokasi baru`
+                    : cls === 'REMOVED_WITH_ACTIVITY'
+                      ? ` — order ${fmtQty(l.ordered_at_time)}, permintaan ${fmtQty(l.requested_at_time)}`
+                      : '';
+                return (
+                  <Text key={l.material_id} style={styles.revisionMatLine}>
+                    • {matName(l.material_id)}: {fmtQty(l.planned_before)} → {fmtQty(l.planned_after)}{suffix}
+                  </Text>
+                );
+              })}
+            </View>
+          );
+        })}
+
+        {(recordedNonWarning > 0 || collapsedCount > 0) && (
+          <Text style={styles.revisionSummaryLine}>
+            {recordedNonWarning > 0
+              ? `${recordedNonWarning} perubahan lain dengan aktivitas dicatat (tanpa peringatan). `
+              : ''}
+            {collapsedCount > 0
+              ? `${collapsedCount} material berubah tanpa aktivitas (diringkas).`
+              : ''}
+          </Text>
+        )}
+
+        <View style={styles.revisionBtnRow}>
+          <TouchableOpacity
+            style={styles.revisionCancelBtn}
+            onPress={() => setDiffPreview(null)}
+            disabled={publishing}
+          >
+            <Text style={styles.revisionCancelText}>Batal</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.revisionConfirmBtn, (!allAcknowledged || publishing || checkingCeiling) && styles.revisionConfirmBtnDisabled]}
+            onPress={() => confirmRepublish(diffPreview)}
+            disabled={!allAcknowledged || publishing || checkingCeiling}
+          >
+            <Ionicons name="checkmark-circle" size={18} color="#fff" />
+            <Text style={styles.revisionConfirmText}>
+              {checkingCeiling ? 'Memeriksa plafon...' : publishing ? 'Publishing...' : 'Konfirmasi & Publish'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {renderCeilingBreachPanel()}
+      </View>
+    );
+  };
+
+  // ── Task 2.12 — ceiling-raise breach panel ───────────────────────────────
+  // Shown when the server's compute_ceiling_breaches holds the publish: the
+  // estimator either escalates to the principal, attaches an already-APPROVED
+  // plan_ceiling_raise task and proceeds (server re-verifies), or reverts the
+  // raised planned values in the workbook and re-publishes (just re-editing).
+  const renderCeilingBreachPanel = () => {
+    if (!ceilingBreaches || ceilingBreaches.length === 0) return null;
+    const selected = selectedCeilingTaskId
+      ? approvedCeilingTasks.find(t => t.id === selectedCeilingTaskId)
+      : null;
+    const covered = selected
+      ? checkCeilingRaiseCoverage(ceilingBreaches, selected.override_payload).covered
+      : false;
+    return (
+      <View style={styles.ceilingPanel}>
+        <Text style={styles.ceilingTitle}>Perlu persetujuan prinsipal</Text>
+        <Text style={styles.ceilingIntro}>
+          Re-publish ini menaikkan plafon material yang jumlah order-nya SUDAH melebihi rencana lama.
+          Kenaikan seperti ini butuh persetujuan prinsipal sebelum bisa dipublish.
+        </Text>
+        {ceilingBreaches.map(b => (
+          <Text key={b.material_id} style={styles.ceilingMatLine}>
+            • {matName(b.material_id)}: rencana lama {fmtQty(b.planned_before)} → diusulkan {fmtQty(b.proposed)}
+            {' '}(sudah order {fmtQty(b.ordered)})
+          </Text>
+        ))}
+
+        {approvedCeilingTasks.length > 0 && (
+          <View style={styles.ceilingPickerBox}>
+            <Text style={styles.ceilingPickerLabel}>Lampirkan persetujuan prinsipal:</Text>
+            <View style={styles.ceilingPickerWrap}>
+              <Picker
+                selectedValue={selectedCeilingTaskId ?? ''}
+                onValueChange={(v) => setSelectedCeilingTaskId(v ? String(v) : null)}
+              >
+                <Picker.Item label="— pilih task yang disetujui —" value="" />
+                {approvedCeilingTasks.map((t) => (
+                  <Picker.Item key={t.id} label={ceilingTaskLabel(t)} value={t.id} />
+                ))}
+              </Picker>
+            </View>
+            {selected && !covered && (
+              <Text style={styles.ceilingWarn}>
+                Persetujuan ini tidak menutup semua material / plafon yang diusulkan. Naikkan persetujuan atau eskalasi ulang.
+              </Text>
+            )}
+          </View>
+        )}
+
+        <View style={styles.revisionBtnRow}>
+          <TouchableOpacity
+            style={[styles.ceilingEscalateBtn, escalatingCeiling && styles.revisionConfirmBtnDisabled]}
+            onPress={handleEscalateCeiling}
+            disabled={escalatingCeiling}
+          >
+            <Ionicons name="arrow-up-circle-outline" size={18} color="#fff" />
+            <Text style={styles.revisionConfirmText}>{escalatingCeiling ? 'Mengirim...' : 'Eskalasi ke Prinsipal'}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.revisionConfirmBtn, (!covered || publishing) && styles.revisionConfirmBtnDisabled]}
+            onPress={() => selected && doPublish(buildRevisionContext(diffPreview!), selected.id)}
+            disabled={!covered || publishing}
+          >
+            <Ionicons name="checkmark-circle" size={18} color="#fff" />
+            <Text style={styles.revisionConfirmText}>{publishing ? 'Publishing...' : 'Publish dgn persetujuan'}</Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.ceilingHint}>
+          Atau kembalikan nilai rencana material tsb ke nilai lama di workbook, lalu publish ulang tanpa gate.
+        </Text>
+      </View>
+    );
   };
 
   const confirmDeleteSession = (session: ImportSession) => {
@@ -1259,10 +1929,18 @@ export default function BaselineScreen({
                 })
               : visibleReviewRows.map(renderReviewCard)}
 
-            {stagingRows.length > 0 && (
-              <TouchableOpacity style={styles.publishBtn} onPress={handlePublish} disabled={publishing}>
+            {diffPreview && renderRevisionChecklist()}
+
+            {stagingRows.length > 0 && !diffPreview && (
+              <TouchableOpacity
+                style={styles.publishBtn}
+                onPress={handlePublish}
+                disabled={publishing || preparingDiff}
+              >
                 <Ionicons name="checkmark-circle" size={20} color="#fff" />
-                <Text style={styles.publishText}>{publishing ? 'Publishing...' : 'Publish Baseline'}</Text>
+                <Text style={styles.publishText}>
+                  {preparingDiff ? 'Menghitung perubahan...' : publishing ? 'Publishing...' : 'Publish Baseline'}
+                </Text>
               </TouchableOpacity>
             )}
           </>
@@ -1464,6 +2142,36 @@ const styles = StyleSheet.create({
   flagSaran: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2 },
   publishBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.sm, backgroundColor: COLORS.ok, borderRadius: RADIUS, padding: SPACE.base, marginTop: SPACE.base },
   publishText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.bold, textTransform: 'uppercase' },
+  // ── Re-publish diff-and-acknowledge checklist (Task 2.11) ──
+  revisionPanel: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.warning, borderRadius: RADIUS, padding: SPACE.base, marginTop: SPACE.base, gap: SPACE.sm },
+  revisionTitle: { color: COLORS.text, fontSize: TYPE.base, fontFamily: FONTS.bold },
+  revisionIntro: { color: COLORS.textSec, fontSize: TYPE.xs, marginBottom: SPACE.xs },
+  revisionClassCard: { borderWidth: 1, borderColor: COLORS.warning, borderRadius: RADIUS, padding: SPACE.sm, gap: SPACE.xs, backgroundColor: COLORS.bg },
+  revisionClassCardCritical: { borderColor: COLORS.critical },
+  revisionCheckboxRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm },
+  revisionCheckbox: { width: 22, height: 22, borderRadius: 4, borderWidth: 2, borderColor: COLORS.textSec, alignItems: 'center', justifyContent: 'center' },
+  revisionCheckboxChecked: { backgroundColor: COLORS.ok, borderColor: COLORS.ok },
+  revisionClassLabel: { flex: 1, color: COLORS.text, fontSize: TYPE.sm, fontFamily: FONTS.bold },
+  revisionClassCopy: { color: COLORS.textSec, fontSize: TYPE.xs },
+  revisionMatLine: { color: COLORS.text, fontSize: TYPE.xs, marginLeft: SPACE.xs },
+  revisionSummaryLine: { color: COLORS.textSec, fontSize: TYPE.xs, fontStyle: 'italic' },
+  revisionBtnRow: { flexDirection: 'row', gap: SPACE.sm, marginTop: SPACE.xs },
+  revisionCancelBtn: { paddingVertical: SPACE.sm, paddingHorizontal: SPACE.base, borderRadius: RADIUS, borderWidth: 1, borderColor: COLORS.border },
+  revisionCancelText: { color: COLORS.textSec, fontSize: TYPE.sm, fontFamily: FONTS.bold },
+  revisionConfirmBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.sm, backgroundColor: COLORS.ok, borderRadius: RADIUS, paddingVertical: SPACE.sm },
+  revisionConfirmBtnDisabled: { opacity: 0.45 },
+  revisionConfirmText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.bold, textTransform: 'uppercase' },
+  // Task 2.12 — ceiling-raise breach panel
+  ceilingPanel: { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.critical, borderRadius: RADIUS, padding: SPACE.base, marginTop: SPACE.base, gap: SPACE.sm },
+  ceilingTitle: { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.critical, textTransform: 'uppercase', letterSpacing: 0.4 },
+  ceilingIntro: { fontSize: TYPE.xs, color: COLORS.textSec, lineHeight: 17 },
+  ceilingMatLine: { color: COLORS.text, fontSize: TYPE.xs, marginLeft: SPACE.xs },
+  ceilingPickerBox: { gap: SPACE.xs, marginTop: SPACE.xs },
+  ceilingPickerLabel: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textSec },
+  ceilingPickerWrap: { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, overflow: 'hidden' },
+  ceilingWarn: { fontSize: TYPE.xs, color: COLORS.critical },
+  ceilingHint: { fontSize: TYPE.xs, color: COLORS.textSec, fontStyle: 'italic', marginTop: SPACE.xs },
+  ceilingEscalateBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.sm, backgroundColor: COLORS.critical, borderRadius: RADIUS, paddingVertical: SPACE.sm },
   anomalyBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(255,152,0,0.08)', borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: 14, marginBottom: SPACE.md },
   anomalyBannerTitle: { fontSize: TYPE.sm, fontFamily: FONTS.bold },
   severityDot: { width: 8, height: 8, borderRadius: 4 },

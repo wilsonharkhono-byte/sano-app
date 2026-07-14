@@ -60,12 +60,24 @@ export interface BoqItem {
   installed: number;
   parent_code: string | null;
   chapter: string | null;
+  sub_chapter: string | null;
   sort_order: number;
   element_code: string | null;
   composite_factors: CompositeFactors | null;
   cost_breakdown: CostBreakdown | null;
   client_unit_price: number | null;
   internal_unit_price: number | null;
+  /**
+   * Task 3.1 — non-null when a LATER re-publish's workbook no longer
+   * contains this code (see migration 074_boq_items_supersede.sql). Soft
+   * marker, not a delete: allocations/receipts/progress_entries may still FK
+   * this row, so it must keep resolving by id. Readers that enumerate the
+   * ACTIVE plan (Progress Summary, useProject's boq_items load, work-group /
+   * allocation pickers) filter `superseded_at IS NULL`; readers that resolve
+   * a specific boq_item_id by FK (allocation display, audit joins,
+   * opname/payroll exports) intentionally do NOT filter on it.
+   */
+  superseded_at: string | null;
 }
 
 /**
@@ -112,7 +124,9 @@ export interface AhsVersion {
   published_at: string;
 }
 
-export type AhsLineType = 'material' | 'labor' | 'equipment' | 'subkon';
+// Includes 'prelim': migration 065 widened ahs_lines.line_type's CHECK to
+// accept it (publishBaselineV2 already emits it for prelim cost residue).
+export type AhsLineType = 'material' | 'labor' | 'equipment' | 'subkon' | 'prelim';
 
 export interface AhsLine {
   id: string;
@@ -120,6 +134,13 @@ export interface AhsLine {
   boq_item_id: string;
   material_id: string | null;
   material_spec: string | null;
+  // NOT 1|2|3|4: ahs_lines.tier is a separate inline CHECK (tier IN (1,2,3))
+  // added in 002_baseline_tables.sql, explicitly left un-widened by both 053
+  // and 065 ("ahs_lines.tier and other tier CHECKs untouched"). The v2
+  // publish path also hardcodes tier: 1 for every ahs_lines insert
+  // (publishBaselineV2.ts — "tier has no meaning for a disaggregated line").
+  // Do not widen this to match Material.tier without also widening the DB
+  // CHECK, or a tier-4 write here will fail at insert time.
   tier: 1 | 2 | 3;
   usage_rate: number;
   unit: string;
@@ -137,7 +158,9 @@ export interface Material {
   code: string | null;
   name: string;
   category: string | null;
-  tier: 1 | 2 | 3;
+  // material_catalog.tier allows 4 (untracked consumable) since migration
+  // 047_material_tier_budget_control.sql.
+  tier: 1 | 2 | 3 | 4;
   unit: string;
   supplier_unit: string;
   /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
@@ -277,7 +300,7 @@ export interface MaterialRequestLine {
   request_header_id: string;
   material_id: string | null;
   custom_material_name: string | null;
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   material_spec_reference: string | null;
   quantity: number;
   unit: string;
@@ -334,7 +357,7 @@ export interface PurchaseOrder {
   status: POStatus;
 }
 
-export type POStatus = 'OPEN' | 'PARTIAL_RECEIVED' | 'FULLY_RECEIVED' | 'CLOSED' | 'CANCELLED';
+export type POStatus = 'OPEN' | 'PARTIAL_RECEIVED' | 'FULLY_RECEIVED' | 'CLOSED_SHORT' | 'CANCELLED';
 
 export interface PurchaseOrderLine {
   id: string;
@@ -345,6 +368,10 @@ export interface PurchaseOrderLine {
   unit: string;
   unit_price: number | null;
   scope_tag: string | null;
+  /** Optional request→PO traceability link (migration 055; populated by
+      Gate2Screen since Task 2.8): the APPROVED material_request_lines.id this
+      PO line fulfills. null/absent = unlinked. */
+  request_line_id?: string | null;
 }
 
 export interface PriceHistory {
@@ -599,6 +626,10 @@ export interface ApprovalTask {
   reason: string | null;
   acted_at: string | null;
   created_at: string;
+  /** PO-quantity-gate override contract (entity_type='po_qty_gate'). Survives the
+   *  principal's verdict UPDATE (which only writes action/reason/acted_at) so
+   *  create_purchase_order can read it. See migration 071 + tools/poQuantityGate.ts. */
+  override_payload?: import('./poQuantityGate').OverridePayloadEntry[] | null;
 }
 
 // ─── Gate 5: Reporting & Reconciliation ───────────────────────────────
@@ -689,7 +720,13 @@ export interface MaterialEnvelopeStatus {
   tier: 1 | 2 | 3 | 4;
   unit: string;
   total_planned: number;
+  /** SANO purchase-order quantity for this material (base units). NOT requests.
+   *  Non-cancelled PO lines only; see migration 068. UI copy: "di-PO". */
   total_ordered: number;
+  /** Demand from non-rejected material requests awaiting/through approval (base
+   *  units). Separate signal from total_ordered. UI copy: "permintaan berjalan".
+   *  Added in migration 068 / Task 2.3. */
+  total_requested: number;
   total_received: number;
   /** Planned material already consumed by installed work (work-group envelope only). */
   total_installed?: number;
@@ -759,12 +796,43 @@ export interface ImportAnomaly {
 
 export type FlagLevel = 'OK' | 'INFO' | 'WARNING' | 'HIGH' | 'CRITICAL';
 
+/**
+ * Signal-1 request-time overage components (Task 2.4 / spec §3). The cumulative
+ * running total behind a soft heads-up, carried on the GateResult so the client
+ * can (a) render the running-total copy, (b) decide whether a reason is required
+ * (projectedPct > 100), and (c) persist it into line_check_details as the
+ * supervisor's evidence-of-then snapshot. All quantities are BASE units (kg).
+ * `poOrdered` is null at a grain with no PO dimension (Tier-1 work-group).
+ */
+export interface OverageComponents {
+  /** Named envelope grain: "Grup: <label>" (Tier-1) or "Proyek" (Tier-2/3). */
+  grainLabel: string;
+  poOrdered: number | null;
+  otherOpen: number;
+  thisRequest: number;
+  planned: number;
+  projectedPct: number;
+  unit: string;
+}
+
 export interface GateResult {
   flag: FlagLevel;
   check: string;
   msg: string;
   extra?: GateResult;
+  /** Present when this result was produced by the Signal-1 overage evaluation. */
+  overage?: OverageComponents;
 }
+
+/** Reason a supervisor gives when a request's projected cumulative crosses 100%
+ * (spec §3 reason capture). Mirrors material_request_lines.overage_reason CHECK
+ * (migration 076). */
+export type OverageReason =
+  | 'WASTE'
+  | 'REWORK'
+  | 'PLAN_UNDERESTIMATE'
+  | 'VARIATION'
+  | 'OTHER';
 
 // ─── Kasbon Ledger ───────────────────────────────────────────────────
 

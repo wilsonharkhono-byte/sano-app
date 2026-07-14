@@ -12,19 +12,31 @@ import DateSelectField, { getTodayIsoDate } from '../components/DateSelectField'
 import MaterialNamingAssist from '../components/MaterialNamingAssist';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
-import { computeWorkGroupGate1Flag, type EnvelopeUnitDisplay } from '../gates/gate1';
+import { computeWorkGroupGate1Flag, buildProjectEnvelopeOverageResult, type EnvelopeUnitDisplay } from '../gates/gate1';
 import { sanitizeText, isPositiveNumber } from '../../tools/validation';
 import { supplierToBase } from '../../tools/materialUnitConversion';
+import { applyCatalogMaterialToLine } from '../../tools/materialSelection';
 import { supabase } from '../../tools/supabase';
-import { getWorkGroupEnvelope } from '../../tools/envelopes';
+import { auditRequestSubmitIfCritical } from '../../tools/audit';
+import { getWorkGroupEnvelope, getMaterialBudget, getMaterialDrift } from '../../tools/envelopes';
+import { evaluateTier4Untracked, evaluateTier3BudgetSoft } from '../../tools/budgetGate';
+import {
+  requiresOverageReason, requiresOverageNote, OVERAGE_REASONS, OVERAGE_REASON_LABELS,
+} from '../../tools/requestOverage';
+import { shouldShowDriftBadge, formatDriftBadge, type MaterialDrift } from '../../tools/planDrift';
+import {
+  buildSubmitMaterialRequestPayload, type SubmitRequestLineInput,
+} from '../../tools/submitMaterialRequest';
 import { buildWorkGroups } from '../../tools/boqWorkGroups';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, RADIUS_SM } from '../theme';
 import type {
   GateResult,
   FlagLevel,
   MaterialEnvelopeStatus,
+  MaterialBudgetStatus,
   EnvelopeBoqBreakdown,
   MaterialRequestAllocationBasis,
+  OverageReason,
   WorkGroup,
 } from '../../tools/types';
 
@@ -39,7 +51,7 @@ interface MaterialOption {
   supplier_unit: string;
   /** Base units per ONE supplier_unit (kg per batang for rebar). null = 1:1. */
   base_qty_per_supplier_unit: number | null;
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   code: string | null;
   category: string | null;
 }
@@ -58,7 +70,7 @@ interface RequestLine {
   materialId: string | null;
   materialName: string;
   isCustom: boolean;
-  tier: 1 | 2 | 3;
+  tier: 1 | 2 | 3 | 4;
   /** Typed in SUPPLIER units (batang for rebar); gates/persist convert to base. */
   quantity: string;
   unit: string;
@@ -72,6 +84,10 @@ interface RequestLine {
   workGroupKey: string | null;
   lineResult: GateResult | null;
   allocationPreview: AllocationPreview[];
+  /** Signal-1 reason capture (spec §3) — required before submit when the line's
+   *  projected cumulative crosses 100% of plan. */
+  overageReason: OverageReason | null;
+  overageNote: string;
 }
 
 const FLAG_ORDER: FlagLevel[] = ['OK', 'INFO', 'WARNING', 'HIGH', 'CRITICAL'];
@@ -82,16 +98,18 @@ const URGENCY_OPTIONS = [
   { key: 'CRITICAL', label: 'Kritis', color: COLORS.critical },
 ] as const;
 
-const TIER_LABELS: Record<1 | 2 | 3, string> = {
+const TIER_LABELS: Record<1 | 2 | 3 | 4, string> = {
   1: 'Tier 1 — Presisi',
   2: 'Tier 2 — Bulk',
   3: 'Tier 3 — Habis Pakai',
+  4: 'Tier 4 — Consumable',
 };
 
-const TIER_COLORS: Record<1 | 2 | 3, string> = {
+const TIER_COLORS: Record<1 | 2 | 3 | 4, string> = {
   1: COLORS.primary,
   2: COLORS.accent,
   3: COLORS.textSec,
+  4: COLORS.textMuted,
 };
 
 let lineCounter = 0;
@@ -116,6 +134,8 @@ function makeLine(overrides: Partial<RequestLine> = {}): RequestLine {
     workGroupKey: null,
     lineResult: null,
     allocationPreview: [],
+    overageReason: null,
+    overageNote: '',
     ...overrides,
   };
 }
@@ -188,90 +208,54 @@ function buildWorkGroupAllocations(
   });
 }
 
-/** "a / b batang (a / b kg)" when a rebar factor exists, else "a / b kg". */
-function fmtEnvPairDisplay(a: number, b: number, baseUnit: string, display?: EnvelopeUnitDisplay | null): string {
-  if (display?.factor && display.factor > 0) {
-    const toBtg = (n: number) => (n / display.factor!).toLocaleString('id-ID', { maximumFractionDigits: 2 });
-    return `${toBtg(a)} / ${toBtg(b)} ${display.supplierUnit} (${Math.round(a).toLocaleString('id-ID')} / ${Math.round(b).toLocaleString('id-ID')} ${baseUnit})`;
-  }
-  return `${Math.round(a).toLocaleString('id-ID')} / ${Math.round(b).toLocaleString('id-ID')} ${baseUnit}`;
-}
-
+/**
+ * Tier-2 soft heads-up (Task 2.4). Delegates to the shared project-grain overage
+ * builder: projected = di-PO (total_ordered) + permintaan berjalan
+ * (total_requested) + permintaan ini, capped at WARNING with running-total copy.
+ * No envelope → "Tidak ada alokasi pembanding" (INFO), never a silent OK.
+ * SERVER TWIN: migration 069 compute_tier2_flag.
+ */
 function buildTier2Result(
   envelope: MaterialEnvelopeStatus | null,
   requestedQty: number,
   display?: EnvelopeUnitDisplay | null,
 ): GateResult {
-  if (!envelope) {
-    return {
-      flag: 'INFO',
-      check: '1a',
-      msg: 'Envelope material belum tersedia di baseline. Tetap boleh diajukan, tetapi estimator harus review manual.',
-    };
-  }
-
-  const newTotal = Number(envelope.total_ordered ?? 0) + requestedQty;
-  const burnPct = Number(envelope.total_planned ?? 0) > 0
-    ? (newTotal / Number(envelope.total_planned)) * 100
-    : 0;
-
-  if (burnPct > 120) {
-    return {
-      flag: 'CRITICAL',
-      check: '1a',
-      msg: `${envelope.material_name} akan melewati envelope hingga ${burnPct.toFixed(0)}%. Auto-hold dan perlu override prinsipal.`,
-      extra: {
-        flag: 'INFO',
-        check: 'scope',
-        msg: `${envelope.boq_item_count} item BoQ akan terkena alokasi bulk.`,
-      },
-    };
-  }
-
-  if (burnPct > 100) {
-    return {
-      flag: 'HIGH',
-      check: '1a',
-      msg: `${envelope.material_name} melampaui envelope: ${burnPct.toFixed(0)}% (${fmtEnvPairDisplay(newTotal, Number(envelope.total_planned ?? 0), envelope.unit, display)}).`,
-      extra: {
-        flag: 'INFO',
-        check: 'scope',
-        msg: `${envelope.boq_item_count} item BoQ akan dihitung proporsional.`,
-      },
-    };
-  }
-
-  if (burnPct > 80) {
-    return {
-      flag: 'WARNING',
-      check: '1a',
-      msg: `${envelope.material_name} mendekati batas envelope: ${burnPct.toFixed(0)}%.`,
-      extra: {
-        flag: 'INFO',
-        check: 'scope',
-        msg: `${envelope.boq_item_count} item BoQ akan menerima alokasi bulk.`,
-      },
-    };
-  }
-
-  return {
-    flag: 'OK',
-    check: '1a',
-    msg: `${envelope.material_name} masih aman di ${burnPct.toFixed(0)}% envelope.`,
-    extra: {
-      flag: 'INFO',
-      check: 'scope',
-      msg: `${envelope.boq_item_count} item BoQ akan dihitung proporsional.`,
-    },
-  };
+  return buildProjectEnvelopeOverageResult(envelope, requestedQty, display);
 }
 
-function buildTier3Result(requestedQty: number, unit: string): GateResult {
-  return {
-    flag: 'OK',
-    check: '1a',
-    msg: `Tier 3 dicatat sebagai stok umum: ${roundQty(requestedQty)} ${unit || 'unit'}.`,
-  };
+/**
+ * Tier-3 soft heads-up (Task 2.4). Replaces the old unconditional-OK stub with
+ * the real Rupiah budget evaluation, capped at WARNING for the request-time
+ * context (evaluateTier3BudgetSoft). A catalog-unlinked / free-text line has no
+ * budget baseline → "Tidak ada alokasi pembanding" (INFO), never OK.
+ * SERVER TWIN: migration 069 compute_tier3_flag.
+ */
+function buildTier3Result(
+  budget: MaterialBudgetStatus | null,
+  requestedQty: number,
+  hasMaterial: boolean,
+): GateResult {
+  if (!hasMaterial) {
+    return {
+      flag: 'INFO',
+      check: '1a',
+      msg: 'Tidak ada alokasi pembanding — material bebas-teks tidak terhubung ke katalog. Estimator review manual.',
+    };
+  }
+  return evaluateTier3BudgetSoft(budget, requestedQty);
+}
+
+/** Tier 3 (Rupiah budget) and Tier 4 (untracked consumable) both post as a
+ * single general-stock allocation — no BoQ item to deduct against. */
+function buildGeneralStockAllocation(requestedQty: number): AllocationPreview[] {
+  return [{
+    boqItemId: null,
+    boqCode: 'STOK',
+    boqLabel: 'Stok Umum',
+    allocatedQuantity: roundQty(requestedQty),
+    proportionPct: 100,
+    allocationBasis: 'GENERAL_STOCK' as const,
+  }];
 }
 
 function describeAllocation(line: RequestLine, allocationCount: number) {
@@ -296,6 +280,12 @@ export default function PermintaanScreen() {
   const [envelopeCache, setEnvelopeCache] = useState<Map<string, MaterialEnvelopeStatus>>(new Map());
   const [breakdownCache, setBreakdownCache] = useState<Map<string, EnvelopeBoqBreakdown[]>>(new Map());
   const [workGroupEnvCache, setWorkGroupEnvCache] = useState<Map<string, MaterialEnvelopeStatus | null>>(new Map());
+  // Tier-3 Rupiah budget envelope per material (null = fetched, no baseline).
+  const [budgetCache, setBudgetCache] = useState<Map<string, MaterialBudgetStatus | null>>(new Map());
+  // Signal-2 plan drift (Task 2.13) — one project-wide fetch (getMaterialDrift
+  // already returns every material with a baseline snapshot in one round trip,
+  // so there is no per-line lazy-load like the other caches above).
+  const [driftCache, setDriftCache] = useState<Map<string, MaterialDrift>>(new Map());
 
   // Work-groups: the bulk unit a supervisor orders against (Tier 1 target).
   const workGroups = useMemo<WorkGroup[]>(() => buildWorkGroups(boqItems), [boqItems]);
@@ -317,6 +307,15 @@ export default function PermintaanScreen() {
           .sort((a, b) => a.name.localeCompare(b.name, 'id', { sensitivity: 'base' }));
         setMaterialOptions(nextOptions);
       });
+  }, [project]);
+
+  // Signal-2 plan drift (spec §4) — supervisor sees the badge as context only,
+  // no Rp. One project-wide fetch; re-runs when the active project changes.
+  useEffect(() => {
+    if (!project) return;
+    getMaterialDrift(project.id).then((rows) => {
+      setDriftCache(new Map(rows.map(row => [row.material_id, row])));
+    });
   }, [project]);
 
   const filteredMaterialOptions = useMemo(() => {
@@ -387,17 +386,33 @@ export default function PermintaanScreen() {
     });
   }, [project, workGroupMap, workGroupEnvCache]);
 
+  // Warm the Tier-3 Rupiah budget envelope for a catalog material (soft gate).
+  const cacheMaterialBudget = useCallback(async (materialId: string) => {
+    if (!project) return;
+    if (budgetCache.has(materialId)) return;
+    const budget = await getMaterialBudget(project.id, materialId);
+    setBudgetCache(prev => {
+      const next = new Map(prev);
+      next.set(materialId, budget);
+      return next;
+    });
+  }, [project, budgetCache]);
+
   // Warm work-group envelope + breakdown for Tier-1 lines once both a group and
   // a catalog material are chosen. Without a materialId there is no baseline to
   // validate the bulk order against (the gate then returns a soft INFO).
+  // Tier-3 catalog lines warm their Rupiah budget envelope for the soft gate.
   useEffect(() => {
     for (const line of lines) {
       if (line.tier === 1 && line.workGroupKey && line.materialId) {
         void cacheWorkGroupEnvelope(line.workGroupKey, line.materialId);
         void cacheTier2Context([line.materialId]);
       }
+      if (line.tier === 3 && line.materialId) {
+        void cacheMaterialBudget(line.materialId);
+      }
     }
-  }, [lines, cacheWorkGroupEnvelope, cacheTier2Context]);
+  }, [lines, cacheWorkGroupEnvelope, cacheTier2Context, cacheMaterialBudget]);
 
   const updateLine = (id: string, patch: Partial<RequestLine>) => {
     setLines(prev => prev.map(line => (
@@ -433,19 +448,7 @@ export default function PermintaanScreen() {
   const applyMaterialSelection = async (material: MaterialOption) => {
     if (!materialPickerLineId) return;
 
-    updateLine(materialPickerLineId, {
-      materialId: material.id,
-      materialName: material.name,
-      isCustom: false,
-      tier: material.tier,
-      unit: material.supplier_unit || material.unit,
-      baseUnit: material.unit,
-      base_qty_per_supplier_unit: material.base_qty_per_supplier_unit ?? null,
-      boqItemId: null,
-      workGroupKey: null,
-      lineResult: null,
-      allocationPreview: [],
-    });
+    updateLine(materialPickerLineId, applyCatalogMaterialToLine(material));
 
     if (material.tier === 2) {
       await cacheTier2Context([material.id]);
@@ -496,10 +499,13 @@ export default function PermintaanScreen() {
           ? workGroupEnvCache.get(`${line.workGroupKey}::${line.materialId}`) ?? null
           : null;
         const breakdown = line.materialId ? breakdownCache.get(line.materialId) ?? [] : [];
+        // Project envelope (PO-based total_ordered) — shown alongside as PO
+        // context only; the group grain has no PO dimension of its own.
+        const projectEnvelope = line.materialId ? envelopeCache.get(line.materialId) ?? null : null;
 
         return {
           ...line,
-          lineResult: computeWorkGroupGate1Flag(envelope, requestedBaseQty, group.label, envDisplay),
+          lineResult: computeWorkGroupGate1Flag(envelope, requestedBaseQty, group.label, envDisplay, projectEnvelope),
           allocationPreview: buildWorkGroupAllocations(breakdown, group.itemIds, requestedBaseQty),
         };
       }
@@ -526,20 +532,26 @@ export default function PermintaanScreen() {
         };
       }
 
+      if (line.tier === 4) {
+        // Untracked consumable — never gated (mirrors tools/budgetGate.ts
+        // evaluateTier4Untracked / the server's dispatch_line_flag tier=4 branch).
+        return {
+          ...line,
+          lineResult: evaluateTier4Untracked(),
+          allocationPreview: buildGeneralStockAllocation(requestedBaseQty),
+        };
+      }
+
+      // Tier 3 — Rupiah budget soft gate. A catalog-linked material burns
+      // against its budget envelope; a free-text line has no baseline.
+      const budget = line.materialId ? budgetCache.get(line.materialId) ?? null : null;
       return {
         ...line,
-        lineResult: buildTier3Result(requestedBaseQty, line.baseUnit || line.unit),
-        allocationPreview: [{
-          boqItemId: null,
-          boqCode: 'STOK',
-          boqLabel: 'Stok Umum',
-          allocatedQuantity: roundQty(requestedBaseQty),
-          proportionPct: 100,
-          allocationBasis: 'GENERAL_STOCK' as const,
-        }],
+        lineResult: buildTier3Result(budget, requestedBaseQty, !!line.materialId),
+        allocationPreview: buildGeneralStockAllocation(requestedBaseQty),
       };
     });
-  }, [lines, workGroupMap, envelopeCache, breakdownCache, workGroupEnvCache]);
+  }, [lines, workGroupMap, envelopeCache, breakdownCache, workGroupEnvCache, budgetCache]);
 
   const overallFlag = useMemo<FlagLevel>(() => {
     let worst: FlagLevel = 'OK';
@@ -551,14 +563,49 @@ export default function PermintaanScreen() {
     return worst;
   }, [linesWithResults]);
 
-  const isAutoHold = overallFlag === 'CRITICAL';
+  // Lines whose projected cumulative crosses 100% must carry an overage reason
+  // before submit (spec §3). Request time never hard-blocks on quantity/budget —
+  // the ONLY submit blocker now is a missing reason on an over-total line.
+  const missingReasonLineIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const line of linesWithResults) {
+      if (isPositiveNumber(line.quantity) && requiresOverageReason(line.lineResult) && !line.overageReason) {
+        ids.add(line.id);
+      }
+    }
+    return ids;
+  }, [linesWithResults]);
+  const hasMissingReason = missingReasonLineIds.size > 0;
+
+  // Reason 'OTHER' ("Lainnya") requires a free-text note before submit (spec §3
+  // "OTHER + free text") — same blocking pattern as the reason-required check
+  // above, just one predicate deeper.
+  const missingOtherNoteLineIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const line of linesWithResults) {
+      if (
+        isPositiveNumber(line.quantity)
+        && requiresOverageReason(line.lineResult)
+        && requiresOverageNote(line.overageReason, line.overageNote)
+      ) {
+        ids.add(line.id);
+      }
+    }
+    return ids;
+  }, [linesWithResults]);
+  const hasMissingOtherNote = missingOtherNoteLineIds.size > 0;
+
   const hasValidLines = linesWithResults.some(line => isPositiveNumber(line.quantity));
 
-  const statusLabel = isAutoHold
-    ? 'Ditahan — Menunggu Override Prinsipal'
-    : overallFlag === 'WARNING' || overallFlag === 'HIGH'
-      ? 'Dalam Review'
-      : 'Siap Dikirim';
+  const hasBlockingReasonIssue = hasMissingReason || hasMissingOtherNote;
+
+  const statusLabel = hasMissingReason
+    ? 'Lengkapi alasan kelebihan alokasi'
+    : hasMissingOtherNote
+      ? "Lengkapi keterangan alasan 'Lainnya'"
+      : overallFlag === 'WARNING' || overallFlag === 'HIGH'
+        ? 'Perlu Review Estimator'
+        : 'Siap Dikirim';
 
   const shouldShowLines = lines.length > 0;
 
@@ -572,8 +619,14 @@ export default function PermintaanScreen() {
       toast('Masukkan jumlah untuk minimal 1 material', 'critical');
       return;
     }
-    if (isAutoHold) {
-      toast('Permintaan ditahan — Prinsipal harus override', 'critical');
+    // Soft heads-up: an over-total line submits, but only after the supervisor
+    // picks a reason (spec §3). No principal hard-hold at request time.
+    if (hasMissingReason) {
+      toast('Pilih alasan untuk material yang melebihi alokasi sebelum mengirim', 'critical');
+      return;
+    }
+    if (hasMissingOtherNote) {
+      toast("Alasan 'Lainnya' butuh keterangan", 'critical');
       return;
     }
 
@@ -609,63 +662,45 @@ export default function PermintaanScreen() {
 
     setSubmitting(true);
     try {
-      const { data: header, error: headerErr } = await supabase
-        .from('material_request_headers')
-        .insert({
-          project_id: project.id,
-          boq_item_id: null,
-          request_basis: ACTIVE_REQUEST_BASIS,
-          requested_by: profile.id,
-          target_date: targetDate,
-          urgency,
-          common_note: commonNote ? sanitizeText(commonNote) : null,
-          overall_flag: overallFlag,
-          overall_status: isAutoHold ? 'AUTO_HOLD' : 'PENDING',
-        })
-        .select('id')
-        .single();
-
-      if (headerErr || !header) throw headerErr ?? new Error('Header insert failed');
-
-      for (const line of validLines) {
-        const { data: createdLine, error: lineErr } = await supabase
-          .from('material_request_lines')
-          .insert({
-            request_header_id: header.id,
-            material_id: line.materialId ?? null,
-            custom_material_name: line.isCustom || !line.materialId ? sanitizeText(line.materialName) : null,
-            tier: line.tier,
-            material_spec_reference: line.specRef ? sanitizeText(line.specRef) : null,
-            // BASE-unit canonical: triggers 048/049 compare quantity against
-            // per-kg benchmarks/envelopes. Batang exists only in the UI.
-            quantity: supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit),
-            unit: sanitizeText(line.base_qty_per_supplier_unit ? (line.baseUnit || line.unit) : line.unit),
-            line_flag: line.lineResult?.flag ?? 'OK',
-            line_check_details: line.lineResult,
-            work_group_label: line.tier === 1 && line.workGroupKey
-              ? workGroupMap.get(line.workGroupKey)?.label ?? null
-              : null,
-          })
-          .select('id')
-          .single();
-
-        if (lineErr || !createdLine) throw lineErr ?? new Error('Line insert failed');
-
-        const allocationRows = line.allocationPreview.map(preview => ({
-          request_line_id: createdLine.id,
+      // Transactional submit (Task 2.9): header + N lines + per-line allocations
+      // + activity_log all land in ONE plpgsql transaction (submit_material_request,
+      // migration 073). Before this, a failed line/allocation insert orphaned the
+      // header — the exact bug class 045 fixed for POs. Any RAISE now rolls the
+      // whole request back, so there is a single error path and no partial-write
+      // cleanup to do. Field-for-field the payload mirrors the old direct inserts.
+      const submitLines: SubmitRequestLineInput[] = validLines.map(line => ({
+        material_id: line.materialId ?? null,
+        custom_material_name: line.isCustom || !line.materialId ? sanitizeText(line.materialName) : null,
+        tier: line.tier,
+        material_spec_reference: line.specRef ? sanitizeText(line.specRef) : null,
+        // BASE-unit canonical: triggers 048/049 compare quantity against
+        // per-kg benchmarks/envelopes. Batang exists only in the UI.
+        quantity: supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit),
+        unit: sanitizeText(line.base_qty_per_supplier_unit ? (line.baseUnit || line.unit) : line.unit),
+        // Advisory: 033 Trigger 1 overwrites line_flag server-side.
+        line_flag: line.lineResult?.flag ?? 'OK',
+        // line_check_details is the supervisor's evidence-of-then snapshot
+        // (spec §3) — it now carries the overage running-total components via
+        // lineResult.overage. Office/approval panels RECOMPUTE live and never
+        // trust this stored value as current numbers.
+        line_check_details: line.lineResult,
+        // Signal-1 reason capture: persisted only for a line that is
+        // actually over-total at submit (a reason left over from an earlier,
+        // higher quantity is dropped if the line fell back under 100%).
+        overage_reason: requiresOverageReason(line.lineResult) ? line.overageReason : null,
+        overage_note: requiresOverageReason(line.lineResult) && line.overageReason && line.overageNote
+          ? sanitizeText(line.overageNote)
+          : null,
+        work_group_label: line.tier === 1 && line.workGroupKey
+          ? workGroupMap.get(line.workGroupKey)?.label ?? null
+          : null,
+        allocations: line.allocationPreview.map(preview => ({
           boq_item_id: preview.boqItemId,
           allocated_quantity: preview.allocatedQuantity,
           proportion_pct: preview.proportionPct,
           allocation_basis: preview.allocationBasis,
-        }));
-
-        if (allocationRows.length > 0) {
-          const { error: allocationErr } = await supabase
-            .from('material_request_line_allocations')
-            .insert(allocationRows);
-          if (allocationErr) throw allocationErr;
-        }
-      }
+        })),
+      }));
 
       const materialSummary = validLines
         .map(line => {
@@ -676,13 +711,46 @@ export default function PermintaanScreen() {
         })
         .join(', ');
 
-      await supabase.from('activity_log').insert({
-        project_id: project.id,
-        user_id: profile.id,
-        type: 'permintaan',
-        label: `Permintaan material: ${materialSummary}`,
-        flag: overallFlag,
-      });
+      const payload = buildSubmitMaterialRequestPayload(
+        {
+          project_id: project.id,
+          boq_item_id: null,
+          request_basis: ACTIVE_REQUEST_BASIS,
+          requested_by: profile.id,
+          target_date: targetDate,
+          urgency,
+          common_note: commonNote ? sanitizeText(commonNote) : null,
+          overall_flag: overallFlag,
+          // Request time never hard-holds on quantity/budget (spec §3) — the
+          // header opens PENDING. Any server-side promotion (033 Trigger 2) is
+          // now unreachable for quantity/budget flags (they cap at WARNING).
+          overall_status: 'PENDING',
+        },
+        submitLines,
+        {
+          project_id: project.id,
+          user_id: profile.id,
+          type: 'permintaan',
+          label: `Permintaan material: ${materialSummary}`,
+          flag: overallFlag,
+        },
+      );
+
+      const { data: newHeaderId, error: submitErr } = await supabase.rpc('submit_material_request', payload);
+      if (submitErr) throw submitErr;
+
+      // Task 3.4: the 033 triggers compute overall_flag server-side and the RPC
+      // returns only the header id, so read the flag back and, if it landed
+      // CRITICAL (Tier-1 envelope breach → AUTO_HOLD), record an audit event.
+      // Non-fatal: never blocks the submit's success path.
+      if (typeof newHeaderId === 'string') {
+        await auditRequestSubmitIfCritical({
+          projectId: project.id,
+          userId: profile.id,
+          requestHeaderId: newHeaderId,
+          summary: materialSummary,
+        });
+      }
 
       toast(
         `Permintaan material dikirim — ${validLines.length} line`,
@@ -718,8 +786,18 @@ export default function PermintaanScreen() {
             {linesWithResults.map((line, idx) => {
               const tierColor = TIER_COLORS[line.tier];
               const envelope = line.materialId ? envelopeCache.get(line.materialId) ?? null : null;
-              const burnPct = Number(envelope?.burn_pct ?? 0);
+              // Bar tracks running request demand (permintaan berjalan) vs plan, so
+              // it agrees with the Tier-2 gate result on the same card. The view's
+              // own burn_pct is now PO-based (di-PO) and shown as its own figure.
+              const plannedQty = Number(envelope?.total_planned ?? 0);
+              const requestedQtyEnv = Number(envelope?.total_requested ?? 0);
+              const orderedQtyEnv = Number(envelope?.total_ordered ?? 0);
+              const burnPct = plannedQty > 0 ? (requestedQtyEnv / plannedQty) * 100 : 0;
               const barColor = burnPct > 100 ? COLORS.critical : burnPct > 80 ? COLORS.warning : COLORS.ok;
+              // Signal-2 plan drift (spec §4) — context only, no Rp; shown as a
+              // badge next to the envelope figures regardless of Signal-1 status.
+              const drift = line.materialId ? driftCache.get(line.materialId) ?? null : null;
+              const showDrift = drift != null && shouldShowDriftBadge(drift.drift_pct);
 
               return (
                 <Card key={line.id}>
@@ -791,16 +869,7 @@ export default function PermintaanScreen() {
                         userId={profile?.id}
                         userRole={profile?.role}
                         onSelectCatalogMaterial={async (material) => {
-                          updateLine(line.id, {
-                            materialId: material.id,
-                            materialName: material.name,
-                            isCustom: false,
-                            tier: (material.tier as 1 | 2 | 3) ?? 3,
-                            unit: material.supplier_unit || material.unit,
-                            boqItemId: null,
-                            lineResult: null,
-                            allocationPreview: [],
-                          });
+                          updateLine(line.id, applyCatalogMaterialToLine(material));
 
                           if (material.tier === 2) {
                             await cacheTier2Context([material.id]);
@@ -813,6 +882,12 @@ export default function PermintaanScreen() {
                           });
                         }}
                       />
+                      {/* Manual tier chips only ever offer 1-3, by design: this
+                          block is for CUSTOM/free-text materials with no catalog
+                          link. Tier 4 (untracked consumable) is a catalog-only
+                          classification carried automatically via
+                          onSelectCatalogMaterial → material.tier — a free-text
+                          line has no catalog id to derive it from. */}
                       <View style={styles.inlineTierRow}>
                         {[1, 2, 3].map(rawTier => {
                           const tier = rawTier as 1 | 2 | 3;
@@ -920,19 +995,30 @@ export default function PermintaanScreen() {
                       </View>
                       <View style={styles.row2}>
                         <Text style={styles.envelopeStat}>
-                          Terpakai: {Math.round(Number(envelope.total_ordered ?? 0)).toLocaleString('id-ID')} {envelope.unit}
+                          Permintaan berjalan: {Math.round(requestedQtyEnv).toLocaleString('id-ID')} {envelope.unit}
                           {line.base_qty_per_supplier_unit != null &&
-                            ` (≈ ${(Number(envelope.total_ordered ?? 0) / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
+                            ` (≈ ${(requestedQtyEnv / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
                         </Text>
                         <Text style={styles.envelopeStat}>
-                          Total: {Math.round(Number(envelope.total_planned ?? 0)).toLocaleString('id-ID')} {envelope.unit}
+                          Rencana: {Math.round(plannedQty).toLocaleString('id-ID')} {envelope.unit}
                           {line.base_qty_per_supplier_unit != null &&
-                            ` (≈ ${(Number(envelope.total_planned ?? 0) / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
+                            ` (≈ ${(plannedQty / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
                         </Text>
                       </View>
-                      <Text style={[styles.envelopePct, { color: barColor }]}>
-                        {burnPct.toFixed(0)}% terpakai
+                      <Text style={styles.envelopeStat}>
+                        Sudah di-PO: {Math.round(orderedQtyEnv).toLocaleString('id-ID')} {envelope.unit}
+                        {line.base_qty_per_supplier_unit != null &&
+                          ` (≈ ${(orderedQtyEnv / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
                       </Text>
+                      <Text style={[styles.envelopePct, { color: barColor }]}>
+                        {burnPct.toFixed(0)}% dari rencana (permintaan)
+                      </Text>
+                      {showDrift && (
+                        <View style={styles.driftBadge}>
+                          <Ionicons name="git-compare-outline" size={12} color={COLORS.info} />
+                          <Text style={styles.driftBadgeText}>{formatDriftBadge(drift!.drift_pct as number)}</Text>
+                        </View>
+                      )}
                     </View>
                   )}
 
@@ -966,8 +1052,80 @@ export default function PermintaanScreen() {
                     </Text>
                   )}
 
+                  {line.tier === 4 && (
+                    <Text style={styles.fieldHint}>
+                      Tier 4 consumable — tidak dilacak anggaran, dicatat sebagai stok umum.
+                    </Text>
+                  )}
+
                   {line.lineResult && (
                     <FlagPanel result={line.lineResult} gateLabel="Gate 1" />
+                  )}
+
+                  {requiresOverageReason(line.lineResult) && (
+                    <View style={[
+                      styles.reasonBox,
+                      !line.overageReason && styles.reasonBoxMissing,
+                    ]}>
+                      <Text style={styles.reasonLabel}>
+                        Alasan kelebihan alokasi <Text style={styles.req}>*</Text>
+                      </Text>
+                      <Text style={styles.reasonHint}>
+                        Permintaan ini membuat total melebihi rencana. Pilih alasan agar estimator bisa menindaklanjuti.
+                      </Text>
+                      <View style={styles.reasonChips}>
+                        {OVERAGE_REASONS.map(reason => {
+                          const selected = line.overageReason === reason;
+                          return (
+                            <TouchableOpacity
+                              key={reason}
+                              style={[styles.reasonChip, selected && styles.reasonChipActive]}
+                              onPress={() => updateLine(line.id, { overageReason: selected ? null : reason })}
+                              accessibilityRole="radio"
+                              accessibilityState={{ checked: selected }}
+                              accessibilityLabel={OVERAGE_REASON_LABELS[reason]}
+                            >
+                              <Text style={[styles.reasonChipText, selected && styles.reasonChipTextActive]}>
+                                {OVERAGE_REASON_LABELS[reason]}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                      {line.overageReason && (() => {
+                        const otherNoteMissing = requiresOverageNote(line.overageReason, line.overageNote);
+                        return (
+                          <>
+                            {line.overageReason === 'OTHER' && (
+                              <Text style={styles.reasonLabel}>
+                                Keterangan <Text style={styles.req}>*</Text>
+                              </Text>
+                            )}
+                            <TextInput
+                              style={[
+                                styles.input,
+                                styles.reasonNote,
+                                otherNoteMissing && styles.reasonNoteMissing,
+                              ]}
+                              value={line.overageNote}
+                              onChangeText={(text) => updateLine(line.id, { overageNote: text })}
+                              placeholder={
+                                line.overageReason === 'OTHER'
+                                  ? "Jelaskan alasan 'Lainnya'…"
+                                  : 'Catatan tambahan (opsional)…'
+                              }
+                              placeholderTextColor={COLORS.textMuted}
+                              multiline
+                            />
+                            {otherNoteMissing && (
+                              <Text style={styles.reasonNoteError}>
+                                Alasan &apos;Lainnya&apos; butuh keterangan
+                              </Text>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </View>
                   )}
                 </Card>
               );
@@ -1048,9 +1206,9 @@ export default function PermintaanScreen() {
 
             <View style={[
               styles.statusBox,
-              { backgroundColor: isAutoHold ? COLORS.criticalBg : COLORS.okBg },
+              { backgroundColor: hasBlockingReasonIssue ? COLORS.criticalBg : COLORS.okBg },
             ]}>
-              <Text style={[styles.statusLabel, { color: isAutoHold ? COLORS.critical : COLORS.ok }]}>
+              <Text style={[styles.statusLabel, { color: hasBlockingReasonIssue ? COLORS.critical : COLORS.ok }]}>
                 {statusLabel}
               </Text>
               <Text style={styles.statusSub}>
@@ -1059,18 +1217,28 @@ export default function PermintaanScreen() {
             </View>
 
             <TouchableOpacity
-              style={[styles.submitBtn, (isAutoHold || submitting) && styles.submitBtnDisabled]}
+              style={[styles.submitBtn, (hasBlockingReasonIssue || submitting) && styles.submitBtnDisabled]}
               onPress={handleSubmit}
-              disabled={submitting || isAutoHold}
-              accessibilityLabel={isAutoHold ? 'Permintaan ditahan, tidak dapat dikirim' : 'Ajukan permintaan material'}
+              disabled={submitting || hasBlockingReasonIssue}
+              accessibilityLabel={
+                hasMissingReason
+                  ? 'Lengkapi alasan kelebihan sebelum mengirim'
+                  : hasMissingOtherNote
+                    ? "Lengkapi keterangan alasan Lainnya sebelum mengirim"
+                    : 'Ajukan permintaan material'
+              }
               accessibilityRole="button"
-              accessibilityState={{ disabled: isAutoHold || submitting, busy: submitting }}
+              accessibilityState={{ disabled: hasBlockingReasonIssue || submitting, busy: submitting }}
             >
               {submitting ? (
                 <ActivityIndicator size="small" color={COLORS.textInverse} />
               ) : (
                 <Text style={styles.submitBtnText}>
-                  {isAutoHold ? 'Ditahan — Override Diperlukan' : 'Ajukan Permintaan'}
+                  {hasMissingReason
+                    ? 'Lengkapi Alasan Kelebihan'
+                    : hasMissingOtherNote
+                      ? 'Lengkapi Keterangan'
+                      : 'Ajukan Permintaan'}
                 </Text>
               )}
             </TouchableOpacity>
@@ -1163,6 +1331,69 @@ const styles = StyleSheet.create({
     marginTop: SPACE.md,
   },
   req: { color: COLORS.critical },
+
+  reasonBox: {
+    marginTop: SPACE.sm,
+    padding: SPACE.md,
+    borderRadius: RADIUS_SM,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.surfaceAlt,
+  },
+  reasonBoxMissing: {
+    borderColor: COLORS.critical,
+    backgroundColor: COLORS.criticalBg,
+  },
+  reasonLabel: {
+    fontSize: TYPE.sm,
+    fontFamily: FONTS.bold,
+    color: COLORS.text,
+  },
+  reasonHint: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.regular,
+    color: COLORS.textSec,
+    marginTop: 2,
+    marginBottom: SPACE.sm,
+    lineHeight: 17,
+  },
+  reasonChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: SPACE.sm,
+  },
+  reasonChip: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 999,
+    paddingHorizontal: SPACE.md - 2,
+    paddingVertical: SPACE.sm - 1,
+    backgroundColor: COLORS.surface,
+  },
+  reasonChipActive: {
+    borderColor: COLORS.primary,
+    backgroundColor: `${COLORS.primary}15`,
+  },
+  reasonChipText: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.semibold,
+    color: COLORS.textSec,
+  },
+  reasonChipTextActive: { color: COLORS.primary },
+  reasonNote: {
+    marginTop: SPACE.sm,
+    minHeight: 44,
+    textAlignVertical: 'top',
+  },
+  reasonNoteMissing: {
+    borderColor: COLORS.critical,
+  },
+  reasonNoteError: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.regular,
+    color: COLORS.critical,
+    marginTop: 4,
+  },
 
   fieldHint: {
     fontSize: TYPE.xs,
@@ -1388,6 +1619,25 @@ const styles = StyleSheet.create({
   envelopePct: {
     fontSize: TYPE.sm,
     fontFamily: FONTS.bold,
+  },
+  // Signal-2 plan drift badge (Task 2.13) — context only, distinct from the
+  // burn-pct color logic above (drift can be positive/negative regardless of
+  // whether the Signal-1 envelope is currently healthy).
+  driftBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.xs - 2,
+    marginTop: SPACE.xs,
+    paddingVertical: 3,
+    paddingHorizontal: SPACE.xs,
+    borderRadius: RADIUS_SM,
+    backgroundColor: COLORS.infoBg,
+    alignSelf: 'flex-start',
+  },
+  driftBadgeText: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.medium,
+    color: COLORS.info,
   },
 
   allocationBox: {

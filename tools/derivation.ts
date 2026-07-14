@@ -137,10 +137,18 @@ export interface MaterialBalance {
 export async function deriveMaterialBalance(projectId: string): Promise<MaterialBalance[]> {
   const [boqTotals, { data: boqItems }, { data: latestAhs }, { data: purchaseOrders }, { data: receipts }] = await Promise.all([
     deriveBoqInstalledTotals(projectId),
+    // Task 3.1: active-plan-only. `boqPlannedMap`/`boqItems` below feed BOTH
+    // the ahs_lines path (already scoped to the latest ahs_version, whose
+    // boq_item_id set can never include a superseded row by construction —
+    // this filter is a no-op there) AND the legacy v1 fallback loop (no
+    // ahs_version/master scoping at all — there, a superseded row WOULD
+    // double-count into the balance without this filter). See migration
+    // 074_boq_items_supersede.sql.
     supabase
       .from('boq_items')
       .select('id, planned, installed, unit, tier1_material, tier2_material')
-      .eq('project_id', projectId),
+      .eq('project_id', projectId)
+      .is('superseded_at', null),
     // Pick the CURRENT baseline, not "highest version" — every publish writes
     // version=1, so ordering by version is a tie that can return a stale,
     // demoted version. publishBaselineV2 maintains is_current (demote old →
@@ -158,13 +166,19 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
       .eq('project_id', projectId),
     supabase
       .from('receipts')
-      .select('id, po_id, receipt_lines(material_name, quantity_actual)')
+      .select('id, po_id, receipt_lines(material_id, material_name, quantity_actual)')
       .eq('project_id', projectId),
   ]);
 
   const boqPlannedMap = new Map((boqItems ?? []).map((item) => [item.id, Number(item.planned ?? 0)]));
   const derivedInstalledMap = new Map(boqTotals.map(total => [total.boq_item_id, Number(total.total_installed ?? 0)]));
   const poMaterialMap = new Map((purchaseOrders ?? []).map((po) => [po.id, po.material_name]));
+  // Received quantities are aggregated into TWO maps: by catalog material_id
+  // (the reliable join, populated once receipt_lines carry material_id — mig 055)
+  // and by normalized material_name (the legacy fallback for lines with no id).
+  // The lookup site tries id first, then name, so a receipt whose free-text name
+  // differs from the catalog name still reconciles via its material_id.
+  const receivedById = new Map<string, number>();
   const receivedByName = new Map<string, number>();
 
   for (const receipt of receipts ?? []) {
@@ -181,9 +195,15 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
     }
 
     for (const line of receiptLines) {
+      const qty = Number(line.quantity_actual ?? 0);
+      const materialId = (line as { material_id?: string | null }).material_id ?? null;
+      if (materialId) {
+        receivedById.set(materialId, (receivedById.get(materialId) ?? 0) + qty);
+        continue;
+      }
       const key = normalizeMaterialKey(line.material_name || poMaterialMap.get(receipt.po_id));
       if (!key) continue;
-      receivedByName.set(key, (receivedByName.get(key) ?? 0) + Number(line.quantity_actual ?? 0));
+      receivedByName.set(key, (receivedByName.get(key) ?? 0) + qty);
     }
   }
 
@@ -342,7 +362,11 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
   const balances: MaterialBalance[] = Array.from(aggregate.values()).map((bucket) => {
     const material = bucket.material_id ? materialMap.get(bucket.material_id) : null;
     const materialName = material?.name ?? bucket.material_name ?? bucket.material_id ?? 'Material belum dipetakan';
-    const received = receivedByName.get(normalizeMaterialKey(materialName)) ?? 0;
+    // Prefer the id link (a receipt keyed to this material_id counts even when
+    // its free-text name differs from the catalog name); fall back to the name
+    // key for legacy/unlinked receipt lines.
+    const receivedForId = bucket.material_id ? receivedById.get(bucket.material_id) : undefined;
+    const received = receivedForId ?? receivedByName.get(normalizeMaterialKey(materialName)) ?? 0;
     const unit = bucket.unit || material?.unit || '—';
 
     return {

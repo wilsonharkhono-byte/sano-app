@@ -27,6 +27,8 @@ import { supabase } from '../../tools/supabase';
 import { generateReport, recordReportExport, type ReportPayload, type ReportType, type ReportFilters } from '../../tools/reports';
 import { ReportPreview } from '../components/ReportPreview';
 import { deriveMaterialBalance } from '../../tools/derivation';
+import { computeOverallProgress } from '../../tools/progressMath';
+import { needsProcurement } from '../../tools/materialThresholds';
 import { getProjectTeam, listAllProfiles, addUserToProject, removeUserFromProject, availableProfiles, type TeamMember, type ProfileOption, ROLE_LABELS } from '../../tools/projectManagement';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
@@ -145,9 +147,9 @@ export default function LaporanScreen() {
   const { projects } = useProject();
 
   // Report metrics
-  const overallProgress = boqItems.length > 0
-    ? Math.round(boqItems.reduce((s, b) => s + b.progress, 0) / boqItems.length)
-    : 0;
+  // Task 3.2: volume-weighted over active, planned>0 items (tools/progressMath.ts)
+  // — same number as the Progress Summary report and every other surface.
+  const overallProgress = Math.round(computeOverallProgress(boqItems));
   const completedItems = boqItems.filter(b => b.progress >= 100).length;
   const openDefects = defects.filter(d => d.status === 'OPEN' || d.status === 'VALIDATED' || d.status === 'IN_REPAIR').length;
 
@@ -190,7 +192,10 @@ export default function LaporanScreen() {
       .then((balances) => {
         setMaterialBalanceSummary({
           total: balances.length,
-          lowStock: balances.filter((item) => item.on_site <= Math.max(item.planned * 0.1, 0)).length,
+          // Task 3.3: tools/materialThresholds.ts — same predicate drives the
+          // Material Balance report's "Perlu Pengadaan" summary count and
+          // per-row Status column, so this tile never disagrees with an export.
+          lowStock: balances.filter((item) => needsProcurement({ planned: item.planned, on_site: item.on_site })).length,
           deficit: balances.filter((item) => item.on_site < 0).length,
         });
       })
@@ -550,6 +555,17 @@ export default function LaporanScreen() {
                 { type: 'site_change_log' as ReportType, label: 'Catatan Perubahan', icon: 'create', filtered: false },
                 { type: 'schedule_variance' as ReportType, label: 'Varians Jadwal', icon: 'calendar', filtered: false },
                 { type: 'weekly_digest' as ReportType, label: 'Rangkuman Mingguan', icon: 'newspaper', filtered: false },
+                // Review fix (task 2): the Beranda "Anomali Kritikal" tile deep-links
+                // here but this Export Center had no audit surface — a dead end.
+                // Role-gated to estimator/admin/principal (reuses isEstimatorOrAdmin,
+                // same set the Beranda tile itself is gated to); supervisors don't see
+                // this entry. Mirrors OfficeReportsScreen's existing audit_list entry,
+                // except filtered: false here — unlike OfficeReportsScreen, this screen
+                // has no filterFrom/filterTo date-range UI wired up, so filtered: true
+                // would show a funnel icon that does nothing.
+                ...(isEstimatorOrAdmin ? [
+                  { type: 'audit_list' as ReportType, label: 'Daftar Audit & Anomali', icon: 'shield-checkmark', filtered: false },
+                ] : []),
               ]).map(r => (
                 <TouchableOpacity
                   key={r.type}

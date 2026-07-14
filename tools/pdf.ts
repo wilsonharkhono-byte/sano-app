@@ -14,8 +14,6 @@ import type {
   SiteChangeLogData,
   ScheduleVarianceData,
   WeeklyDigestData,
-  PayrollSupportData,
-  ClientChargeData,
   AuditListData,
   AIUsageData,
   ApprovalSLAData,
@@ -25,6 +23,8 @@ import type {
   ReportPhoto,
 } from './reportDataTypes';
 import { SanoDoc, C, FS, PDF } from './pdf-layout';
+import { formatDriftPct } from './planDrift';
+import { needsProcurement } from './materialThresholds';
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -152,41 +152,52 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
   sd.kpiRow([
     { value: String(d.total_materials ?? 0), label: 'Total Material', color: C.info },
     { value: String(d.over_received ?? 0), label: 'Over-Received', color: C.warning },
-    { value: String(d.under_received ?? 0), label: 'Under-Received', color: C.critical },
+    { value: String(d.needs_procurement ?? 0), label: 'Perlu Pengadaan', color: C.critical },
     { value: String(d.over_budget ?? 0), label: 'Over-Budget', color: C.critical },
   ]);
 
   sd.sectionTitle('Ringkasan');
   sd.metricRow('Total Material', String(d.total_materials ?? 0));
   sd.metricRow('Over-Received', String(d.over_received ?? 0), { valueColor: C.warning });
-  sd.metricRow('Under-Received', String(d.under_received ?? 0), { valueColor: C.critical });
+  sd.metricRow('Perlu Pengadaan', String(d.needs_procurement ?? 0), { valueColor: C.critical });
   sd.metricRow('Over-Budget', String(d.over_budget ?? 0), { valueColor: C.critical });
 
   if ((d.balances ?? []).length > 0) {
     sd.gap(6);
     sd.sectionTitle('Detail Material');
     // NOTE: "Terpasang" and "On-Site" columns are omitted from the PDF to
-    // make room for the five new budget/control columns while keeping
-    // fractional widths summing to ~1.0. Both columns remain in excel.ts.
+    // make room for the budget/control/drift columns while keeping fractional
+    // widths summing to ~1.0. Both quantity columns remain in excel.ts.
+    const showCosts = d.show_costs === true;
     sd.table(
       [
-        { header: 'Material', width: 0.22 },
+        // Material shrinks from 0.22 to 0.16 in the showCosts layout to make
+        // room for the Drift column below (0.22+...+0.05 = 1.00 without it;
+        // 0.16+...+0.05+0.06 = 1.00 with it).
+        { header: 'Material', width: showCosts ? 0.16 : 0.47 },
         { header: 'Sat.', width: 0.05 },
         { header: 'Rencana', width: 0.09, align: 'right' },
         { header: 'Diterima', width: 0.09, align: 'right' },
         { header: 'Status', width: 0.12 },
         { header: 'Kontrol', width: 0.07 },
-        { header: 'Anggaran (Rp)', width: 0.13, align: 'right' },
-        { header: 'Terpakai (Rp)', width: 0.12, align: 'right' },
+        ...(showCosts ? [
+          { header: 'Anggaran (Rp)', width: 0.13, align: 'right' as const },
+          { header: 'Terpakai (Rp)', width: 0.12, align: 'right' as const },
+        ] : []),
         { header: 'Burn %', width: 0.06, align: 'right' },
         { header: 'Flag', width: 0.05 },
+        // Signal-2 plan drift (Task 2.13) — office viewers only, same
+        // show_costs gate as the Rp columns above.
+        ...(showCosts ? [{ header: 'Drift', width: 0.06, align: 'right' as const }] : []),
       ],
       (d.balances ?? []).map((b) => {
         const received = b.received ?? b.total_received ?? 0;
         const planned = b.planned ?? 0;
         const installed = b.installed ?? 0;
         const onSite = b.on_site ?? received - installed;
-        const status = onSite < 0 ? 'Defisit' : received < planned * 0.8 ? 'Perlu Pengadaan' : 'Aman';
+        // Task 3.3: shared on_site-based predicate (tools/materialThresholds.ts) —
+        // same rule as the LaporanScreen tile and the reports.ts summary count.
+        const status = onSite < 0 ? 'Defisit' : needsProcurement({ planned, on_site: onSite }) ? 'Perlu Pengadaan' : 'Aman';
         const isRp = b.control === 'RP';
         return [
           b.material_name ?? b.name ?? '—',
@@ -195,12 +206,23 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
           String(received),
           status,
           b.control ?? '—',
-          isRp ? Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID') : '—',
-          isRp ? Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID') : '—',
+          ...(showCosts ? [
+            isRp ? Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID') : '—',
+            isRp ? Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID') : '—',
+          ] : []),
           b.control === 'NONE' || b.burn_pct == null ? '—' : b.burn_pct.toFixed(0) + '%',
           b.control === 'NONE' ? '—' : (b.flag ?? '—'),
+          ...(showCosts ? [b.drift_pct == null ? '—' : formatDriftPct(b.drift_pct)] : []),
         ];
       }),
+    );
+    // Task 3.3 review: the PDF omits the Terpasang/On-Site columns (width
+    // budget above), so the Status column is not derivable from the visible
+    // Rencana/Diterima pair — explain the rule in a footnote.
+    sd.text(
+      'Status "Perlu Pengadaan": estimasi saldo on-site (diterima − terpasang) ≤ 10% dari rencana. ' +
+        'Saldo on-site adalah estimasi (terpasang dihitung dari progres BoQ), bukan hitungan stok tersertifikasi.',
+      { size: FS.xs },
     );
   }
 }
@@ -220,15 +242,16 @@ async function buildReceiptLog(sd: SanoDoc, d: ReceiptLogData): Promise<void> {
   if ((d.entries ?? []).length > 0) {
     sd.gap(6);
     sd.sectionTitle('Log Penerimaan');
+    const showCosts = d.show_costs === true;
     sd.table(
       [
         { header: 'No. PO', width: 0.10 },
-        { header: 'Material', width: 0.22 },
+        { header: 'Material', width: showCosts ? 0.22 : 0.36 },
         { header: 'Supplier', width: 0.16 },
         { header: 'Pesan', width: 0.08, align: 'right' },
         { header: 'Terima', width: 0.08, align: 'right' },
         { header: 'Sat.', width: 0.06 },
-        { header: 'Harga/Unit', width: 0.14, align: 'right' },
+        ...(showCosts ? [{ header: 'Harga/Unit', width: 0.14, align: 'right' as const }] : []),
         { header: 'Status', width: 0.16 },
       ],
       (d.entries ?? []).map((e) => [
@@ -238,7 +261,7 @@ async function buildReceiptLog(sd: SanoDoc, d: ReceiptLogData): Promise<void> {
         String(e.ordered_qty ?? 0),
         String(e.received_qty ?? 0),
         e.unit ?? '—',
-        e.unit_price != null ? fmtRp(e.unit_price) : '—',
+        ...(showCosts ? [e.unit_price != null ? fmtRp(e.unit_price) : '—'] : []),
         (e.status ?? '—').replace(/_/g, ' '),
       ]),
     );
@@ -319,129 +342,6 @@ async function buildWeeklyDigest(sd: SanoDoc, d: WeeklyDigestData): Promise<void
     Object.entries(d.by_type).forEach(([type, count]: [string, number]) => {
       sd.metricRow(type, String(count));
     });
-  }
-}
-
-async function buildPayrollSupportSummary(sd: SanoDoc, d: PayrollSupportData): Promise<void> {
-  sd.kpiRow([
-    { value: String(d.total_entries ?? 0), label: 'Total Entri', color: C.info },
-    { value: String(d.total_qty ?? 0), label: 'Total Qty', color: C.accent },
-    { value: String((d.by_reporter ?? []).length), label: 'Jumlah Pelapor', color: C.ok },
-  ]);
-
-  sd.sectionTitle('Ringkasan');
-  sd.metricRow('Tujuan', d.purpose ?? '—');
-  sd.metricRow('Total Entri', String(d.total_entries ?? 0));
-  sd.metricRow('Total Qty', String(d.total_qty ?? 0));
-
-  if ((d.by_reporter ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Rekap per Pelapor');
-    sd.table(
-      [
-        { header: 'Pelapor', width: 0.50 },
-        { header: 'Jumlah Entri', width: 0.25, align: 'right' },
-        { header: 'Total Qty', width: 0.25, align: 'right' },
-      ],
-      (d.by_reporter ?? []).map((g) => [
-        g.reporter_name ?? '—',
-        String(g.entry_count ?? 0),
-        String(g.total_qty ?? 0),
-      ]),
-    );
-  }
-
-  if ((d.entries ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Detail Entri');
-    sd.table(
-      [
-        { header: 'Tgl', width: 0.08 },
-        { header: 'Pelapor', width: 0.14 },
-        { header: 'Kode', width: 0.09 },
-        { header: 'Item', width: 0.22 },
-        { header: 'Qty', width: 0.07, align: 'right' },
-        { header: 'Sat.', width: 0.06 },
-        { header: 'Lokasi', width: 0.14 },
-        { header: 'Catatan', width: 0.20 },
-      ],
-      (d.entries ?? []).slice(0, 100).map((e) => [
-        fmtDateShort(e.created_at),
-        e.reporter_name ?? '—',
-        e.boq_code ?? '—',
-        e.boq_label ?? '—',
-        String(e.quantity ?? 0),
-        e.unit ?? '—',
-        e.location ?? '—',
-        e.note ?? '—',
-      ]),
-    );
-  }
-}
-
-async function buildClientChargeReport(sd: SanoDoc, d: ClientChargeData): Promise<void> {
-  sd.kpiRow([
-    { value: fmtRp(d.grand_total_est_cost ?? 0), label: 'Est. Tagihan VO', color: C.critical },
-    { value: String(d.vo_charges?.items?.length ?? 0), label: 'VO Klien', color: C.warning },
-    { value: String(d.progress_support?.total_entries ?? 0), label: 'Support Entries', color: C.info },
-  ]);
-
-  sd.sectionTitle('Ringkasan Tagihan');
-  sd.metricRow('Tujuan', d.purpose ?? '—');
-  sd.metricRow('Estimasi VO Tagih', fmtRp(d.grand_total_est_cost ?? 0), { valueColor: C.critical });
-  sd.metricRow('Jumlah VO Terkait Klien', String(d.vo_charges?.items?.length ?? 0));
-  sd.metricRow('Support Progress Entries', String(d.progress_support?.total_entries ?? 0));
-
-  if ((d.vo_charges?.items ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('VO Tagihan Klien');
-    sd.table(
-      [
-        { header: 'Tgl', width: 0.08 },
-        { header: 'Lokasi', width: 0.14 },
-        { header: 'Deskripsi', width: 0.26 },
-        { header: 'Pemohon', width: 0.13 },
-        { header: 'Penyebab', width: 0.11 },
-        { header: 'Est. Biaya', width: 0.14, align: 'right' },
-        { header: 'Status', width: 0.14 },
-      ],
-      (d.vo_charges.items ?? []).map((item) => [
-        fmtDateShort(item.created_at),
-        item.location ?? '—',
-        item.description ?? '—',
-        item.requested_by_name ?? '—',
-        (item.cause ?? '—').replace(/_/g, ' '),
-        item.est_cost != null ? fmtRp(item.est_cost) : '—',
-        (item.status ?? '—').replace(/_/g, ' '),
-      ]),
-    );
-  }
-
-  if ((d.progress_support?.items ?? []).length > 0) {
-    sd.gap(6);
-    sd.sectionTitle('Support Progress');
-    sd.table(
-      [
-        { header: 'Tgl', width: 0.08 },
-        { header: 'Pelapor', width: 0.14 },
-        { header: 'Kode', width: 0.09 },
-        { header: 'Item', width: 0.22 },
-        { header: 'Qty', width: 0.07, align: 'right' },
-        { header: 'Sat.', width: 0.06 },
-        { header: 'Lokasi', width: 0.14 },
-        { header: 'Catatan', width: 0.20 },
-      ],
-      (d.progress_support.items ?? []).slice(0, 80).map((item) => [
-        fmtDateShort(item.created_at),
-        item.reporter_name ?? '—',
-        item.boq_code ?? '—',
-        item.boq_label ?? '—',
-        String(item.quantity ?? 0),
-        item.unit ?? '—',
-        item.location ?? '—',
-        item.note ?? '—',
-      ]),
-    );
   }
 }
 
@@ -804,15 +704,13 @@ async function buildSiteChangeLog(sd: SanoDoc, d: SiteChangeLogData): Promise<vo
 // forward declarations populated below
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- heterogeneous builder map requires flexible data param
 const BUILDERS: Partial<Record<string, (sd: SanoDoc, d: any) => Promise<void>>> = {};
-type AnyReportData = ProgressSummaryData | MaterialBalanceData | ReceiptLogData | SiteChangeLogData | ScheduleVarianceData | WeeklyDigestData | PayrollSupportData | ClientChargeData | AuditListData | AIUsageData | ApprovalSLAData | OperationalDisciplineData | ToolUsageData | ExceptionHandlingData;
+type AnyReportData = ProgressSummaryData | MaterialBalanceData | ReceiptLogData | SiteChangeLogData | ScheduleVarianceData | WeeklyDigestData | AuditListData | AIUsageData | ApprovalSLAData | OperationalDisciplineData | ToolUsageData | ExceptionHandlingData;
 
 BUILDERS['progress_summary'] = buildProgressSummary;
 BUILDERS['material_balance'] = buildMaterialBalance;
 BUILDERS['receipt_log'] = buildReceiptLog;
 BUILDERS['schedule_variance'] = buildScheduleVariance;
 BUILDERS['weekly_digest'] = buildWeeklyDigest;
-BUILDERS['payroll_support_summary'] = buildPayrollSupportSummary;
-BUILDERS['client_charge_report'] = buildClientChargeReport;
 BUILDERS['audit_list'] = buildAuditList;
 BUILDERS['ai_usage_summary'] = buildAIUsageSummary;
 BUILDERS['approval_sla_user'] = buildApprovalSLAUser;
@@ -851,12 +749,6 @@ export async function exportReportToPdf(
       break;
     case 'weekly_digest':
       await buildWeeklyDigest(sd, payload.data as WeeklyDigestData);
-      break;
-    case 'payroll_support_summary':
-      await buildPayrollSupportSummary(sd, payload.data as PayrollSupportData);
-      break;
-    case 'client_charge_report':
-      await buildClientChargeReport(sd, payload.data as ClientChargeData);
       break;
     case 'audit_list':
       await buildAuditList(sd, payload.data as AuditListData);

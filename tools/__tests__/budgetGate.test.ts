@@ -1,4 +1,5 @@
-import { evaluateTier3Budget, evaluateTier4Untracked } from '../budgetGate';
+import { evaluateTier3Budget, evaluateTier3BudgetSoft, evaluateTier4Untracked } from '../budgetGate';
+import { requiresOverageReason } from '../requestOverage';
 import type { MaterialBudgetStatus } from '../types';
 
 const budget = (m: Partial<MaterialBudgetStatus>): MaterialBudgetStatus => ({
@@ -59,6 +60,38 @@ describe('evaluateTier3Budget', () => {
     const r = evaluateTier3Budget(budget({ budget_total_rupiah: 0 }), 10);
     expect(r.flag).toBe('WARNING');
     expect(r.check).toBe('tier3_zero_budget');
+  });
+});
+
+describe('evaluateTier3BudgetSoft — request-time WARNING cap (Task 2.4)', () => {
+  it('caps HIGH (over budget) to WARNING with escalated copy', () => {
+    const r = evaluateTier3BudgetSoft(budget({ committed_rupiah: 8_000_000 }), 10); // 104%
+    expect(r.flag).toBe('WARNING'); // pre-069 HIGH
+    expect(r.msg).toContain('Melebihi anggaran');
+  });
+
+  it('caps CRITICAL (>120%) to WARNING and strips the principal-override promise', () => {
+    const r = evaluateTier3BudgetSoft(budget({ committed_rupiah: 10_000_000 }), 10); // 127%
+    expect(r.flag).toBe('WARNING'); // pre-069 CRITICAL
+    expect(r.msg).toContain('Jauh melebihi anggaran');
+    expect(r.msg).not.toMatch(/principal override/i);
+  });
+
+  it('requires a reason when the projected budget burn crosses 100%', () => {
+    expect(requiresOverageReason(evaluateTier3BudgetSoft(budget({ committed_rupiah: 8_000_000 }), 10))).toBe(true); // 104%
+    expect(requiresOverageReason(evaluateTier3BudgetSoft(budget({}), 10))).toBe(false); // 10% well under
+  });
+
+  it('leaves the sub-100 bands untouched (OK/INFO/WARNING as before)', () => {
+    expect(evaluateTier3BudgetSoft(budget({}), 10).flag).toBe('OK');                       // 10%
+    expect(evaluateTier3BudgetSoft(budget({ committed_rupiah: 6_500_000 }), 10).flag).toBe('WARNING'); // 86%
+  });
+
+  it('passes through the evaluator WARNING (no overage marker) when budget is not evaluable', () => {
+    const r = evaluateTier3BudgetSoft(null, 10);
+    expect(r.flag).toBe('WARNING');
+    expect(r.overage).toBeUndefined();
+    expect(requiresOverageReason(r)).toBe(false);
   });
 });
 

@@ -8,6 +8,8 @@ import { supabase } from './supabase';
 import type { MilestoneStatus } from './types';
 import { aggregatePeriod } from './dailySiteLogs';
 import { resolvePhotoUrl } from './storage';
+import { computeOverallProgress } from './progressMath';
+import { dayRangeWIB } from './timeWindow';
 
 const STATUS_LABELS: Record<MilestoneStatus, string> = {
   ON_TRACK: 'Sesuai Jadwal',
@@ -32,12 +34,17 @@ export function deriveProjectStatusLabel(statuses: MilestoneStatus[]): string {
   return 'Sesuai Jadwal';
 }
 
-export async function installedAsOf(projectId: string, isoDateEnd: string): Promise<Map<string, number>> {
+// Task 3.5: `cutoffIsoExclusive` is an EXCLUSIVE upper bound ("installed
+// strictly before this instant") rather than the old inclusive `lte`. Callers
+// pass a WIB-day-boundary instant from tools/timeWindow.ts — an exclusive
+// boundary composes correctly with "as of end of day X WIB" (== strictly
+// before the start of day X+1 WIB) without the old 23:59:59-literal gap.
+export async function installedAsOf(projectId: string, cutoffIsoExclusive: string): Promise<Map<string, number>> {
   const { data, error } = await supabase
     .from('progress_entries')
     .select('boq_item_id, quantity, created_at')
     .eq('project_id', projectId)
-    .lte('created_at', isoDateEnd);
+    .lt('created_at', cutoffIsoExclusive);
   if (error) throw error;
 
   const map = new Map<string, number>();
@@ -47,23 +54,42 @@ export async function installedAsOf(projectId: string, isoDateEnd: string): Prom
   return map;
 }
 
-function overallProgress(boqItems: Array<{ id: string; planned: number }>, installed: Map<string, number>): number {
-  const withPlan = boqItems.filter((b) => b.planned > 0);
-  if (withPlan.length === 0) return 0;
-  const sum = withPlan.reduce((s, b) => s + Math.min(100, ((installed.get(b.id) ?? 0) / b.planned) * 100), 0);
-  return sum / withPlan.length;
+// Task 3.2: delegates to the shared volume-weighted formula
+// (tools/progressMath.ts) — this "as of" variant keeps its own semantics
+// (installed is read from a point-in-time progress_entries snapshot, not the
+// live boq_items.installed column) but the AGGREGATION math is now the same
+// one function every surface uses, so the weekly delta hint reconciles with
+// the Progress Summary report / Beranda / Laporan overall %.
+function overallProgress(
+  boqItems: Array<{ id: string; planned: number; superseded_at?: string | null }>,
+  installed: Map<string, number>,
+): number {
+  return computeOverallProgress(
+    boqItems.map((b) => ({
+      planned: b.planned,
+      installed: installed.get(b.id) ?? 0,
+      superseded_at: b.superseded_at,
+    })),
+  );
 }
 
 export async function computeWeeklyProgressDelta(
   projectId: string,
-  boqItems: Array<{ id: string; planned: number }>,
+  boqItems: Array<{ id: string; planned: number; superseded_at?: string | null }>,
   startIso: string,
   endIso: string,
 ): Promise<number> {
-  // Overall progress as of midnight opening the period start vs. end-of-day of the period end.
+  // Task 3.5: overall progress as of midnight WIB opening the period start vs.
+  // end-of-day WIB of the period end. `dayRangeWIB` gives fromIso = start of
+  // `startIso`'s WIB day and toIso = the EXCLUSIVE end of `endIso`'s WIB day
+  // (== start of the next day WIB) — both are exactly the exclusive cutoffs
+  // `installedAsOf` now expects, so "as of end of day" lands on the same
+  // boundary as every other report's date window instead of a bespoke
+  // offset-less `T23:59:59` literal.
+  const { fromIso: periodStartWib, toIso: periodEndExclusiveWib } = dayRangeWIB(startIso, endIso);
   const [atStart, atEnd] = await Promise.all([
-    installedAsOf(projectId, `${startIso}T00:00:00`),
-    installedAsOf(projectId, `${endIso}T23:59:59`),
+    installedAsOf(projectId, periodStartWib),
+    installedAsOf(projectId, periodEndExclusiveWib),
   ]);
   return overallProgress(boqItems, atEnd) - overallProgress(boqItems, atStart);
 }
@@ -79,6 +105,56 @@ export async function assignNextReportNo(projectId: string): Promise<number> {
   if (error) throw error;
   return (data?.report_no ?? 0) + 1;
 }
+
+// Task 3.7: true-max revision counter. ClientReportBuilderScreen's history
+// list can hand back ANY revision row the user tapped (not necessarily the
+// newest one for that report_no) — trusting `viewing.meta.revision + 1` can
+// therefore recreate a revision number that already exists. Query the actual
+// max instead. Also reused by issueClientReport's retry-on-conflict below.
+export async function nextRevisionNo(projectId: string, reportNo: number): Promise<number> {
+  const { data, error } = await supabase
+    .from('client_progress_reports')
+    .select('revision')
+    .eq('project_id', projectId)
+    .eq('report_no', reportNo)
+    .order('revision', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data?.revision ?? 0) + 1;
+}
+
+// Postgres 23505 is the primary signal. Also match on the constraint name
+// from migration 075 as a fallback — future-proofs against a driver/proxy
+// that loses the error `code` field but keeps `message`, and against other
+// unique constraints on this table being (mis)read as a numbering race if
+// their message happens to omit a code. Named-constraint match stays scoped
+// to THIS constraint specifically, so it won't paper over unrelated
+// violations the way a bare "any 23505" fallback would.
+const NUMBERING_CONSTRAINT_NAME = 'uq_client_progress_reports_no_revision';
+
+function isUniqueViolation(error: any): boolean {
+  if (!error) return false;
+  if (error.code === '23505') return true;
+  return typeof error.message === 'string' && error.message.includes(NUMBERING_CONSTRAINT_NAME);
+}
+
+// Operator-facing message for when the numbering race never resolves inside
+// the retry budget — swapped in for the raw Postgres 23505 copy, which is
+// meaningless to a non-technical user tapping "Terbitkan". The raw error is
+// still logged via console.warn below so the real cause isn't lost.
+const REPORT_NUMBER_CONFLICT_MESSAGE = 'Nomor laporan bentrok berulang — coba lagi.';
+
+// Bounded retries for the report-numbering race (Task 3.7): two concurrent
+// "Terbitkan" taps can both read the same max(report_no) (or max(revision))
+// during draft assembly and then race to insert. Migration 075 adds a hard
+// UNIQUE index on (project_id, report_no, revision) so a collision surfaces
+// LOUDLY as a Postgres unique-violation (23505) instead of silently minting
+// a duplicate — this loop catches that violation and retries with a freshly
+// recomputed number. Works even without 075 applied (the insert would then
+// just succeed with a duplicate number, same as before this fix) — 075 is
+// what turns the (rare) silent dupe into a loud, retried conflict.
+const MAX_REPORT_ISSUE_ATTEMPTS = 5;
 
 export async function recordClientProgressReportExport(
   projectId: string,
@@ -182,36 +258,78 @@ export async function issueClientReport(
   draft: ClientReportDraft,
   projectId: string,
   userId: string,
-): Promise<{ id: string }> {
-  const { data, error } = await supabase
-    .from('client_progress_reports')
-    .insert({
-      project_id: projectId,
-      report_no: draft.reportNo,
-      revision: draft.revision ?? 1,
-      kind: draft.kind,
-      period_start: draft.periodStart,
-      period_end: draft.periodEnd,
-      status_label: draft.statusLabel,
-      weather: draft.weather,
-      crew_total: draft.crewTotal,
-      crew_breakdown: draft.crewBreakdown,
-      safety_incidents: draft.safetyIncidents,
-      next_plan: draft.nextPlan,
-      snapshot: draft,                       // frozen rendered content
-      issued_at: new Date().toISOString(),
-      issued_by: userId,
-    })
-    .select('id')
-    .single();
-  if (error || !data) throw error ?? new Error('Client report issue failed');
+): Promise<{ id: string; reportNo: number; revision: number }> {
+  const isRevision = (draft.revision ?? 1) > 1;
+  let reportNo = draft.reportNo;
+  let revision = draft.revision ?? 1;
+  // Starts out literally `draft` (not a copy) so the common, uncontested path
+  // inserts the exact snapshot the caller built. Only rebuilt after a retry,
+  // once reportNo/revision have actually changed from what the caller passed.
+  let snapshot: ClientReportDraft = draft;
 
-  await recordClientProgressReportExport(projectId, userId, {
-    kind: draft.kind,
-    report_no: draft.reportNo,
-    revision: draft.revision ?? 1,
-  });
-  return { id: data.id };
+  for (let attempt = 1; attempt <= MAX_REPORT_ISSUE_ATTEMPTS; attempt++) {
+    const { data, error } = await supabase
+      .from('client_progress_reports')
+      .insert({
+        project_id: projectId,
+        report_no: reportNo,
+        revision,
+        kind: draft.kind,
+        period_start: draft.periodStart,
+        period_end: draft.periodEnd,
+        status_label: draft.statusLabel,
+        weather: draft.weather,
+        crew_total: draft.crewTotal,
+        crew_breakdown: draft.crewBreakdown,
+        safety_incidents: draft.safetyIncidents,
+        next_plan: draft.nextPlan,
+        snapshot,                              // frozen rendered content
+        issued_at: new Date().toISOString(),
+        issued_by: userId,
+      })
+      .select('id')
+      .single();
+
+    if (!error && data) {
+      await recordClientProgressReportExport(projectId, userId, {
+        kind: draft.kind,
+        report_no: reportNo,
+        revision,
+      });
+      // Return the number ACTUALLY inserted, not draft.reportNo/revision —
+      // a lost race + successful retry above may have bumped both, and the
+      // caller (ClientReportBuilderScreen) toasts these values so the
+      // operator sees the true issued number, not the stale pre-retry one.
+      return { id: data.id, reportNo, revision };
+    }
+
+    if (!error || !isUniqueViolation(error)) {
+      // A real failure unrelated to the numbering race — surface immediately.
+      throw error ?? new Error('Client report issue failed');
+    }
+
+    if (attempt === MAX_REPORT_ISSUE_ATTEMPTS) {
+      // The numbering race never resolved inside the retry budget. The raw
+      // Postgres 23505 copy is meaningless to whoever tapped "Terbitkan" —
+      // log it for diagnosis and surface a plain-language operator message
+      // instead.
+      console.warn('[issueClientReport] report numbering conflict persisted after retries', error);
+      throw new Error(REPORT_NUMBER_CONFLICT_MESSAGE);
+    }
+
+    // Lost the race: someone else took this (report_no, revision) between
+    // our read and our insert. Recompute the true max and try again — bump
+    // report_no for a brand-new report, or revision for an explicit re-issue
+    // (Buat Revisi) of an existing report_no.
+    if (isRevision) {
+      revision = await nextRevisionNo(projectId, reportNo);
+    } else {
+      reportNo = await assignNextReportNo(projectId);
+    }
+    snapshot = { ...draft, reportNo, revision };
+  }
+
+  throw new Error('Client report issue failed after retries');
 }
 
 // ---------------------------------------------------------------------------

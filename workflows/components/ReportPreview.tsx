@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, Image } from 'react-native';
 import { COLORS } from '../theme';
 import type { ReportPayload } from '../../tools/reports';
+import { formatDriftPct } from '../../tools/planDrift';
 
 function RRow({ label, value, color }: { label: string; value: string | number; color?: string }) {
   return (
@@ -100,7 +101,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <SLabel>Ringkasan</SLabel>
         <RRow label="Total Material" value={d.total_materials} />
         <RRow label="Over-Received" value={d.over_received} color={COLORS.warning} />
-        <RRow label="Under-Received" value={d.under_received} color={COLORS.critical} />
+        <RRow label="Perlu Pengadaan" value={d.needs_procurement} color={COLORS.critical} />
         <RRow label="Over-Budget" value={d.over_budget ?? 0} color={COLORS.critical} />
         <SLabel>Detail Material</SLabel>
         {(d.balances ?? []).map((b: any, i: number) => (
@@ -115,9 +116,17 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
               Terpasang: {b.installed ?? 0} {b.unit} · Saldo: {b.on_site ?? 0} {b.unit}
             </Text>
-            {b.control === 'RP' && (
+            {d.show_costs && b.control === 'RP' && (
               <Text style={{ fontSize: 12, color: COLORS.textSec }}>
                 Anggaran: Rp {Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID')} · Terpakai: Rp {Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID')} · {b.burn_pct != null ? b.burn_pct.toFixed(0) + '%' : '—'} [{b.flag ?? '—'}]
+              </Text>
+            )}
+            {/* Signal-2 plan drift (Task 2.13) — office viewers only, same
+                show_costs gate as the Rp line above. drift_pct undefined/null
+                = no baseline snapshot yet for this material. */}
+            {d.show_costs && b.drift_pct != null && (
+              <Text style={{ fontSize: 12, color: COLORS.info }}>
+                Drift vs baseline: {formatDriftPct(b.drift_pct)}
               </Text>
             )}
           </View>
@@ -289,63 +298,6 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
             ))}
           </>
         )}
-      </>
-    );
-  }
-
-  if (payload.type === 'payroll_support_summary') {
-    return (
-      <>
-        <SLabel>Tujuan</SLabel>
-        <Text style={{ fontSize: 13, color: COLORS.textSec, lineHeight: 19 }}>{d.purpose}</Text>
-        <SLabel>Ringkasan</SLabel>
-        <RRow label="Total Entri" value={d.total_entries ?? 0} />
-        <RRow label="Total Qty" value={d.total_qty ?? 0} color={COLORS.accent} />
-        <RRow label="Jumlah Pelapor" value={(d.by_reporter ?? []).length} />
-        <SLabel>Rekap per Pelapor</SLabel>
-        {(d.by_reporter ?? []).map((group: any, index: number) => (
-          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
-            <Text style={{ fontSize: 13, fontWeight: '600' }}>{group.reporter_name}</Text>
-            <Text style={{ fontSize: 12, color: COLORS.textSec }}>
-              {group.entry_count} entri · total {group.total_qty} unit pekerjaan
-            </Text>
-          </View>
-        ))}
-        {(d.by_reporter ?? []).length === 0 && <Text style={{ fontSize: 13, color: COLORS.textSec }}>Belum ada entri payroll support pada rentang ini.</Text>}
-      </>
-    );
-  }
-
-  if (payload.type === 'client_charge_report') {
-    const formatRp = (n: number) => `Rp ${n.toLocaleString('id-ID')}`;
-    return (
-      <>
-        <SLabel>Tujuan</SLabel>
-        <Text style={{ fontSize: 13, color: COLORS.textSec, lineHeight: 19 }}>{d.purpose}</Text>
-        <SLabel>Ringkasan</SLabel>
-        <RRow label="Estimasi Biaya Ditagihkan" value={formatRp(d.grand_total_est_cost ?? 0)} color={COLORS.warning} />
-        <RRow label="Perubahan Terkait Klien" value={d.vo_charges?.items?.length ?? 0} />
-        <RRow label="Entri Support Progress" value={d.progress_support?.total_entries ?? 0} />
-        <SLabel>Perubahan Potensial Ditagihkan</SLabel>
-        {(d.vo_charges?.items ?? []).map((item: any, index: number) => (
-          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
-            <Text style={{ fontSize: 13, fontWeight: '600' }}>{item.description}</Text>
-            <Text style={{ fontSize: 12, color: COLORS.textSec }}>{item.location ?? '—'} · {item.requested_by_name ?? '—'}</Text>
-            <Text style={{ fontSize: 12, color: COLORS.textSec }}>{item.est_material ?? 'Tanpa material estimasi'} · {item.est_cost ? formatRp(item.est_cost) : 'Belum ada estimasi biaya'}</Text>
-          </View>
-        ))}
-        {(d.vo_charges?.items ?? []).length === 0 && <Text style={{ fontSize: 13, color: COLORS.textSec }}>Belum ada catatan perubahan permintaan owner pada filter ini.</Text>}
-        <SLabel>Support Progress</SLabel>
-        {(d.progress_support?.items ?? []).slice(0, 10).map((item: any, index: number) => (
-          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
-            <Text style={{ fontSize: 13, fontWeight: '600' }}>{item.boq_code} — {item.boq_label}</Text>
-            <Text style={{ fontSize: 12, color: COLORS.textSec }}>
-              {item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID') : '—'} · {item.quantity} {item.unit}
-              {item.location ? ` · ${item.location}` : ''}
-            </Text>
-            <Text style={{ fontSize: 12, color: COLORS.textSec }}>{item.reporter_name}</Text>
-          </View>
-        ))}
       </>
     );
   }

@@ -1,0 +1,65 @@
+-- 074 — Soft-delete stale boq_items on re-publish (Task 3.1)
+--
+-- Problem: publishBaselineV2.ts upserts boq_items by (project_id, code) and
+-- never removes a row whose code is absent from the NEW workbook (the upsert
+-- region, tools/publishBaselineV2.ts, `.from('boq_items').upsert(batch,
+-- { onConflict: 'project_id,code' })`). A code that a contractor's revised
+-- RAB drops (e.g. an element re-scoped out, or a code renumbered by the
+-- estimator) leaves its OLD boq_items row behind with stale planned/
+-- installed — it keeps showing in Progress Summary (tools/reports.ts
+-- generateProgressSummary), dilutes overall %, and stays a live target for
+-- work-group pickers and allocation candidate lists even though the current
+-- plan no longer includes it.
+--
+-- Why soft delete, not hard delete: boq_items is FK'd from allocations,
+-- receipts, progress_entries, opname_lines, milestones.boq_ids, etc.
+-- Historical rows must keep resolving by id for audit/display (a receipt or
+-- progress entry logged against a code that later disappears from the plan
+-- must still show its label). A hard DELETE would either cascade-orphan that
+-- history or be blocked by FK constraints — neither is acceptable under the
+-- truth-correctness contract (CLAUDE.md §1.1: absent numbers are better than
+-- silently deleted ones, but silently deleted HISTORY is worse still).
+--
+-- Fix: add a nullable `superseded_at` marker. NULL = active (current plan
+-- row); non-NULL = the code was absent from a later publish, timestamped.
+-- tools/publishBaselineV2.ts (separate change, same task) sets it after a
+-- successful boq_items upsert, and clears it back to NULL if a superseded
+-- code REAPPEARS in a still-later workbook (resurrect). Readers that
+-- enumerate the ACTIVE plan (Progress Summary, useProject's boq_items load,
+-- work-group/allocation pickers) filter `superseded_at IS NULL`; readers
+-- that resolve a specific boq_item_id by FK (allocation display, opname
+-- exports, audit joins) are intentionally left unfiltered so history keeps
+-- resolving.
+--
+-- RLS / write-gating: no policy change needed. The supervisor column-guard
+-- trigger installed by 059_boq_items_write_split.sql
+-- (guard_boq_items_supervisor_cols) is a WHITELIST, not a blacklist — it only
+-- allows `installed`/`progress` through for non-office actors and rejects a
+-- diff on every other column via
+-- `(to_jsonb(NEW) - 'installed' - 'progress') IS DISTINCT FROM (to_jsonb(OLD) - 'installed' - 'progress')`.
+-- A brand-new column is therefore automatically protected from supervisor
+-- writes with no follow-up migration required — same precedent as
+-- 064_boq_items_subchapter.sql's header.
+--
+-- Index: a partial index on `project_id` WHERE superseded_at IS NULL speeds
+-- up every "active plan rows for this project" query (the common case, now
+-- run by every reader listed above) without bloating the index with
+-- superseded history.
+--
+-- Idempotent / re-paste-safe: ADD COLUMN IF NOT EXISTS, DROP INDEX IF EXISTS
+-- before CREATE INDEX. Safe to paste into the Supabase Dashboard SQL editor
+-- more than once.
+--
+-- DEPLOY ORDER: paste this migration BEFORE deploying the app build that
+-- writes superseded_at — otherwise the publish path's supersede/resurrect
+-- update fails ("column superseded_at does not exist"). That failure is
+-- designed to be NON-FATAL (a warning, not a publish abort — see
+-- publishBaselineV2.ts), so an out-of-order deploy degrades to "stale rows
+-- keep polluting reads" (today's behavior) rather than breaking publish
+-- outright — but there is no reason to accept even that: paste this first,
+-- same as 064's precedent.
+
+ALTER TABLE boq_items ADD COLUMN IF NOT EXISTS superseded_at TIMESTAMPTZ;
+
+DROP INDEX IF EXISTS idx_boq_items_active_by_project;
+CREATE INDEX idx_boq_items_active_by_project ON boq_items (project_id) WHERE superseded_at IS NULL;

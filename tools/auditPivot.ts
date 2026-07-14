@@ -56,6 +56,8 @@ export interface AuditAhsRow {
   materialCode: string | null;
   materialName: string;
   materialSpec: string | null;
+  // NOT 1|2|3|4: mirrors ahs_lines.tier, whose DB CHECK is still (1,2,3) —
+  // see tools/types.ts AhsLine.tier for the full scope note.
   tier: 1 | 2 | 3;
   coefficient: number;
   unit: string;
@@ -80,7 +82,9 @@ export interface AuditMaterialRow {
   code: string;
   name: string;
   category: string;
-  tier: 1 | 2 | 3;
+  // material_catalog.tier allows 4 (untracked consumable) since migration
+  // 047_material_tier_budget_control.sql.
+  tier: 1 | 2 | 3 | 4;
   unit: string;
   refUnitPrice: number;
   sourceRow: number | null;
@@ -249,7 +253,7 @@ export function extractMaterialRows(rows: ImportStagingRow[]): AuditMaterialRow[
         code: str(p.code),
         name: str(p.name),
         category: str(p.category),
-        tier: (num(p.tier, 2) as 1 | 2 | 3),
+        tier: (num(p.tier, 2) as 1 | 2 | 3 | 4),
         unit: str(p.unit),
         refUnitPrice: num(p.reference_unit_price),
         sourceRow: raw.excelRowNumber != null ? num(raw.excelRowNumber) : null,

@@ -685,9 +685,17 @@ export default function AuditTraceScreen({
       return;
     }
     await supabase.from('import_staging_edits').delete().eq('id', lastEdit.id);
-    const refreshed = await getStagingRows(sessionId);
-    onRowsChange(refreshed);
-    toast('Perubahan di-undo', 'ok');
+    // getStagingRows now throws on a query error rather than silently
+    // returning [] — catch it here so a failed reload surfaces as a toast
+    // instead of crashing the undo flow (the edit + delete above already
+    // succeeded, so onRowsChange just wouldn't refresh in that case).
+    try {
+      const refreshed = await getStagingRows(sessionId);
+      onRowsChange(refreshed);
+      toast('Perubahan di-undo', 'ok');
+    } catch (err: any) {
+      toast(`Undo tersimpan, tapi gagal memuat ulang baris: ${err.message}`, 'critical');
+    }
   }, [sessionId, stagingRows, toast, onRowsChange]);
 
   const handleDeleteAhs = useCallback(

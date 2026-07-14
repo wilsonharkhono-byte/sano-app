@@ -2,8 +2,11 @@
 //
 // Turns flat BoQ rows into the work-groups a field supervisor actually orders
 // against — "Struktur Pondasi", "Kolom Lantai 1", "Balok & Plat Lantai 2", …
-// Pure + deterministic; classifies from a runtime BoqItem's label + chapter
-// (sub-chapter is not persisted to boq_items, so it is not available here).
+// Pure + deterministic; classifies from a runtime BoqItem's label + chapter,
+// and sub_chapter when the source workbook has it (persisted on boq_items as
+// of 064_boq_items_subchapter.sql / tools/publishBaselineV2.ts — v1 imports
+// and pre-064 v2 publishes may still leave it null, which the classifier
+// treats as "not available" the same as before).
 //
 // Design: docs/superpowers/specs/2026-06-16-boq-work-group-material-requests-design.md
 // Validated against AAL-5, Sonny, Nusa Golf, PD3, Ernawati

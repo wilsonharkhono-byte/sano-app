@@ -48,13 +48,27 @@ export const DefectSeverity = {
 export type DefectSeverityType = (typeof DefectSeverity)[keyof typeof DefectSeverity];
 
 // ── Purchase Order Status ───────────────────────────────────────────────────
+// Storable statuses only (must match purchase_orders.status CHECK — 001:212 +
+// widened to add CLOSED_SHORT in migration 072). CLOSED_SHORT is a TERMINAL
+// short-close: a delivery declared "Terima Final" that arrived under the ordered
+// quantity. CANCELLED is a terminal admin cancel of an OPEN, receipt-free PO.
 export const POStatus = {
   OPEN: 'OPEN',
   PARTIAL_RECEIVED: 'PARTIAL_RECEIVED',
   FULLY_RECEIVED: 'FULLY_RECEIVED',
+  CLOSED_SHORT: 'CLOSED_SHORT',
   CANCELLED: 'CANCELLED',
 } as const;
 export type POStatusType = (typeof POStatus)[keyof typeof POStatus];
+
+// Indonesian display labels for each PO status (see tools/poStatus.ts helpers).
+export const PO_STATUS_LABELS: Record<POStatusType, string> = {
+  OPEN: 'Terbuka',
+  PARTIAL_RECEIVED: 'Diterima sebagian',
+  FULLY_RECEIVED: 'Diterima penuh',
+  CLOSED_SHORT: 'Ditutup (kurang kirim)',
+  CANCELLED: 'Dibatalkan',
+};
 
 // ── Material Request Header Status ──────────────────────────────────────────
 export const MRStatus = {

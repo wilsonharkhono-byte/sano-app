@@ -26,8 +26,19 @@ export interface ReportPhoto {
 export interface MaterialBalanceData {
   total_materials: number;
   over_received: number;
-  under_received: number;
+  // Task 3.3: renamed from `under_received` (which counted `received <
+  // planned*0.8` — a DIFFERENT rule than the "Perlu Pengadaan" tile on
+  // LaporanScreen). Now counts tools/materialThresholds.ts `needsProcurement`
+  // (on_site-based), the same predicate that drives the per-row Status
+  // column below and the LaporanScreen dashboard tile — one rule everywhere.
+  needs_procurement: number;
   over_budget?: number;
+  // Single decision point (set once, in tools/reports.ts) for whether Rp
+  // budget fields are present on `balances` rows. Exporters (excel/pdf) and
+  // ReportPreview react to this flag rather than re-deriving viewerRole
+  // logic themselves. false for supervisor viewers (and fails closed when
+  // viewerRole is missing).
+  show_costs: boolean;
   balances: Array<{
     material_name?: string;
     name?: string;
@@ -44,6 +55,13 @@ export interface MaterialBalanceData {
     committed_rupiah?: number | null;
     burn_pct?: number | null;
     flag?: string;
+    // Signal-2 plan drift (Task 2.13, spec §4) — quantity-based, not Rp, but
+    // gated behind the same show_costs decision point as the budget fields
+    // above: office viewers only (supervisor gets the badge in Permintaan,
+    // not a report column — see tools/reports.ts generateMaterialBalanceReport).
+    // undefined = material has no baseline snapshot yet (no comparison).
+    drift_pct?: number | null;
+    baseline_planned_qty?: number | null;
   }>;
 }
 
@@ -51,6 +69,10 @@ export interface MaterialBalanceData {
 export interface ReceiptLogData {
   total_pos: number;
   fully_received: number;
+  // See MaterialBalanceData.show_costs — same single-decision-point pattern.
+  // false for supervisor viewers; `unit_price` is omitted from entries (not
+  // nulled) when this is false.
+  show_costs: boolean;
   entries: Array<{
     po_number: string;
     po_ref: string | null;
@@ -60,7 +82,7 @@ export interface ReceiptLogData {
     received_qty: number;
     receipt_count: number;
     unit: string;
-    unit_price: number | null;
+    unit_price?: number | null;
     status: string;
     ordered_date: string;
     last_receipt: string | null;
@@ -149,66 +171,6 @@ export interface WeeklyDigestData {
   by_type: Record<string, number>;
   by_flag: Record<string, number>;
   overall_progress: number;
-}
-
-// ── Payroll Support Summary ────────────────────────────────────────
-export interface PayrollSupportData {
-  purpose: string;
-  total_entries: number;
-  total_qty: number;
-  by_reporter: Array<{
-    reporter_name: string;
-    total_qty: number;
-    entry_count: number;
-  }>;
-  entries: Array<{
-    id: string;
-    created_at: string;
-    boq_code: string;
-    boq_label: string;
-    quantity: number;
-    unit: string;
-    location: string | null;
-    note: string | null;
-    reporter_name: string;
-  }>;
-  date_range: { from: string | null; to: string | null };
-}
-
-// ── Client Charge Report ───────────────────────────────────────────
-export interface ClientChargeData {
-  purpose: string;
-  vo_charges: {
-    items: Array<{
-      id: string;
-      created_at: string;
-      location: string | null;
-      description: string | null;
-      requested_by_name: string | null;
-      cause: string;
-      est_material: number | null;
-      est_cost: number | null;
-      status: string;
-    }>;
-    total_est_cost: number;
-  };
-  progress_support: {
-    items: Array<{
-      id: string;
-      created_at: string;
-      boq_code: string;
-      boq_label: string;
-      quantity: number;
-      unit: string;
-      location: string | null;
-      reporter_name: string;
-      note?: string | null;
-    }>;
-    total_entries: number;
-    total_qty: number;
-  };
-  grand_total_est_cost: number;
-  date_range: { from: string | null; to: string | null };
 }
 
 // ── Audit List ─────────────────────────────────────────────────────
@@ -395,8 +357,6 @@ export interface ReportDataMap {
   site_change_log: SiteChangeLogData;
   schedule_variance: ScheduleVarianceData;
   weekly_digest: WeeklyDigestData;
-  payroll_support_summary: PayrollSupportData;
-  client_charge_report: ClientChargeData;
   audit_list: AuditListData;
   ai_usage_summary: AIUsageData;
   approval_sla_user: ApprovalSLAData;

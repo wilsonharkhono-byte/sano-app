@@ -4,7 +4,7 @@ import { MaterialUsagePanel } from '../MaterialUsagePanel';
 import type { EnvelopeWithPrice } from '../../../../tools/envelopes';
 
 describe('MaterialUsagePanel', () => {
-  it('renders unlinked-material warning when materialId is null', () => {
+  it('renders "Tidak ada alokasi pembanding" for an unlinked/free-text line', () => {
     const { getByText } = render(
       <MaterialUsagePanel
         materialId={null}
@@ -15,7 +15,7 @@ describe('MaterialUsagePanel', () => {
         envelope={null}
       />,
     );
-    expect(getByText(/tidak terdaftar di katalog/i)).toBeTruthy();
+    expect(getByText(/Tidak ada alokasi pembanding/i)).toBeTruthy();
   });
 });
 
@@ -28,6 +28,7 @@ const tier2Envelope = (m: Partial<EnvelopeWithPrice> = {}): EnvelopeWithPrice =>
   unit: 'pcs',
   total_planned: 5000,
   total_ordered: 200,
+  total_requested: 350,
   total_received: 0,
   remaining_to_order: 4800,
   burn_pct: 4,
@@ -50,9 +51,12 @@ describe('MaterialUsagePanel — Tier 2', () => {
         envelope={tier2Envelope()}
       />,
     );
-    expect(getByText(/200 \/ 5\.000 pcs/)).toBeTruthy();
+    // "Di-PO" surfaces the SANO PO qty (total_ordered); "Permintaan berjalan"
+    // is the separate request-demand figure (total_requested).
+    expect(getByText(/Di-PO: 200 \/ 5\.000 pcs/)).toBeTruthy();
     expect(getByText(/4%/)).toBeTruthy();
-    expect(getByText(/Sisa: 4\.800 pcs/)).toBeTruthy();
+    expect(getByText(/Permintaan berjalan: 350 pcs/)).toBeTruthy();
+    expect(getByText(/Sisa untuk di-PO: 4\.800 pcs/)).toBeTruthy();
   });
 
   it('renders Rupiah envelope when baseline_unit_price is present', () => {
@@ -96,7 +100,7 @@ describe('MaterialUsagePanel — Tier 2', () => {
     expect(getByText(/⚠ Envelope sudah terlampaui/i)).toBeTruthy();
   });
 
-  it('shows envelope-empty state when envelope is null', () => {
+  it('shows "Tidak ada alokasi pembanding" when the envelope is null', () => {
     const { getByText } = render(
       <MaterialUsagePanel
         materialId="mat-bata"
@@ -106,7 +110,30 @@ describe('MaterialUsagePanel — Tier 2', () => {
         envelope={null}
       />,
     );
-    expect(getByText(/Envelope belum ada di baseline/i)).toBeTruthy();
+    expect(getByText(/Tidak ada alokasi pembanding/i)).toBeTruthy();
+  });
+
+  it('renders the recomputed Signal-1 overage running total (planned/di-PO/berjalan/ini/proyeksi) + reason', () => {
+    // planned 1000, di-PO 900, total_requested 110 (incl. this 50) → other-open
+    // 60; projected 900+60+50 = 1010 = 101%.
+    const { getByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-bata"
+        tier={2}
+        requestedQuantity={50}
+        requestedUnit="kg"
+        envelope={tier2Envelope({ unit: 'kg', total_planned: 1000, total_ordered: 900, total_requested: 110 })}
+        overageReason="PLAN_UNDERESTIMATE"
+        overageNote="RAB kurang di zona B"
+      />,
+    );
+    expect(getByText(/Rencana: 1\.000 kg/)).toBeTruthy();
+    expect(getByText(/Sudah di-PO: 900 kg/)).toBeTruthy();
+    expect(getByText(/Permintaan berjalan lain: 60 kg/)).toBeTruthy();
+    expect(getByText(/Permintaan ini: 50 kg/)).toBeTruthy();
+    expect(getByText(/Proyeksi: 1\.010 kg \(101%\)/)).toBeTruthy();
+    expect(getByText(/Melebihi total alokasi/i)).toBeTruthy();
+    expect(getByText(/Alasan pengaju: Volume RAB kurang — RAB kurang di zona B/)).toBeTruthy();
   });
 
   it('renders boq_item_count when present', () => {
@@ -210,5 +237,26 @@ describe('MaterialUsagePanel — Tier 3', () => {
       />,
     );
     expect(getByText(/Estimasi biaya tidak tersedia/i)).toBeTruthy();
+  });
+});
+
+// material_request_lines.tier has allowed 4 (untracked consumable) since
+// migration 053_tier4_request_lines.sql, and PermintaanScreen already lets
+// estimators submit tier-4 request lines (commit 21cde48) — this office
+// review side must render them without crashing or falling into the
+// generic "tier tidak terdefinisi" warning branch.
+describe('MaterialUsagePanel — Tier 4', () => {
+  it('renders the untracked-consumable notice, not the unknown-tier fallback', () => {
+    const { getByText, queryByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-oli"
+        tier={4}
+        requestedQuantity={2}
+        requestedUnit="liter"
+        envelope={tier2Envelope({ tier: 4, material_name: 'Oli bekisting', unit: 'liter' })}
+      />,
+    );
+    expect(getByText(/Tier 4 consumable — tidak dilacak anggaran/i)).toBeTruthy();
+    expect(queryByText(/Material tier tidak terdefinisi/i)).toBeNull();
   });
 });

@@ -7,6 +7,8 @@ import { Platform } from 'react-native';
 import * as XLSX from 'xlsx';
 import { encode } from 'base64-arraybuffer';
 import type { ReportPayload } from './reports';
+import { formatDriftPct } from './planDrift';
+import { needsProcurement } from './materialThresholds';
 import type {
   ProgressSummaryData,
   MaterialBalanceData,
@@ -14,9 +16,12 @@ import type {
   SiteChangeLogData,
   ScheduleVarianceData,
   WeeklyDigestData,
-  PayrollSupportData,
-  ClientChargeData,
   AuditListData,
+  AIUsageData,
+  ApprovalSLAData,
+  OperationalDisciplineData,
+  ToolUsageData,
+  ExceptionHandlingData,
   ReportPhoto,
 } from './reportDataTypes';
 
@@ -255,12 +260,13 @@ function buildProgressSummary(wb: XLSX.WorkBook, d: ProgressSummaryData) {
   appendSheet(wb, 'Lampiran Foto Progres', photoHeader, photoRows);
 }
 
-function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
+export function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
+  const showCosts = d.show_costs === true;
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Total Material', String(d.total_materials)],
     ['Over-Received', String(d.over_received)],
-    ['Under-Received', String(d.under_received)],
+    ['Perlu Pengadaan', String(d.needs_procurement)],
     ['Over-Budget', String(d.over_budget ?? 0)],
   ];
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
@@ -271,14 +277,21 @@ function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
   const header = [
     'Nama Material', 'Satuan', 'Volume Direncanakan', 'Volume Diterima',
     'Volume Terpasang', 'Saldo On-Site', 'Status',
-    'Tier', 'Kontrol', 'Anggaran (Rp)', 'Terpakai (Rp)', 'Burn %', 'Flag',
+    'Tier', 'Kontrol',
+    ...(showCosts ? ['Anggaran (Rp)', 'Terpakai (Rp)'] : []),
+    'Burn %', 'Flag',
+    // Signal-2 plan drift (Task 2.13) — office viewers only, same show_costs
+    // gate as the Rp columns above (see MaterialBalanceData.drift_pct).
+    ...(showCosts ? ['Drift vs Baseline'] : []),
   ];
   const rows: string[][] = (d.balances ?? []).map((b) => {
     const received = b.received ?? b.total_received ?? 0;
     const planned = b.planned ?? 0;
     const installed = b.installed ?? 0;
     const onSite = b.on_site ?? received - installed;
-    const status = onSite < 0 ? 'Defisit di Lapangan' : received < planned * 0.8 ? 'Perlu Pengadaan' : 'Aman';
+    // Task 3.3: shared on_site-based predicate (tools/materialThresholds.ts) —
+    // same rule as the LaporanScreen tile and the reports.ts summary count.
+    const status = onSite < 0 ? 'Defisit di Lapangan' : needsProcurement({ planned, on_site: onSite }) ? 'Perlu Pengadaan' : 'Aman';
     const isRp = b.control === 'RP';
     return [
       b.material_name ?? b.name ?? '—',
@@ -290,10 +303,13 @@ function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
       status,
       b.tier == null ? '—' : String(b.tier),
       b.control ?? '—',
-      isRp ? Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID') : '—',
-      isRp ? Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID') : '—',
+      ...(showCosts ? [
+        isRp ? Math.round(b.budget_total_rupiah ?? 0).toLocaleString('id-ID') : '—',
+        isRp ? Math.round(b.committed_rupiah ?? 0).toLocaleString('id-ID') : '—',
+      ] : []),
       b.control === 'NONE' || b.burn_pct == null ? '—' : b.burn_pct.toFixed(0) + '%',
       b.control === 'NONE' ? '—' : (b.flag ?? '—'),
+      ...(showCosts ? [b.drift_pct == null ? '—' : formatDriftPct(b.drift_pct)] : []),
     ];
   });
   const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
@@ -302,7 +318,8 @@ function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) {
   XLSX.utils.book_append_sheet(wb, ws, 'Detail Material');
 }
 
-function buildReceiptLog(wb: XLSX.WorkBook, d: ReceiptLogData) {
+export function buildReceiptLog(wb: XLSX.WorkBook, d: ReceiptLogData) {
+  const showCosts = d.show_costs === true;
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Total PO', String(d.total_pos)],
@@ -314,7 +331,11 @@ function buildReceiptLog(wb: XLSX.WorkBook, d: ReceiptLogData) {
   applyHeaderStyle(wsSummary, 0, 2);
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan');
 
-  const header = ['No. PO', 'Material', 'Supplier', 'Qty Dipesan', 'Qty Diterima', 'Satuan', 'Harga Satuan (Rp)', 'Total Nilai (Rp)', 'Status'];
+  const header = [
+    'No. PO', 'Material', 'Supplier', 'Qty Dipesan', 'Qty Diterima', 'Satuan',
+    ...(showCosts ? ['Harga Satuan (Rp)', 'Total Nilai (Rp)'] : []),
+    'Status',
+  ];
   const rows: SheetRow[] = (d.entries ?? []).map((e) => [
     e.po_number ?? e.po_ref ?? '—',
     e.material ?? '—',
@@ -322,8 +343,10 @@ function buildReceiptLog(wb: XLSX.WorkBook, d: ReceiptLogData) {
     String(e.ordered_qty ?? 0),
     String(e.received_qty ?? 0),
     e.unit ?? '—',
-    e.unit_price != null ? String(e.unit_price) : '—',
-    e.unit_price != null ? String((e.ordered_qty ?? 0) * e.unit_price) : '—',
+    ...(showCosts ? [
+      e.unit_price != null ? String(e.unit_price) : '—',
+      e.unit_price != null ? String((e.ordered_qty ?? 0) * e.unit_price) : '—',
+    ] : []),
     (e.status ?? '—').replace(/_/g, ' '),
   ]);
   appendSheet(wb, 'Log Penerimaan', header, rows);
@@ -501,80 +524,131 @@ function buildWeeklyDigest(wb: XLSX.WorkBook, d: WeeklyDigestData) {
   }
 }
 
-function buildPayrollSupportSummary(wb: XLSX.WorkBook, d: PayrollSupportData) {
+// Restored (post-3.4): AI Usage Summary — live principal report. Excel builder
+// added to satisfy the surviving-type invariant (was meta-sheet-only before).
+function buildAIUsageSummary(wb: XLSX.WorkBook, d: AIUsageData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
-    ['Tujuan', d.purpose ?? '—'],
-    ['Total Entri', String(d.total_entries ?? 0)],
-    ['Total Qty', String(d.total_qty ?? 0)],
-    ['Jumlah Pelapor', String((d.by_reporter ?? []).length)],
+    ['Total Interaksi', String(d.summary?.total_interactions ?? 0)],
+    ['User Aktif', String(d.summary?.active_users ?? 0)],
+    ['Total Token', String(d.summary?.total_tokens ?? 0)],
+    ['Token Input', String(d.summary?.total_input_tokens ?? 0)],
+    ['Token Output', String(d.summary?.total_output_tokens ?? 0)],
+    ['Chat Haiku', String(d.summary?.haiku_count ?? 0)],
+    ['Chat Sonnet', String(d.summary?.sonnet_count ?? 0)],
   ];
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
   wsSummary['!cols'] = colWidths(summaryRows);
   applyHeaderStyle(wsSummary, 0, 2);
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Payroll');
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan AI');
 
-  const groupHeader = ['Pelapor', 'Jumlah Entri', 'Total Qty'];
-  const groupRows: SheetRow[] = (d.by_reporter ?? []).map((group) => [
-    group.reporter_name ?? '—',
-    String(group.entry_count ?? 0),
-    String(group.total_qty ?? 0),
+  const userHeader = ['User', 'Peran', 'Chat', 'Token Input', 'Token Output', 'Total Token', 'Haiku', 'Sonnet', 'Hari Aktif', 'Terakhir Pakai'];
+  const userRows: SheetRow[] = (d.users ?? []).map((u) => [
+    u.full_name ?? '—',
+    u.role ?? '—',
+    String(u.interaction_count ?? 0),
+    String(u.input_tokens ?? 0),
+    String(u.output_tokens ?? 0),
+    String(u.total_tokens ?? 0),
+    String(u.haiku_count ?? 0),
+    String(u.sonnet_count ?? 0),
+    String(u.active_days ?? 0),
+    u.last_used_at ? new Date(u.last_used_at).toLocaleString('id-ID') : '—',
   ]);
-  appendSheet(wb, 'Rekap Pelapor', groupHeader, groupRows);
+  appendSheet(wb, 'AI per User', userHeader, userRows);
 
-  const entryHeader = ['Tanggal', 'Pelapor', 'Kode BoQ', 'Item', 'Qty', 'Satuan', 'Lokasi', 'Catatan'];
-  const entryRows: SheetRow[] = (d.entries ?? []).map((entry) => [
-    entry.created_at ? new Date(entry.created_at).toLocaleDateString('id-ID') : '—',
-    entry.reporter_name ?? '—',
-    entry.boq_code ?? '—',
-    entry.boq_label ?? '—',
-    String(entry.quantity ?? 0),
-    entry.unit ?? '—',
-    entry.location ?? '—',
-    entry.note ?? '—',
+  const dayHeader = ['Tanggal', 'Chat', 'Token Input', 'Token Output', 'Total Token'];
+  const dayRows: SheetRow[] = (d.usage_by_day ?? []).map((row) => [
+    row.date ?? '—',
+    String(row.interaction_count ?? 0),
+    String(row.input_tokens ?? 0),
+    String(row.output_tokens ?? 0),
+    String(row.total_tokens ?? 0),
   ]);
-  appendSheet(wb, 'Entri Payroll Support', entryHeader, entryRows);
+  appendSheet(wb, 'Tren Harian', dayHeader, dayRows);
 }
 
-function buildClientChargeReport(wb: XLSX.WorkBook, d: ClientChargeData) {
+// Task 3.4: launched report — Approval SLA per User (input tables are live:
+// approval_tasks + the per-module review timestamps). Sheets mirror the
+// summary + detail pattern used by the other builders.
+function buildApprovalSLAUser(wb: XLSX.WorkBook, d: ApprovalSLAData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
-    ['Tujuan', d.purpose ?? '—'],
-    ['Estimasi VO Tagih', fmtRp(d.grand_total_est_cost ?? 0)],
-    ['Jumlah VO Terkait Klien', String(d.vo_charges?.items?.length ?? 0)],
-    ['Jumlah Support Progress', String(d.progress_support?.total_entries ?? 0)],
-    ['Total Qty Support Progress', String(d.progress_support?.total_qty ?? 0)],
+    ['Event Ditangani', String(d.summary?.handled_events ?? 0)],
+    ['Reviewer Aktif', String(d.summary?.active_reviewers ?? 0)],
+    ['Rata-rata SLA (jam)', String(d.summary?.avg_hours ?? 0)],
+    ['Median SLA (jam)', String(d.summary?.median_hours ?? 0)],
+    ['Lebih dari 24 jam', String(d.summary?.over_24h ?? 0)],
+    ['Item Pending', String(d.summary?.pending_items ?? 0)],
   ];
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
   wsSummary['!cols'] = colWidths(summaryRows);
   applyHeaderStyle(wsSummary, 0, 2);
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Tagihan');
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan SLA');
 
-  const voHeader = ['Tanggal', 'Lokasi', 'Deskripsi', 'Pemohon', 'Penyebab', 'Material Estimasi', 'Est. Biaya (Rp)', 'Status'];
-  const voRows: SheetRow[] = (d.vo_charges?.items ?? []).map((item) => [
-    item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID') : '—',
-    item.location ?? '—',
-    item.description ?? '—',
-    item.requested_by_name ?? '—',
-    (item.cause ?? '—').replace(/_/g, ' '),
-    item.est_material ?? '—',
-    item.est_cost != null ? String(item.est_cost) : '—',
-    (item.status ?? '—').replace(/_/g, ' '),
+  const queueHeader = ['Antrean', 'Pending'];
+  const queueRows: SheetRow[] = (d.pending_by_queue ?? []).map((row) => [
+    row.label ?? '—',
+    String(row.count ?? 0),
   ]);
-  appendSheet(wb, 'VO Tagihan Klien', voHeader, voRows);
+  appendSheet(wb, 'Pending per Antrean', queueHeader, queueRows);
 
-  const progressHeader = ['Tanggal', 'Pelapor', 'Kode BoQ', 'Item', 'Qty', 'Satuan', 'Lokasi', 'Catatan'];
-  const progressRows: SheetRow[] = (d.progress_support?.items ?? []).map((item) => [
-    item.created_at ? new Date(item.created_at).toLocaleDateString('id-ID') : '—',
-    item.reporter_name ?? '—',
-    item.boq_code ?? '—',
-    item.boq_label ?? '—',
-    String(item.quantity ?? 0),
-    item.unit ?? '—',
-    item.location ?? '—',
-    item.note ?? '—',
+  const userHeader = ['User', 'Peran', 'Ditangani', 'Avg (jam)', 'Median (jam)', '>24 jam', 'Pending', 'Terakhir Aksi'];
+  const userRows: SheetRow[] = (d.users ?? []).map((u) => [
+    u.full_name ?? '—',
+    u.role ?? '—',
+    String(u.handled_events ?? 0),
+    String(u.avg_hours ?? 0),
+    String(u.median_hours ?? 0),
+    String(u.over_24h ?? 0),
+    String(u.assigned_pending ?? 0),
+    u.last_acted_at ? new Date(u.last_acted_at).toLocaleString('id-ID') : '—',
   ]);
-  appendSheet(wb, 'Support Progress', progressHeader, progressRows);
+  appendSheet(wb, 'SLA per User', userHeader, userRows);
+
+  const entityHeader = ['Jenis Approval', 'Event', 'Avg (jam)', 'Median (jam)'];
+  const entityRows: SheetRow[] = (d.entity_sla ?? []).map((row) => [
+    row.entity ?? '—',
+    String(row.handled_events ?? 0),
+    String(row.avg_hours ?? 0),
+    String(row.median_hours ?? 0),
+  ]);
+  appendSheet(wb, 'SLA per Jenis', entityHeader, entityRows);
+}
+
+// Task 3.4: launched report — Operational Entry Discipline (input table live:
+// activity_log + per-module entry/photo tables).
+function buildOperationalEntryDiscipline(wb: XLSX.WorkBook, d: OperationalDisciplineData) {
+  const summaryRows: string[][] = [
+    ['Indikator', 'Nilai'],
+    ['Total Entry', String(d.summary?.total_entries ?? 0)],
+    ['User Aktif', String(d.summary?.active_users ?? 0)],
+    ['Entry Eligible Foto', String(d.summary?.photo_eligible_entries ?? 0)],
+    ['Foto Lengkap', String(d.summary?.photo_backed_entries ?? 0)],
+    ['Cakupan Foto', `${d.summary?.photo_coverage_pct ?? 0}%`],
+  ];
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+  wsSummary['!cols'] = colWidths(summaryRows);
+  applyHeaderStyle(wsSummary, 0, 2);
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Disiplin');
+
+  const moduleHeader = ['Modul', 'Jumlah Entry'];
+  const moduleRows: SheetRow[] = (d.by_module ?? []).map((row) => [
+    row.module ?? '—',
+    String(row.count ?? 0),
+  ]);
+  appendSheet(wb, 'Distribusi Modul', moduleHeader, moduleRows);
+
+  const userHeader = ['User', 'Peran', 'Total Entry', 'Hari Aktif', 'Cakupan Foto', 'Aktivitas Terakhir'];
+  const userRows: SheetRow[] = (d.users ?? []).map((u) => [
+    u.full_name ?? '—',
+    u.role ?? '—',
+    String(u.total_entries ?? 0),
+    String(u.active_days ?? 0),
+    u.photo_coverage_pct != null ? `${u.photo_coverage_pct}%` : '—',
+    u.last_activity ? new Date(u.last_activity).toLocaleString('id-ID') : '—',
+  ]);
+  appendSheet(wb, 'Disiplin per User', userHeader, userRows);
 }
 
 function buildAuditList(wb: XLSX.WorkBook, d: AuditListData) {
@@ -612,6 +686,81 @@ function buildAuditList(wb: XLSX.WorkBook, d: AuditListData) {
   appendSheet(wb, 'Audit Case', auditHeader, auditRows);
 }
 
+// Restored (post-3.4): Tool Usage Summary — live principal report. Excel builder
+// added to satisfy the surviving-type invariant (was meta-sheet-only before).
+function buildToolUsageSummary(wb: XLSX.WorkBook, d: ToolUsageData) {
+  const summaryRows: string[][] = [
+    ['Indikator', 'Nilai'],
+    ['Total Export', String(d.summary?.total_exports ?? 0)],
+    ['User Export', String(d.summary?.export_users ?? 0)],
+    ['Total Chat AI', String(d.summary?.total_ai_chats ?? 0)],
+    ['User AI', String(d.summary?.ai_users ?? 0)],
+    ['Total Token AI', String(d.summary?.total_ai_tokens ?? 0)],
+  ];
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+  wsSummary['!cols'] = colWidths(summaryRows);
+  applyHeaderStyle(wsSummary, 0, 2);
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Tool');
+
+  const typeHeader = ['Tipe Laporan', 'Jumlah Export'];
+  const typeRows: SheetRow[] = (d.top_report_types ?? []).map((row) => [
+    row.report_type ?? '—',
+    String(row.count ?? 0),
+  ]);
+  appendSheet(wb, 'Export per Tipe', typeHeader, typeRows);
+
+  const userHeader = ['User', 'Peran', 'Export', 'Chat AI', 'Total Token', 'Haiku', 'Sonnet', 'Aktivitas Terakhir'];
+  const userRows: SheetRow[] = (d.users ?? []).map((u) => [
+    u.full_name ?? '—',
+    u.role ?? '—',
+    String(u.export_count ?? 0),
+    String(u.ai_chat_count ?? 0),
+    String(u.total_tokens ?? 0),
+    String(u.haiku_count ?? 0),
+    String(u.sonnet_count ?? 0),
+    u.last_seen ? new Date(u.last_seen).toLocaleString('id-ID') : '—',
+  ]);
+  appendSheet(wb, 'Tool per User', userHeader, userRows);
+}
+
+// Restored (post-3.4): Exception Handling Load — live principal report. Excel
+// builder added to satisfy the surviving-type invariant.
+function buildExceptionHandlingLoad(wb: XLSX.WorkBook, d: ExceptionHandlingData) {
+  const summaryRows: string[][] = [
+    ['Indikator', 'Nilai'],
+    ['AUTO_HOLD Request', String(d.summary?.auto_hold_requests ?? 0)],
+    ['Request Ditolak', String(d.summary?.rejected_requests ?? 0)],
+    ['Perubahan Ditolak', String(d.summary?.rejected_vo ?? 0)],
+    ['MTN Ditolak', String(d.summary?.rejected_mtn ?? 0)],
+    ['Hold/Reject/Override', String(d.summary?.hold_reject_override_actions ?? 0)],
+    ['Total Anomali', String(d.summary?.anomalies_total ?? 0)],
+    ['Anomali High/Critical', String(d.summary?.anomalies_high_or_critical ?? 0)],
+    ['Audit Case Open', String(d.summary?.audit_cases_open ?? 0)],
+  ];
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+  wsSummary['!cols'] = colWidths(summaryRows);
+  applyHeaderStyle(wsSummary, 0, 2);
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Ringkasan Exception');
+
+  const userHeader = ['User', 'Peran', 'Generated', 'Handled', 'Hold/Reject/Override', 'Terakhir Sentuh'];
+  const userRows: SheetRow[] = (d.users ?? []).map((u) => [
+    u.full_name ?? '—',
+    u.role ?? '—',
+    String(u.generated_count ?? 0),
+    String(u.handled_count ?? 0),
+    String(u.hold_reject_override ?? 0),
+    u.last_touch ? new Date(u.last_touch).toLocaleString('id-ID') : '—',
+  ]);
+  appendSheet(wb, 'Beban per User', userHeader, userRows);
+
+  const anomalyHeader = ['Tipe Anomali', 'Jumlah'];
+  const anomalyRows: SheetRow[] = (d.anomaly_breakdown ?? []).map((row) => [
+    row.event_type ?? '—',
+    String(row.count ?? 0),
+  ]);
+  appendSheet(wb, 'Breakdown Anomali', anomalyHeader, anomalyRows);
+}
+
 // ── main export function ─────────────────────────────────────────────
 
 export async function exportReportToExcel(
@@ -630,9 +779,12 @@ export async function exportReportToExcel(
     case 'site_change_log':    buildSiteChangeLog(wb, payload.data as SiteChangeLogData); break;
     case 'schedule_variance':  buildScheduleVariance(wb, payload.data as ScheduleVarianceData); break;
     case 'weekly_digest':      buildWeeklyDigest(wb, payload.data as WeeklyDigestData); break;
-    case 'payroll_support_summary': buildPayrollSupportSummary(wb, payload.data as PayrollSupportData); break;
-    case 'client_charge_report': buildClientChargeReport(wb, payload.data as ClientChargeData); break;
     case 'audit_list':         buildAuditList(wb, payload.data as AuditListData); break;
+    case 'ai_usage_summary':   buildAIUsageSummary(wb, payload.data as AIUsageData); break;
+    case 'approval_sla_user':  buildApprovalSLAUser(wb, payload.data as ApprovalSLAData); break;
+    case 'operational_entry_discipline': buildOperationalEntryDiscipline(wb, payload.data as OperationalDisciplineData); break;
+    case 'tool_usage_summary': buildToolUsageSummary(wb, payload.data as ToolUsageData); break;
+    case 'exception_handling_load': buildExceptionHandlingLoad(wb, payload.data as ExceptionHandlingData); break;
   }
 
   const baseWorkbookBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
