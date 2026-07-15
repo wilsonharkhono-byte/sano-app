@@ -331,6 +331,85 @@ describe('deriveMaterialBalance — received & on_site', () => {
     expect(b.on_site).toBe(8); // received 10 - installed 2
   });
 
+  it('displays rebar in WHOLE batang, rounded up (÷ factor, ceil), not stored kg', async () => {
+    wireSupabase({
+      rpc: { derive_boq_installed: { data: [] } },
+      tables: {
+        boq_items: {
+          data: [{ id: 'boq-1', planned: 10, installed: 0, unit: 'm3', tier1_material: null, tier2_material: null }],
+        },
+        ahs_versions: { data: [{ id: 'ahs-v1' }] },
+        purchase_orders: { data: [{ id: 'po-1', material_name: 'Besi beton ulir 10 mm' }] },
+        receipts: {
+          data: [
+            {
+              id: 'r-1',
+              po_id: 'po-1',
+              receipt_lines: [{ material_id: 'mat-1', material_name: 'Besi beton ulir 10 mm', quantity_actual: 371 }],
+            },
+          ],
+        },
+        ahs_lines: {
+          data: [
+            {
+              material_id: 'mat-1', usage_rate: 0, coefficient: 74.05, waste_factor: 0,
+              unit: 'kg', boq_item_id: 'boq-1', material_spec: 'Besi beton ulir 10 mm',
+              line_type: 'material', material_catalog: { name: 'Besi beton ulir 10 mm' },
+            },
+          ],
+        },
+        material_catalog: {
+          data: [{ id: 'mat-1', name: 'Besi beton ulir 10 mm', unit: 'kg', supplier_unit: 'batang', base_qty_per_supplier_unit: 7.4 }],
+        },
+      },
+    });
+
+    const balances = await deriveMaterialBalance('proj-1');
+
+    expect(balances).toHaveLength(1);
+    const b = balances[0];
+    // Stored in kg; report shows WHOLE batang (you can't stock a partial 12 m bar).
+    expect(b.unit).toBe('batang');
+    // planned 10 m3 × 74.05 kg/m3 = 740.5 kg ÷ 7.4 = 100.07 → ceil 101.
+    expect(b.planned).toBe(101);
+    // received 371 kg ÷ 7.4 = 50.14 → ceil 51; installed 0; on_site = 51.
+    expect(b.received).toBe(51);
+    expect(b.installed).toBe(0);
+    expect(b.on_site).toBe(51);
+  });
+
+  it('leaves non-rebar (no supplier factor) in its base unit, unrounded', async () => {
+    wireSupabase({
+      rpc: { derive_boq_installed: { data: [] } },
+      tables: {
+        boq_items: {
+          data: [{ id: 'boq-1', planned: 3, installed: 0, unit: 'm3', tier1_material: null, tier2_material: null }],
+        },
+        ahs_versions: { data: [{ id: 'ahs-v1' }] },
+        purchase_orders: { data: [] },
+        receipts: { data: [] },
+        ahs_lines: {
+          data: [
+            {
+              material_id: 'mat-2', usage_rate: 0, coefficient: 1.05, waste_factor: 0,
+              unit: 'm3', boq_item_id: 'boq-1', material_spec: 'Beton Readymix',
+              line_type: 'material', material_catalog: { name: 'Beton Readymix' },
+            },
+          ],
+        },
+        material_catalog: {
+          data: [{ id: 'mat-2', name: 'Beton Readymix', unit: 'm3', supplier_unit: 'm3', base_qty_per_supplier_unit: null }],
+        },
+      },
+    });
+
+    const balances = await deriveMaterialBalance('proj-1');
+    expect(balances).toHaveLength(1);
+    // 3 × 1.05 = 3.15 m3 — stays fractional in m3 (no batang rounding).
+    expect(balances[0].unit).toBe('m3');
+    expect(balances[0].planned).toBe(3.15);
+  });
+
   it('matches received by name case-insensitively (normalizeMaterialKey)', async () => {
     wireSupabase({
       rpc: { derive_boq_installed: { data: [] } },

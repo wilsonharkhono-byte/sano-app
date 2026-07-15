@@ -5,6 +5,7 @@
 
 import { supabase } from './supabase';
 import { fetchAllPaged } from './queryHelpers';
+import { baseToSupplierOrder } from './materialUnitConversion';
 import type { FlagLevel, MaterialBudgetStatus } from './types';
 
 function normalizeMaterialKey(value?: string | null): string {
@@ -355,8 +356,8 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
 
   const materialIds = Array.from(new Set(Array.from(aggregate.values()).map(item => item.material_id).filter(Boolean))) as string[];
   const { data: materials } = materialIds.length > 0
-    ? await supabase.from('material_catalog').select('id, name, unit').in('id', materialIds)
-    : { data: [] as Array<{ id: string; name: string; unit: string }> };
+    ? await supabase.from('material_catalog').select('id, name, unit, supplier_unit, base_qty_per_supplier_unit').in('id', materialIds)
+    : { data: [] as Array<{ id: string; name: string; unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }> };
   const materialMap = new Map((materials ?? []).map((material) => [material.id, material]));
 
   const balances: MaterialBalance[] = Array.from(aggregate.values()).map((bucket) => {
@@ -367,16 +368,28 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
     // key for legacy/unlinked receipt lines.
     const receivedForId = bucket.material_id ? receivedById.get(bucket.material_id) : undefined;
     const received = receivedForId ?? receivedByName.get(normalizeMaterialKey(materialName)) ?? 0;
-    const unit = bucket.unit || material?.unit || '—';
+
+    // Quantities are stored in the material's BASE unit (kg for rebar). Rebar is
+    // ordered/stocked/counted as whole SUPPLIER units (batang) — you can't hold a
+    // fraction of a 12 m bar — so convert base→supplier and round UP to whole bars
+    // (baseToSupplierOrder = ceil), the same rule the ordering flow uses. Materials
+    // without a base_qty_per_supplier_unit factor pass through in their base unit.
+    const factor = material?.base_qty_per_supplier_unit ?? null;
+    const inSupplierUnits = typeof factor === 'number' && isFinite(factor) && factor > 0;
+    const round3 = (n: number) => Number(n.toFixed(3));
+    const toDisplay = (q: number) => round3(baseToSupplierOrder(q, factor));
+    const receivedDisp = toDisplay(received);
+    const installedDisp = toDisplay(bucket.installed);
 
     return {
       material_name: materialName,
       material_id: bucket.material_id,
-      planned: Number(bucket.planned.toFixed(3)),
-      received: Number(received.toFixed(3)),
-      installed: Number(bucket.installed.toFixed(3)),
-      on_site: Number((received - bucket.installed).toFixed(3)),
-      unit,
+      planned: toDisplay(bucket.planned),
+      received: receivedDisp,
+      installed: installedDisp,
+      // Saldo from the already-rounded components so the row reads consistently.
+      on_site: round3(receivedDisp - installedDisp),
+      unit: inSupplierUnits ? (material?.supplier_unit || 'batang') : (bucket.unit || material?.unit || '—'),
     };
   });
 
