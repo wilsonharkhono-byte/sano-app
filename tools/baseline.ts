@@ -381,8 +381,15 @@ export function needsReview(confidence: number): boolean {
 import { type ParsedWorkbook } from './excelParser';
 import { parseBoqV2 } from './boqParserV2';
 import { detectBoqSheetOptionFromBuffer } from './boqParserV2/multiSheetScanner';
-import { publishBaselineV2, type RevisionContext } from './publishBaselineV2';
+import { publishBaselineV2, loadCatalogAndAliases, type RevisionContext } from './publishBaselineV2';
+import { isSimplifiedInputWorkbook, parseSimplifiedInput } from './simplifiedInput';
+import type { StagingRowV2, ValidationReport } from './boqParserV2/types';
 import type { ImportAnomaly } from './types';
+// NOTE: ./simplifiedInput/reconcile is imported DYNAMICALLY at its call site
+// below. A static import here would create a baseline → reconcile → excelParser
+// → baseline cycle that perturbs TypeScript's whole-program inference (it
+// surfaced as a spurious navigation-type error in workflows/App.tsx). The
+// dynamic import keeps reconcile out of baseline's static import graph.
 
 /**
  * Parse an uploaded Excel BoQ file and populate staging rows + anomalies.
@@ -427,13 +434,44 @@ export async function parseAndStageWorkbook(
       // empty ArrayBuffer, which made v2 silently parse nothing. Resolve
       // the path the same way v1 would (read local file into memory).
       const v2Buffer = await resolveFileInput(fileInput);
-      // Default ingest is single-sheet `RAB (A)` (unchanged). Add-on rule: a
-      // multi-building workbook whose materials span `RAB (B)`…`RAB (E)`
-      // (e.g. Nusa Golf) is detected from its sheet-tagged breakdown sheets and
-      // parsed across all RAB sheets, so its materials aren't lost. See
-      // detectBoqSheetOption.
-      const boqSheet = detectBoqSheetOptionFromBuffer(v2Buffer);
-      const v2Result = await parseBoqV2(v2Buffer, { boqSheet });
+      // Simplified "SANO Input" two-sheet format (Tier-1 work-group matrix +
+      // tiered Others list) — an alternative to full RAB parsing. Detected by
+      // its exact sheet names; emits the same { stagingRows, validationReport }
+      // the rest of this function consumes. See
+      // docs/superpowers/specs/2026-07-14-simplified-boq-input-parser-design.md
+      let v2Result: { stagingRows: StagingRowV2[]; validationReport: ValidationReport };
+      if (isSimplifiedInputWorkbook(v2Buffer)) {
+        v2Result = parseSimplifiedInput(v2Buffer);
+        // Surface tier disagreements between the file and the catalog so a
+        // reviewer sees them before publish (file wins, but the shared catalog
+        // is not mutated — spec §5.5). Non-fatal: on any load error we proceed
+        // without conflict flags rather than block the import.
+        try {
+          const { catalog, aliasMap } = await loadCatalogAndAliases();
+          const catalogEntries = catalog.map(c => ({
+            code: c.code, name: c.name, category: c.category, tier: c.tier, unit: c.unit, aliases: [],
+          }));
+          const anchor = v2Result.stagingRows.find(
+            r => (r.parsed_data as { code?: string }).code === 'MATERIAL-UMUM',
+          );
+          if (anchor) {
+            // Dynamic import — see the note on the import block above (breaks a
+            // baseline → reconcile → excelParser → baseline static cycle).
+            const { detectOthersConflicts, flagOthersConflicts } = await import('./simplifiedInput/reconcile');
+            flagOthersConflicts(anchor, detectOthersConflicts(anchor, catalogEntries, aliasMap));
+          }
+        } catch (err) {
+          console.warn('[simplified-input] conflict pre-check skipped:', err);
+        }
+      } else {
+        // Default ingest is single-sheet `RAB (A)` (unchanged). Add-on rule: a
+        // multi-building workbook whose materials span `RAB (B)`…`RAB (E)`
+        // (e.g. Nusa Golf) is detected from its sheet-tagged breakdown sheets and
+        // parsed across all RAB sheets, so its materials aren't lost. See
+        // detectBoqSheetOption.
+        const boqSheet = detectBoqSheetOptionFromBuffer(v2Buffer);
+        v2Result = await parseBoqV2(v2Buffer, { boqSheet });
+      }
       // Insert v2 staging rows with the new fields populated.
       const inserts = v2Result.stagingRows.map(r => ({
         session_id: sessionId,
