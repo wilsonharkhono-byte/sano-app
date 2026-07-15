@@ -135,3 +135,48 @@ describe('buildWorkGroups', () => {
     expect(a).toBe(b);
   });
 });
+
+describe('buildWorkGroups — simplified "SANO Input" format (1:1, no auto-mixing)', () => {
+  const simplified = [
+    item('Lt. Basement ; Pile Cap, Sloof, Plat Lantai', 'Lt. Basement', { code: 'T1-007', sort_order: 7 }),
+    item('Lt. Basement ; Kolom', 'Lt. Basement', { code: 'T1-009', sort_order: 9 }),
+    item('Lantai 1 ; Kolom', 'Lantai 1', { code: 'T1-020', sort_order: 20 }),
+    // Others anchor — not a work area, must be excluded
+    item('Material Umum (Tier 2 & 3)', 'Material Umum', { code: 'MATERIAL-UMUM', sort_order: 99 }),
+  ];
+
+  it('surfaces each T1 row as its own group with its exact left-column label', () => {
+    const groups = buildWorkGroups(simplified);
+    expect(groups.map(g => g.label)).toEqual([
+      'Lt. Basement ; Pile Cap, Sloof, Plat Lantai',
+      'Lt. Basement ; Kolom',
+      'Lantai 1 ; Kolom',
+    ]);
+    expect(groups.every(g => g.itemCount === 1)).toBe(true);
+  });
+
+  it('does NOT merge like elements (no "Kolom" super-group)', () => {
+    const groups = buildWorkGroups(simplified);
+    expect(groups.find(g => g.label === 'Kolom')).toBeUndefined();
+    expect(groups.filter(g => g.label.includes('Kolom'))).toHaveLength(2); // two distinct rows
+  });
+
+  it('excludes the MATERIAL-UMUM Others anchor', () => {
+    const groups = buildWorkGroups(simplified);
+    expect(groups.find(g => g.label.includes('Material Umum'))).toBeUndefined();
+  });
+
+  it('orders groups by T1 code (Excel row order)', () => {
+    const groups = buildWorkGroups(simplified);
+    expect(groups.map(g => g.key)).toEqual(['sano:T1-007', 'sano:T1-009', 'sano:T1-020']);
+  });
+
+  it('leaves the RAB path (non-T1 codes) on the classifier', () => {
+    const rab = [
+      item('Poer PC.1', 'PEKERJAAN STRUKTUR', { code: 'III.A.1.1' }),
+      item('Sloof S1', 'PEKERJAAN STRUKTUR', { code: 'III.A.2.1' }),
+    ];
+    const groups = buildWorkGroups(rab);
+    expect(groups.find(g => g.label === 'Struktur Pondasi')?.itemCount).toBe(2); // still merged
+  });
+});
