@@ -19,6 +19,7 @@ export const REBAR_KG_PER_M: Record<number, number> = {
   19: 2.226,
   22: 2.984,
   25: 3.853,
+  29: 5.185,
   32: 6.313,
 };
 
@@ -42,6 +43,7 @@ const DIAMETER_BY_CODE: Record<string, number> = {
   'REB-DE19': 19,
   'REB-DE22': 22,
   'REB-DE25': 25,
+  'REB-DE29': 29,
   'REB-DE32': 32,
 };
 
@@ -55,7 +57,7 @@ export function rebarFactorByCode(code: string | null | undefined): number | nul
 // Matches the diameter token in workbook component names: "Besi D8",
 // "Besi beton D-10", "Besi beton P-12", "Besi Tulangan Ø16". Requires a
 // non-alphanumeric char (or start) before D/P/Ø so "PAD-6" etc. don't match.
-const DIAMETER_TOKEN_RE = /(?:^|[^a-z0-9])[dpøØ]\s?-?\s?(6|8|10|12|13|16|19|22|25|32)(?![0-9])/i;
+const DIAMETER_TOKEN_RE = /(?:^|[^a-z0-9])[dpøØ]\s?-?\s?(6|8|10|12|13|16|19|22|25|29|32)(?![0-9])/i;
 
 /**
  * kg-per-batang from a workbook component name (used where no catalog id is

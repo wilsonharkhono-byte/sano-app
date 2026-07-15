@@ -52,7 +52,7 @@ function RoleRouter() {
       if (!ref?.isReady()) return;
       const target = resolveNotificationRoute(screen, roleRef.current);
       try {
-        ref.navigate(target as never, (params ?? {}) as never);
+        (ref.navigate as unknown as (screen: string, params?: object) => void)(target, params ?? {});
       } catch {
         // Route not in current role's nav — fall back to Notifikasi tab.
         try { ref.navigate('Notifikasi' as never); } catch {}
