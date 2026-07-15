@@ -5,7 +5,7 @@
 
 import { supabase } from './supabase';
 import { fetchAllPaged } from './queryHelpers';
-import { displayQty, type MaterialUnitInfo } from './materialUnitConversion';
+import { baseToSupplierOrder } from './materialUnitConversion';
 import type { FlagLevel, MaterialBudgetStatus } from './types';
 
 function normalizeMaterialKey(value?: string | null): string {
@@ -370,26 +370,26 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
     const received = receivedForId ?? receivedByName.get(normalizeMaterialKey(materialName)) ?? 0;
 
     // Quantities are stored in the material's BASE unit (kg for rebar). Rebar is
-    // ordered and shown in SUPPLIER units (batang); every order/gate/catalog
-    // screen already converts via `displayQty`. Route the report through the
-    // same helper so besi reads in batang here too — not raw stored kg. Materials
-    // without a factor pass through unchanged.
-    const info: MaterialUnitInfo = {
-      unit: bucket.unit || material?.unit || '—',
-      supplier_unit: material?.supplier_unit ?? null,
-      base_qty_per_supplier_unit: material?.base_qty_per_supplier_unit ?? null,
-    };
+    // ordered/stocked/counted as whole SUPPLIER units (batang) — you can't hold a
+    // fraction of a 12 m bar — so convert base→supplier and round UP to whole bars
+    // (baseToSupplierOrder = ceil), the same rule the ordering flow uses. Materials
+    // without a base_qty_per_supplier_unit factor pass through in their base unit.
+    const factor = material?.base_qty_per_supplier_unit ?? null;
+    const inSupplierUnits = typeof factor === 'number' && isFinite(factor) && factor > 0;
     const round3 = (n: number) => Number(n.toFixed(3));
-    const plannedDisp = displayQty(bucket.planned, info);
+    const toDisplay = (q: number) => round3(baseToSupplierOrder(q, factor));
+    const receivedDisp = toDisplay(received);
+    const installedDisp = toDisplay(bucket.installed);
 
     return {
       material_name: materialName,
       material_id: bucket.material_id,
-      planned: round3(plannedDisp.qty),
-      received: round3(displayQty(received, info).qty),
-      installed: round3(displayQty(bucket.installed, info).qty),
-      on_site: round3(displayQty(received - bucket.installed, info).qty),
-      unit: plannedDisp.unit,
+      planned: toDisplay(bucket.planned),
+      received: receivedDisp,
+      installed: installedDisp,
+      // Saldo from the already-rounded components so the row reads consistently.
+      on_site: round3(receivedDisp - installedDisp),
+      unit: inSupplierUnits ? (material?.supplier_unit || 'batang') : (bucket.unit || material?.unit || '—'),
     };
   });
 
