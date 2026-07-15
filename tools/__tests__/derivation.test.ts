@@ -331,6 +331,52 @@ describe('deriveMaterialBalance — received & on_site', () => {
     expect(b.on_site).toBe(8); // received 10 - installed 2
   });
 
+  it('displays rebar in batang (÷ base_qty_per_supplier_unit), not stored kg', async () => {
+    wireSupabase({
+      rpc: { derive_boq_installed: { data: [] } },
+      tables: {
+        boq_items: {
+          data: [{ id: 'boq-1', planned: 10, installed: 0, unit: 'm3', tier1_material: null, tier2_material: null }],
+        },
+        ahs_versions: { data: [{ id: 'ahs-v1' }] },
+        purchase_orders: { data: [{ id: 'po-1', material_name: 'Besi beton ulir 10 mm' }] },
+        receipts: {
+          data: [
+            {
+              id: 'r-1',
+              po_id: 'po-1',
+              receipt_lines: [{ material_id: 'mat-1', material_name: 'Besi beton ulir 10 mm', quantity_actual: 370 }],
+            },
+          ],
+        },
+        ahs_lines: {
+          data: [
+            {
+              material_id: 'mat-1', usage_rate: 0, coefficient: 74, waste_factor: 0,
+              unit: 'kg', boq_item_id: 'boq-1', material_spec: 'Besi beton ulir 10 mm',
+              line_type: 'material', material_catalog: { name: 'Besi beton ulir 10 mm' },
+            },
+          ],
+        },
+        material_catalog: {
+          data: [{ id: 'mat-1', name: 'Besi beton ulir 10 mm', unit: 'kg', supplier_unit: 'batang', base_qty_per_supplier_unit: 7.4 }],
+        },
+      },
+    });
+
+    const balances = await deriveMaterialBalance('proj-1');
+
+    expect(balances).toHaveLength(1);
+    const b = balances[0];
+    // Stored in kg; report must display batang. planned 10 m3 × 74 kg/m3 = 740 kg ÷ 7.4 = 100 batang.
+    expect(b.unit).toBe('batang');
+    expect(b.planned).toBe(100);
+    // received 370 kg ÷ 7.4 = 50 batang; installed 0; on_site = 50.
+    expect(b.received).toBe(50);
+    expect(b.installed).toBe(0);
+    expect(b.on_site).toBe(50);
+  });
+
   it('matches received by name case-insensitively (normalizeMaterialKey)', async () => {
     wireSupabase({
       rpc: { derive_boq_installed: { data: [] } },
