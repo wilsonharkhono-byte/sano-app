@@ -44,6 +44,8 @@ import {
 } from '../../tools/ceilingRaiseGate';
 import { parseBoqWorkbook, applyBoqGrouping, type ParsedWorkbook } from '../../tools/excelParser';
 import { parseBoqV2 } from '../../tools/boqParserV2';
+import { isSimplifiedInputWorkbook, parseSimplifiedInput } from '../../tools/simplifiedInput';
+import type { StagingRowV2 } from '../../tools/boqParserV2/types';
 import { applyAIBoqGrouping } from '../../tools/ai-assist';
 import { supabase } from '../../tools/supabase';
 import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools/types';
@@ -236,6 +238,40 @@ function buildParsePreview(fileName: string, parsed: ParsedWorkbook): ParsePrevi
   };
 }
 
+/**
+ * Preview for the simplified "SANO Input" two-sheet format. The default preview
+ * runs the v1 RAB parser, which cannot read this format and reports 0 / "Tidak
+ * terdeteksi" — misleading, since the real (v2) staging succeeds. Build the
+ * preview directly from parseSimplifiedInput's boq staging rows instead.
+ */
+function buildSimplifiedPreview(fileName: string, stagingRows: StagingRowV2[]): ParsePreview {
+  const boqRows = stagingRows.filter(r => r.row_type === 'boq');
+  const workAreas = boqRows.filter(r => String((r.parsed_data as { code?: string }).code ?? '').startsWith('T1-'));
+  return {
+    fileName,
+    rabSheets: ['SANO Input Tier 1'],
+    ahsSheet: null,
+    materialSheet: 'SANO Input Others',
+    boqCount: boqRows.length,
+    ahsCount: 0,
+    materialCount: 0,
+    anomalyCount: boqRows.filter(r => r.needs_review).length,
+    boqSample: workAreas.slice(0, 6).map(r => {
+      const pd = r.parsed_data as { code?: string; label?: string; unit?: string; planned?: number };
+      const raw = (r.raw_data ?? {}) as { source_sheet?: string; source_row?: number };
+      return {
+        code: pd.code ?? '',
+        label: pd.label ?? '',
+        unit: pd.unit ?? '',
+        volume: Number(pd.planned) || 0,
+        sourceSheet: raw.source_sheet ?? 'SANO Input Tier 1',
+        sourceRow: raw.source_row ?? 0,
+      };
+    }),
+    anomalySample: [],
+  };
+}
+
 export default function BaselineScreen({
   onBack,
   backLabel = 'Kembali ke Laporan',
@@ -389,18 +425,27 @@ export default function BaselineScreen({
 
       const { arrayBuffer, uploadBody, mimeType } = await readPickedWorkbook(asset);
 
-      setParseProgress('Menganalisis struktur RAB...');
-      const localParsed = parseBoqWorkbook(arrayBuffer.slice(0), fileName);
+      // The simplified "SANO Input" two-sheet format is parsed by a different
+      // pipeline (parseSimplifiedInput); the v1 RAB parser below can't read it
+      // and would show a misleading 0. Build its preview from the v2 staging rows.
+      if (isSimplifiedInputWorkbook(arrayBuffer.slice(0))) {
+        setParseProgress('Menganalisis format SANO Input...');
+        const { stagingRows } = parseSimplifiedInput(arrayBuffer.slice(0));
+        setLastPreview(buildSimplifiedPreview(fileName, stagingRows));
+      } else {
+        setParseProgress('Menganalisis struktur RAB...');
+        const localParsed = parseBoqWorkbook(arrayBuffer.slice(0), fileName);
 
-      // AI-driven grouping: consolidate granular items into broader categories
-      setParseProgress('Mengelompokkan item BoQ (AI)...');
-      try {
-        await applyAIBoqGrouping(localParsed);
-      } catch {
-        applyBoqGrouping(localParsed); // keyword fallback
+        // AI-driven grouping: consolidate granular items into broader categories
+        setParseProgress('Mengelompokkan item BoQ (AI)...');
+        try {
+          await applyAIBoqGrouping(localParsed);
+        } catch {
+          applyBoqGrouping(localParsed); // keyword fallback
+        }
+
+        setLastPreview(buildParsePreview(fileName, localParsed));
       }
-
-      setLastPreview(buildParsePreview(fileName, localParsed));
 
       // Upload raw file to Supabase Storage for traceability when the bucket exists.
       setParseProgress('Mengunggah file...');
