@@ -39,6 +39,18 @@ export interface ClassifyInput {
 export interface GroupableItem extends ClassifyInput {
   id: string;
   sort_order: number;
+  /**
+   * BoQ code. Optional and only read to detect the simplified "SANO Input"
+   * format (code `T1-NNN`), where each row is an explicit, user-defined work
+   * area and must NOT be auto-classified/mixed. Absent/other codes → the RAB
+   * classifier runs unchanged.
+   */
+  code?: string | null;
+}
+
+/** True when the code is a simplified "SANO Input" Tier-1 work-area row. */
+function isSimplifiedWorkAreaCode(code: string | null | undefined): boolean {
+  return /^T1-\d+$/.test((code ?? '').trim());
 }
 
 // ── text helpers ────────────────────────────────────────────────────────
@@ -260,6 +272,27 @@ export function classifyBoqWorkGroup(item: ClassifyInput): BoqWorkGroupClass {
  * the picker reads foundation → floors → finishes → MEP.
  */
 export function buildWorkGroups(items: GroupableItem[]): WorkGroup[] {
+  // Simplified "SANO Input" projects: each row (code T1-NNN) is a work area the
+  // estimator defined explicitly. Surface each as its own work group, labeled
+  // with its exact left-column label — do NOT auto-classify or merge them.
+  // Only Tier-1 work-area rows count (the MATERIAL-UMUM Others anchor is not a
+  // work area). The RAB path (no T1-NNN codes) is untouched and uses the
+  // classifier below.
+  const simplified = items.filter(it => isSimplifiedWorkAreaCode(it.code));
+  if (simplified.length > 0) {
+    return simplified
+      .slice()
+      .sort((a, b) => (a.code ?? '').localeCompare(b.code ?? '')) // T1-001, T1-002, … = Excel order
+      .map(it => ({
+        key: `sano:${(it.code ?? it.id).trim()}`,
+        label: it.label,
+        floor: extractFloor(it),
+        itemIds: [it.id],
+        itemCount: 1,
+        sortOrder: it.sort_order ?? 0,
+      }));
+  }
+
   const map = new Map<string, { cls: InternalClass; itemIds: string[]; sortOrder: number }>();
 
   for (const it of items) {
