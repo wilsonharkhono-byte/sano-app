@@ -39,7 +39,8 @@ describe('parseTier1Sheet', () => {
     expect(beton.unit).toBe('m³');
     // ø8 was 0 → skipped; ø10/13/16/19/22 present → 5 rebar + 1 beton = 6
     expect(comps).toHaveLength(6);
-    const d10 = comps.find((c: any) => c.materialName === 'Besi beton ulir 10 mm (batang)');
+    const d10 = comps.find((c: any) => c.materialName === 'Besi beton ulir 10 mm');
+    expect(d10.unit).toBe('batang');
     expect(d10.quantityPerUnit * (rows[0].parsed_data.planned as number)).toBeCloseTo(517, 6);
   });
 

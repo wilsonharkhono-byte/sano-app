@@ -1,5 +1,7 @@
 # Simplified BoQ Input Parser — Implementation Plan
 
+> **⚠ Revised 2026-07-15 — Task 7 (migration 082 / isolated `REB-*-BTG` batang rows) is DROPPED.** After the strict-50 catalogue rebuild, rebar links to the existing curated `Besi beton …` rows (unit kg + batang factor); the parser emits `unit='batang'` and publish converts batang→kg. See the spec's revised §5.4 for the current approach; the migration task below is historical.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a parser that turns the team's two-sheet "SANO Input" workbook into `boq_items` + material-link balance, reusing the existing staging → review → publish pipeline unchanged.

@@ -383,9 +383,13 @@ import { parseBoqV2 } from './boqParserV2';
 import { detectBoqSheetOptionFromBuffer } from './boqParserV2/multiSheetScanner';
 import { publishBaselineV2, loadCatalogAndAliases, type RevisionContext } from './publishBaselineV2';
 import { isSimplifiedInputWorkbook, parseSimplifiedInput } from './simplifiedInput';
-import { detectOthersConflicts, flagOthersConflicts } from './simplifiedInput/reconcile';
 import type { StagingRowV2, ValidationReport } from './boqParserV2/types';
 import type { ImportAnomaly } from './types';
+// NOTE: ./simplifiedInput/reconcile is imported DYNAMICALLY at its call site
+// below. A static import here would create a baseline → reconcile → excelParser
+// → baseline cycle that perturbs TypeScript's whole-program inference (it
+// surfaced as a spurious navigation-type error in workflows/App.tsx). The
+// dynamic import keeps reconcile out of baseline's static import graph.
 
 /**
  * Parse an uploaded Excel BoQ file and populate staging rows + anomalies.
@@ -450,7 +454,12 @@ export async function parseAndStageWorkbook(
           const anchor = v2Result.stagingRows.find(
             r => (r.parsed_data as { code?: string }).code === 'MATERIAL-UMUM',
           );
-          if (anchor) flagOthersConflicts(anchor, detectOthersConflicts(anchor, catalogEntries, aliasMap));
+          if (anchor) {
+            // Dynamic import — see the note on the import block above (breaks a
+            // baseline → reconcile → excelParser → baseline static cycle).
+            const { detectOthersConflicts, flagOthersConflicts } = await import('./simplifiedInput/reconcile');
+            flagOthersConflicts(anchor, detectOthersConflicts(anchor, catalogEntries, aliasMap));
+          }
         } catch (err) {
           console.warn('[simplified-input] conflict pre-check skipped:', err);
         }

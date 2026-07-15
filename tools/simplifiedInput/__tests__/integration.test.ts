@@ -4,11 +4,17 @@ import { parseSimplifiedInput, isSimplifiedInputWorkbook } from '../index';
 
 const ASSET = path.resolve(__dirname, '../../../assets/BOQ/20260713 SANO Input - BDG D-18.xlsx');
 
-// Guard: skip when the asset isn't present (keeps CI green in trimmed checkouts).
+// Guard: skip when the asset isn't present (it's an untracked local workbook,
+// absent in CI). The read MUST be lazy (beforeAll, not the describe body):
+// describe.skip still executes the describe callback to collect tests, so a
+// top-level fs.readFileSync would throw ENOENT even when skipped.
 const maybe = fs.existsSync(ASSET) ? describe : describe.skip;
 
 maybe('BDG D-18 simplified workbook', () => {
-  const buf = fs.readFileSync(ASSET);
+  let buf: Buffer;
+  beforeAll(() => {
+    buf = fs.readFileSync(ASSET);
+  });
 
   it('is detected as a simplified-input workbook', () => {
     expect(isSimplifiedInputWorkbook(buf)).toBe(true);
@@ -34,7 +40,7 @@ maybe('BDG D-18 simplified workbook', () => {
       expect(beton?.quantityPerUnit).toBe(1.0);
       for (const c of comps.filter((x) => x.materialName !== 'Beton Readymix')) {
         expect(c.unit).toBe('batang');
-        expect(c.materialName).toMatch(/\(batang\)$/);
+        expect(c.materialName).toMatch(/^Besi beton (polos|ulir) \d+ mm$/);
       }
     }
   });
@@ -46,7 +52,7 @@ maybe('BDG D-18 simplified workbook', () => {
     )!;
     const planned = (kolom.parsed_data as { planned: number }).planned;
     const d10 = (kolom.parsed_data.recipe as { components: any[] }).components.find(
-      (c) => c.materialName === 'Besi beton ulir 10 mm (batang)',
+      (c) => c.materialName === 'Besi beton ulir 10 mm',
     );
     expect(Math.round(planned * d10.quantityPerUnit)).toBe(517);
   });
