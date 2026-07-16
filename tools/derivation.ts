@@ -394,12 +394,34 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
   }
 
   const materialIds = Array.from(new Set(Array.from(aggregate.values()).map(item => item.material_id).filter(Boolean))) as string[];
-  const { data: materials } = materialIds.length > 0
-    ? await supabase.from('material_catalog').select('id, name, unit, supplier_unit, base_qty_per_supplier_unit').in('id', materialIds)
-    : { data: [] as Array<{ id: string; name: string; unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null }> };
+  const [{ data: materials }, { data: assetRows }] = await Promise.all([
+    materialIds.length > 0
+      ? supabase.from('material_catalog').select('id, name, unit, supplier_unit, base_qty_per_supplier_unit, is_asset').in('id', materialIds)
+      : Promise.resolve({ data: [] as Array<{ id: string; name: string; unit: string; supplier_unit: string | null; base_qty_per_supplier_unit: number | null; is_asset?: boolean }> }),
+    // Asset NAMES too: unlinked lines (material_id null) aggregate into
+    // name-keyed buckets, which the id check below can't see.
+    supabase.from('material_catalog').select('name, is_asset').eq('is_asset', true),
+  ]);
   const materialMap = new Map((materials ?? []).map((material) => [material.id, material]));
+  // Re-filter client-side: belt over the .eq (and it keeps table mocks simple).
+  const assetNameKeys = new Set(
+    ((assetRows ?? []) as Array<{ name: string; is_asset?: boolean }>)
+      .filter((r) => r.is_asset)
+      .map((r) => normalizeMaterialKey(r.name)),
+  );
 
-  const balances: MaterialBalance[] = Array.from(aggregate.values()).map((bucket) => {
+  // Company-owned equipment (is_asset) circulates, it isn't consumed — its
+  // truth lives in the equipment ledger (tools/equipment.ts), so keep it out
+  // of a consumption balance entirely (it would double-report via published
+  // perancah lines). Exclude by id link AND by normalized name, so unlinked
+  // spec-name / tier1_material / tier2_material buckets are covered too.
+  const consumableBuckets = Array.from(aggregate.values()).filter((bucket) => {
+    if (bucket.material_id && (materialMap.get(bucket.material_id) as { is_asset?: boolean } | undefined)?.is_asset) return false;
+    if (!bucket.material_id && assetNameKeys.has(normalizeMaterialKey(bucket.material_name))) return false;
+    return true;
+  });
+
+  const balances: MaterialBalance[] = consumableBuckets.map((bucket) => {
     const material = bucket.material_id ? materialMap.get(bucket.material_id) : null;
     const materialName = material?.name ?? bucket.material_name ?? bucket.material_id ?? 'Material belum dipetakan';
     // Prefer the id link (a receipt keyed to this material_id counts even when

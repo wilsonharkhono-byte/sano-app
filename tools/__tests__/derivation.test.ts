@@ -55,6 +55,9 @@ function wireSupabase(opts: {
   const tables: Record<string, { data: unknown; error?: unknown }> = {
     project_material_master: { data: [] },
     project_material_master_lines: { data: [] },
+    // deriveMaterialBalance always queries material_catalog for asset names
+    // (is_asset exclusion), even when no bucket carries a material_id.
+    material_catalog: { data: [] },
     ...opts.tables,
   };
   (mockSupabase.from as jest.Mock).mockImplementation((table: string) => {
@@ -414,6 +417,86 @@ describe('deriveMaterialBalance — received & on_site', () => {
     expect(b.received).toBe(51);
     expect(b.installed).toBe(0);
     expect(b.on_site).toBe(51);
+  });
+
+  it('excludes is_asset materials (equipment pool tracks them, not the balance)', async () => {
+    wireSupabase({
+      rpc: { derive_boq_installed: { data: [] } },
+      tables: {
+        boq_items: {
+          data: [{ id: 'boq-1', planned: 10, installed: 0, unit: 'm3', tier1_material: null, tier2_material: null }],
+        },
+        ahs_versions: { data: [{ id: 'ahs-v1' }] },
+        purchase_orders: { data: [] },
+        receipts: { data: [] },
+        ahs_lines: {
+          data: [
+            {
+              material_id: 'mat-scaf', usage_rate: 0, coefficient: 2, waste_factor: 0,
+              unit: 'set', boq_item_id: 'boq-1', material_spec: 'Perancah Bekisting Balok',
+              line_type: 'material', material_catalog: { name: 'Scaffolding set' },
+            },
+            {
+              material_id: 'mat-1', usage_rate: 0, coefficient: 74, waste_factor: 0,
+              unit: 'kg', boq_item_id: 'boq-1', material_spec: 'Besi beton',
+              line_type: 'material', material_catalog: { name: 'Besi beton ulir 10 mm' },
+            },
+          ],
+        },
+        material_catalog: {
+          data: [
+            { id: 'mat-scaf', name: 'Scaffolding set', unit: 'set', supplier_unit: 'set', base_qty_per_supplier_unit: null, is_asset: true },
+            { id: 'mat-1', name: 'Besi beton ulir 10 mm', unit: 'kg', supplier_unit: 'batang', base_qty_per_supplier_unit: 7.4, is_asset: false },
+          ],
+        },
+      },
+    });
+
+    const balances = await deriveMaterialBalance('proj-1');
+
+    // The scaffolding (company asset) must NOT appear — it is not consumed.
+    expect(balances.map((b) => b.material_id)).toEqual(['mat-1']);
+  });
+
+  it('excludes NAME-keyed asset buckets too (unlinked spec-name lines)', async () => {
+    wireSupabase({
+      rpc: { derive_boq_installed: { data: [] } },
+      tables: {
+        boq_items: {
+          data: [{ id: 'boq-1', planned: 10, installed: 0, unit: 'm3', tier1_material: null, tier2_material: null }],
+        },
+        ahs_versions: { data: [{ id: 'ahs-v1' }] },
+        purchase_orders: { data: [] },
+        receipts: { data: [] },
+        ahs_lines: {
+          data: [
+            {
+              // Unlinked asset line: NO material_id, only the free-text spec
+              // name. Must still be excluded by name.
+              material_id: null, usage_rate: 0, coefficient: 2, waste_factor: 0,
+              unit: 'set', boq_item_id: 'boq-1', material_spec: 'Scaffolding set',
+              line_type: 'material', material_catalog: null,
+            },
+            {
+              material_id: 'mat-1', usage_rate: 0, coefficient: 74, waste_factor: 0,
+              unit: 'kg', boq_item_id: 'boq-1', material_spec: 'Besi beton',
+              line_type: 'material', material_catalog: { name: 'Besi beton ulir 10 mm' },
+            },
+          ],
+        },
+        material_catalog: {
+          data: [
+            { id: 'mat-scaf', name: 'Scaffolding set', unit: 'set', supplier_unit: 'set', base_qty_per_supplier_unit: null, is_asset: true },
+            { id: 'mat-1', name: 'Besi beton ulir 10 mm', unit: 'kg', supplier_unit: 'batang', base_qty_per_supplier_unit: 7.4, is_asset: false },
+          ],
+        },
+      },
+    });
+
+    const balances = await deriveMaterialBalance('proj-1');
+
+    // The name-keyed scaffolding bucket must be excluded just like an id-linked one.
+    expect(balances.map((b) => b.material_name)).toEqual(['Besi beton ulir 10 mm']);
   });
 
   it('leaves non-rebar (no supplier factor) in its base unit, unrounded', async () => {

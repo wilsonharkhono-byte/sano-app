@@ -154,7 +154,9 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
           : Promise.resolve({ data: [] as PurchaseOrderLine[] }),
         supabase.from('price_history').select('*').eq('project_id', project.id),
         supabase.from('vendor_scorecards').select('*').eq('project_id', project.id),
-        supabase.from('material_catalog').select('id, name, unit, supplier_unit, base_qty_per_supplier_unit, code, category').order('name'),
+        // Company-owned equipment (is_asset) is deployed via the equipment
+        // pool, never purchased onto a PO — mirror the Permintaan picker filter.
+        supabase.from('material_catalog').select('id, name, unit, supplier_unit, base_qty_per_supplier_unit, code, category').eq('is_asset', false).order('name'),
         supabase.from('project_assignments').select('user_id').eq('project_id', project.id),
         supabase.from('profiles').select('id, role'),
         supabase

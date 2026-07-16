@@ -424,7 +424,7 @@ async function syncOnce() {
 
   const { data: existingMaterials, error: fetchMaterialsError } = await supabase
     .from('material_catalog')
-    .select('id, code, name, category, tier, unit, supplier_unit, base_qty_per_supplier_unit');
+    .select('id, code, name, category, tier, unit, supplier_unit, base_qty_per_supplier_unit, is_asset');
 
   if (fetchMaterialsError) {
     throw new Error(`Failed to fetch existing materials: ${fetchMaterialsError.message}`);
@@ -476,9 +476,16 @@ async function syncOnce() {
 
   let prunedCount = 0;
   if (pruneMode) {
-    const extraIds = (existingMaterials ?? [])
-      .filter(row => row.code && String(row.code).trim() && !desiredCodes.has(row.code))
-      .map(row => row.id);
+    const extraRows = (existingMaterials ?? [])
+      .filter(row => row.code && String(row.code).trim() && !desiredCodes.has(row.code));
+    // Equipment (is_asset) definitions are owned by the asset pool, not this
+    // CSV — never prune them (a delete would also FK-fail on equipment_ledger
+    // and abort the whole batched prune).
+    const assetRows = extraRows.filter(row => row.is_asset);
+    for (const row of assetRows) {
+      console.warn(`⚠️  Prune skipped for equipment (is_asset): ${row.code} — kelola lewat pool Alat`);
+    }
+    const extraIds = extraRows.filter(row => !row.is_asset).map(row => row.id);
 
     if (extraIds.length > 0) {
       const { error } = await supabase.from('material_catalog').delete().in('id', extraIds);

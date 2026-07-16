@@ -103,12 +103,49 @@ by disposition. Lives on the Equipment screen (PDF/Excel export = follow-up).
 - Existing tier gates / triggers / envelopes untouched — equipment never enters
   `material_request_lines`.
 
+## 2.7 Review-driven hardening (added after the 8-angle self-review)
+
+- **Envelope chokepoint**: `v_material_envelopes` (which `v_material_envelope_status`
+  and `v_material_budget_status` build on) now excludes `is_asset` rows — one
+  filter removes equipment from the Tier-2 envelope gate, Tier-3 Rupiah budget,
+  PO quantity gate, and office envelope screens at once.
+- **Server twin for consumable writes**: `reject_asset_material_line()` trigger
+  on `material_request_lines` + `purchase_order_lines` — no client path (stale
+  bundle, Gate2, direct RPC) can put an asset on a request or PO.
+- **Gate2 PO picker** filters `is_asset` like the Permintaan picker.
+- Material Balance also excludes **name-keyed** asset buckets (unlinked
+  spec-name / tier1/tier2 free-text lines), not just id-linked ones.
+- Screen: id-ID comma-decimal-safe qty parsing (`parseQty`); an open count-&-close
+  form closes when a movement changes balances (no stale pre-fill); projects come
+  from `useProject()`; dispositions fetched once per load.
+- `syncMaterialCatalog.mjs` never prunes `is_asset` rows (asset definitions are
+  owned by the pool, not the CSV) and preserves the flag on re-sync.
+
+## 2.8 Onboarding + acquisition (deliberate v1 decisions)
+
+- **Back-fill required**: the migration seeds no ledger rows, so equipment
+  already deployed on projects must be entered as `OPENING` (owned count) +
+  `DEPLOY` (per project) before its first RETURN/TRANSFER — the guard otherwise
+  (correctly) rejects the outflow. Legacy on-site scaffolding no longer appears
+  in MTN; the ledger TRANSFER replaces it after back-fill.
+- **Acquisition**: buying NEW equipment is recorded as an `OPENING` event with
+  note/photo. There is intentionally no PO path for assets in v1 (POs are gated
+  off); a PO-linked acquisition trail is a follow-up if wanted.
+
 ## 3. Out of scope / follow-ups
 
 - Real part-type list + `OPENING` counts (user provides later; enters as data).
 - PDF/Excel Equipment Balance export.
 - Rupiah replacement-cost on losses (explicitly declined for v1).
 - Per-set or serial-number tracking (design supports adding later).
+- PO-linked asset acquisition (see §2.8).
+- At scale: server-side balance aggregate (view/RPC) instead of the client-side
+  full-ledger fold; statement-level guard trigger (transition table) instead of
+  per-row re-derivation; incremental reload instead of full reload per write.
+- UI polish: SelectSheet instead of native Pickers; StatTile for the stat row.
+- Deploy order: migration 084 (already applied to live) must be pasted before
+  any environment runs this app bundle — the consumable picker queries
+  `is_asset` and fails empty on a DB without it.
 
 ## 4. Files
 
