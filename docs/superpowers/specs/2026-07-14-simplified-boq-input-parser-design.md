@@ -113,14 +113,15 @@ Each data row → one `boq` staging row. `parsed_data`:
 - Beton coefficient is exactly `1.0` — col B is taken literally; no invented 1.05 waste (truth contract: if the team wanted waste it would be in the number).
 - Rebar stays **batang end-to-end** — see §5.4.
 
-### 5.3 Others sheet → synthetic anchor BoQ row
+### 5.3 Others sheet → project-level materials, no BoQ relation (revised 2026-07-16)
 
-`project_material_master_lines.boq_item_id` is `NOT NULL`, but the Others totals are project-level. One synthetic `boq` row per import anchors them:
+> **Revision.** The first draft hung all Others on ONE synthetic `MATERIAL-UMUM` BoQ row (to satisfy `boq_item_id NOT NULL`). That row is a single rejectable point of failure — and in practice it got REJECTED in review, silently dropping every Tier-2/3 material. It also contradicts the model: **Tier-2/3 are project-level envelopes with no BoQ relation** (Tier 2 = quantity envelope, Tier 3 = Rupiah budget). Replaced with the honest model below.
 
-- **code**: `MATERIAL-UMUM`. **label**: `Material Umum (Tier 2 & 3)`. **chapter**: `Material Umum`. **unit**: `ls`. **planned**: `1`.
-- **recipe.components** = one component per Others row: `materialName` = col A, `unit` = col C (Satuan), `quantityPerUnit` = col D (Volume), `unitPrice` = col E (Harga Satuan), `lineType = 'material'`. `master_planned = 1 × Volume = Volume` — exactly the project total, in the sheet's unit.
+Each Others row → one **project-level material staging row** (`row_type = 'material'`, `parsed_data.project_material = true`, carrying `name`, `unit`, `tier`, `volume`, `reference_unit_price`). Using `'material'` (not `'boq'`) keeps them out of every BoQ / supersede / work-group path automatically — no guards needed.
 
-Shows as one extra clearly-labeled BoQ line. No schema change. (Considered and rejected: nullable `boq_item_id` — touches envelope views + a Dashboard-pasted migration, higher blast radius.)
+At publish, `buildProjectMaterialLines` reconciles each to the catalogue (fuzzy, file-wins) and writes a `project_material_master_line` with **`boq_item_id = NULL`** and `planned_quantity = Volume` (absolute). Migration `082_project_material_lines_nullable_boq.sql` makes the column nullable. The material-level readers already tolerate null (they SUM per material, no `boq_items` join), so **the Tier-2/3 envelope + budget gates work unchanged**. The one code addition: `deriveMaterialBalance` (the balance report) gets an additive read of null-anchor master lines — its primary path re-derives `planned = boq.planned × coefficient` from `ahs_lines`, which would otherwise miss project-level materials.
+
+No `MATERIAL-UMUM` row, nothing rejectable, no fake BoQ item. REJECTED material rows and catalogue-unresolved materials are skipped at publish (surfaced, not invented).
 
 ### 5.4 Rebar batang — link to the curated kg rows (revised 2026-07-15)
 

@@ -20,12 +20,15 @@ maybe('BDG D-18 simplified workbook', () => {
     expect(isSimplifiedInputWorkbook(buf)).toBe(true);
   });
 
-  it('parses to boq rows: Tier-1 work areas + exactly one Material Umum anchor', () => {
+  it('parses to Tier-1 boq rows + project-level Others material rows (no anchor)', () => {
     const { stagingRows } = parseSimplifiedInput(buf);
-    expect(stagingRows.length).toBeGreaterThan(1);
-    expect(stagingRows.every((r) => r.row_type === 'boq')).toBe(true);
-    const anchors = stagingRows.filter((r) => (r.parsed_data as { code?: string }).code === 'MATERIAL-UMUM');
-    expect(anchors).toHaveLength(1);
+    const boq = stagingRows.filter((r) => r.row_type === 'boq');
+    const others = stagingRows.filter((r) => r.row_type === 'material');
+    expect(boq.length).toBeGreaterThan(1); // 42 Tier-1 work areas
+    expect(others.length).toBe(13); // 13 Tier-2/3 Others materials, project-level
+    expect(others.every((r) => (r.parsed_data as any).project_material === true)).toBe(true);
+    // No synthetic MATERIAL-UMUM anchor exists anymore.
+    expect(stagingRows.some((r) => (r.parsed_data as { code?: string }).code === 'MATERIAL-UMUM')).toBe(false);
     // Row numbers are contiguous 1..N.
     expect(stagingRows.map((r) => r.row_number)).toEqual(stagingRows.map((_, i) => i + 1));
   });

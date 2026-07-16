@@ -246,6 +246,7 @@ function buildParsePreview(fileName: string, parsed: ParsedWorkbook): ParsePrevi
  */
 function buildSimplifiedPreview(fileName: string, stagingRows: StagingRowV2[]): ParsePreview {
   const boqRows = stagingRows.filter(r => r.row_type === 'boq');
+  const projectMaterials = stagingRows.filter(r => r.row_type === 'material');
   const workAreas = boqRows.filter(r => String((r.parsed_data as { code?: string }).code ?? '').startsWith('T1-'));
   return {
     fileName,
@@ -254,8 +255,8 @@ function buildSimplifiedPreview(fileName: string, stagingRows: StagingRowV2[]): 
     materialSheet: 'SANO Input Others',
     boqCount: boqRows.length,
     ahsCount: 0,
-    materialCount: 0,
-    anomalyCount: boqRows.filter(r => r.needs_review).length,
+    materialCount: projectMaterials.length,
+    anomalyCount: stagingRows.filter(r => r.needs_review).length,
     boqSample: workAreas.slice(0, 6).map(r => {
       const pd = r.parsed_data as { code?: string; label?: string; unit?: string; planned?: number };
       const raw = (r.raw_data ?? {}) as { source_sheet?: string; source_row?: number };
