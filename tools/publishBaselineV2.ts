@@ -574,7 +574,8 @@ export interface MasterLineInput {
 export interface MasterLineRecord {
   master_id: string;
   material_id: string;
-  boq_item_id: string;
+  /** NULL for project-level (Tier-2/3 "Others") materials with no BoQ relation. */
+  boq_item_id: string | null;
   planned_quantity: number;
   unit: string;
 }
@@ -609,6 +610,50 @@ export function buildMasterLinesV2(
     }
   }
   return [...byPair.values()];
+}
+
+/**
+ * Build PROJECT-LEVEL master lines (boq_item_id = NULL) for the simplified
+ * "SANO Input" format's Tier-2/3 "Others" materials — staged as row_type
+ * 'material' with parsed_data.project_material = true. planned_quantity is the
+ * sheet's ABSOLUTE Volume (no BoQ multiplier); these have no BoQ relation.
+ * REJECTED rows are skipped; unresolved materials are returned (not invented).
+ * Duplicate materials sum. Runs alongside buildMasterLinesV2 into the same master.
+ */
+export function buildProjectMaterialLines(
+  rows: StagingRowV2[],
+  masterId: string,
+  catalog: CatalogRow[],
+  aliasMap: Map<string, string>,
+): { lines: MasterLineRecord[]; unresolved: string[] } {
+  const byMaterial = new Map<string, MasterLineRecord>();
+  const unresolved: string[] = [];
+  for (const r of rows) {
+    if (r.row_type !== 'material') continue;
+    const pd = r.parsed_data as { name?: string; unit?: string; volume?: unknown; project_material?: boolean };
+    if (!pd.project_material || r.review_status === 'REJECTED') continue;
+    const name = typeof pd.name === 'string' ? pd.name.trim() : '';
+    const volume = toNumber(pd.volume);
+    if (!name || !(volume > 0)) continue;
+    const materialId = resolveCatalogId(name, catalog, aliasMap);
+    if (materialId == null) {
+      unresolved.push(name);
+      continue;
+    }
+    const existing = byMaterial.get(materialId);
+    if (existing) {
+      existing.planned_quantity += volume;
+    } else {
+      byMaterial.set(materialId, {
+        master_id: masterId,
+        material_id: materialId,
+        boq_item_id: null,
+        planned_quantity: volume,
+        unit: pd.unit ?? '',
+      });
+    }
+  }
+  return { lines: [...byMaterial.values()], unresolved };
 }
 
 export interface BaselineSnapshotRow {
@@ -1283,7 +1328,13 @@ export async function publishBaselineV2(
     .single();
   if (masterErr || !master) return { success: false, error: `material master insert failed: ${masterErr?.message}` };
 
-  const masterLines = buildMasterLinesV2(masterLineInputs, master.id as string);
+  const boqMasterLines = buildMasterLinesV2(masterLineInputs, master.id as string);
+  // Project-level Tier-2/3 "Others" materials (simplified format): master lines
+  // with boq_item_id = NULL and the sheet's absolute Volume. No BoQ relation.
+  const { lines: projectMasterLines, unresolved: projectUnresolved } =
+    buildProjectMaterialLines(rows, master.id as string, catalog, aliasMap);
+  for (const n of projectUnresolved) unresolvedComponents.push(`Others (project-level): ${n}`);
+  const masterLines = [...boqMasterLines, ...projectMasterLines];
   let masterLineFailedCount = 0;
   const failedMasterMaterialIds = new Set<string>();
   if (masterLines.length > 0) {

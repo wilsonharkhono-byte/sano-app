@@ -298,6 +298,45 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
     }
   }
 
+  // Project-level Tier-2/3 "Others" materials (simplified "SANO Input" format)
+  // are master lines with boq_item_id = NULL and an ABSOLUTE planned_quantity —
+  // they are NOT in ahs_lines, so the structured path above misses them. Add
+  // them directly. Only when the AHS path ran: when !hasStructuredBaseline the
+  // fallback below already reads every master line (incl. these), so running
+  // here too would double-count.
+  if (hasStructuredBaseline) {
+    const { data: pmHeader } = await supabase
+      .from('project_material_master')
+      .select('id')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    const pmMasterId = pmHeader?.[0]?.id;
+    if (pmMasterId) {
+      const projectLines = await fetchAllPaged<{
+        material_id: string | null;
+        planned_quantity: number | null;
+        unit?: string;
+      }>((from, to) =>
+        supabase
+          .from('project_material_master_lines')
+          .select('material_id, planned_quantity, unit')
+          .eq('master_id', pmMasterId)
+          .is('boq_item_id', null)
+          .order('id', { ascending: true })
+          .range(from, to) as unknown as PromiseLike<{ data: never[] | null; error: { message?: string } | null }>);
+      for (const line of projectLines) {
+        upsertAggregate(
+          line.material_id ?? null,
+          null,
+          line.unit ?? '',
+          Number(line.planned_quantity ?? 0),
+          0,
+        );
+      }
+    }
+  }
+
   if (!hasStructuredBaseline) {
     const { data: masterHeader } = await supabase
       .from('project_material_master')

@@ -49,8 +49,16 @@ function wireSupabase(opts: {
   tables: Record<string, { data: unknown; error?: unknown }>;
   rpc?: Record<string, { data: unknown; error?: unknown }>;
 }) {
+  // deriveMaterialBalance now always probes the material master for project-level
+  // (NULL-boq) Tier-2/3 lines. Default both to empty so structured-path tests that
+  // don't care about them still pass; a test can override by naming them.
+  const tables: Record<string, { data: unknown; error?: unknown }> = {
+    project_material_master: { data: [] },
+    project_material_master_lines: { data: [] },
+    ...opts.tables,
+  };
   (mockSupabase.from as jest.Mock).mockImplementation((table: string) => {
-    const result = opts.tables[table];
+    const result = tables[table];
     if (!result) {
       throw new Error(`Unexpected supabase.from('${table}') in test — add a fixture`);
     }
@@ -115,6 +123,33 @@ describe('deriveMaterialBalance — structured (ahs_lines) baseline', () => {
       installed: 0,
       unit: 'kg',
     });
+  });
+
+  it('adds project-level (NULL-boq) Tier-2/3 materials with their absolute planned', async () => {
+    wireSupabase({
+      rpc: { derive_boq_installed: { data: [] } },
+      tables: {
+        boq_items: { data: [{ id: 'boq-1', planned: 10, installed: 0, unit: 'm3', tier1_material: null, tier2_material: null }] },
+        ahs_versions: { data: [{ id: 'ahs-v1' }] },
+        purchase_orders: { data: [] },
+        receipts: { data: [] },
+        ahs_lines: {
+          data: [{
+            material_id: 'mat-1', usage_rate: 0, coefficient: 2.5, waste_factor: 0, unit: 'kg',
+            boq_item_id: 'boq-1', material_spec: 'Besi', line_type: 'material', material_catalog: { name: 'Besi D8' },
+          }],
+        },
+        // A Tier-2 project-level material: NULL boq_item_id, absolute planned_quantity.
+        project_material_master: { data: [{ id: 'master-1' }] },
+        project_material_master_lines: { data: [{ material_id: 'mat-2', boq_item_id: null, planned_quantity: 500, unit: 'sak' }] },
+        material_catalog: { data: [{ id: 'mat-1', name: 'Besi D8', unit: 'kg' }, { id: 'mat-2', name: 'Semen PC', unit: 'sak' }] },
+      },
+    });
+
+    const balances = await deriveMaterialBalance('proj-1');
+    const byId = Object.fromEntries(balances.map((b) => [b.material_id, b]));
+    expect(byId['mat-1']).toMatchObject({ planned: 25 }); // boq-derived, unchanged
+    expect(byId['mat-2']).toMatchObject({ planned: 500, installed: 0 }); // project-level, absolute qty
   });
 
   it('falls back to usage_rate when coefficient is absent/zero (v1 path)', async () => {
@@ -225,6 +260,9 @@ describe('deriveMaterialBalance — structured (ahs_lines) baseline', () => {
           return ahsChain;
         case 'material_catalog':
           return makeQuery({ data: [{ id: 'mat-1', name: 'Besi D8', unit: 'kg' }] });
+        case 'project_material_master':
+        case 'project_material_master_lines':
+          return makeQuery({ data: [] }); // no project-level (NULL-boq) lines in this fixture
         default:
           throw new Error(`Unexpected from('${table}')`);
       }
