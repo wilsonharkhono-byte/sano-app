@@ -33,13 +33,14 @@ describe('isSimplifiedInputWorkbook', () => {
 });
 
 describe('parseSimplifiedInput', () => {
-  it('emits Tier-1 boq rows plus the Others anchor, contiguously numbered', () => {
+  it('emits Tier-1 boq rows plus project-level Others material rows, contiguously numbered', () => {
     const buf = workbookBuffer({ 'SANO Input Tier 1': tier1Aoa, 'SANO Input Others': othersAoa });
     const { stagingRows } = parseSimplifiedInput(buf);
-    expect(stagingRows).toHaveLength(2); // 1 Tier-1 work area + 1 anchor
-    expect(stagingRows.every((r) => r.row_type === 'boq')).toBe(true);
+    expect(stagingRows).toHaveLength(2); // 1 Tier-1 boq + 1 Others material
+    expect(stagingRows.map((r) => r.row_type)).toEqual(['boq', 'material']);
     expect(stagingRows.map((r) => r.row_number)).toEqual([1, 2]);
-    expect(stagingRows.map((r) => r.parsed_data.code)).toEqual(['T1-001', 'MATERIAL-UMUM']);
+    expect(stagingRows.map((r) => r.parsed_data.code)).toEqual(['T1-001', 'OTH-001']);
+    expect((stagingRows[1].parsed_data as any).project_material).toBe(true);
   });
 
   it('returns an empty-but-valid validation report', () => {

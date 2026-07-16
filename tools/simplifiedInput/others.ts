@@ -1,18 +1,8 @@
 import * as XLSX from 'xlsx';
-import type { StagingRowV2, RecipeComponent, BoqRowRecipe } from '../boqParserV2/types';
-import { makeBoqStagingRow } from './staging';
+import type { StagingRowV2 } from '../boqParserV2/types';
 
 export const OTHERS_SHEET_NAME = 'SANO Input Others';
-export const ANCHOR_CODE = 'MATERIAL-UMUM';
 const DATA_START_ROW = 3; // 1-indexed: row 1 header, row 2 blank
-
-interface OthersMaterial {
-  name: string;
-  tier: number | null;
-  unit: string;
-  volume: number;
-  unitPrice: number;
-}
 
 function numAt(ws: XLSX.WorkSheet, addr: string): number {
   const c = ws[addr];
@@ -24,17 +14,19 @@ function strAt(ws: XLSX.WorkSheet, addr: string): string {
 }
 
 /**
- * Parse "SANO Input Others" into ONE synthetic "Material Umum" anchor boq row
- * (planned = 1) whose components are the project-level Tier-2/3 materials.
- * master_planned = 1 × Volume = the project total, in the sheet's unit. The
- * file's declared tier/price are captured in raw_data.others_materials for the
- * reconcile helper. Returns null when the sheet has no data rows.
+ * Parse "SANO Input Others" into PROJECT-LEVEL material staging rows (row_type
+ * 'material', flagged project_material). These are Tier-2/3 envelopes with NO
+ * BoQ relation — publish writes them as master lines with boq_item_id = NULL
+ * (see publishProjectMaterials). Using 'material' (not 'boq') keeps them out of
+ * every BoQ / supersede / work-group path automatically. Returns [] when the
+ * sheet has no data rows.
  */
-export function parseOthersSheet(ws: XLSX.WorkSheet, rowNumber = 1): StagingRowV2 | null {
-  if (!ws['!ref']) return null;
+export function parseOthersSheet(ws: XLSX.WorkSheet, startRowNumber = 1): StagingRowV2[] {
+  if (!ws['!ref']) return [];
   const range = XLSX.utils.decode_range(ws['!ref']);
-  const components: RecipeComponent[] = [];
-  const materials: OthersMaterial[] = [];
+  const rows: StagingRowV2[] = [];
+  let seq = 0;
+  let rowNumber = startRowNumber;
 
   for (let r = DATA_START_ROW; r <= range.e.r + 1; r++) {
     const name = strAt(ws, `A${r}`);
@@ -44,43 +36,33 @@ export function parseOthersSheet(ws: XLSX.WorkSheet, rowNumber = 1): StagingRowV
     const volume = numAt(ws, `D${r}`);
     const unitPrice = numAt(ws, `E${r}`);
 
-    components.push({
-      sourceCell: { sheet: OTHERS_SHEET_NAME, address: `A${r}` },
-      referencedCell: { sheet: OTHERS_SHEET_NAME, address: `A${r}` },
-      referencedBlockTitle: null,
-      referencedBlockRow: null,
-      quantityPerUnit: volume,
-      unitPrice,
-      costContribution: volume * unitPrice,
-      lineType: 'material',
+    seq += 1;
+    rows.push({
+      row_type: 'material',
+      row_number: rowNumber++,
+      raw_data: {
+        source_sheet: OTHERS_SHEET_NAME,
+        source_row: r,
+        source_cell: `A${r}`,
+        project_material: true,
+      },
+      parsed_data: {
+        code: `OTH-${String(seq).padStart(3, '0')}`,
+        name,
+        unit,
+        reference_unit_price: unitPrice,
+        tier: tierRaw > 0 ? tierRaw : null,
+        volume,
+        project_material: true,
+      },
+      needs_review: false,
       confidence: 1,
-      unit,
-      materialName: name,
+      review_status: 'PENDING',
+      cost_basis: null,
+      parent_ahs_staging_id: null,
+      ref_cells: null,
+      cost_split: null,
     });
-    materials.push({ name, tier: tierRaw > 0 ? tierRaw : null, unit, volume, unitPrice });
   }
-
-  if (components.length === 0) return null;
-
-  const recipe: BoqRowRecipe = {
-    perUnit: { material: 0, labor: 0, equipment: 0, prelim: 0 },
-    subkonPerUnit: 0,
-    components,
-    markup: null,
-    totalCached: 0,
-  };
-
-  return makeBoqStagingRow({
-    code: ANCHOR_CODE,
-    label: 'Material Umum (Tier 2 & 3)',
-    chapter: 'Material Umum',
-    subChapter: null,
-    unit: 'ls',
-    planned: 1,
-    recipe,
-    sourceSheet: OTHERS_SHEET_NAME,
-    sourceRow: DATA_START_ROW,
-    rowNumber,
-    extraRaw: { others_materials: materials },
-  });
+  return rows;
 }
