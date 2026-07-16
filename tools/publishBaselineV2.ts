@@ -656,6 +656,60 @@ export function buildProjectMaterialLines(
   return { lines: [...byMaterial.values()], unresolved };
 }
 
+export interface ProjectPriceBookInsert {
+  project_id: string;
+  material_id: string | null;
+  material_name: string;
+  unit: string;
+  unit_price: number;
+  tier: number;
+}
+
+/**
+ * Build ahs_price_book rows from the simplified format's project-level Others
+ * materials. Tier 3 is a Rupiah budget: v_material_budget_status INNER-joins
+ * ahs_price_book, so without a price row the material has NO budget envelope
+ * (Gate-1 shows TIER3_NO_BUDGET). The Others sheet is the price + tier
+ * authority for simplified projects (Material | Tier | Satuan | Volume |
+ * Harga Satuan — file wins), so publish maintains the project's price book
+ * from it. material_id is resolved through the same alias/fuzzy cascade as
+ * the master lines; rows with no positive price or an out-of-range tier are
+ * skipped (never guessed). RAB projects stage no project_material rows, so
+ * this returns [] and their (office-ingested) price book is never touched.
+ */
+export function buildProjectPriceBook(
+  rows: StagingRowV2[],
+  projectId: string,
+  catalog: CatalogRow[],
+  aliasMap: Map<string, string>,
+): ProjectPriceBookInsert[] {
+  const out: ProjectPriceBookInsert[] = [];
+  for (const r of rows) {
+    if (r.row_type !== 'material') continue;
+    const pd = r.parsed_data as {
+      name?: string;
+      unit?: string;
+      tier?: unknown;
+      reference_unit_price?: unknown;
+      project_material?: boolean;
+    };
+    if (!pd.project_material || r.review_status === 'REJECTED') continue;
+    const name = typeof pd.name === 'string' ? pd.name.trim() : '';
+    const price = toNumber(pd.reference_unit_price);
+    const tier = toNumber(pd.tier);
+    if (!name || !(price > 0) || ![1, 2, 3, 4].includes(tier)) continue;
+    out.push({
+      project_id: projectId,
+      material_id: resolveCatalogId(name, catalog, aliasMap),
+      material_name: name,
+      unit: pd.unit ?? '',
+      unit_price: price,
+      tier,
+    });
+  }
+  return out;
+}
+
 export interface BaselineSnapshotRow {
   project_id: string;
   material_id: string;
@@ -1348,6 +1402,31 @@ export async function publishBaselineV2(
       // Track which materials had a line fail so their baseline snapshot is not
       // anchored on a partial/absent master row (2.10 review item ii, below).
       if (f.row.material_id) failedMasterMaterialIds.add(f.row.material_id);
+    }
+  }
+
+  // Simplified-format projects: maintain the project's ahs_price_book from the
+  // Others sheet (price + tier authority), so the Tier-3 Rupiah budget gate has
+  // an envelope to evaluate. Replace-per-publish, but ONLY when this session
+  // staged project-level materials — RAB publishes have none, so an
+  // office-ingested price book is never wiped. Non-fatal: a price-book write
+  // failure degrades to the (visible) TIER3_NO_BUDGET warning, not a lost plan.
+  const priceBookRows = buildProjectPriceBook(rows, projectId, catalog, aliasMap);
+  if (priceBookRows.length > 0) {
+    const { error: pbDelErr } = await supabase
+      .from('ahs_price_book')
+      .delete()
+      .eq('project_id', projectId);
+    if (pbDelErr) {
+      warnings.push(`price book replace failed (Tier-3 budgets may be stale): ${pbDelErr.message}`);
+    } else {
+      const { failed: pbFailed } = await resilientWrite(
+        priceBookRows,
+        (batch) => supabase.from('ahs_price_book').insert(batch),
+      );
+      for (const f of pbFailed) {
+        warnings.push(`price book row "${(f.row as { material_name?: string }).material_name ?? '?'}" failed: ${f.error}`);
+      }
     }
   }
 
