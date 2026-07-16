@@ -39,10 +39,7 @@ export function parseSimplifiedInput(
 
   const rows: StagingRowV2[] = [];
   if (tier1Ws) rows.push(...parseTier1Sheet(tier1Ws));
-  if (othersWs) {
-    const anchor = parseOthersSheet(othersWs);
-    if (anchor) rows.push(anchor);
-  }
+  if (othersWs) rows.push(...parseOthersSheet(othersWs));
   rows.forEach((r, i) => {
     r.row_number = i + 1;
   });
