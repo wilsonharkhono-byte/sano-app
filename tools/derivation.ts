@@ -394,6 +394,9 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
   }
 
   const materialIds = Array.from(new Set(Array.from(aggregate.values()).map(item => item.material_id).filter(Boolean))) as string[];
+  // Superset of main's query: keeps main's supplier_unit + base_qty_per_supplier_unit
+  // (rebar batang display) and adds is_asset + an asset-name query for the
+  // equipment-exclusion filter below (assetRows / consumableBuckets need it).
   const [{ data: materials }, { data: assetRows }] = await Promise.all([
     materialIds.length > 0
       ? supabase.from('material_catalog').select('id, name, unit, supplier_unit, base_qty_per_supplier_unit, is_asset').in('id', materialIds)

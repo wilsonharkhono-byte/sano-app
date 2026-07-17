@@ -87,7 +87,6 @@ const BLUEPRINT_CSS = `
   .top{ display:flex; align-items:flex-start; justify-content:space-between; }
   .brand{ display:flex; align-items:center; gap:9px; }
   .brand .logo{ font-weight:700; font-size:19px; letter-spacing:.14em; }
-  .brand .tick{ width:18px; height:1.4px; background:var(--ink); }
   .top .hdrmeta{ text-align:right; font-size:9px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-3); line-height:1.7; }
   .top .hdrmeta b{ color:var(--ink-2); font-weight:600; }
 
@@ -343,7 +342,7 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
   <div class="sheet">
     <span class="mark tl"></span><span class="mark tr"></span><span class="mark bl"></span><span class="mark br"></span>
     <div class="top">
-      <div class="brand">${SANO_LOGO_SVG}<span class="tick"></span></div>
+      <div class="brand">${SANO_LOGO_SVG}</div>
       <div class="hdrmeta">Konfidensial<br><b>${esc(reportTag)}</b><br><span>${esc(periodeShort)}</span></div>
     </div>
     <div class="kicker">${esc(kicker)}</div>
