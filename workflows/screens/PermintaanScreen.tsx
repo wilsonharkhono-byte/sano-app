@@ -296,6 +296,9 @@ export default function PermintaanScreen() {
     supabase
       .from('material_catalog')
       .select('id, name, unit, supplier_unit, tier, code, category, base_qty_per_supplier_unit')
+      // Company-owned equipment (scaffolding parts) is deployed via the
+      // equipment pool, not requested/purchased as a consumable.
+      .eq('is_asset', false)
       .order('name')
       .then(({ data, error }) => {
         if (error) {
