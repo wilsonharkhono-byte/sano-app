@@ -1,11 +1,27 @@
 // SANO — Client Progress Report HTML render
-// Ports the "Blueprint Precision" template VERBATIM (assets/Client Progress
-// Report Template/SANO_Laporan_Harian-Mingguan_Blueprint.html). Only the
-// screen-only .toolbar is removed and placeholders are substituted. CSS values
-// are NOT re-authored (spec §1.2 fidelity contract).
+// Ports the "Blueprint Precision" template (assets/Client Progress Report
+// Template/SANO_Laporan_Harian-Mingguan_Blueprint.html). The screen-only
+// .toolbar is removed and placeholders are substituted.
+//
+// The template's verbatim-CSS contract is deliberately overridden in three
+// places at the design owner's explicit request (spec 2026-07-16):
+//   1. Paper is pure #FFFFFF (was the cream tint #FDFCF9) for clean printing.
+//   2. Print pagination is A4-locked on EVERY page — @page margins on all
+//      pages + a position:fixed running footer with real page counters — rather
+//      than a single-page min-height:100vh.
+//   3. Photos render as an auto-justified gallery (see tools/justifiedGallery.ts)
+//      instead of a fixed-height crop band, so nothing is force-cropped.
 
 import { Platform } from 'react-native';
 import type { ClientReportDraft } from './clientReport';
+import {
+  LAYOUT_JUSTIFIED_JS,
+  GALLERY_REF_WIDTH_PX,
+  GALLERY_TARGET_ROW_PX,
+  GALLERY_MAX_ROW_PX,
+  GALLERY_GAP_PX,
+  GALLERY_FEATURE_MIN_ASPECT,
+} from './justifiedGallery';
 
 export function esc(s: string | number | null | undefined): string {
   return String(s ?? '')
@@ -22,7 +38,7 @@ const BLUEPRINT_CSS = `
      ============================================================ */
   :root{
     --ink:#16130f; --ink-2:#57514a; --ink-3:#8c857a;
-    --paper:#FDFCF9; --paper-2:#F4F1EA;
+    --paper:#FFFFFF; --paper-2:#F4F1EA;
     --sand:#7A6B56; --sand-lt:#C9B79A;
     --line:#16130f; --line-sub:#dcd6ca;
   }
@@ -140,11 +156,32 @@ const BLUEPRINT_CSS = `
 
   /* ---- print ------------------------------------------------- */
   @media print{
-    @page{ size:A4; margin:0; }
-    body{ background:var(--paper); }
+    /* Every printed page is true A4 with real margins on ALL pages (not just
+       page 1, which the old sheet-padding approach could not guarantee). */
+    @page{ size:A4; margin:12mm 14mm 13mm; }
+    html, body{ background:#fff; }
     .toolbar{ display:none !important; }
-    .sheet{ width:auto; min-height:auto; max-width:none; margin:0; box-shadow:none; padding:13mm 14mm; }
-    section, .hero, figure, .row, .plan{ break-inside:avoid; }
+    /* @page supplies the margins now, so the sheet itself is padding-free. Its
+       min-height is ~one A4 content page so a SHORT report pins the closing
+       block — footer and all — to the page bottom (via .closing margin-top:auto),
+       while a LONG report grows past it and paginates onto further A4 pages, the
+       closing block landing on the final page. The footer stays in normal flow
+       (no position:fixed) so it can never overlap the closing content. */
+    .sheet{ width:auto; max-width:none; margin:0; padding:0; box-shadow:none; min-height:270mm; }
+    /* registration marks reframe EVERY printed page */
+    .mark{ position:fixed; }
+    .mark.tl{ top:7mm; left:7mm; } .mark.tr{ top:7mm; right:7mm; }
+    .mark.bl{ bottom:7mm; left:7mm; } .mark.br{ bottom:7mm; right:7mm; }
+    /* No CSS page counter: Chrome (the browser the app prints through) renders
+       the printed-page counters as 0, and there is no reliable cross-browser CSS
+       page number. Rather than print a wrong number, the footer carries no page
+       count; a user who needs page numbers can enable the browser print dialog's
+       own headers/footers. */
+    /* Avoid splitting individual photos, justified rows, update rows and the
+       closing block across a page break — but NOT the documentation <section>
+       itself: it must be free to start on page 1 and flow across pages, else a
+       photo-heavy report leaves page 1 half-empty. */
+    .gitem, .grow-row, .feature, .row, .plan{ break-inside:avoid; }
   }
   @media (max-width:680px){
     .sheet{ min-height:0; padding:18px 16px; }
@@ -189,17 +226,84 @@ const SANO_LOGO_SVG = `<svg viewBox="0 0 315.66 87.26" width="76" height="21" st
   </g>
 </svg>`;
 
-// Additive print/media overrides — NOT part of the verbatim blueprint CSS block.
-// (1) photos render as covered <img>; (2) force background colours/tints/bars to
-// print (browsers skip them by default); (3) make the sheet fill the full A4 page
-// in print so the flex `margin-top:auto` pins the footer to the page bottom.
-// Sizing kept here (not inline) so no numeric % leaks into the report body.
+// Additive media overrides — NOT part of the verbatim blueprint CSS block.
+// Justified photo gallery: the embedded layout script (GALLERY_SCRIPT below)
+// measures each photo and groups the non-feature photos into flush rows. Rows
+// are sized with flex-grow (∝ each photo's aspect) + a per-row `aspect-ratio`,
+// so the layout scales flush at ANY width — the transient screen popup and the
+// real A4 print width alike — with no fixed-height crop band. Before the script
+// runs (or if it fails), the fallback below simply stacks each photo full-width
+// at its true aspect: larger, but still never cropped.
+// All sizing lives here (not inline) so no numeric % leaks into the report body.
 const REPORT_MEDIA_CSS = `
-  .heroimg{ display:block; width:100%; height:50mm; object-fit:cover; }
-  .thumbimg{ display:block; width:100%; height:26mm; object-fit:cover; border:1px solid var(--line-sub); }
+  .gallery{ margin-top:9px; }
+  .gitem{ position:relative; margin:0; min-width:0; overflow:hidden;
+    border:1px solid var(--line-sub); background:var(--paper-2); }
+  .gitem img{ display:block; width:100%; height:auto; object-fit:cover; } /* fallback: true aspect */
+  /* justified row: figures fill the row width in proportion to their aspect,
+     the row's height comes from its inline aspect-ratio. */
+  .grow-row{ display:flex; gap:8px; align-items:stretch; margin-top:8px; }
+  .grow-row .gitem{ flex-basis:0; }
+  .grow-row .gitem img{ height:100%; }
+  /* full-width feature (a landscape first photo), shown at its TRUE aspect */
+  .feature{ margin-top:0; border:1px solid var(--ink); }
+  .feature img{ width:100%; height:auto; }
+  /* caption overlay — one treatment for feature and flowed photos */
+  .gcap{ position:absolute; left:0; right:0; bottom:0; background:var(--ink); color:var(--paper);
+    font-size:10px; padding:6px 10px; display:flex; gap:8px; align-items:center; }
+  .gcap .d{ color:var(--sand-lt); font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+    font-size:9px; white-space:nowrap; }
+  .gcap .t{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-  @media print{ .sheet{ min-height:100vh; } }
 `;
+
+// Self-contained gallery layout, embedded in the report so it justifies itself
+// on load (works even if the HTML is printed standalone). Runs on window 'load'
+// (all <img> measured), assigns the landscape first photo a full-width feature
+// row, greedily groups the rest into justified rows, then flags __galleryReady
+// so exportClientReportPdf knows the layout settled before it prints. Any error
+// leaves the never-cropped full-width fallback in place. NOTE: keep this free of
+// literal "<digits>%" — the report-body renders no numeric percentage.
+const GALLERY_SCRIPT = `<script>
+${LAYOUT_JUSTIFIED_JS}
+(function(){
+  function build(){
+    try{
+      var gallery = document.getElementById('gallery');
+      if(!gallery){ window.__galleryReady = true; return; }
+      var kids = gallery.children, figs = [];
+      for(var i=0;i<kids.length;i++){ if(kids[i].tagName === 'FIGURE') figs.push(kids[i]); }
+      if(figs.length === 0){ window.__galleryReady = true; return; }
+      var aspects = [];
+      for(var j=0;j<figs.length;j++){
+        var im = figs[j].getElementsByTagName('img')[0];
+        aspects.push((im && im.naturalWidth > 0 && im.naturalHeight > 0) ? (im.naturalWidth / im.naturalHeight) : 1.3333);
+      }
+      var start = 0;
+      if(aspects[0] >= ${GALLERY_FEATURE_MIN_ASPECT}){ figs[0].className = 'gitem feature'; start = 1; }
+      var rowFigs = figs.slice(start), rowAspects = aspects.slice(start);
+      var rows = layoutJustified(rowAspects, { containerWidth:${GALLERY_REF_WIDTH_PX}, targetRowHeight:${GALLERY_TARGET_ROW_PX}, gap:${GALLERY_GAP_PX}, maxRowHeight:${GALLERY_MAX_ROW_PX} });
+      for(var r=0;r<rows.length;r++){
+        var rowDiv = document.createElement('div');
+        rowDiv.className = 'grow-row';
+        var sum = 0, items = rows[r].items;
+        for(var c=0;c<items.length;c++){ sum += rowAspects[items[c].index]; }
+        rowDiv.style.aspectRatio = String(sum);
+        for(var d=0;d<items.length;d++){
+          var idx = items[d].index, f = rowFigs[idx];
+          f.style.flexGrow = String(rowAspects[idx]);
+          rowDiv.appendChild(f);
+        }
+        gallery.appendChild(rowDiv);
+      }
+      window.__galleryReady = true;
+    }catch(e){ window.__galleryReady = true; }
+  }
+  if(document.readyState === 'complete'){ build(); }
+  else { window.addEventListener('load', build); }
+  setTimeout(function(){ if(!window.__galleryReady){ build(); } }, 2500);
+})();
+</script>`;
 
 export function renderClientReportHtml(draft: ClientReportDraft): string {
   const kicker = draft.kind === 'harian' ? 'Laporan Harian' : 'Laporan Mingguan';
@@ -215,19 +319,15 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
   const updateRows = draft.updates.map((u) => `
       <div class="row"><span class="date">${esc(u.date)}</span><span class="area">${esc(u.area)}</span><span class="note">${esc(u.note)}</span></div>`).join('');
 
-  // Photos render as real <img> (not CSS background-image), which prints
-  // reliably — browsers omit background images from PDF output by default.
-  // Sizing lives in REPORT_MEDIA_CSS so no inline % leaks into the body.
-  const hero = draft.hero
-    ? `<div class="hero">
-        <img class="heroimg" src="${esc(draft.hero.url)}" alt="" />
-        <div class="cap"><span class="d">${esc(draft.hero.date)}</span><span>${esc(draft.hero.caption)}</span></div>
-      </div>`
-    : '';
-
-  const thumbs = draft.thumbs.length
-    ? `<div class="thumbs">${draft.thumbs.map((t) => `
-        <figure><img class="thumbimg" src="${esc(t.url)}" alt="" /><figcaption><span class="d">${esc(t.date)}</span> · ${esc(t.caption)}</figcaption></figure>`).join('')}</div>`
+  // All photos (hero first, then the rest) go into one gallery. Each renders as
+  // a real <img> (not CSS background-image), which prints reliably — browsers
+  // omit background images from PDF output by default. The embedded
+  // GALLERY_SCRIPT measures them at load and arranges the justified rows;
+  // sizing lives in REPORT_MEDIA_CSS so no inline % leaks into the body.
+  const photos = draft.hero ? [draft.hero, ...draft.thumbs] : draft.thumbs;
+  const gallery = photos.length
+    ? `<div class="gallery" id="gallery">${photos.map((p) => `
+        <figure class="gitem"><img src="${esc(p.url)}" alt="" /><figcaption class="gcap"><span class="d">${esc(p.date)}</span><span class="t">${esc(p.caption)}</span></figcaption></figure>`).join('')}</div>`
     : '';
 
   return `<!doctype html>
@@ -262,8 +362,7 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
     </section>
     <section>
       <div class="sec-head"><span class="no">02</span><h2>Dokumentasi Lapangan</h2></div>
-      ${hero}
-      ${thumbs}
+      ${gallery}
     </section>
     <div class="closing">
       <div class="plan">
@@ -273,11 +372,12 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
       <div class="runfoot">
         <span>SANcontractor © 2026 · Konfidensial</span>
         <span>${esc(draft.projectName)} · ${esc(reportTag)}</span>
-        <span>Hal. 1 / 1</span>
+        <span>${esc(periodeShort)}</span>
       </div>
       <div class="dimline">A4 · 210 × 297 mm</div>
     </div>
   </div>
+  ${GALLERY_SCRIPT}
 </body></html>`;
 }
 
@@ -302,6 +402,16 @@ export async function exportClientReportPdf(draft: ClientReportDraft): Promise<v
     await Promise.all(imgs.map((img) => (img.complete
       ? Promise.resolve()
       : new Promise<void>((res) => { img.addEventListener('load', () => res()); img.addEventListener('error', () => res()); }))));
+  } catch { /* ignore */ }
+  // Wait for the justified-gallery layout pass (GALLERY_SCRIPT, runs on the
+  // popup's load event) to arrange the photos before the print snapshot is
+  // taken. Bounded poll so a script hiccup can never hang the print action.
+  try {
+    const deadline = Date.now() + 3000;
+    // @ts-ignore - __galleryReady is set by the embedded layout script
+    while (!win.__galleryReady && Date.now() < deadline) {
+      await new Promise<void>((res) => setTimeout(res, 50));
+    }
   } catch { /* ignore */ }
   win.focus();
   win.print();

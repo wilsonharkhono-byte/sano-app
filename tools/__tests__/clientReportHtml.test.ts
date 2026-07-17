@@ -82,8 +82,37 @@ describe('renderClientReportHtml', () => {
     expect(html).not.toContain("background-image:url('https://cdn"); // no bg-image for photos
   });
 
-  it('forces backgrounds to print and pins the footer to the A4 page bottom', () => {
+  it('uses perfectly white paper for clean printing', () => {
+    expect(html).toContain('--paper:#FFFFFF');
+    expect(html).not.toContain('#FDFCF9');   // the old cream tint is gone
+  });
+
+  it('locks the printed page geometry to A4 on every page', () => {
     expect(html).toContain('print-color-adjust:exact');
-    expect(html).toContain('min-height:100vh');   // sheet fills the page in print
+    expect(html).toContain('size:A4');
+    expect(html).toContain('@page');
+    expect(html).toContain('min-height:270mm');     // deterministic A4 page height…
+    expect(html).not.toContain('min-height:100vh');  // …not the browser-dependent 100vh
+    expect(html).toContain('position:fixed');        // registration marks reframe each page
+  });
+
+  it('never prints a page number it cannot compute (no counter(page) → "Hal. 0")', () => {
+    // Chrome renders CSS page counters as 0 in print; showing a wrong page
+    // number violates the "never fake a number" rule, so there is none.
+    expect(html).not.toContain('counter(page)');
+    expect(html).not.toContain('Hal. 1 / 1');
+  });
+
+  it('arranges photos in an auto-justified gallery, not a fixed crop band', () => {
+    expect(html).toContain('class="gallery" id="gallery"');
+    expect(html).toContain('class="gitem"');
+    expect(html).toContain('function layoutJustified'); // the embedded layout algorithm
+    expect(html).not.toContain('class="heroimg"');      // old fixed 50mm cover band gone
+    expect(html).not.toContain('class="thumbimg"');     // old fixed 26mm cover grid gone
+  });
+
+  it('keeps the report body free of any literal percentage (incl. the gallery script)', () => {
+    const body = html.slice(html.lastIndexOf('</style>'));
+    expect(body).not.toMatch(/\d+\s*%/);
   });
 });
