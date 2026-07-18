@@ -91,7 +91,7 @@ export default function MilestoneAiReviewScreen({ onBack }: Props) {
     <View style={styles.flex}>
       <Header />
       <ScrollView contentContainerStyle={styles.content}>
-        <TouchableOpacity style={styles.backRow} onPress={onBack}>
+        <TouchableOpacity style={styles.backRow} onPress={onBack} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Ionicons name="arrow-back" size={20} color={COLORS.primary} />
           <Text style={styles.backText}>Kembali</Text>
         </TouchableOpacity>
@@ -141,7 +141,7 @@ export default function MilestoneAiReviewScreen({ onBack }: Props) {
                   </Text>
                 </View>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.discardBtn} onPress={() => handleDiscardOne(d)}>
+              <TouchableOpacity style={styles.discardBtn} onPress={() => handleDiscardOne(d)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Ionicons name="trash-outline" size={12} color={COLORS.critical} />
                 <Text style={styles.discardText}>Buang</Text>
               </TouchableOpacity>

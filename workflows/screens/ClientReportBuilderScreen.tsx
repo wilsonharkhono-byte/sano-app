@@ -298,15 +298,15 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
 
             <Card title="Lengkapi Naratif" subtitle="Isi field yang tidak bisa diambil otomatis.">
               <Text style={styles.label}>Sub-judul (mis. Finishing Interior)</Text>
-              <TextInput style={styles.input} value={draft.subtitle} onChangeText={(v) => patch({ subtitle: v })} placeholder="Lingkup pekerjaan" />
+              <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={draft.subtitle} onChangeText={(v) => patch({ subtitle: v })} placeholder="Lingkup pekerjaan" />
               <Text style={styles.label}>Klien</Text>
-              <TextInput style={styles.input} value={draft.clientName ?? ''} onChangeText={(v) => patch({ clientName: v })} placeholder="Nama klien" />
+              <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={draft.clientName ?? ''} onChangeText={(v) => patch({ clientName: v })} placeholder="Nama klien" />
               <Text style={styles.label}>Cuaca</Text>
-              <TextInput style={styles.input} value={draft.weather ?? ''} onChangeText={(v) => patch({ weather: v })} placeholder="Cerah" />
+              <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={draft.weather ?? ''} onChangeText={(v) => patch({ weather: v })} placeholder="Cerah" />
               <View style={styles.row2}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.label}>Tenaga Kerja (orang)</Text>
-                  <TextInput
+                  <TextInput placeholderTextColor={COLORS.textMuted}
                     style={styles.input}
                     keyboardType="numeric"
                     value={draft.crewTotal != null ? String(draft.crewTotal) : ''}
@@ -319,7 +319,7 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
                 </View>
                 <View style={{ flex: 2 }}>
                   <Text style={styles.label}>Rincian Tenaga Kerja</Text>
-                  <TextInput
+                  <TextInput placeholderTextColor={COLORS.textMuted}
                     style={styles.input}
                     value={draft.crewBreakdown ?? ''}
                     onChangeText={(v) => patch({ crewBreakdown: v || null })}
@@ -335,7 +335,7 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
                 </Text>
               )}
               <Text style={styles.label}>Rencana Periode Berikutnya</Text>
-              <TextInput style={[styles.input, styles.textarea]} value={draft.nextPlan} onChangeText={(v) => patch({ nextPlan: v })} multiline placeholder="Rencana pekerjaan berikutnya..." />
+              <TextInput placeholderTextColor={COLORS.textMuted} style={[styles.input, styles.textarea]} value={draft.nextPlan} onChangeText={(v) => patch({ nextPlan: v })} multiline placeholder="Rencana pekerjaan berikutnya..." />
             </Card>
 
             <Card
@@ -350,13 +350,13 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
                       <Ionicons name="close-circle-outline" size={18} color={COLORS.critical} />
                     </TouchableOpacity>
                   </View>
-                  <TextInput
+                  <TextInput placeholderTextColor={COLORS.textMuted}
                     style={styles.input}
                     value={u.area}
                     onChangeText={(v) => patchUpdate(i, { area: v })}
                     placeholder="Area (mis. Tangga)"
                   />
-                  <TextInput
+                  <TextInput placeholderTextColor={COLORS.textMuted}
                     style={[styles.input, styles.textareaSm, { marginTop: SPACE.xs + 2 }]}
                     value={u.note}
                     onChangeText={(v) => patchUpdate(i, { note: v })}
@@ -391,7 +391,7 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
                         <Ionicons name="close-circle-outline" size={18} color={COLORS.critical} />
                       </TouchableOpacity>
                     </View>
-                    <TextInput
+                    <TextInput placeholderTextColor={COLORS.textMuted}
                       style={[styles.input, { marginTop: SPACE.xs }]}
                       value={ph.caption}
                       onChangeText={(v) => patchPhoto(i, { caption: v })}

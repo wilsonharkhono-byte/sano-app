@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { FLAG_COLORS, FLAG_BG, FONTS, TYPE, RADIUS_SM } from '../theme';
+import { COLORS, FLAG_COLORS, FLAG_BG, FONTS, TYPE, RADIUS_SM } from '../theme';
 
 interface Props {
   flag: string;
@@ -17,7 +17,7 @@ const FLAG_LABELS: Record<string, string> = {
 
 export default function Badge({ flag, label }: Props) {
   const bgColor   = FLAG_BG[flag]     ?? 'rgba(0,0,0,0.06)';
-  const textColor = FLAG_COLORS[flag] ?? '#524E49';
+  const textColor = FLAG_COLORS[flag] ?? COLORS.textSec;
   const displayLabel = label ?? FLAG_LABELS[flag] ?? flag;
 
   return (

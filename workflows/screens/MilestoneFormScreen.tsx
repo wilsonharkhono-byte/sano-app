@@ -61,7 +61,7 @@ function PredecessorPicker({ allMilestones, currentId, selected, onChange }: Pre
 
   return (
     <>
-      <TextInput
+      <TextInput placeholderTextColor={COLORS.textMuted}
         style={stylesLocal.search}
         value={search}
         onChangeText={setSearch}
@@ -231,7 +231,7 @@ export default function MilestoneFormScreen({ onBack, milestoneId, initialDraft 
 
         <Card>
           <Text style={styles.label}>Nama Milestone <Text style={styles.req}>*</Text></Text>
-          <TextInput
+          <TextInput placeholderTextColor={COLORS.textMuted}
             style={styles.input}
             value={label}
             onChangeText={setLabel}

@@ -108,19 +108,19 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
 
         <Card title="Kondisi Hari Ini">
           <Text style={styles.label}>Cuaca</Text>
-          <TextInput style={styles.input} value={weather} onChangeText={setWeather} placeholder="Cerah / Hujan / Berawan" />
+          <TextInput style={styles.input} value={weather} onChangeText={setWeather} placeholder="Cerah / Hujan / Berawan" placeholderTextColor={COLORS.textMuted} />
           <View style={styles.row2}>
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Tenaga Kerja</Text>
-              <TextInput style={styles.input} keyboardType="numeric" value={crewTotal} onChangeText={setCrewTotal} placeholder="8" />
+              <TextInput style={styles.input} keyboardType="numeric" value={crewTotal} onChangeText={setCrewTotal} placeholder="8" placeholderTextColor={COLORS.textMuted} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Insiden K3</Text>
-              <TextInput style={styles.input} keyboardType="numeric" value={safety} onChangeText={setSafety} placeholder="0" />
+              <TextInput style={styles.input} keyboardType="numeric" value={safety} onChangeText={setSafety} placeholder="0" placeholderTextColor={COLORS.textMuted} />
             </View>
           </View>
           <Text style={styles.label}>Rincian Tenaga Kerja</Text>
-          <TextInput style={styles.input} value={crewBreakdown} onChangeText={setCrewBreakdown} placeholder="3 tukang · 2 kenek · 1 mandor" />
+          <TextInput style={styles.input} value={crewBreakdown} onChangeText={setCrewBreakdown} placeholder="3 tukang · 2 kenek · 1 mandor" placeholderTextColor={COLORS.textMuted} />
         </Card>
 
         <Card title="Update Lapangan" subtitle="Catatan progres naratif. Kaitkan ke item BoQ bila relevan (opsional).">
@@ -134,8 +134,8 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
                   </TouchableOpacity>
                 )}
               </View>
-              <TextInput style={styles.input} value={h.area} onChangeText={(v) => updateHighlight(i, { area: v })} placeholder="Area (mis. Tangga)" />
-              <TextInput style={[styles.input, styles.textarea]} value={h.note} onChangeText={(v) => updateHighlight(i, { note: v })} multiline placeholder="Catatan progres..." />
+              <TextInput style={styles.input} value={h.area} onChangeText={(v) => updateHighlight(i, { area: v })} placeholder="Area (mis. Tangga)" placeholderTextColor={COLORS.textMuted} />
+              <TextInput style={[styles.input, styles.textarea]} value={h.note} onChangeText={(v) => updateHighlight(i, { note: v })} multiline placeholder="Catatan progres..." placeholderTextColor={COLORS.textMuted} />
               <Text style={styles.linkLabel}>Kaitkan item BoQ (opsional)</Text>
               <SelectSheet
                 value={h.boq_item_id ?? ''}

@@ -490,7 +490,7 @@ export default function AttendanceScreen({
             <>
               {/* Week navigation */}
               <View style={styles.weekNav}>
-                <TouchableOpacity style={styles.weekNavBtn} onPress={() => setWeekStart(prevWeek(weekStart))}>
+                <TouchableOpacity style={styles.weekNavBtn} onPress={() => setWeekStart(prevWeek(weekStart))} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                   <Ionicons name="chevron-back" size={18} color={COLORS.primary} />
                 </TouchableOpacity>
                 <View style={styles.weekLabelBox}>
@@ -501,6 +501,7 @@ export default function AttendanceScreen({
                   style={styles.weekNavBtn}
                   onPress={() => setWeekStart(nextWeek(weekStart))}
                   disabled={nextWeek(weekStart) > localISO(new Date())}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   <Ionicons name="chevron-forward" size={18} color={COLORS.primary} />
                 </TouchableOpacity>
@@ -593,6 +594,7 @@ export default function AttendanceScreen({
                                     style={[styles.presenceToggle, pillStyle, locked && styles.presenceLocked]}
                                     onPress={() => togglePresence(w.id, date)}
                                     activeOpacity={locked ? 1 : 0.2}
+                                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                                   >
                                     <Text style={[
                                       styles.presenceSymbol,
@@ -601,7 +603,7 @@ export default function AttendanceScreen({
                                   </TouchableOpacity>
                                   {locked ? (
                                     <View style={styles.lockRow}>
-                                      <Ionicons name="lock-closed" size={9} color={COLORS.textMuted} />
+                                      <Ionicons name="lock-closed" size={12} color={COLORS.textSec} />
                                       {presence === 'present' && ot > 0 && (
                                         <Text style={styles.lockOt}>{ot}j</Text>
                                       )}
@@ -631,7 +633,7 @@ export default function AttendanceScreen({
                               )}
                             </View>
                             <View style={styles.payCell}>
-                              <Text style={styles.payText}>{formatRp(totals.weekPay)}</Text>
+                              <Text style={styles.payText} numberOfLines={1}>{formatRp(totals.weekPay)}</Text>
                             </View>
                           </View>
                         </View>
@@ -656,7 +658,7 @@ export default function AttendanceScreen({
                         <Text style={styles.gridFooterText}>{grandDays}h</Text>
                       </View>
                       <View style={styles.payCell}>
-                        <Text style={[styles.gridFooterText, { color: COLORS.primary }]}>
+                        <Text style={[styles.gridFooterText, { color: COLORS.primary }]} numberOfLines={1}>
                           {formatRp(grandTotal)}
                         </Text>
                       </View>
@@ -683,7 +685,7 @@ export default function AttendanceScreen({
                       disabled={!hasUnsavedEdits || saving}
                     >
                       {saving
-                        ? <ActivityIndicator size="small" color="#fff" />
+                        ? <ActivityIndicator size="small" color={COLORS.textInverse} />
                         : <Text style={styles.saveBtnText}>
                             {hasUnsavedEdits ? 'Simpan Draft' : 'Tersimpan'}
                           </Text>
@@ -777,7 +779,7 @@ export default function AttendanceScreen({
                         {ws.total_overtime_hours > 0 && (
                           <Text style={styles.historyOT}>{ws.total_overtime_hours}j OT</Text>
                         )}
-                        <Text style={styles.historyPay}>{formatRp(ws.total_pay)}</Text>
+                        <Text style={styles.historyPay} numberOfLines={1}>{formatRp(ws.total_pay)}</Text>
                         <View style={styles.historyStatus}>
                           {ws.settled_count === ws.days_present + ws.days_absent
                             ? <Badge flag="OK" label="Settled" />
@@ -803,7 +805,7 @@ export default function AttendanceScreen({
 const NAME_W   = 118;
 const DAY_W    = 52;
 const TOTAL_W  = 44;
-const PAY_W    = 86;
+const PAY_W    = 112;
 
 const styles = StyleSheet.create({
   flex:    { flex: 1, backgroundColor: COLORS.bg },
@@ -855,7 +857,7 @@ const styles = StyleSheet.create({
   gridFooterText: { fontSize: TYPE.xs, fontFamily: FONTS.bold, color: COLORS.text },
 
   dayName: { fontSize: TYPE.xs, fontFamily: FONTS.bold, color: COLORS.textSec, letterSpacing: 0.3 },
-  dayDate: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textMuted, marginTop: 1 },
+  dayDate: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 1 },
 
   dayCell: { width: DAY_W, alignItems: 'center', paddingVertical: SPACE.xs },
   totalCell: { width: TOTAL_W, alignItems: 'center', justifyContent: 'center', paddingVertical: SPACE.xs },
@@ -870,7 +872,7 @@ const styles = StyleSheet.create({
   presenceSymbolMuted: { color: COLORS.textMuted },
 
   lockRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, height: 22 },
-  lockOt:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textMuted },
+  lockOt:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec },
 
   otInput: {
     width: 36, height: 22, textAlign: 'center',
@@ -878,10 +880,10 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: COLORS.primary + '60',
     paddingVertical: 0,
   },
-  otPlaceholder: { fontSize: TYPE.xs, color: COLORS.textMuted, height: 22, textAlignVertical: 'center', marginTop: 1 },
+  otPlaceholder: { fontSize: TYPE.xs, color: COLORS.textSec, height: 22, textAlignVertical: 'center', marginTop: 1 },
 
   workerNameText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
-  workerSkillText: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textMuted, marginTop: 1 },  // was TYPE.xs-1 (10dp)
+  workerSkillText: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 1 },  // was TYPE.xs-1 (10dp)
 
   totalText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
   otSummary: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 1 },  // was TYPE.xs-1 (10dp)
@@ -905,6 +907,6 @@ const styles = StyleSheet.create({
   historyName:       { flex: 1, fontSize: TYPE.sm, fontFamily: FONTS.medium, color: COLORS.text },
   historyDays:       { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.text, width: 28, textAlign: 'right' },
   historyOT:         { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, width: 42, textAlign: 'right' },
-  historyPay:        { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.text, width: 76, textAlign: 'right' },
+  historyPay:        { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.text, width: 92, textAlign: 'right' },
   historyStatus:     { width: 56, alignItems: 'flex-end' },
 });

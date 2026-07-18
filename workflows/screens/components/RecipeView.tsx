@@ -54,7 +54,7 @@ const LINE_TYPE_COLORS: Record<string, string> = {
   material:  COLORS.info,
   labor:     COLORS.ok,
   equipment: COLORS.warning,
-  subkon:    COLORS.accent,
+  subkon:    COLORS.accentDark,
   prelim:    COLORS.textMuted,
 };
 
@@ -279,7 +279,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   sectionLabel: {
-    fontSize: 10,
+    fontSize: TYPE.xs,
     fontFamily: FONTS.bold,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
@@ -314,7 +314,7 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   componentSource: {
-    fontSize: 10,
+    fontSize: TYPE.xs,
     color: COLORS.textMuted,
     fontFamily: FONTS.regular,
     marginTop: 1,
@@ -346,7 +346,7 @@ const styles = StyleSheet.create({
     color: COLORS.warning,
   },
   markupSource: {
-    fontSize: 10,
+    fontSize: TYPE.xs,
     color: COLORS.textMuted,
     fontFamily: FONTS.regular,
     marginTop: 1,

@@ -664,7 +664,7 @@ export default function BaselineScreen({
   const anomalySeverityColor = (s: string) => {
     switch (s) {
       case 'CRITICAL': return COLORS.critical;
-      case 'HIGH': return '#E65100';
+      case 'HIGH': return COLORS.high;
       case 'WARNING': return COLORS.warning;
       default: return COLORS.textSec;
     }
@@ -1254,7 +1254,7 @@ export default function BaselineScreen({
             >
               <TouchableOpacity style={styles.revisionCheckboxRow} onPress={() => toggleAckClass(cls)}>
                 <View style={[styles.revisionCheckbox, checked && styles.revisionCheckboxChecked]}>
-                  {checked && <Ionicons name="checkmark" size={16} color="#fff" />}
+                  {checked && <Ionicons name="checkmark" size={16} color={COLORS.textInverse} />}
                 </View>
                 <Text style={styles.revisionClassLabel}>{meta.label}</Text>
               </TouchableOpacity>
@@ -1304,7 +1304,7 @@ export default function BaselineScreen({
             onPress={() => confirmRepublish(diffPreview)}
             disabled={!allAcknowledged || publishing || checkingCeiling}
           >
-            <Ionicons name="checkmark-circle" size={18} color="#fff" />
+            <Ionicons name="checkmark-circle" size={18} color={COLORS.textInverse} />
             <Text style={styles.revisionConfirmText}>
               {checkingCeiling ? 'Memeriksa plafon...' : publishing ? 'Publishing...' : 'Konfirmasi & Publish'}
             </Text>
@@ -1371,7 +1371,7 @@ export default function BaselineScreen({
             onPress={handleEscalateCeiling}
             disabled={escalatingCeiling}
           >
-            <Ionicons name="arrow-up-circle-outline" size={18} color="#fff" />
+            <Ionicons name="arrow-up-circle-outline" size={18} color={COLORS.textInverse} />
             <Text style={styles.revisionConfirmText}>{escalatingCeiling ? 'Mengirim...' : 'Eskalasi ke Prinsipal'}</Text>
           </TouchableOpacity>
           <TouchableOpacity
@@ -1379,7 +1379,7 @@ export default function BaselineScreen({
             onPress={() => selected && doPublish(buildRevisionContext(diffPreview!), selected.id)}
             disabled={!covered || publishing}
           >
-            <Ionicons name="checkmark-circle" size={18} color="#fff" />
+            <Ionicons name="checkmark-circle" size={18} color={COLORS.textInverse} />
             <Text style={styles.revisionConfirmText}>{publishing ? 'Publishing...' : 'Publish dgn persetujuan'}</Text>
           </TouchableOpacity>
         </View>
@@ -1567,7 +1567,7 @@ export default function BaselineScreen({
                     value={editDraft[key] ?? ''}
                     onChangeText={(text) => setEditDraft(prev => ({ ...prev, [key]: text }))}
                     placeholder={`Isi ${label}`}
-                    placeholderTextColor={COLORS.textSec}
+                    placeholderTextColor={COLORS.textMuted}
                   />
                 )}
               </View>
@@ -1603,7 +1603,7 @@ export default function BaselineScreen({
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
 
         {/* Back button */}
-        <TouchableOpacity style={styles.backBtn} onPress={view === 'sessions' ? onBack : () => setView('sessions')}>
+        <TouchableOpacity style={styles.backBtn} onPress={view === 'sessions' ? onBack : () => setView('sessions')} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
           <Ionicons name="arrow-back" size={20} color={COLORS.primary} />
           <Text style={styles.backText}>{view === 'sessions' ? backLabel : 'Kembali ke Sesi'}</Text>
         </TouchableOpacity>
@@ -1628,12 +1628,12 @@ export default function BaselineScreen({
             <TouchableOpacity style={[styles.uploadBtn, parsing && { opacity: 0.6 }]} onPress={handleUpload} disabled={parsing}>
               {parsing ? (
                 <>
-                  <ActivityIndicator size="small" color="#fff" />
+                  <ActivityIndicator size="small" color={COLORS.textInverse} />
                   <Text style={styles.uploadText}>{parseProgress || 'Parsing...'}</Text>
                 </>
               ) : (
                 <>
-                  <Ionicons name="cloud-upload" size={20} color="#fff" />
+                  <Ionicons name="cloud-upload" size={20} color={COLORS.textInverse} />
                   <Text style={styles.uploadText}>Upload File BoQ / AHS</Text>
                 </>
               )}
@@ -1686,8 +1686,8 @@ export default function BaselineScreen({
             )}
 
             {__DEV__ && (
-              <TouchableOpacity onPress={handleDryRunV2} style={{ padding: 12, backgroundColor: '#333' }}>
-                <Text style={{ color: '#fff' }}>DEV: Dry-run parseBoqV2</Text>
+              <TouchableOpacity onPress={handleDryRunV2} style={{ padding: 12, backgroundColor: COLORS.primary }}>
+                <Text style={{ color: COLORS.textInverse }}>DEV: Dry-run parseBoqV2</Text>
               </TouchableOpacity>
             )}
 
@@ -1983,7 +1983,7 @@ export default function BaselineScreen({
                 onPress={handlePublish}
                 disabled={publishing || preparingDiff}
               >
-                <Ionicons name="checkmark-circle" size={20} color="#fff" />
+                <Ionicons name="checkmark-circle" size={20} color={COLORS.textInverse} />
                 <Text style={styles.publishText}>
                   {preparingDiff ? 'Menghitung perubahan...' : publishing ? 'Publishing...' : 'Publish Baseline'}
                 </Text>
@@ -2135,7 +2135,7 @@ const styles = StyleSheet.create({
     paddingBottom: SPACE.sm,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
-    backgroundColor: 'rgba(59, 130, 246, 0.04)',
+    backgroundColor: COLORS.infoBg,
     borderRadius: RADIUS,
   },
   inlineEditorTitle: {
@@ -2218,12 +2218,12 @@ const styles = StyleSheet.create({
   ceilingWarn: { fontSize: TYPE.xs, color: COLORS.critical },
   ceilingHint: { fontSize: TYPE.xs, color: COLORS.textSec, fontStyle: 'italic', marginTop: SPACE.xs },
   ceilingEscalateBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.sm, backgroundColor: COLORS.critical, borderRadius: RADIUS, paddingVertical: SPACE.sm },
-  anomalyBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(255,152,0,0.08)', borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: 14, marginBottom: SPACE.md },
+  anomalyBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: COLORS.warningBg, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: 14, marginBottom: SPACE.md },
   anomalyBannerTitle: { fontSize: TYPE.sm, fontFamily: FONTS.bold },
   severityDot: { width: 8, height: 8, borderRadius: 4 },
   auditBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: 'rgba(33,150,243,0.06)',
+    backgroundColor: COLORS.infoBg,
     borderWidth: 1, borderColor: COLORS.primary,
     borderRadius: RADIUS, padding: 14, marginBottom: SPACE.md,
   },

@@ -626,7 +626,7 @@ export default function MandorSetupScreen({
                 disabled={saving}
               >
                 {saving
-                  ? <ActivityIndicator size="small" color="#fff" />
+                  ? <ActivityIndicator size="small" color={COLORS.textInverse} />
                   : <Text style={styles.primaryBtnText}>Tambah Mandor</Text>
                 }
               </TouchableOpacity>
@@ -888,7 +888,7 @@ export default function MandorSetupScreen({
                 disabled={saving}
               >
                 {saving
-                  ? <ActivityIndicator size="small" color="#fff" />
+                  ? <ActivityIndicator size="small" color={COLORS.textInverse} />
                   : <Text style={styles.primaryBtnText}>Tambah</Text>
                 }
               </TouchableOpacity>
@@ -931,7 +931,7 @@ export default function MandorSetupScreen({
                 disabled={savingOt}
               >
                 {savingOt
-                  ? <ActivityIndicator size="small" color="#fff" />
+                  ? <ActivityIndicator size="small" color={COLORS.textInverse} />
                   : <Text style={styles.primaryBtnText}>{overtimeRules ? 'Update Lembur' : 'Simpan Lembur'}</Text>
                 }
               </TouchableOpacity>
@@ -975,7 +975,7 @@ export default function MandorSetupScreen({
                           <Text style={{ fontSize: TYPE.base, fontFamily: FONTS.semibold, color: w.current_daily_rate ? COLORS.text : COLORS.warning }}>
                             {w.current_daily_rate ? formatRate(w.current_daily_rate) : 'Belum ada tarif'}
                           </Text>
-                          <TouchableOpacity onPress={() => { setEditingWorkerRate(w.id); setWorkerRateInput(w.current_daily_rate ? String(w.current_daily_rate) : ''); }}>
+                          <TouchableOpacity onPress={() => { setEditingWorkerRate(w.id); setWorkerRateInput(w.current_daily_rate ? String(w.current_daily_rate) : ''); }} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                             <Ionicons name="pencil" size={14} color={COLORS.primary} />
                           </TouchableOpacity>
                         </View>
@@ -1063,6 +1063,7 @@ export default function MandorSetupScreen({
                               setWorkerOtT2(w.ot_tier2_rate ? String(w.ot_tier2_rate) : '');
                               setWorkerOtT2Threshold(w.ot_tier2_threshold ? String(w.ot_tier2_threshold) : '10');
                             }}
+                            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                           >
                             <Ionicons name="pencil" size={14} color={COLORS.primary} />
                           </TouchableOpacity>
@@ -1099,6 +1100,7 @@ export default function MandorSetupScreen({
             <TouchableOpacity
               onPress={() => setShowTradeModal(false)}
               style={styles.modalBackBtn}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Ionicons name="chevron-back" size={20} color={COLORS.primary} />
               <Text style={styles.modalBackText}>Tutup</Text>
@@ -1222,7 +1224,7 @@ const styles = StyleSheet.create({
   lineRow:     { flexDirection: 'row', alignItems: 'flex-start', gap: SPACE.sm, marginTop: SPACE.sm, paddingTop: SPACE.sm, borderTopWidth: 1, borderTopColor: COLORS.borderSub },
   confDot:     { width: 8, height: 8, borderRadius: 4, marginTop: 4 },
   lineDesc:    { fontSize: TYPE.sm, fontFamily: FONTS.medium, color: COLORS.text },
-  lineReason:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textMuted, marginTop: 1 },
+  lineReason:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 1 },
   confirmBtn:  { marginTop: SPACE.md, backgroundColor: COLORS.primary, borderRadius: RADIUS, paddingVertical: SPACE.md, alignItems: 'center' },
   confirmBtnText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textInverse, textTransform: 'uppercase', letterSpacing: 0.3 },
 
@@ -1255,7 +1257,7 @@ const styles = StyleSheet.create({
   rateItemLabel: { fontSize: TYPE.base, fontFamily: FONTS.semibold, color: COLORS.text, marginBottom: SPACE.xs },
   rateCompRow:   { flexDirection: 'row', alignItems: 'center', gap: SPACE.md, marginTop: SPACE.md },
   rateCompItem:  { flex: 1 },
-  rateCompLabel: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textMuted, marginBottom: 2 },
+  rateCompLabel: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginBottom: 2 },
   rateCompValue: { fontSize: TYPE.base, fontFamily: FONTS.semibold, color: COLORS.text },
   rateInput:     { borderBottomWidth: 1.5, borderBottomColor: COLORS.primary, fontSize: TYPE.base, fontFamily: FONTS.semibold, color: COLORS.primary, paddingVertical: 2 },
   varBadge:      { paddingHorizontal: SPACE.sm, paddingVertical: SPACE.xs, borderRadius: RADIUS_SM },

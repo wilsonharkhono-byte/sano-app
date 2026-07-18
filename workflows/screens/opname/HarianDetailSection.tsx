@@ -362,6 +362,7 @@ export const HarianDetailSection: React.FC<HarianDetailSectionProps> = ({
                       onPress={() => handleDeleteAllocationRow(allocation)}
                       disabled={deletingAllocationId === allocation.id}
                       style={styles.deleteAllocationBtn}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                     >
                       {deletingAllocationId === allocation.id
                         ? <ActivityIndicator size="small" color={COLORS.critical} />

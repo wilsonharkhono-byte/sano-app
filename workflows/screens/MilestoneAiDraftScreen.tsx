@@ -100,7 +100,7 @@ export default function MilestoneAiDraftScreen({ onBack }: Props) {
     <View style={styles.flex}>
       <Header />
       <ScrollView contentContainerStyle={styles.content}>
-        <TouchableOpacity style={styles.backRow} onPress={onBack} disabled={submitting}>
+        <TouchableOpacity style={styles.backRow} onPress={onBack} disabled={submitting} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
           <Ionicons name="arrow-back" size={20} color={COLORS.primary} />
           <Text style={styles.backText}>Kembali</Text>
         </TouchableOpacity>
@@ -114,7 +114,7 @@ export default function MilestoneAiDraftScreen({ onBack }: Props) {
             {PROJECT_TYPES.map(t => {
               const active = t === projectType;
               return (
-                <TouchableOpacity key={t} style={[styles.pill, active && styles.pillActive]} onPress={() => setProjectType(t)}>
+                <TouchableOpacity key={t} style={[styles.pill, active && styles.pillActive]} onPress={() => setProjectType(t)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                   <Text style={[styles.pillText, active && styles.pillTextActive]}>{t}</Text>
                 </TouchableOpacity>
               );
@@ -136,7 +136,7 @@ export default function MilestoneAiDraftScreen({ onBack }: Props) {
             ] as Array<[ShiftMode, string]>).map(([key, label]) => {
               const active = key === shiftMode;
               return (
-                <TouchableOpacity key={key} style={[styles.pill, active && styles.pillActive]} onPress={() => setShiftMode(key)}>
+                <TouchableOpacity key={key} style={[styles.pill, active && styles.pillActive]} onPress={() => setShiftMode(key)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                   <Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
                 </TouchableOpacity>
               );
@@ -144,7 +144,7 @@ export default function MilestoneAiDraftScreen({ onBack }: Props) {
           </View>
 
           <Text style={styles.label}>Catatan Kondisi Site</Text>
-          <TextInput
+          <TextInput placeholderTextColor={COLORS.textMuted}
             style={[styles.input, styles.textarea]}
             value={siteNotes}
             onChangeText={setSiteNotes}

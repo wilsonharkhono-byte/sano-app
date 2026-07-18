@@ -176,10 +176,10 @@ export default function CacatScreen() {
             </View>
 
             <Text style={styles.label}>Lokasi Spesifik <Text style={styles.req}>*</Text></Text>
-            <TextInput style={styles.input} value={loc} onChangeText={setLoc} placeholder="Lt.2, Kamar Tidur Utama, Dinding Selatan" />
+            <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={loc} onChangeText={setLoc} placeholder="Lt.2, Kamar Tidur Utama, Dinding Selatan" />
 
             <Text style={styles.label}>Deskripsi <Text style={styles.req}>*</Text></Text>
-            <TextInput style={[styles.input, styles.textarea]} value={desc} onChangeText={setDesc} multiline placeholder="Plesteran retak rambut sepanjang 2m" />
+            <TextInput placeholderTextColor={COLORS.textMuted} style={[styles.input, styles.textarea]} value={desc} onChangeText={setDesc} multiline placeholder="Plesteran retak rambut sepanjang 2m" />
 
             <Text style={styles.label}>Keparahan <Text style={styles.req}>*</Text></Text>
             <View style={styles.sevRow}>
@@ -216,7 +216,7 @@ export default function CacatScreen() {
         <Text style={styles.sectionHead}>Status Serah Terima</Text>
         <Card borderColor={eligible ? COLORS.ok : COLORS.critical}>
           <Text style={styles.cardTitle}>Status Punch List — Serah Terima</Text>
-          <View style={[styles.eligibleBox, { backgroundColor: eligible ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.08)' }]}>
+          <View style={[styles.eligibleBox, { backgroundColor: eligible ? COLORS.okBg : COLORS.criticalBg }]}>
             <Text style={[styles.eligibleLabel, { color: eligible ? COLORS.ok : COLORS.critical }]}>
               {eligible ? 'ELIGIBLE — Siap Serah Terima' : 'BELUM ELIGIBLE'}
             </Text>
@@ -249,14 +249,14 @@ const styles = StyleSheet.create({
   defectDesc:   { fontSize: TYPE.sm, marginBottom: SPACE.sm },
   defectFooter: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm },
   hint:         { fontSize: TYPE.xs, color: COLORS.textSec, marginBottom: SPACE.xs },
-  divider:      { height: 1, backgroundColor: 'rgba(148,148,148,0.2)', marginVertical: SPACE.sm + 2 },
+  divider:      { height: 1, backgroundColor: COLORS.borderSub, marginVertical: SPACE.sm + 2 },
   label:        { fontSize: TYPE.sm, fontFamily: FONTS.medium, marginBottom: 6, marginTop: SPACE.md },
   req:          { color: COLORS.critical },
   input:        { backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: SPACE.md, fontSize: TYPE.md, color: COLORS.text },
   textarea:     { minHeight: 80, textAlignVertical: 'top' },
   pickerWrap:   { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface },
   sevRow:       { flexDirection: 'row', gap: SPACE.sm },
-  sevChip:      { flex: 1, padding: 10, borderWidth: 2, borderColor: COLORS.border, borderRadius: RADIUS, alignItems: 'center' },
+  sevChip:      { flex: 1, padding: 10, borderWidth: 2, borderColor: COLORS.border, borderRadius: RADIUS, alignItems: 'center', minHeight: 44 },
   sevText:      { fontSize: TYPE.xs, fontFamily: FONTS.bold, textTransform: 'uppercase', color: COLORS.textSec },
   btn:          { backgroundColor: COLORS.primary, borderRadius: RADIUS, padding: SPACE.base, alignItems: 'center' },
   btnText:      { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' },

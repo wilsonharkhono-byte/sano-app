@@ -1,12 +1,12 @@
 import React from 'react';
 import { View, Text, Image } from 'react-native';
-import { COLORS } from '../theme';
+import { COLORS, TYPE } from '../theme';
 import type { ReportPayload } from '../../tools/reports';
 import { formatDriftPct } from '../../tools/planDrift';
 
 function RRow({ label, value, color }: { label: string; value: string | number; color?: string }) {
   return (
-    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)' }}>
+    <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub }}>
       <Text style={{ fontSize: 13, color: COLORS.textSec, flex: 1 }}>{label}</Text>
       <Text style={{ fontSize: 13, fontWeight: '700', color: color ?? COLORS.text }}>{String(value)}</Text>
     </View>
@@ -15,7 +15,7 @@ function RRow({ label, value, color }: { label: string; value: string | number; 
 
 function SLabel({ children }: { children: string }) {
   return (
-    <Text style={{ fontSize: 11, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', color: COLORS.textSec, marginTop: 14, marginBottom: 6 }}>
+    <Text style={{ fontSize: TYPE.xs, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', color: COLORS.textSec, marginTop: 14, marginBottom: 6 }}>
       {children}
     </Text>
   );
@@ -55,7 +55,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
     return (
       <>
         <SLabel>Ringkasan</SLabel>
-        <RRow label="Progress Keseluruhan" value={`${d.overall_progress}%`} color={COLORS.accent} />
+        <RRow label="Progress Keseluruhan" value={`${d.overall_progress}%`} color={COLORS.accentDark} />
         <RRow label="Total Item BoQ" value={d.total_items} />
         <RRow label="Selesai" value={d.completed_items} color={COLORS.ok} />
         <RRow label="Sedang Berjalan" value={d.in_progress_items} color={COLORS.warning} />
@@ -82,7 +82,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
           .filter((entry: any) => (entry.photos ?? []).length > 0)
           .slice(0, 5)
           .map((entry: any, i: number) => (
-            <View key={i} style={{ marginBottom: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 10 }}>
+            <View key={i} style={{ marginBottom: 12, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 10 }}>
               <Text style={{ fontSize: 13, fontWeight: '600' }}>{entry.boq_code} — {entry.boq_label}</Text>
               <Text style={{ fontSize: 12, color: COLORS.textSec }}>
                 {entry.created_at ? new Date(entry.created_at).toLocaleDateString('id-ID') : '—'} · {entry.quantity} {entry.unit}
@@ -105,9 +105,9 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <RRow label="Over-Budget" value={d.over_budget ?? 0} color={COLORS.critical} />
         <SLabel>Detail Material</SLabel>
         {(d.balances ?? []).map((b: any, i: number) => (
-          <View key={i} style={{ marginBottom: 8, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={i} style={{ marginBottom: 8, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{b.material_name ?? b.name ?? '—'}</Text>
-            <Text style={{ fontSize: 11, color: COLORS.textSec }}>
+            <Text style={{ fontSize: TYPE.xs, color: COLORS.textSec }}>
               Tier {b.tier ?? '—'} · {b.control ?? '—'}
             </Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
@@ -146,7 +146,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <RRow label="Fully Received" value={d.fully_received} color={COLORS.ok} />
         <SLabel>Log Penerimaan</SLabel>
         {(d.entries ?? []).map((e: any, i: number) => (
-          <View key={i} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={i} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{e.material}</Text>
             <Text style={{ fontSize: 12, color: COLORS.primary, fontWeight: '700' }}>{e.po_number ?? e.po_ref ?? '—'}</Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>{e.supplier}</Text>
@@ -163,7 +163,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
           .filter((receipt: any) => (receipt.photos ?? []).length > 0)
           .slice(0, 5)
           .map((receipt: any, i: number) => (
-            <View key={i} style={{ marginBottom: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 10 }}>
+            <View key={i} style={{ marginBottom: 12, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 10 }}>
               <Text style={{ fontSize: 13, fontWeight: '600' }}>{receipt.material_name}</Text>
               <Text style={{ fontSize: 12, color: COLORS.textSec }}>
                 {receipt.po_number ?? receipt.po_ref ?? '—'} ·
@@ -207,7 +207,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         )}
         <SLabel>Daftar Catatan</SLabel>
         {(d.items ?? []).map((item: any, i: number) => (
-          <View key={i} style={{ marginBottom: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 10 }}>
+          <View key={i} style={{ marginBottom: 12, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 10 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
               <Text style={{ fontSize: 13, fontWeight: '600', flex: 1 }}>{item.description}</Text>
               <Text style={{ fontSize: 11, fontWeight: '700', color: item.decision === 'ditolak' ? COLORS.critical : item.decision === 'pending' ? COLORS.warning : item.decision === 'selesai' ? COLORS.ok : COLORS.info }}>
@@ -257,7 +257,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <RRow label="Delayed" value={d.delayed} color={COLORS.critical} />
         <SLabel>Detail Milestone</SLabel>
         {(d.milestones ?? []).map((m: any, i: number) => (
-          <View key={i} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={i} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
               <Text style={{ fontSize: 13, fontWeight: '600', flex: 1 }}>{m.label}</Text>
               <Text style={{ fontSize: 11, fontWeight: '700', color: statusColor(m.status) }}>{m.status.replace(/_/g, ' ')}</Text>
@@ -280,7 +280,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <SLabel>Periode</SLabel>
         <RRow label="Minggu" value={`${d.week_start} — ${d.week_end}`} />
         <RRow label="Total Aktivitas" value={d.total_activities} />
-        <RRow label="Progress Keseluruhan" value={`${d.overall_progress}%`} color={COLORS.accent} />
+        <RRow label="Progress Keseluruhan" value={`${d.overall_progress}%`} color={COLORS.accentDark} />
         {d.by_flag && Object.keys(d.by_flag).length > 0 && (
           <>
             <SLabel>Aktivitas per Flag</SLabel>
@@ -311,7 +311,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <RRow label="Audit Case Open" value={d.audit_cases?.open ?? 0} color={COLORS.critical} />
         <SLabel>Daftar Anomali</SLabel>
         {(d.anomalies?.items ?? []).map((item: any, index: number) => (
-          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{item.event_type}</Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>{item.entity_type} · {item.entity_id}</Text>
             <Text style={{ fontSize: 12, color: item.severity === 'CRITICAL' ? COLORS.critical : item.severity === 'WARNING' ? COLORS.warning : COLORS.textSec }}>{item.description}</Text>
@@ -320,7 +320,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         {(d.anomalies?.items ?? []).length === 0 && <Text style={{ fontSize: 13, color: COLORS.textSec }}>Belum ada anomali pada filter ini.</Text>}
         <SLabel>Audit Case</SLabel>
         {(d.audit_cases?.items ?? []).map((item: any, index: number) => (
-          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{item.trigger_type}</Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>{item.entity_type} · {item.entity_id}</Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>Status: {(item.status ?? 'OPEN').replace(/_/g, ' ')}</Text>
@@ -339,7 +339,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <SLabel>Ringkasan</SLabel>
         <RRow label="Total Interaksi" value={d.summary?.total_interactions ?? 0} />
         <RRow label="User Aktif" value={d.summary?.active_users ?? 0} />
-        <RRow label="Total Token" value={fmtTokens(d.summary?.total_tokens ?? 0)} color={COLORS.accent} />
+        <RRow label="Total Token" value={fmtTokens(d.summary?.total_tokens ?? 0)} color={COLORS.accentDark} />
         <RRow label="Haiku" value={d.summary?.haiku_count ?? 0} />
         <RRow label="Sonnet" value={d.summary?.sonnet_count ?? 0} color={COLORS.warning} />
         {d.error ? (
@@ -349,7 +349,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         ) : null}
         <SLabel>Per User</SLabel>
         {(d.users ?? []).map((user: any, index: number) => (
-          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{user.full_name}</Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
               {user.role ?? '—'} · {user.interaction_count} chat · {user.active_days} hari aktif
@@ -367,7 +367,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         {(d.users ?? []).length === 0 && <Text style={{ fontSize: 13, color: COLORS.textSec }}>Belum ada penggunaan AI pada filter ini.</Text>}
         <SLabel>Tren Harian</SLabel>
         {(d.usage_by_day ?? []).slice(-10).reverse().map((row: any, index: number) => (
-          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{new Date(row.date).toLocaleDateString('id-ID')}</Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
               {row.interaction_count} chat · {fmtTokens(row.total_tokens ?? 0)} token
@@ -384,7 +384,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <SLabel>Ringkasan</SLabel>
         <RRow label="Event Ditangani" value={d.summary?.handled_events ?? 0} />
         <RRow label="Reviewer Aktif" value={d.summary?.active_reviewers ?? 0} />
-        <RRow label="Rata-rata SLA" value={`${d.summary?.avg_hours ?? 0} jam`} color={COLORS.accent} />
+        <RRow label="Rata-rata SLA" value={`${d.summary?.avg_hours ?? 0} jam`} color={COLORS.accentDark} />
         <RRow label="Median SLA" value={`${d.summary?.median_hours ?? 0} jam`} />
         <RRow label="Lebih dari 24 jam" value={d.summary?.over_24h ?? 0} color={COLORS.warning} />
         <RRow label="Queue Pending" value={d.summary?.pending_items ?? 0} color={COLORS.critical} />
@@ -394,7 +394,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         ))}
         <SLabel>Per User</SLabel>
         {(d.users ?? []).map((user: any, index: number) => (
-          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{user.full_name}</Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
               {user.role ?? '—'} · {user.handled_events} handled · avg {user.avg_hours} jam · median {user.median_hours} jam
@@ -407,7 +407,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         ))}
         <SLabel>Per Jenis Approval</SLabel>
         {(d.entity_sla ?? []).map((row: any, index: number) => (
-          <View key={index} style={{ marginBottom: 8, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={index} style={{ marginBottom: 8, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{row.entity}</Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
               {row.handled_events} event · avg {row.avg_hours} jam · median {row.median_hours} jam
@@ -426,14 +426,14 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <RRow label="User Aktif" value={d.summary?.active_users ?? 0} />
         <RRow label="Entry Eligible Foto" value={d.summary?.photo_eligible_entries ?? 0} />
         <RRow label="Foto Lengkap" value={d.summary?.photo_backed_entries ?? 0} color={COLORS.ok} />
-        <RRow label="Cakupan Foto" value={`${d.summary?.photo_coverage_pct ?? 0}%`} color={COLORS.accent} />
+        <RRow label="Cakupan Foto" value={`${d.summary?.photo_coverage_pct ?? 0}%`} color={COLORS.accentDark} />
         <SLabel>Distribusi Modul</SLabel>
         {(d.by_module ?? []).map((row: any, index: number) => (
           <RRow key={index} label={row.module} value={row.count} />
         ))}
         <SLabel>Per User</SLabel>
         {(d.users ?? []).map((user: any, index: number) => (
-          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{user.full_name}</Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
               {user.role ?? '—'} · {user.total_entries} entry · {user.active_days} hari aktif
@@ -455,7 +455,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <SLabel>Ringkasan</SLabel>
         <RRow label="Total Export" value={d.summary?.total_exports ?? 0} />
         <RRow label="User Export Aktif" value={d.summary?.export_users ?? 0} />
-        <RRow label="Total Chat AI" value={d.summary?.total_ai_chats ?? 0} color={COLORS.accent} />
+        <RRow label="Total Chat AI" value={d.summary?.total_ai_chats ?? 0} color={COLORS.accentDark} />
         <RRow label="User AI Aktif" value={d.summary?.ai_users ?? 0} />
         <RRow label="Total Token AI" value={fmtTokens(d.summary?.total_ai_tokens ?? 0)} />
         <SLabel>Report Paling Sering</SLabel>
@@ -464,7 +464,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         ))}
         <SLabel>Per User</SLabel>
         {(d.users ?? []).map((user: any, index: number) => (
-          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{user.full_name}</Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
               {user.role ?? '—'} · {user.export_count} export · {user.ai_chat_count} chat AI
@@ -493,7 +493,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
         <RRow label="Audit Case Open" value={d.summary?.audit_cases_open ?? 0} color={COLORS.critical} />
         <SLabel>Per User</SLabel>
         {(d.users ?? []).map((user: any, index: number) => (
-          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: 'rgba(148,148,148,0.15)', paddingBottom: 8 }}>
+          <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
             <Text style={{ fontSize: 13, fontWeight: '600' }}>{user.full_name}</Text>
             <Text style={{ fontSize: 12, color: COLORS.textSec }}>
               {user.role ?? '—'} · generated {user.generated_count ?? 0} · handled {user.handled_count ?? 0}

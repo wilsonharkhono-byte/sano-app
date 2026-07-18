@@ -933,7 +933,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
 
       {selectedPO ? (
         <>
-          <TouchableOpacity style={styles.backRow} onPress={() => setSelectedPO(null)}>
+          <TouchableOpacity style={styles.backRow} onPress={() => setSelectedPO(null)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="arrow-back" size={16} color={COLORS.primary} />
             <Text style={styles.backRowText}>Kembali ke Daftar PO</Text>
           </TouchableOpacity>
@@ -965,7 +965,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   ) : null}
 
                   <Text style={styles.fieldLabel}>Harga Satuan (Rp per {line.unit || 'unit'})</Text>
-                  <TextInput
+                  <TextInput placeholderTextColor={COLORS.textMuted}
                     style={styles.input}
                     keyboardType="numeric"
                     value={edit.price}
@@ -974,7 +974,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   />
 
                   <Text style={styles.fieldLabel}>Vendor</Text>
-                  <TextInput
+                  <TextInput placeholderTextColor={COLORS.textMuted}
                     style={styles.input}
                     value={edit.vendor}
                     onChangeText={v => setLineEdits(prev => ({ ...prev, [line.id]: { ...edit, vendor: v } }))}
@@ -994,7 +994,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   {g2 && (g2.overall.flag === 'WARNING' || g2.overall.flag === 'HIGH' || g2.overall.flag === 'CRITICAL') && (
                     <>
                       <Text style={styles.fieldLabel}>Justifikasi <Text style={{ color: COLORS.critical }}>*</Text></Text>
-                      <TextInput
+                      <TextInput placeholderTextColor={COLORS.textMuted}
                         style={[styles.input, styles.textarea]}
                         value={edit.justification}
                         onChangeText={v => setLineEdits(prev => ({ ...prev, [line.id]: { ...edit, justification: v } }))}
@@ -1007,7 +1007,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   {/* Escalate button for HIGH/CRITICAL */}
                   {g2?.requiresPrincipal && (
                     <TouchableOpacity style={styles.escalateBtn} onPress={() => handleEscalate(selectedPO, idx)}>
-                      <Ionicons name="arrow-up-circle" size={16} color="#fff" />
+                      <Ionicons name="arrow-up-circle" size={16} color={COLORS.textInverse} />
                       <Text style={styles.escalateBtnText}>Eskalasi ke Principal</Text>
                     </TouchableOpacity>
                   )}
@@ -1024,14 +1024,14 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         </>
       ) : showCreateForm ? (
         <>
-          <TouchableOpacity style={styles.backRow} onPress={resetCreateForm}>
+          <TouchableOpacity style={styles.backRow} onPress={resetCreateForm} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="arrow-back" size={16} color={COLORS.primary} />
             <Text style={styles.backRowText}>Kembali ke Daftar PO</Text>
           </TouchableOpacity>
 
           <Card title="Buat Purchase Order" subtitle="Admin atau Estimator dapat membuat daftar PO baru untuk proyek aktif.">
             <Text style={styles.fieldLabel}>Supplier <Text style={{ color: COLORS.critical }}>*</Text></Text>
-            <TextInput
+            <TextInput placeholderTextColor={COLORS.textMuted}
               style={styles.input}
               value={draftSupplier}
               onChangeText={setDraftSupplier}
@@ -1093,7 +1093,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
             {draftBoqMode === 'multi' && (
               <>
                 <Text style={styles.fieldLabel}>Ringkasan Cakupan BoQ <Text style={{ color: COLORS.critical }}>*</Text></Text>
-                <TextInput
+                <TextInput placeholderTextColor={COLORS.textMuted}
                   style={[styles.input, styles.textarea]}
                   value={draftBoqSummary}
                   onChangeText={setDraftBoqSummary}
@@ -1114,7 +1114,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                 <View style={styles.lineHeader}>
                   <Text style={styles.lineName}>Line #{index + 1}</Text>
                   {draftLines.length > 1 ? (
-                    <TouchableOpacity onPress={() => removeDraftLine(line.id)}>
+                    <TouchableOpacity onPress={() => removeDraftLine(line.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                       <Text style={styles.removeLineText}>Hapus</Text>
                     </TouchableOpacity>
                   ) : null}
@@ -1140,7 +1140,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                 {!line.material_id ? (
                   <>
                     <Text style={styles.fieldLabel}>Nama Material <Text style={{ color: COLORS.critical }}>*</Text></Text>
-                    <TextInput
+                    <TextInput placeholderTextColor={COLORS.textMuted}
                       style={styles.input}
                       value={line.material_name}
                       onChangeText={(value) => updateDraftLine(line.id, { material_name: value })}
@@ -1168,7 +1168,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                 <View style={styles.row3}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.fieldLabel}>Qty <Text style={{ color: COLORS.critical }}>*</Text></Text>
-                    <TextInput
+                    <TextInput placeholderTextColor={COLORS.textMuted}
                       style={styles.input}
                       keyboardType="numeric"
                       value={line.quantity}
@@ -1178,7 +1178,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.fieldLabel}>Unit <Text style={{ color: COLORS.critical }}>*</Text></Text>
-                    <TextInput
+                    <TextInput placeholderTextColor={COLORS.textMuted}
                       style={[styles.input, line.material_id && styles.inputDisabled]}
                       value={line.unit}
                       onChangeText={(value) => updateDraftLine(line.id, { unit: value })}
@@ -1188,7 +1188,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.fieldLabel}>Harga <Text style={{ color: COLORS.critical }}>*</Text></Text>
-                    <TextInput
+                    <TextInput placeholderTextColor={COLORS.textMuted}
                       style={styles.input}
                       keyboardType="numeric"
                       value={line.unit_price}
@@ -1222,6 +1222,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                       onPress={() => clearRequestLink(line.id)}
                       accessibilityRole="button"
                       accessibilityLabel="Hapus tautan permintaan"
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                     >
                       <Ionicons name="close-circle" size={16} color={COLORS.textSec} />
                     </TouchableOpacity>
@@ -1333,7 +1334,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         <>
           <View style={styles.topActionRow}>
             <TouchableOpacity style={styles.createBtn} onPress={() => setShowCreateForm(true)}>
-              <Ionicons name="add-circle" size={16} color="#fff" />
+              <Ionicons name="add-circle" size={16} color={COLORS.textInverse} />
               <Text style={styles.createBtnText}>Buat PO Baru</Text>
             </TouchableOpacity>
           </View>
@@ -1511,7 +1512,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       <Header />
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
         {showBackButton && (
-          <TouchableOpacity style={styles.backRow} onPress={onBack}>
+          <TouchableOpacity style={styles.backRow} onPress={onBack} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="arrow-back" size={20} color={COLORS.primary} />
             <Text style={styles.backRowText}>Kembali ke Laporan</Text>
           </TouchableOpacity>
@@ -1555,7 +1556,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                 value={materialSearch}
                 onChangeText={setMaterialSearch}
                 placeholder="Cari nama, kode, kategori..."
-                placeholderTextColor={COLORS.textSec}
+                placeholderTextColor={COLORS.textMuted}
               />
             </View>
 
@@ -1616,7 +1617,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                 value={boqSearch}
                 onChangeText={setBoqSearch}
                 placeholder="Cari kode atau nama pekerjaan..."
-                placeholderTextColor={COLORS.textSec}
+                placeholderTextColor={COLORS.textMuted}
               />
             </View>
 
@@ -1738,7 +1739,7 @@ function ApprovalActions({ taskId, onAction, actions = ['APPROVE', 'HOLD', 'REJE
         </TouchableOpacity>
       ) : (
         <>
-          <TextInput
+          <TextInput placeholderTextColor={COLORS.textMuted}
             style={[styles.input, styles.textarea]}
             value={reason}
             onChangeText={setReason}

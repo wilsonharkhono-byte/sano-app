@@ -71,36 +71,36 @@ const CHIP_STYLES: Record<
   { bg: string; fg: string; label: (row: AuditAhsRow) => string }
 > = {
   catalog: {
-    bg: '#e6f4ff',
-    fg: '#0958d9',
+    bg: COLORS.infoBg,
+    fg: COLORS.info,
     label: row => `Katalog: ${row.refCells?.unit_price?.sheet ?? '?'}!${row.refCells?.unit_price?.cell ?? '?'}`,
   },
   nested_ahs: {
-    bg: '#e0f2e9',
-    fg: '#237804',
+    bg: COLORS.okBg,
+    fg: COLORS.ok,
     label: row => `Turunan: ${row.refCells?.unit_price?.sheet ?? '?'}!${row.refCells?.unit_price?.cell ?? '?'}`,
   },
   literal: {
-    bg: '#fff7e6',
-    fg: '#d48806',
+    bg: COLORS.warningBg,
+    fg: COLORS.warning,
     label: () => 'Literal (hardcoded)',
   },
   takeoff_ref: {
-    bg: '#e6f4ff',
-    fg: '#0958d9',
+    bg: COLORS.infoBg,
+    fg: COLORS.info,
     label: row => {
       const q = row.refCells?.quantity?.[0];
       return `Takeoff: ${q?.sheet ?? '?'}!${q?.cell ?? '?'}`;
     },
   },
   cross_ref: {
-    bg: '#fff1f0',
-    fg: '#cf1322',
+    bg: COLORS.criticalBg,
+    fg: COLORS.critical,
     label: () => 'Split F/G/H',
   },
   inline_split: {
-    bg: '#f0f5ff',
-    fg: '#2f54eb',
+    bg: COLORS.accentBg,
+    fg: COLORS.accentDark,
     label: () => 'Split inline (BoQ)',
   },
 };
@@ -116,13 +116,13 @@ function ValidationBadge({
   if (!entry) return null;
   if (entry.status === 'ok') {
     return (
-      <Text style={{ color: '#237804', fontSize: 12, marginTop: 2 }}>
+      <Text style={{ color: COLORS.ok, fontSize: 12, marginTop: 2 }}>
         ✓ balanced
       </Text>
     );
   }
   return (
-    <Text style={{ color: '#d48806', fontSize: 12, marginTop: 2 }}>
+    <Text style={{ color: COLORS.warning, fontSize: 12, marginTop: 2 }}>
       ⚠ Tidak balans: Rp {entry.delta.toLocaleString('id-ID')}
     </Text>
   );
@@ -137,6 +137,7 @@ function TraceChip({ row }: { row: AuditAhsRow }) {
   return (
     <TouchableOpacity
       onPress={handlePress}
+      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       style={{
         backgroundColor: cfg.bg,
         paddingHorizontal: 6,
@@ -302,7 +303,7 @@ function EditableCell({ value, onCommit, numeric, placeholder, width, align = 'l
         onBlur={commit}
         onChangeText={setDraft}
         placeholder={placeholder}
-        placeholderTextColor={COLORS.textSec}
+        placeholderTextColor={COLORS.textMuted}
         keyboardType={numeric ? 'decimal-pad' : 'default'}
         editable={!saving}
       />
@@ -440,7 +441,7 @@ function EditAhsComponentForm({ row, onSave, onCancel }: EditAhsComponentFormPro
           accessibilityLabel="Simpan edit"
         >
           {saving
-            ? <ActivityIndicator size="small" color="#fff" />
+            ? <ActivityIndicator size="small" color={COLORS.textInverse} />
             : <Text style={styles.editSaveText}>Simpan</Text>}
         </TouchableOpacity>
       </View>
@@ -833,7 +834,7 @@ export default function AuditTraceScreen({
     <Modal visible={visible} animationType="slide" onRequestClose={close}>
       <View style={styles.flex}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={close} style={styles.closeBtn}>
+          <TouchableOpacity onPress={close} style={styles.closeBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Ionicons name="close" size={22} color={COLORS.primary} />
             <Text style={styles.closeText}>Tutup</Text>
           </TouchableOpacity>
@@ -846,6 +847,7 @@ export default function AuditTraceScreen({
             style={styles.undoBtn}
             accessibilityRole="button"
             accessibilityLabel="Undo edit terakhir"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
             <Ionicons name="arrow-undo" size={16} color={COLORS.primary} />
             <Text style={styles.undoText}>Undo</Text>
@@ -881,10 +883,10 @@ export default function AuditTraceScreen({
                 : tab === 'boq' ? 'Cari kode/uraian BoQ...'
                   : 'Cari judul block / kode BoQ...'
             }
-            placeholderTextColor={COLORS.textSec}
+            placeholderTextColor={COLORS.textMuted}
           />
           {search.length > 0 && (
-            <TouchableOpacity onPress={() => setSearch('')}>
+            <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
               <Ionicons name="close-circle" size={16} color={COLORS.textSec} />
             </TouchableOpacity>
           )}
@@ -1202,6 +1204,7 @@ function MaterialDetail({
                 onPress={() => onToggleEdit(key)}
                 accessibilityRole="button"
                 accessibilityLabel={expanded ? 'Tutup editor' : 'Edit komponen'}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Ionicons
                   name={expanded ? 'chevron-up' : 'create-outline'}
@@ -1210,7 +1213,7 @@ function MaterialDetail({
                 />
                 <Text style={styles.editBtnText}>{expanded ? 'Tutup' : 'Edit'}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(line.ahs)}>
+              <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(line.ahs)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Ionicons name="trash-outline" size={14} color={COLORS.critical} />
                 <Text style={styles.deleteText}>Hapus baris</Text>
               </TouchableOpacity>
@@ -1450,6 +1453,7 @@ function BoqDetail({
                       onPress={() => onToggleEdit(key)}
                       accessibilityRole="button"
                       accessibilityLabel={expanded ? 'Tutup editor' : 'Edit komponen'}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     >
                       <Ionicons
                         name={expanded ? 'chevron-up' : 'create-outline'}
@@ -1458,7 +1462,7 @@ function BoqDetail({
                       />
                       <Text style={styles.editBtnText}>{expanded ? 'Tutup' : 'Edit'}</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(line.ahs)}>
+                    <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(line.ahs)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                       <Ionicons name="trash-outline" size={14} color={COLORS.critical} />
                       <Text style={styles.deleteText}>Hapus baris</Text>
                     </TouchableOpacity>
@@ -1623,6 +1627,7 @@ function AhsBlockDetail({
                 onPress={() => onToggleEdit(key)}
                 accessibilityRole="button"
                 accessibilityLabel={expanded ? 'Tutup editor' : 'Edit komponen'}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Ionicons
                   name={expanded ? 'chevron-up' : 'create-outline'}
@@ -1631,7 +1636,7 @@ function AhsBlockDetail({
                 />
                 <Text style={styles.editBtnText}>{expanded ? 'Tutup' : 'Edit'}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(c.ahs)}>
+              <TouchableOpacity style={styles.deleteBtn} onPress={() => onDeleteAhs(c.ahs)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Ionicons name="trash-outline" size={14} color={COLORS.critical} />
                 <Text style={styles.deleteText}>Hapus baris</Text>
               </TouchableOpacity>
@@ -1666,7 +1671,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 4,
     paddingHorizontal: 10, paddingVertical: 6,
     borderWidth: 1, borderColor: COLORS.primary, borderRadius: 6,
-    backgroundColor: 'rgba(22,119,255,0.04)',
+    backgroundColor: COLORS.accentBg,
   },
   undoText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.primary },
   title: { fontSize: TYPE.base, fontFamily: FONTS.bold, color: COLORS.text },
@@ -1730,7 +1735,7 @@ const styles = StyleSheet.create({
   formRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
   formCol: { flex: 1 },
   formLabel: {
-    fontSize: 10, fontFamily: FONTS.semibold, color: COLORS.textSec,
+    fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textSec,
     textTransform: 'uppercase', letterSpacing: 0.3, marginBottom: 3,
   },
   cellInput: {
@@ -1739,17 +1744,17 @@ const styles = StyleSheet.create({
     fontSize: TYPE.sm, color: COLORS.text,
     backgroundColor: COLORS.surface,
   },
-  cellInputFocused: { borderColor: COLORS.primary, backgroundColor: '#fff' },
+  cellInputFocused: { borderColor: COLORS.primary, backgroundColor: COLORS.surface },
 
   totalsRow: { flexDirection: 'row', gap: SPACE.sm, marginTop: SPACE.md },
   totalBox: {
     flex: 1,
     padding: SPACE.sm + 2,
     borderRadius: RADIUS, borderWidth: 1, borderColor: COLORS.border,
-    backgroundColor: 'rgba(0,0,0,0.02)',
+    backgroundColor: COLORS.surfaceSunken,
   },
   totalLabel: {
-    fontSize: 10, fontFamily: FONTS.semibold, color: COLORS.textSec,
+    fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textSec,
     textTransform: 'uppercase', letterSpacing: 0.3,
   },
   totalValue: { fontSize: TYPE.base, fontFamily: FONTS.bold, color: COLORS.text, marginTop: 2 },
@@ -1771,8 +1776,8 @@ const styles = StyleSheet.create({
     flex: 1,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
     paddingVertical: 6,
-    borderWidth: 1, borderColor: 'rgba(198,40,40,0.3)', borderRadius: 6,
-    backgroundColor: 'rgba(198,40,40,0.04)',
+    borderWidth: 1, borderColor: COLORS.critical, borderRadius: 6,
+    backgroundColor: COLORS.criticalBg,
   },
   deleteText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.critical },
 
@@ -1792,7 +1797,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
     paddingVertical: 6,
     borderWidth: 1, borderColor: COLORS.primary, borderRadius: 6,
-    backgroundColor: 'rgba(22,119,255,0.04)',
+    backgroundColor: COLORS.accentBg,
   },
   editBtnText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.primary },
 
@@ -1800,7 +1805,7 @@ const styles = StyleSheet.create({
     marginTop: SPACE.sm,
     padding: SPACE.sm + 2,
     borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
-    backgroundColor: 'rgba(0,0,0,0.02)',
+    backgroundColor: COLORS.surfaceSunken,
   },
   editPanelTitle: {
     fontSize: TYPE.xs, fontFamily: FONTS.bold,
@@ -1838,7 +1843,7 @@ const styles = StyleSheet.create({
     marginHorizontal: SPACE.sm,
     padding: SPACE.sm + 2,
     borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
-    backgroundColor: 'rgba(0,0,0,0.02)',
+    backgroundColor: COLORS.surfaceSunken,
   },
   pickerOption: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',

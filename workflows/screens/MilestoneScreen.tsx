@@ -207,7 +207,7 @@ export function MilestonePanel({
       {/* Sync button */}
       {canRevise && (
         <TouchableOpacity style={styles.syncBtn} onPress={handleSync} disabled={syncing}>
-          <Ionicons name="sync" size={16} color="#fff" />
+          <Ionicons name="sync" size={16} color={COLORS.textInverse} />
           <Text style={styles.syncBtnText}>{syncing ? 'Menyinkronkan...' : 'Sinkronisasi Status dari Progres'}</Text>
         </TouchableOpacity>
       )}
@@ -222,7 +222,7 @@ export function MilestonePanel({
             placeholder="Pilih tanggal revisi"
           />
           <Text style={styles.label}>Alasan Revisi <Text style={styles.req}>*</Text></Text>
-          <TextInput
+          <TextInput placeholderTextColor={COLORS.textMuted}
             style={[styles.input, styles.textarea]}
             value={revisionReason}
             onChangeText={setRevisionReason}
@@ -310,6 +310,7 @@ export function MilestonePanel({
                     onPress={() => {
                       Alert.alert('Penjelasan AI', m.ai_explanation ?? 'Tidak ada penjelasan.');
                     }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
                     <Ionicons name="sparkles" size={10} color={COLORS.info} />
                     <Text style={styles.aiBadgeText}>
@@ -331,7 +332,7 @@ export function MilestonePanel({
               <Badge flag={STATUS_FLAG[m.status] ?? 'INFO'} label={m.status.replace('_', ' ')} />
               {canRevise && !revising && (
                 <View style={{ flexDirection: 'row', gap: 4 }}>
-                  <TouchableOpacity style={styles.actBtn} onPress={() => onOpenForm?.(m.id)}>
+                  <TouchableOpacity style={styles.actBtn} onPress={() => onOpenForm?.(m.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                     <Ionicons name="create-outline" size={12} color={COLORS.primary} />
                     <Text style={styles.actBtnText}>Edit</Text>
                   </TouchableOpacity>
@@ -342,6 +343,7 @@ export function MilestonePanel({
                       setNewDate(m.revised_date ?? m.planned_date);
                       setRevisionReason('');
                     }}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
                     <Ionicons name="time-outline" size={12} color={COLORS.warning} />
                     <Text style={[styles.actBtnText, { color: COLORS.warning }]}>Revisi</Text>
@@ -349,6 +351,7 @@ export function MilestonePanel({
                   <TouchableOpacity
                     style={styles.actBtn}
                     onPress={() => handleDeleteCard(m)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   >
                     <Ionicons name="trash-outline" size={12} color={COLORS.critical} />
                     <Text style={[styles.actBtnText, { color: COLORS.critical }]}>Hapus</Text>

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, RADIUS } from '../theme';
+import { COLORS, RADIUS, TYPE } from '../theme';
 import { resolvePhotoUrl } from '../../tools/storage';
 
 interface Props {
@@ -154,7 +154,7 @@ const styles = StyleSheet.create({
   frame: {
     height: 116,
     borderRadius: RADIUS - 2,
-    backgroundColor: '#f0ede6',
+    backgroundColor: COLORS.surfaceAlt,
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
@@ -170,7 +170,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   fallbackText: {
-    fontSize: 11,
+    fontSize: TYPE.xs,
     color: COLORS.textSec,
   },
   metaRow: {
@@ -193,7 +193,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   featuredText: {
-    fontSize: 11,
+    fontSize: TYPE.xs,
     fontWeight: '600',
     color: COLORS.textSec,
   },
@@ -221,7 +221,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderStyle: 'dashed',
-    backgroundColor: '#f8f5ef',
+    backgroundColor: COLORS.surface,
   },
   addIcon: {
     width: 42,
@@ -240,7 +240,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   addHint: {
-    fontSize: 11,
+    fontSize: TYPE.xs,
     lineHeight: 16,
     color: COLORS.textSec,
     textAlign: 'center',
@@ -251,7 +251,7 @@ const styles = StyleSheet.create({
     color: COLORS.textSec,
   },
   helper: {
-    fontSize: 11,
+    fontSize: TYPE.xs,
     lineHeight: 16,
     color: COLORS.textSec,
   },
