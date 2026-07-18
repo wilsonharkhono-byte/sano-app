@@ -247,7 +247,7 @@ export default function MaterialCatalogScreen({ onBack }: { onBack: () => void }
               <Ionicons name="link-outline" size={16} color={COLORS.textSec} />
               <Text style={styles.aliasText}>{a.alias}</Text>
               {isEstimator && (
-                <TouchableOpacity onPress={() => removeAlias(a.id)} style={styles.aliasRemove}>
+                <TouchableOpacity onPress={() => removeAlias(a.id)} style={styles.aliasRemove} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                   <Ionicons name="close-circle" size={18} color={COLORS.critical} />
                 </TouchableOpacity>
               )}
@@ -308,7 +308,7 @@ export default function MaterialCatalogScreen({ onBack }: { onBack: () => void }
           onChangeText={setSearch}
         />
         {search.length > 0 && (
-          <TouchableOpacity onPress={() => setSearch('')}>
+          <TouchableOpacity onPress={() => setSearch('')} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Ionicons name="close-circle" size={18} color={COLORS.textSec} />
           </TouchableOpacity>
         )}
@@ -466,7 +466,7 @@ const styles = StyleSheet.create({
   countText: {
     fontSize: TYPE.xs,
     fontFamily: FONTS.regular,
-    color: COLORS.textMuted,
+    color: COLORS.textSec,
     marginLeft: 'auto',
   },
 
@@ -527,7 +527,7 @@ const styles = StyleSheet.create({
   matUnit: {
     fontSize: TYPE.xs,
     fontFamily: FONTS.regular,
-    color: COLORS.textMuted,
+    color: COLORS.textSec,
   },
 
   // Detail
@@ -572,7 +572,7 @@ const styles = StyleSheet.create({
   aliasHint: {
     fontSize: TYPE.xs,
     fontFamily: FONTS.regular,
-    color: COLORS.textMuted,
+    color: COLORS.textSec,
     marginBottom: SPACE.md,
     lineHeight: 17,
   },

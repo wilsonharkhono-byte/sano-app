@@ -290,11 +290,11 @@ export default function AIChatModal({
             </View>
             <View style={styles.headerRight}>
               {messages.length > 0 && (
-                <TouchableOpacity style={styles.clearBtn} onPress={handleClear}>
+                <TouchableOpacity style={styles.clearBtn} onPress={handleClear} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                   <Ionicons name="refresh" size={14} color={COLORS.textSec} />
                 </TouchableOpacity>
               )}
-              <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
+              <TouchableOpacity style={styles.closeBtn} onPress={onClose} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Ionicons name="close" size={18} color={COLORS.text} />
               </TouchableOpacity>
             </View>
@@ -403,7 +403,7 @@ export default function AIChatModal({
             <TextInput
               style={styles.input}
               placeholder="Ketik pertanyaan tentang SANO..."
-              placeholderTextColor={COLORS.textSec}
+              placeholderTextColor={COLORS.textMuted}
               value={input}
               onChangeText={setInput}
               multiline
@@ -655,7 +655,7 @@ const styles = StyleSheet.create({
   assistantLabelText: {
     fontSize: TYPE.xs,
     fontFamily: FONTS.bold,
-    color: COLORS.accent,
+    color: COLORS.accentDark,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
   },

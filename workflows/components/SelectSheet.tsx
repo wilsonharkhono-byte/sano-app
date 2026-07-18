@@ -107,7 +107,7 @@ export default function SelectSheet({
                   autoCorrect={false}
                 />
                 {query.length > 0 && (
-                  <TouchableOpacity onPress={() => setQuery('')} accessibilityLabel="Hapus pencarian">
+                  <TouchableOpacity onPress={() => setQuery('')} accessibilityLabel="Hapus pencarian" hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                     <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
                   </TouchableOpacity>
                 )}

@@ -286,6 +286,7 @@ export default function ProgresScreen() {
         onPress={goBack}
         accessibilityRole="button"
         accessibilityLabel="Kembali ke hub progres"
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       >
         <Ionicons name="arrow-back" size={20} color={COLORS.primary} />
         <Text style={styles.backText}>Kembali</Text>
@@ -512,7 +513,7 @@ export default function ProgresScreen() {
                   <View style={styles.row2}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.label}>Qty Hari Ini <Text style={styles.req}>*</Text></Text>
-                      <TextInput style={styles.input} keyboardType="numeric" value={qty} onChangeText={setQty} placeholder="0" />
+                      <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} keyboardType="numeric" value={qty} onChangeText={setQty} placeholder="0" />
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.label}>Satuan</Text>
@@ -536,10 +537,10 @@ export default function ProgresScreen() {
                   </View>
 
                   <Text style={styles.label}>Lokasi / Keterangan</Text>
-                  <TextInput style={styles.input} value={location} onChangeText={setLocation} placeholder="Contoh: Kolom K1-K8, zona utara" />
+                  <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={location} onChangeText={setLocation} placeholder="Contoh: Kolom K1-K8, zona utara" />
 
                   <Text style={styles.label}>Catatan</Text>
-                  <TextInput style={[styles.input, styles.textarea]} value={progressNote} onChangeText={setProgressNote} multiline placeholder="Catatan tambahan (opsional)" />
+                  <TextInput placeholderTextColor={COLORS.textMuted} style={[styles.input, styles.textarea]} value={progressNote} onChangeText={setProgressNote} multiline placeholder="Catatan tambahan (opsional)" />
                   <Text style={styles.fieldHint}>
                     Tambahan scope, permintaan owner, atau perubahan pekerjaan dicatat lewat `Catatan Perubahan`, bukan lewat progres biasa.
                   </Text>
@@ -603,7 +604,7 @@ const styles = StyleSheet.create({
     width: '48%', backgroundColor: COLORS.surface, borderWidth: 1,
     borderColor: COLORS.borderSub, borderRadius: RADIUS, padding: SPACE.base,
     alignItems: 'center', gap: SPACE.sm,
-    shadowColor: '#5A4A3A', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 1,
+    shadowColor: COLORS.shadow, shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 1,
   },
   hubIcon:  { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   hubLabel: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', letterSpacing: 0.3, textAlign: 'center', color: COLORS.text },
@@ -650,7 +651,7 @@ const styles = StyleSheet.create({
   listTitle:     { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
   listSub:       { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 2 },
   listPct:       { fontSize: TYPE.lg, fontFamily: FONTS.bold, letterSpacing: -0.3 },
-  detailBoxInline:{ marginTop: 0, marginBottom: SPACE.sm, padding: SPACE.md, borderRadius: RADIUS, backgroundColor: 'rgba(20,18,16,0.03)', borderWidth: 1, borderColor: COLORS.borderSub, borderTopLeftRadius: 0, borderTopRightRadius: 0 },
+  detailBoxInline:{ marginTop: 0, marginBottom: SPACE.sm, padding: SPACE.md, borderRadius: RADIUS, backgroundColor: COLORS.surfaceSunken, borderWidth: 1, borderColor: COLORS.borderSub, borderTopLeftRadius: 0, borderTopRightRadius: 0 },
   detailTitle:   { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.text, marginBottom: SPACE.xs },
   entryRow:      { flexDirection: 'row', alignItems: 'flex-start', gap: SPACE.sm, paddingVertical: SPACE.sm, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub },
   entryQty:      { fontSize: TYPE.sm, fontFamily: FONTS.bold, color: COLORS.text },

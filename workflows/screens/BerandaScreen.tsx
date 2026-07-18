@@ -156,6 +156,7 @@ export default function BerandaScreen() {
               onPress={() => navigation.navigate('Terima')}
               accessibilityLabel={`Lihat ${pendingDeliveries} pengiriman tertunda`}
               accessibilityRole="button"
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Text style={styles.alertBtnText}>Buka Terima</Text>
               <Ionicons name="arrow-forward" size={14} color={COLORS.warning} />
@@ -173,6 +174,7 @@ export default function BerandaScreen() {
               onPress={() => navigation.navigate('Progres')}
               accessibilityLabel={`Lihat ${criticalDefects} perubahan berat di Progres`}
               accessibilityRole="button"
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Text style={[styles.alertBtnText, { color: COLORS.critical }]}>Buka Progres</Text>
               <Ionicons name="arrow-forward" size={14} color={COLORS.critical} />
@@ -190,6 +192,7 @@ export default function BerandaScreen() {
               onPress={() => navigation.navigate('Laporan', { initialSection: 'jadwal' })}
               accessibilityLabel={`Lihat ${atRiskMilestones} milestone berisiko di Jadwal`}
               accessibilityRole="button"
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Text style={styles.alertBtnText}>Buka Jadwal</Text>
               <Ionicons name="arrow-forward" size={14} color={COLORS.warning} />
@@ -208,6 +211,7 @@ export default function BerandaScreen() {
               onPress={() => navigation.navigate('Laporan')}
               accessibilityLabel={`Lihat ${criticalAnomalies} anomali kritikal di Laporan`}
               accessibilityRole="button"
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Text style={[styles.alertBtnText, { color: COLORS.high }]}>Buka Laporan</Text>
               <Ionicons name="arrow-forward" size={14} color={COLORS.high} />
@@ -323,7 +327,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
   progressTrack: {
-    backgroundColor: 'rgba(20,18,16,0.08)',
+    backgroundColor: COLORS.trackBg,
     borderRadius: 4,
     height: 6,
     overflow: 'hidden',

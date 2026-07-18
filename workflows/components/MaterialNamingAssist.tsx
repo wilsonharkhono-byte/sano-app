@@ -212,6 +212,7 @@ export default function MaterialNamingAssist({
                 namingSuggestionCache.delete(cacheKey);
                 setRefreshTick(value => value + 1);
               }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Ionicons name="refresh" size={14} color={COLORS.primary} />
             </TouchableOpacity>

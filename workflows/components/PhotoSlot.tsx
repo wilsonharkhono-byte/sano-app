@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { TouchableOpacity, Text, StyleSheet, View, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, RADIUS } from '../theme';
+import { COLORS, RADIUS, TYPE } from '../theme';
 import { resolvePhotoUrl } from '../../tools/storage';
 
 interface Props {
@@ -79,7 +79,7 @@ export default function PhotoSlot({ label, captured, capturedTime, gpsLabel, pho
 
 const styles = StyleSheet.create({
   slot: {
-    backgroundColor: '#f5f3f0',
+    backgroundColor: COLORS.surfaceAlt,
     borderWidth: 2,
     borderStyle: 'dashed',
     borderColor: COLORS.border,
@@ -90,12 +90,12 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 4,
   },
-  captured: { borderStyle: 'solid', borderColor: COLORS.ok, backgroundColor: 'rgba(76,175,80,0.05)' },
+  captured: { borderStyle: 'solid', borderColor: COLORS.ok, backgroundColor: COLORS.okBg },
   previewFrame: {
     width: '100%',
     height: 132,
     borderRadius: RADIUS - 4,
-    backgroundColor: '#e9e5de',
+    backgroundColor: COLORS.surfaceAlt,
     marginBottom: 6,
     overflow: 'hidden',
     alignItems: 'center',
@@ -112,8 +112,8 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   capturedTitle: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', color: COLORS.ok },
-  capturedHint: { fontSize: 11, color: COLORS.textSec, textAlign: 'center', lineHeight: 15 },
+  capturedHint: { fontSize: TYPE.xs, color: COLORS.textSec, textAlign: 'center', lineHeight: 15 },
   retakeLabel: { fontSize: 11, fontWeight: '600', color: COLORS.primary, textTransform: 'uppercase', marginTop: 2 },
-  label: { fontSize: 11, color: COLORS.textSec, textAlign: 'center', fontWeight: '500', textTransform: 'uppercase', lineHeight: 16 },
-  helper: { fontSize: 11, color: COLORS.textSec, textAlign: 'center', lineHeight: 15, marginTop: 4 },
+  label: { fontSize: TYPE.xs, color: COLORS.textSec, textAlign: 'center', fontWeight: '500', textTransform: 'uppercase', lineHeight: 16 },
+  helper: { fontSize: TYPE.xs, color: COLORS.textSec, textAlign: 'center', lineHeight: 15, marginTop: 4 },
 });

@@ -332,7 +332,7 @@ const styles = StyleSheet.create({
   acronym: {
     fontSize: 9,
     fontFamily: FONTS.medium,
-    color: '#5C5650',
+    color: COLORS.textInverseSec,
     letterSpacing: 2,
     lineHeight: 14,
     marginBottom: SPACE.sm + 2,
@@ -354,7 +354,7 @@ const styles = StyleSheet.create({
   tagline: {
     fontSize: TYPE.base,               // 15 — comfortable on mobile
     fontFamily: FONTS.regular,
-    color: '#7A746E',
+    color: COLORS.textInverseSec,
     lineHeight: 22,
     flex: 1,
   },
@@ -388,7 +388,7 @@ const styles = StyleSheet.create({
     gap: 8,                            // was 6 — more room label → input
   },
   fieldLabel: {
-    fontSize: 11,                      // was 9 — readable on mobile
+    fontSize: TYPE.xs,                 // was 9 — readable on mobile
     fontFamily: FONTS.bold,
     color: COLORS.textSec,
     letterSpacing: 2,

@@ -156,7 +156,7 @@ export const OpnameListView: React.FC<OpnameListViewProps> = ({
               )}
               <View style={styles.rowBtns}>
                 <TouchableOpacity style={styles.primaryBtn} onPress={handleCreate} disabled={saving}>
-                  {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryBtnText}>Buat Opname</Text>}
+                  {saving ? <ActivityIndicator size="small" color={COLORS.textInverse} /> : <Text style={styles.primaryBtnText}>Buat Opname</Text>}
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.ghostBtn} onPress={() => setShowCreate(false)}>
                   <Text style={styles.ghostBtnText}>Batal</Text>
@@ -223,9 +223,10 @@ export const OpnameListView: React.FC<OpnameListViewProps> = ({
               <TouchableOpacity
                 style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: SPACE.xs }}
                 onPress={handleRequestKasbon}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
-                <Ionicons name="add-circle-outline" size={16} color={COLORS.accent} />
-                <Text style={{ fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.accent }}>Ajukan</Text>
+                <Ionicons name="add-circle-outline" size={16} color={COLORS.accentDark} />
+                <Text style={{ fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.accentDark }}>Ajukan</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -281,7 +282,7 @@ export const OpnameListView: React.FC<OpnameListViewProps> = ({
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACE.sm }}>
                   <Badge flag={k.status === 'SETTLED' ? 'OK' : k.status === 'APPROVED' ? 'INFO' : 'WARNING'} label={kasbonStatusLabel(k.status)} />
                   {k.status === 'REQUESTED' && isAdmin && (
-                    <TouchableOpacity onPress={() => handleApproveKasbon(k)}>
+                    <TouchableOpacity onPress={() => handleApproveKasbon(k)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
                       <Ionicons name="checkmark-circle" size={22} color={COLORS.ok} />
                     </TouchableOpacity>
                   )}

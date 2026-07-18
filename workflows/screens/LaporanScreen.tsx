@@ -526,7 +526,7 @@ export default function LaporanScreen() {
 
             {/* Handover eligibility */}
             <Card title="Status Serah Terima" borderColor={handoverEligible ? COLORS.ok : COLORS.critical}>
-              <View style={[styles.eligibleBox, { backgroundColor: handoverEligible ? 'rgba(76,175,80,0.08)' : 'rgba(244,67,54,0.08)' }]}>
+              <View style={[styles.eligibleBox, { backgroundColor: handoverEligible ? COLORS.okBg : COLORS.criticalBg }]}>
                 <Text style={[styles.eligibleLabel, { color: handoverEligible ? COLORS.ok : COLORS.critical }]}>
                   {handoverEligible ? 'ELIGIBLE — Siap Serah Terima' : 'BELUM ELIGIBLE'}
                 </Text>
@@ -631,7 +631,7 @@ export default function LaporanScreen() {
                 </>
               ) : (
                 <>
-                  <TextInput style={styles.input} value={mtnMat} onChangeText={setMtnMat} placeholder="Nama material (baseline belum tersedia)" />
+                  <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={mtnMat} onChangeText={setMtnMat} placeholder="Nama material (baseline belum tersedia)" />
                   <TouchableOpacity onPress={loadMtnBalances} style={{ marginTop: 4 }}>
                     <Text style={[styles.hint, { color: COLORS.info }]}>Muat saldo material →</Text>
                   </TouchableOpacity>
@@ -642,7 +642,7 @@ export default function LaporanScreen() {
               <View style={styles.row2}>
                 <View style={{ flex: 2 }}>
                   <Text style={styles.label}>Jumlah <Text style={styles.req}>*</Text></Text>
-                  <TextInput
+                  <TextInput placeholderTextColor={COLORS.textMuted}
                     style={[styles.input, mtnAvailable !== null && parseFloat(mtnQty) > mtnAvailable ? { borderColor: COLORS.warning } : null]}
                     keyboardType="numeric"
                     value={mtnQty}
@@ -655,7 +655,7 @@ export default function LaporanScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.label}>Satuan</Text>
-                  <TextInput style={[styles.input, { color: COLORS.textSec }]} value={mtnUnit} editable={false} placeholder="—" />
+                  <TextInput placeholderTextColor={COLORS.textMuted} style={[styles.input, { color: COLORS.textSec }]} value={mtnUnit} editable={false} placeholder="—" />
                 </View>
               </View>
 
@@ -671,11 +671,11 @@ export default function LaporanScreen() {
                   </Picker>
                 </View>
               ) : (
-                <TextInput style={styles.input} value={mtnDest} onChangeText={setMtnDest} placeholder="Nama / kode proyek tujuan" />
+                <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={mtnDest} onChangeText={setMtnDest} placeholder="Nama / kode proyek tujuan" />
               )}
 
               <Text style={styles.label}>Alasan</Text>
-              <TextInput style={[styles.input, styles.textarea]} value={mtnReason} onChangeText={setMtnReason} multiline placeholder="Alasan transfer..." />
+              <TextInput placeholderTextColor={COLORS.textMuted} style={[styles.input, styles.textarea]} value={mtnReason} onChangeText={setMtnReason} multiline placeholder="Alasan transfer..." />
               <Text style={styles.label}>Foto Material <Text style={styles.req}>*</Text></Text>
               <PhotoGalleryField
                 photoPaths={mtnPhotos}

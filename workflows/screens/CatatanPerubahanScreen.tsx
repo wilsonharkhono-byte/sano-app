@@ -45,7 +45,7 @@ const COST_BEARERS: CostBearer[] = ['mandor', 'owner', 'kontraktor'];
 
 const DECISION_COLORS: Record<Decision, string> = {
   pending: COLORS.textSec,
-  disetujui: '#1565C0',
+  disetujui: COLORS.info,
   ditolak: COLORS.critical,
   selesai: COLORS.ok,
 };
@@ -736,8 +736,8 @@ const styles = StyleSheet.create({
   impactRow:    { flexDirection: 'row', gap: SPACE.sm },
   impactChip:   { flex: 1, padding: SPACE.sm, borderWidth: 2, borderColor: COLORS.border, borderRadius: RADIUS, alignItems: 'center' },
   impactLabel:  { fontSize: TYPE.xs, fontFamily: FONTS.bold, textTransform: 'uppercase', color: COLORS.textSec },
-  impactDesc:   { fontSize: 10, color: COLORS.textSec, marginTop: 2, textAlign: 'center' },
-  beratWarning: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, marginTop: SPACE.sm, padding: SPACE.sm, borderRadius: RADIUS_SM, backgroundColor: 'rgba(198,40,40,0.08)' },
+  impactDesc:   { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2, textAlign: 'center' },
+  beratWarning: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, marginTop: SPACE.sm, padding: SPACE.sm, borderRadius: RADIUS_SM, backgroundColor: COLORS.criticalBg },
   beratWarningText: { fontSize: TYPE.xs, color: COLORS.critical, flex: 1 },
 
   // Type selector
@@ -747,7 +747,7 @@ const styles = StyleSheet.create({
   typeChipHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   typeText:       { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textSec },
   typeTextActive: { color: COLORS.primary },
-  typeHint:       { fontSize: TYPE.xs - 1, fontFamily: FONTS.regular, color: COLORS.textMuted, lineHeight: 15, paddingLeft: 21 },
+  typeHint:       { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, lineHeight: 15, paddingLeft: 21 },
   typeHintActive: { color: COLORS.primary, opacity: 0.75 },
 
   // Buttons

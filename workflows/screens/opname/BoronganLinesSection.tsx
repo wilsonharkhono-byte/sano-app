@@ -246,6 +246,7 @@ export const BoronganLinesSection: React.FC<BoronganLinesSectionProps> = ({
                 <TouchableOpacity
                   style={[styles.tdkBtn, line.is_tdk_acc && styles.tdkBtnActive]}
                   onPress={() => handleTdkAcc(line)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   <Ionicons
                     name={line.is_tdk_acc ? 'close-circle' : 'ban-outline'}
