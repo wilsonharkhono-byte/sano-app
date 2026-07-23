@@ -8,7 +8,7 @@ type JItem = { index: number; width: number };
 type JRow = { height: number; items: JItem[] };
 type LayoutFn = (
   aspects: number[],
-  opts: { containerWidth: number; targetRowHeight: number; gap?: number; maxRowHeight?: number },
+  opts: { containerWidth: number; targetRowHeight: number; gap?: number; maxRowHeight?: number; maxItemsPerRow?: number },
 ) => JRow[];
 // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
 const layoutJustified = new Function('return (' + LAYOUT_JUSTIFIED_JS + ')')() as LayoutFn;
@@ -74,6 +74,30 @@ describe('layoutJustified', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].height).toBeCloseTo(300, 5); // clamped, not 1000/0.75
     expect(rows[0].items[0].width).toBeCloseTo(225, 5); // 0.75 * 300
+  });
+
+  it('caps a row at maxItemsPerRow so photos never shrink illegibly small', () => {
+    // five portrait photos (phone shots of A4-ish daily reports): unlimited,
+    // all five pack into one 185px row — each only ~131px wide. With a cap of
+    // 3 the rows split 3 + 2 and every photo stays substantially larger.
+    const aspects = [0.707, 0.707, 0.707, 0.707, 0.707];
+    const uncapped = layoutJustified(aspects, { containerWidth: 688, targetRowHeight: 200, gap: 8, maxRowHeight: 300 });
+    expect(uncapped).toHaveLength(1); // documents the cramming this cap fixes
+
+    const rows = layoutJustified(aspects, { containerWidth: 688, targetRowHeight: 200, gap: 8, maxRowHeight: 300, maxItemsPerRow: 3 });
+    expect(rows).toHaveLength(2);
+    expect(rows[0].items.map((i) => i.index)).toEqual([0, 1, 2]);
+    expect(rows[1].items.map((i) => i.index)).toEqual([3, 4]);
+    for (const row of rows) {
+      expect(row.height).toBeLessThanOrEqual(300); // count-capped rows clamp like the last row
+      for (const it of row.items) expect(it.width).toBeGreaterThan(200);
+    }
+  });
+
+  it('maxItemsPerRow leaves wide-landscape packing untouched when rows commit before the cap', () => {
+    const capped = layoutJustified([2, 2, 1], { containerWidth: 1000, targetRowHeight: 200, gap: 0, maxItemsPerRow: 3 });
+    const free = layoutJustified([2, 2, 1], { containerWidth: 1000, targetRowHeight: 200, gap: 0 });
+    expect(capped).toEqual(free);
   });
 
   it('skips non-positive/degenerate aspect ratios', () => {

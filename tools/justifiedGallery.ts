@@ -29,12 +29,14 @@ export interface JustifiedOptions {
   targetRowHeight: number; // desired row height; rows commit at or below this
   gap?: number; // space between photos in a row (default 0)
   maxRowHeight?: number; // clamp so a sparse last row isn't blown up (default target * 1.33)
+  maxItemsPerRow?: number; // legibility cap: commit a row at this count even above target height (0/absent = unlimited)
 }
 
 export const LAYOUT_JUSTIFIED_JS = `function layoutJustified(aspects, opts) {
   var gap = (opts.gap === undefined || opts.gap === null) ? 0 : opts.gap;
   var target = opts.targetRowHeight;
   var maxH = (opts.maxRowHeight === undefined || opts.maxRowHeight === null) ? target * 1.33 : opts.maxRowHeight;
+  var maxN = (opts.maxItemsPerRow === undefined || opts.maxItemsPerRow === null) ? 0 : opts.maxItemsPerRow;
   var W = opts.containerWidth;
   var rows = [];
   var rowIdx = [];      // input indices in the current row
@@ -60,8 +62,8 @@ export const LAYOUT_JUSTIFIED_JS = `function layoutJustified(aspects, opts) {
     rowAspects.push(a);
     sumAspect += a;
     var h = rowHeight(sumAspect, rowIdx.length);
-    if (h <= target) {
-      commit(rowIdx, rowAspects, h);
+    if (h <= target || (maxN > 0 && rowIdx.length >= maxN)) {
+      commit(rowIdx, rowAspects, h < maxH ? h : maxH);
       rowIdx = [];
       rowAspects = [];
       sumAspect = 0;
@@ -90,3 +92,8 @@ export const GALLERY_GAP_PX = 8;
 // A first photo at least this wide (landscape) earns the full-width feature row;
 // portrait/square first photos join the justified rows instead of being crushed.
 export const GALLERY_FEATURE_MIN_ASPECT = 1.3;
+// Legibility floor: site photos are often dense (progress-report collages,
+// portrait phone shots), so never pack more than this many into one A4 row —
+// 3 portraits still print ≥ ~56mm wide. Overflow rows simply flow onto the
+// next printed page.
+export const GALLERY_MAX_ITEMS_PER_ROW = 3;
