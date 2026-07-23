@@ -607,7 +607,7 @@ export default function TerimaScreen() {
                       <View key={l.key} style={styles.lineBox}>
                         <Text style={styles.lineName}>{l.material_name}</Text>
                         <View style={styles.row2}>
-                          <TextInput
+                          <TextInput placeholderTextColor={COLORS.textMuted}
                             style={[styles.input, { flex: 1 }]}
                             keyboardType="numeric"
                             value={lineQtys[l.key] ?? ''}
@@ -629,7 +629,7 @@ export default function TerimaScreen() {
                   <Text style={styles.fieldHint}>Sisa total PO: {formatPoQty(Math.max(0, remainingQty))}</Text>
 
                   <Text style={styles.label}>Referensi Kendaraan</Text>
-                  <TextInput style={styles.input} value={vehicleRef} onChangeText={setVehicleRef} placeholder="Plat nomor / ID shipment" />
+                  <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={vehicleRef} onChangeText={setVehicleRef} placeholder="Plat nomor / ID shipment" />
 
                   <Text style={styles.label}>Foto Bukti <Text style={styles.req}>*</Text></Text>
                   <Text style={styles.hint}>{requiredPhotos} foto wajib.</Text>
@@ -641,7 +641,7 @@ export default function TerimaScreen() {
                   </View>
 
                   <Text style={styles.label}>Catatan</Text>
-                  <TextInput style={[styles.input, styles.textarea]} value={notes} onChangeText={setNotes} multiline placeholder="Catatan penerimaan..." />
+                  <TextInput placeholderTextColor={COLORS.textMuted} style={[styles.input, styles.textarea]} value={notes} onChangeText={setNotes} multiline placeholder="Catatan penerimaan..." />
 
                   <FlagPanel result={gateResult} gateLabel="Gate 3" />
 
@@ -718,7 +718,7 @@ const styles = StyleSheet.create({
   photoGrid:  { flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.sm, marginBottom: SPACE.sm },
 
   // Per-line receive input (line-grain, migration 070)
-  lineBox:  { backgroundColor: 'rgba(20,18,16,0.03)', borderRadius: RADIUS, padding: SPACE.md, marginTop: SPACE.sm },
+  lineBox:  { backgroundColor: COLORS.surfaceSunken, borderRadius: RADIUS, padding: SPACE.md, marginTop: SPACE.sm },
   lineName: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text, marginBottom: SPACE.xs },
 
   // poLines fetch-failure block (blocks the receive form until retried)
@@ -728,14 +728,14 @@ const styles = StyleSheet.create({
   retryBtnText:     { color: COLORS.textInverse, fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', letterSpacing: 0.3 },
 
   // PO detail card
-  poCard:        { backgroundColor: 'rgba(20,18,16,0.03)', borderRadius: RADIUS, padding: SPACE.md, marginTop: SPACE.md },
+  poCard:        { backgroundColor: COLORS.surfaceSunken, borderRadius: RADIUS, padding: SPACE.md, marginTop: SPACE.md },
   poCode:        { fontSize: TYPE.xs, fontFamily: FONTS.bold, color: COLORS.primary, letterSpacing: 0.5, marginBottom: 4 },
   poTitle:       { fontSize: TYPE.base, fontFamily: FONTS.bold, color: COLORS.text },
   poSub:         { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 2 },
   poMetrics:     { flexDirection: 'row', gap: SPACE.sm, marginTop: SPACE.md },
   poMetric:      { flex: 1, alignItems: 'center' },
   poMetricValue: { fontSize: TYPE.lg, fontFamily: FONTS.bold, color: COLORS.text, letterSpacing: -0.3 },
-  progressBarWrap: { backgroundColor: 'rgba(20,18,16,0.07)', borderRadius: 4, height: 6, overflow: 'hidden', marginTop: SPACE.sm },
+  progressBarWrap: { backgroundColor: COLORS.trackBg, borderRadius: 4, height: 6, overflow: 'hidden', marginTop: SPACE.sm },
   progressBarFill: { height: '100%', borderRadius: 4, backgroundColor: COLORS.accent },
   poStatusRow:   { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: SPACE.sm },
 

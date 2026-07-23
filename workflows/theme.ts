@@ -15,6 +15,8 @@ export const COLORS = {
   bgOat:     '#C6C1B6',       // slightly darker oat — subtle section dividers
   surface:   '#FDFAF6',       // warm near-white (tinted, not pure #FFF)
   surfaceAlt:'#F2EFE9',       // slightly warmer surface for disabled / inactive
+  surfaceSunken: 'rgba(20,18,16,0.03)', // subtle sunken tint on light surfaces (inset rows, detail boxes)
+  trackBg:    'rgba(20,18,16,0.08)',    // progress-track / meter background on light surfaces
 
   // Text
   text:      '#141210',       // primary text (matches primary)
@@ -24,6 +26,9 @@ export const COLORS = {
   // Borders
   border:    '#B5AFA8',       // visible border
   borderSub: 'rgba(148,148,148,0.18)', // subtle border (cards)
+
+  // Elevation
+  shadow:    '#5A4A3A',       // warm shadow colour for elevated surfaces
 
   // Semantic — status colours
   ok:        '#3D8B40',       // darkened green for better contrast

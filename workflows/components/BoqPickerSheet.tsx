@@ -95,13 +95,13 @@ export default function BoqPickerSheet({ visible, items, initialSelectedIds, onC
         <View style={styles.sheet}>
           <View style={styles.header}>
             <Text style={styles.title}>Pilih Item BoQ</Text>
-            <TouchableOpacity onPress={onClose}>
+            <TouchableOpacity onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
               <Ionicons name="close" size={22} color={COLORS.text} />
             </TouchableOpacity>
           </View>
 
           <View style={styles.searchRow}>
-            <TextInput
+            <TextInput placeholderTextColor={COLORS.textMuted}
               style={styles.search}
               value={search}
               onChangeText={setSearch}

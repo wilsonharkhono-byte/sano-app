@@ -17,7 +17,7 @@ interface Props {
  * with small all-caps label below). Instead, value and label sit in a
  * horizontal relationship with a subtle left accent bar.
  */
-export default function StatTile({ value, label, context, color = COLORS.accent }: Props) {
+export default function StatTile({ value, label, context, color = COLORS.accentDark }: Props) {
   return (
     <View style={styles.tile} accessibilityLabel={`${label}: ${value}${context ? ', ' + context : ''}`}>
       <View style={[styles.accentBar, { backgroundColor: color }]} />

@@ -10,7 +10,11 @@
 //      pages + a position:fixed running footer with real page counters — rather
 //      than a single-page min-height:100vh.
 //   3. Photos render as an auto-justified gallery (see tools/justifiedGallery.ts)
-//      instead of a fixed-height crop band, so nothing is force-cropped.
+//      instead of a fixed-height crop band, so nothing is force-cropped. Rows
+//      are capped at GALLERY_MAX_ITEMS_PER_ROW photos so each stays legible;
+//      extra rows flow onto further A4 pages.
+//   4. The corner registration marks are screen-only: Chrome cannot paint them
+//      at the paper edge (see the print CSS note inside BLUEPRINT_CSS).
 
 import { Platform } from 'react-native';
 import type { ClientReportDraft } from './clientReport';
@@ -21,6 +25,7 @@ import {
   GALLERY_MAX_ROW_PX,
   GALLERY_GAP_PX,
   GALLERY_FEATURE_MIN_ASPECT,
+  GALLERY_MAX_ITEMS_PER_ROW,
 } from './justifiedGallery';
 
 export function esc(s: string | number | null | undefined): string {
@@ -167,10 +172,14 @@ const BLUEPRINT_CSS = `
        closing block landing on the final page. The footer stays in normal flow
        (no position:fixed) so it can never overlap the closing content. */
     .sheet{ width:auto; max-width:none; margin:0; padding:0; box-shadow:none; min-height:270mm; }
-    /* registration marks reframe EVERY printed page */
-    .mark{ position:fixed; }
-    .mark.tl{ top:7mm; left:7mm; } .mark.tr{ top:7mm; right:7mm; }
-    .mark.bl{ bottom:7mm; left:7mm; } .mark.br{ bottom:7mm; right:7mm; }
+    /* NO registration marks on print. Chrome anchors position:fixed to the
+       page CONTENT box (inside the @page margins) and clips anything painted
+       into the margin area (verified with a headless print repro, 2026-07-23).
+       So paper-edge marks are impossible: placed at 7mm they land ~19-21mm
+       into the paper and strike through the masthead/footer text on every
+       page ("cut off" text in the PDF). Screen keeps the marks — the sheet's
+       own padding hosts them there. */
+    .mark{ display:none; }
     /* No CSS page counter: Chrome (the browser the app prints through) renders
        the printed-page counters as 0, and there is no reliable cross-browser CSS
        page number. Rather than print a wrong number, the footer carries no page
@@ -179,8 +188,10 @@ const BLUEPRINT_CSS = `
     /* Avoid splitting individual photos, justified rows, update rows and the
        closing block across a page break — but NOT the documentation <section>
        itself: it must be free to start on page 1 and flow across pages, else a
-       photo-heavy report leaves page 1 half-empty. */
-    .gitem, .grow-row, .feature, .row, .plan{ break-inside:avoid; }
+       photo-heavy report leaves page 1 half-empty. The WHOLE .closing block
+       (03 plan + runfoot + dimline) moves as one unit, so a tight fit can
+       never orphan the footer lines alone on the last page. */
+    .gitem, .grow-row, .feature, .row, .closing{ break-inside:avoid; }
   }
   @media (max-width:680px){
     .sheet{ min-height:0; padding:18px 16px; }
@@ -244,6 +255,7 @@ const REPORT_MEDIA_CSS = `
   .grow-row{ display:flex; gap:8px; align-items:stretch; margin-top:8px; }
   .grow-row .gitem{ flex-basis:0; }
   .grow-row .gitem img{ height:100%; }
+  .grow-row .gspace{ flex-basis:0; min-width:0; }
   /* full-width feature (a landscape first photo), shown at its TRUE aspect */
   .feature{ margin-top:0; border:1px solid var(--ink); }
   .feature img{ width:100%; height:auto; }
@@ -281,17 +293,30 @@ ${LAYOUT_JUSTIFIED_JS}
       var start = 0;
       if(aspects[0] >= ${GALLERY_FEATURE_MIN_ASPECT}){ figs[0].className = 'gitem feature'; start = 1; }
       var rowFigs = figs.slice(start), rowAspects = aspects.slice(start);
-      var rows = layoutJustified(rowAspects, { containerWidth:${GALLERY_REF_WIDTH_PX}, targetRowHeight:${GALLERY_TARGET_ROW_PX}, gap:${GALLERY_GAP_PX}, maxRowHeight:${GALLERY_MAX_ROW_PX} });
+      var rows = layoutJustified(rowAspects, { containerWidth:${GALLERY_REF_WIDTH_PX}, targetRowHeight:${GALLERY_TARGET_ROW_PX}, gap:${GALLERY_GAP_PX}, maxRowHeight:${GALLERY_MAX_ROW_PX}, maxItemsPerRow:${GALLERY_MAX_ITEMS_PER_ROW} });
       for(var r=0;r<rows.length;r++){
         var rowDiv = document.createElement('div');
         rowDiv.className = 'grow-row';
         var sum = 0, items = rows[r].items;
         for(var c=0;c<items.length;c++){ sum += rowAspects[items[c].index]; }
-        rowDiv.style.aspectRatio = String(sum);
+        // A row the model clamped to maxRowHeight (count-capped, or a sparse
+        // last row) must NOT be stretched flush — that would inflate the
+        // photos far past the clamp. Pad it with a flex spacer instead so the
+        // photos keep the clamped height and the row ends ragged.
+        var gaps = ${GALLERY_GAP_PX} * (items.length > 1 ? items.length - 1 : 0);
+        var flushH = (${GALLERY_REF_WIDTH_PX} - gaps) / sum;
+        var padSum = flushH > rows[r].height + 0.5 ? (${GALLERY_REF_WIDTH_PX} - gaps) / rows[r].height : 0;
+        rowDiv.style.aspectRatio = String(padSum > 0 ? padSum : sum);
         for(var d=0;d<items.length;d++){
           var idx = items[d].index, f = rowFigs[idx];
           f.style.flexGrow = String(rowAspects[idx]);
           rowDiv.appendChild(f);
+        }
+        if(padSum > 0){
+          var pad = document.createElement('div');
+          pad.className = 'gspace';
+          pad.style.flexGrow = String(padSum - sum);
+          rowDiv.appendChild(pad);
         }
         gallery.appendChild(rowDiv);
       }

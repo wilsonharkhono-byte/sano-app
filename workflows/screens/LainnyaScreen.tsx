@@ -160,7 +160,7 @@ export default function LainnyaScreen() {
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Jumlah Pekerja</Text>
-              <TextInput style={styles.input} keyboardType="numeric" value={attCount} onChangeText={setAttCount} placeholder="0" />
+              <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} keyboardType="numeric" value={attCount} onChangeText={setAttCount} placeholder="0" />
             </View>
           </View>
           <View style={styles.row2}>
@@ -174,7 +174,7 @@ export default function LainnyaScreen() {
             </View>
           </View>
           <Text style={styles.label}>Catatan</Text>
-          <TextInput style={[styles.input, styles.textarea]} value={attNotes} onChangeText={setAttNotes} multiline placeholder="Contoh: 3 tukang besi, 5 tukang bata..." />
+          <TextInput placeholderTextColor={COLORS.textMuted} style={[styles.input, styles.textarea]} value={attNotes} onChangeText={setAttNotes} multiline placeholder="Contoh: 3 tukang besi, 5 tukang bata..." />
           <TouchableOpacity style={[styles.btn, { marginTop: 12 }]} onPress={handleAttendance}>
             <Text style={styles.btnText}>Simpan Kehadiran</Text>
           </TouchableOpacity>
@@ -184,19 +184,19 @@ export default function LainnyaScreen() {
         <Text style={styles.sectionHead}>MTN — Nota Transfer Material</Text>
         <Card title="Transfer Material Antar Proyek" subtitle="Material berlebih dipindah ke proyek lain atas persetujuan Estimator.">
           <Text style={styles.label}>Material <Text style={styles.req}>*</Text></Text>
-          <TextInput style={styles.input} value={mtnMat} onChangeText={setMtnMat} placeholder="Nama material" />
+          <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={mtnMat} onChangeText={setMtnMat} placeholder="Nama material" />
           <View style={styles.row2}>
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Jumlah <Text style={styles.req}>*</Text></Text>
-              <TextInput style={styles.input} keyboardType="numeric" value={mtnQty} onChangeText={setMtnQty} placeholder="0" />
+              <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} keyboardType="numeric" value={mtnQty} onChangeText={setMtnQty} placeholder="0" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Proyek Tujuan <Text style={styles.req}>*</Text></Text>
-              <TextInput style={styles.input} value={mtnDest} onChangeText={setMtnDest} placeholder="Nama proyek" />
+              <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={mtnDest} onChangeText={setMtnDest} placeholder="Nama proyek" />
             </View>
           </View>
           <Text style={styles.label}>Alasan <Text style={styles.req}>*</Text></Text>
-          <TextInput style={[styles.input, styles.textarea]} value={mtnReason} onChangeText={setMtnReason} multiline placeholder="Alasan transfer..." />
+          <TextInput placeholderTextColor={COLORS.textMuted} style={[styles.input, styles.textarea]} value={mtnReason} onChangeText={setMtnReason} multiline placeholder="Alasan transfer..." />
           <Text style={styles.label}>Foto Material <Text style={styles.req}>*</Text></Text>
           <PhotoSlot label="Foto Material yang Dipindah" captured={!!mtnPhoto} onPress={handlePhotoMTN} />
           <TouchableOpacity style={[styles.ghostBtn, { marginTop: 12 }]} onPress={handleMTN}>
@@ -208,19 +208,19 @@ export default function LainnyaScreen() {
         <Text style={styles.sectionHead}>Micro-VO — Perubahan Kecil Lapangan</Text>
         <Card title="Catat Perubahan Klien" subtitle="Perubahan kecil saat kunjungan klien — perlu dicatat untuk kalkulasi margin.">
           <Text style={styles.label}>Lokasi Perubahan <Text style={styles.req}>*</Text></Text>
-          <TextInput style={styles.input} value={mvoLoc} onChangeText={setMvoLoc} placeholder="Contoh: Kamar Mandi Utama Lt.2" />
+          <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={mvoLoc} onChangeText={setMvoLoc} placeholder="Contoh: Kamar Mandi Utama Lt.2" />
           <Text style={styles.label}>Apa yang Berubah <Text style={styles.req}>*</Text></Text>
-          <TextInput style={[styles.input, styles.textarea]} value={mvoDesc} onChangeText={setMvoDesc} multiline placeholder="Keramik diganti ukuran 80x80..." />
+          <TextInput placeholderTextColor={COLORS.textMuted} style={[styles.input, styles.textarea]} value={mvoDesc} onChangeText={setMvoDesc} multiline placeholder="Keramik diganti ukuran 80x80..." />
           <Text style={styles.label}>Diminta Oleh <Text style={styles.req}>*</Text></Text>
-          <TextInput style={styles.input} value={mvoReq} onChangeText={setMvoReq} placeholder="Nama klien / PM" />
+          <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={mvoReq} onChangeText={setMvoReq} placeholder="Nama klien / PM" />
           <View style={styles.row2}>
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Est. Material</Text>
-              <TextInput style={styles.input} value={mvoMat} onChangeText={setMvoMat} placeholder="keramik +12 dus" />
+              <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={mvoMat} onChangeText={setMvoMat} placeholder="keramik +12 dus" />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Est. Biaya (Rp)</Text>
-              <TextInput style={styles.input} keyboardType="numeric" value={mvoCost} onChangeText={setMvoCost} placeholder="0" />
+              <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} keyboardType="numeric" value={mvoCost} onChangeText={setMvoCost} placeholder="0" />
             </View>
           </View>
           <Text style={styles.label}>Foto Bukti</Text>
@@ -239,7 +239,7 @@ export default function LainnyaScreen() {
           <TextInput style={[styles.input, styles.disabled]} value={project?.name ?? '—'} editable={false} />
           <Text style={styles.fieldHint}>Proyek diassign oleh Estimator</Text>
           <Text style={styles.label}>No. WhatsApp</Text>
-          <TextInput style={styles.input} value={settingsPhone} onChangeText={setSettingsPhone} placeholder="+62 812 ..." keyboardType="phone-pad" />
+          <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={settingsPhone} onChangeText={setSettingsPhone} placeholder="+62 812 ..." keyboardType="phone-pad" />
           <TouchableOpacity style={[styles.btn, { marginTop: 12 }]} onPress={handleSaveSettings}>
             <Text style={styles.btnText}>Simpan</Text>
           </TouchableOpacity>

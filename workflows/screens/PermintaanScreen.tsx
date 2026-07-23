@@ -109,7 +109,7 @@ const TIER_COLORS: Record<1 | 2 | 3 | 4, string> = {
   1: COLORS.primary,
   2: COLORS.accent,
   3: COLORS.textSec,
-  4: COLORS.textMuted,
+  4: COLORS.textSec,
 };
 
 let lineCounter = 0;
@@ -1087,6 +1087,7 @@ export default function PermintaanScreen() {
                               accessibilityRole="radio"
                               accessibilityState={{ checked: selected }}
                               accessibilityLabel={OVERAGE_REASON_LABELS[reason]}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                             >
                               <Text style={[styles.reasonChipText, selected && styles.reasonChipTextActive]}>
                                 {OVERAGE_REASON_LABELS[reason]}
@@ -1277,7 +1278,7 @@ export default function PermintaanScreen() {
                 value={materialSearch}
                 onChangeText={setMaterialSearch}
                 placeholder="Cari kode, nama, atau kategori..."
-                placeholderTextColor={COLORS.textSec}
+                placeholderTextColor={COLORS.textMuted}
               />
             </View>
 

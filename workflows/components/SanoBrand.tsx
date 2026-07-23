@@ -1,7 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import { FONTS, TYPE, SPACE } from '../theme';
+import { COLORS, FONTS, TYPE, SPACE } from '../theme';
 
 type Tone = 'dark' | 'light';
 
@@ -19,7 +19,7 @@ export function SanoLogo({
   tone?: Tone;
 }) {
   // Resolve colour: explicit `color` wins, then `tone`, then default dark.
-  const fill = color ?? (tone === 'light' ? '#FDFAF6' : '#141210');
+  const fill = color ?? (tone === 'light' ? COLORS.textInverse : COLORS.text);
   const height = Math.round(width * (87.26 / 315.66));
 
   return (
@@ -47,7 +47,7 @@ export default function SanoBrand({
   tone?: Tone;
   compact?: boolean;
 }) {
-  const subColor = tone === 'light' ? 'rgba(253,250,246,0.60)' : '#524E49';
+  const subColor = tone === 'light' ? COLORS.textInverseSec : COLORS.textSec;
 
   return (
     <View

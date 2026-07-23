@@ -65,7 +65,7 @@ export const OpnameActionButtons: React.FC<OpnameActionButtonsProps> = ({
           disabled={saving || (activeOpname.payment_type !== 'harian' && linesLength === 0)}
         >
           {saving
-            ? <ActivityIndicator size="small" color="#fff" />
+            ? <ActivityIndicator size="small" color={COLORS.textInverse} />
             : <Text style={styles.primaryBtnText}>
                 {role === 'supervisor' ? 'Ajukan ke Estimator' : 'Kirim Draft Opname'}
               </Text>}
@@ -81,12 +81,12 @@ export const OpnameActionButtons: React.FC<OpnameActionButtonsProps> = ({
           onPress={handleVerify}
           disabled={saving || (activeOpname.payment_type === 'harian' && harianAllocationSummary.remainingPct > 0.05)}
         >
-          {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryBtnText}>Verifikasi & Teruskan ke Admin</Text>}
+          {saving ? <ActivityIndicator size="small" color={COLORS.textInverse} /> : <Text style={styles.primaryBtnText}>Verifikasi & Teruskan ke Admin</Text>}
         </TouchableOpacity>
       )}
       {activeOpname.status === 'VERIFIED' && isAdmin && !showApproveConfirm && (
         <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: COLORS.ok }]} onPress={handleApprove} disabled={saving}>
-          {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryBtnText}>Setujui Pembayaran</Text>}
+          {saving ? <ActivityIndicator size="small" color={COLORS.textInverse} /> : <Text style={styles.primaryBtnText}>Setujui Pembayaran</Text>}
         </TouchableOpacity>
       )}
       {activeOpname.status === 'VERIFIED' && isAdmin && showApproveConfirm && (
@@ -97,7 +97,7 @@ export const OpnameActionButtons: React.FC<OpnameActionButtonsProps> = ({
           </Text>
           <View style={styles.rowBtns}>
             <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: COLORS.ok }]} onPress={handleApproveConfirmed} disabled={saving}>
-              {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryBtnText}>Ya, Setujui</Text>}
+              {saving ? <ActivityIndicator size="small" color={COLORS.textInverse} /> : <Text style={styles.primaryBtnText}>Ya, Setujui</Text>}
             </TouchableOpacity>
             <TouchableOpacity style={styles.ghostBtn} onPress={() => setShowApproveConfirm(false)}>
               <Text style={styles.ghostBtnText}>Batal</Text>
@@ -112,9 +112,9 @@ export const OpnameActionButtons: React.FC<OpnameActionButtonsProps> = ({
           disabled={exporting}
         >
           {exporting
-            ? <ActivityIndicator size="small" color="#fff" />
+            ? <ActivityIndicator size="small" color={COLORS.textInverse} />
             : <>
-                <Ionicons name="download-outline" size={18} color="#fff" />
+                <Ionicons name="download-outline" size={18} color={COLORS.textInverse} />
                 <Text style={styles.primaryBtnText}>Export Excel Opname</Text>
               </>
           }
@@ -127,9 +127,9 @@ export const OpnameActionButtons: React.FC<OpnameActionButtonsProps> = ({
           disabled={saving}
         >
           {saving
-            ? <ActivityIndicator size="small" color="#fff" />
+            ? <ActivityIndicator size="small" color={COLORS.textInverse} />
             : <>
-                <Ionicons name="checkmark-circle-outline" size={18} color="#fff" />
+                <Ionicons name="checkmark-circle-outline" size={18} color={COLORS.textInverse} />
                 <Text style={styles.primaryBtnText}>Konfirmasi Pembayaran</Text>
               </>
           }
@@ -148,7 +148,7 @@ export const OpnameActionButtons: React.FC<OpnameActionButtonsProps> = ({
           />
           <View style={styles.rowBtns}>
             <TouchableOpacity style={[styles.primaryBtn, { backgroundColor: COLORS.ok }]} onPress={handleConfirmPaymentSubmit} disabled={saving}>
-              {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.primaryBtnText}>Konfirmasi PAID</Text>}
+              {saving ? <ActivityIndicator size="small" color={COLORS.textInverse} /> : <Text style={styles.primaryBtnText}>Konfirmasi PAID</Text>}
             </TouchableOpacity>
             <TouchableOpacity style={styles.ghostBtn} onPress={() => setShowApproveConfirm(false)}>
               <Text style={styles.ghostBtnText}>Batal</Text>
