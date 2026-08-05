@@ -178,6 +178,56 @@ export async function getWorkGroupEnvelope(
   };
 }
 
+/** One row of get_workgroup_material_envelopes (migration 086). BASE units. */
+export interface WorkGroupMaterialEnvelope {
+  material_id: string;
+  /** Planned demand for this material across the group's BoQ rows (latest master). */
+  planned: number;
+  /** Group demand already turned into a non-cancelled SANO PO. */
+  ordered: number;
+  /** Group demand still open (non-rejected requests not yet linked to a live PO). */
+  requested: number;
+}
+
+/**
+ * ALL-materials work-group envelope (migration 086): planned / ordered /
+ * requested for every material planned against the given BoQ rows, in ONE round
+ * trip. Generalizes getWorkGroupEnvelope above (one material per call) for the
+ * BoQ-first request flow and Mode Besi.
+ *
+ * `ordered + requested` equals getWorkGroupEnvelope's total_ordered by
+ * construction — see the verification query in the migration.
+ *
+ * Returns `{ rows, error }` instead of throwing: a failed envelope fetch is a
+ * non-blocking INFO with a retry in the UI (design spec §7), never a dead
+ * screen. Numeric coercion is mandatory — PostgREST hands NUMERIC back as a
+ * string.
+ */
+export async function getWorkGroupMaterialEnvelopes(
+  projectId: string,
+  boqItemIds: string[],
+): Promise<{ rows: WorkGroupMaterialEnvelope[]; error: string | null }> {
+  if (boqItemIds.length === 0) return { rows: [], error: null };
+
+  const { data, error } = await supabase.rpc('get_workgroup_material_envelopes', {
+    p_project_id: projectId,
+    p_boq_item_ids: boqItemIds,
+  });
+
+  if (error) return { rows: [], error: error.message };
+
+  const raw = (data ?? []) as Array<Record<string, unknown>>;
+  return {
+    rows: raw.map(row => ({
+      material_id: String(row.material_id),
+      planned: Number(row.planned ?? 0),
+      ordered: Number(row.ordered ?? 0),
+      requested: Number(row.requested ?? 0),
+    })),
+    error: null,
+  };
+}
+
 /**
  * Signal 2 (plan drift, Task 2.13): per-material {baseline, current, drift_pct}
  * for every material that has a baseline snapshot (077) in this project.
