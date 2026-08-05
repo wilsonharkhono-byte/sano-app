@@ -27,6 +27,11 @@ import {
   buildWorkGroupDemand, formatSisaLabel,
   type DemandRow, type DemandCatalogMaterial,
 } from '../../tools/workGroupDemand';
+import {
+  isRebarCode, buildRebarCells, groupsWithRebarDemand, groupRebarSisaBatang,
+  buildMatrixRows, splitBasisFor, defaultSplit, expandRebarMatrix,
+  type RebarMaterial, type RebarGroupEnvelope, type RebarMatrixRow,
+} from '../../tools/rebarMatrix';
 import { evaluateTier4Untracked, evaluateTier3BudgetSoft } from '../../tools/budgetGate';
 import { requiresOverageReason, requiresOverageNote } from '../../tools/requestOverage';
 import { shouldShowDriftBadge, formatDriftBadge, type MaterialDrift } from '../../tools/planDrift';
@@ -329,6 +334,18 @@ export default function PermintaanScreen() {
   const [groupEnvError, setGroupEnvError] = useState<string | null>(null);
   const [pekerjaanGroupKey, setPekerjaanGroupKey] = useState<string | null>(null);
   const [showTier2Section, setShowTier2Section] = useState(false);
+  // Mode Besi (spec §3): scope screen → matrix screen, with each diameter's
+  // per-group split rendered inline under the total it divides.
+  const [besiStep, setBesiStep] = useState<'scope' | 'matrix'>('scope');
+  const [besiScope, setBesiScope] = useState<Set<string>>(new Set());
+  const [besiScopeReady, setBesiScopeReady] = useState(false);
+  const [besiShowOther, setBesiShowOther] = useState(false);
+  /** materialId → total batang typed by the supervisor. */
+  const [besiTotal, setBesiTotal] = useState<Record<string, string>>({});
+  /** materialId → groupKey → batang. The single source the lines derive from. */
+  const [besiSplit, setBesiSplit] = useState<Record<string, Record<string, string>>>({});
+  /** materialId → one reason applied to every over-alokasi line of that diameter. */
+  const [besiReason, setBesiReason] = useState<Record<string, { reason: OverageReason | null; note: string }>>({});
 
   // Work-groups: the bulk unit a supervisor orders against (Tier 1 target).
   const workGroups = useMemo<WorkGroup[]>(() => buildWorkGroups(boqItems), [boqItems]);
@@ -509,6 +526,12 @@ export default function PermintaanScreen() {
   /** Deterministic line id per (group, material) so re-renders never churn keys. */
   const demandLineId = (groupKey: string, materialId: string) => `demand:${groupKey}:${materialId}`;
 
+  /** Mode Besi's equivalent: one id per (diameter, group). Deterministic for the
+   *  same reason — the derive effect rebuilds every line on each keystroke, and
+   *  a churning id would remount inputs and re-arm every cache lookup. */
+  const besiLinePrefix = (materialId: string) => `besi:${materialId}:`;
+  const besiLineId = (materialId: string, groupKey: string) => `${besiLinePrefix(materialId)}${groupKey}`;
+
   /** Rows inside the "Material terkait (Tier 2+)" disclosure that already carry
    *  a materialized line. Drives both the toggle's count and tier2Open. */
   const tier2FilledCount = useMemo(() => {
@@ -612,6 +635,209 @@ export default function PermintaanScreen() {
     }
   }, [lines, cacheWorkGroupEnvelope, cacheTier2Context, cacheMaterialBudget]);
 
+  // ── Mode Besi (spec §3) ──────────────────────────────────────────────────
+  // The matrix owns the numbers; `lines` is DERIVED from it (see the effect
+  // below), so gates, allocations and submit stay the same pipeline every
+  // other path uses — Mode Besi adds no write path of its own.
+
+  const materialById = useMemo(
+    () => new Map(materialOptions.map(m => [m.id, m])),
+    [materialOptions],
+  );
+
+  /** Rebar bars come from the CATALOG (code LIKE 'REB-%'), never a hardcoded list. */
+  const rebarMaterials = useMemo<RebarMaterial[]>(() => materialOptions
+    .filter(m => isRebarCode(m.code))
+    .map(m => ({
+      id: m.id,
+      code: m.code ?? '',
+      name: m.name,
+      unit: m.unit,
+      supplierUnit: m.supplier_unit || 'batang',
+      kgPerBatang: m.base_qty_per_supplier_unit,
+    })), [materialOptions]);
+
+  // Mode Besi needs every group's envelope to know which have rebar demand.
+  useEffect(() => {
+    if (mode !== 'besi') return;
+    void loadGroupEnvelopes(workGroups.map(group => group.key));
+  }, [mode, workGroups, loadGroupEnvelopes]);
+
+  /**
+   * Every group's envelope fetch has RESOLVED. Same `.has()` reasoning as
+   * isUnallocatableTier1: until then "no group has rebar demand" is a fetch in
+   * flight, not an answer, and the empty state must not claim otherwise.
+   */
+  const besiEnvelopesReady = useMemo(
+    () => workGroups.every(group => groupEnvCache.has(group.key)),
+    [workGroups, groupEnvCache],
+  );
+
+  const rebarGroupEnvelopes = useMemo<RebarGroupEnvelope[]>(() => workGroups
+    .filter(group => groupEnvCache.has(group.key))
+    .map(group => ({
+      groupKey: group.key,
+      groupLabel: group.label,
+      rows: groupEnvCache.get(group.key)!,
+    })), [workGroups, groupEnvCache]);
+
+  const rebarCells = useMemo(
+    () => buildRebarCells(rebarMaterials, rebarGroupEnvelopes),
+    [rebarMaterials, rebarGroupEnvelopes],
+  );
+
+  const rebarDemandGroupKeys = useMemo(() => groupsWithRebarDemand(rebarCells), [rebarCells]);
+
+  // Default scope = every group with rebar demand, selected (spec §3 step 1).
+  // Seeded once per entry into Mode Besi so the user's edits are never overwritten.
+  useEffect(() => {
+    if (mode !== 'besi' || besiScopeReady || rebarDemandGroupKeys.length === 0) return;
+    setBesiScope(new Set(rebarDemandGroupKeys));
+    setBesiScopeReady(true);
+  }, [mode, besiScopeReady, rebarDemandGroupKeys]);
+
+  const besiScopeKeys = useMemo(
+    () => rebarDemandGroupKeys.filter(key => besiScope.has(key)),
+    [rebarDemandGroupKeys, besiScope],
+  );
+
+  const besiMatrixRows = useMemo(
+    () => buildMatrixRows(rebarMaterials, rebarCells, besiScopeKeys),
+    [rebarMaterials, rebarCells, besiScopeKeys],
+  );
+
+  /**
+   * Mode Besi's lines are DERIVED state: the matrix owns the numbers, this
+   * effect projects them onto the same `lines` array every other path uses.
+   * Ids are deterministic so React keys, caches and gate results survive a
+   * keystroke. The per-diameter reason rides along onto each of its lines,
+   * which is how "one picker per diameter, stored per line" is satisfied.
+   *
+   * It replaces `lines` wholesale, so it MUST stay inert outside Mode Besi —
+   * the `mode` guard is both the first statement and the first dep. Mode Besi
+   * renders no card list (shouldShowLines), so inside 'besi' nothing else can
+   * own a line for it to clobber.
+   */
+  useEffect(() => {
+    if (mode !== 'besi') return;
+    const drafts = expandRebarMatrix(
+      Object.entries(besiSplit).map(([materialId, byGroup]) => ({
+        materialId,
+        splits: Object.entries(byGroup).map(([groupKey, raw]) => ({
+          groupKey,
+          batang: Number.parseInt(raw, 10) || 0,
+        })),
+      })),
+    );
+
+    setLines(drafts.flatMap(draft => {
+      const material = materialById.get(draft.materialId);
+      if (!material) return [];
+      const captured = besiReason[draft.materialId];
+      return [makeLine({
+        ...applyCatalogMaterialToLine(material),
+        id: besiLineId(draft.materialId, draft.workGroupKey),
+        workGroupKey: draft.workGroupKey,
+        quantity: String(draft.quantityBatang),
+        overageReason: captured?.reason ?? null,
+        overageNote: captured?.note ?? '',
+      })];
+    }));
+  }, [mode, besiSplit, besiReason, materialById]);
+
+  /** Diameters rendered under the "Diameter lain" disclosure (no baseline in scope). */
+  const besiOtherRows = useMemo(
+    () => besiMatrixRows.filter(row => !row.hasBaseline),
+    [besiMatrixRows],
+  );
+
+  /**
+   * No-baseline diameters the supervisor has already touched — a materialized
+   * line, or a typed total whose split is still unassigned (defaultSplit
+   * returns null without a baseline, so those rows legitimately have a total
+   * and no line yet).
+   */
+  const besiOtherFilledCount = useMemo(
+    () => besiOtherRows.filter(row =>
+      (Number.parseInt(besiTotal[row.material.id] ?? '', 10) || 0) > 0
+      || lines.some(line => line.id.startsWith(besiLinePrefix(row.material.id))),
+    ).length,
+    [besiOtherRows, besiTotal, lines],
+  );
+
+  /**
+   * Same rule as Path 1's tier2Open: the disclosure must not hide a filled row.
+   * Collapsing unmounts the row while its line survives in `lines`, so a
+   * missing overage reason (which DISABLES submit rather than firing a toast)
+   * or an unallocatable 'tanpa baseline' line would sit behind a closed
+   * section with no visible control to fix it. Manual toggling still works
+   * while every row of the section is empty.
+   */
+  const besiOtherOpen = besiShowOther || besiOtherFilledCount > 0;
+
+  /**
+   * Changing the scope invalidates every split already seeded from it — a
+   * de-scoped group would otherwise keep its batang and still expand into a
+   * line. Clearing the matrix inputs on toggle keeps `besiSplit` unable to hold
+   * a group that is not in scope, which is what makes the derive effect above
+   * safe without a second filter.
+   */
+  const toggleBesiScope = (groupKey: string) => {
+    setBesiScope(prev => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey); else next.add(groupKey);
+      return next;
+    });
+    setBesiTotal({});
+    setBesiSplit({});
+    setBesiReason({});
+  };
+
+  /** Typing a total seeds the default split; the user can then edit any group. */
+  const setBesiTotalFor = (materialId: string, value: string) => {
+    setBesiTotal(prev => ({ ...prev, [materialId]: value }));
+    const total = Number.parseInt(value, 10);
+    if (!Number.isFinite(total) || total <= 0) {
+      setBesiSplit(prev => ({ ...prev, [materialId]: {} }));
+      return;
+    }
+    const basis = splitBasisFor(rebarCells, materialId, besiScopeKeys);
+    const split = defaultSplit(total, basis);
+    setBesiSplit(prev => ({
+      ...prev,
+      // No baseline anywhere in scope → no honest proportion; start every group
+      // empty and let the supervisor assign (spec §3 step 3).
+      [materialId]: Object.fromEntries(
+        (split ?? basis.map(b => ({ groupKey: b.groupKey, batang: 0 })))
+          .map(entry => [entry.groupKey, split ? String(entry.batang) : '']),
+      ),
+    }));
+  };
+
+  const setBesiSplitFor = (materialId: string, groupKey: string, value: string) => {
+    setBesiSplit(prev => ({
+      ...prev,
+      [materialId]: { ...(prev[materialId] ?? {}), [groupKey]: value },
+    }));
+  };
+
+  const besiSplitTotal = (materialId: string) =>
+    Object.values(besiSplit[materialId] ?? {})
+      .reduce((sum, raw) => sum + (Number.parseInt(raw, 10) || 0), 0);
+
+  /** Every Mode Besi input, back to entry state. One helper so the three exits
+   *  (enter a path, leave to the landing, submit) can never drift apart and
+   *  leave a de-scoped group or a stale reason alive in the next draft. */
+  const resetBesiState = () => {
+    setBesiStep('scope');
+    setBesiScope(new Set());
+    setBesiScopeReady(false);
+    setBesiShowOther(false);
+    setBesiTotal({});
+    setBesiSplit({});
+    setBesiReason({});
+  };
+
   const updateLine = (id: string, patch: Partial<RequestLine>) => {
     setLines(prev => prev.map(line => (
       line.id === id
@@ -649,6 +875,12 @@ export default function PermintaanScreen() {
     setLines(next === 'umum' ? [makeLine()] : []);
     setCommonNote('');
     setUrgency('NORMAL');
+    setPekerjaanGroupKey(null);
+    setShowTier2Section(false);
+    resetBesiState();
+    // The banner belongs to the path being left — Mode Besi and Path 1 share
+    // this one error slot, so a stale one would accuse a fetch that never ran.
+    setGroupEnvError(null);
     setMode(next);
   };
 
@@ -659,6 +891,7 @@ export default function PermintaanScreen() {
       setLines([]);
       setCommonNote('');
       setUrgency('NORMAL');
+      resetBesiState();
       setMode('landing');
     };
     const hasInput = lines.some(line => isPositiveNumber(line.quantity));
@@ -810,6 +1043,17 @@ export default function PermintaanScreen() {
     ),
     [linesWithResults],
   );
+
+  /** Diameters with at least one line projected over 100% — each gets one picker.
+   *  Lives here, not with the other Mode Besi memos, because it reads the GATE
+   *  results (linesWithResults), which are derived further down the file. */
+  const besiOverMaterialIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const line of linesWithResults) {
+      if (line.materialId && requiresOverageReason(line.lineResult)) ids.add(line.materialId);
+    }
+    return ids;
+  }, [linesWithResults]);
 
   const overallFlag = useMemo<FlagLevel>(() => {
     let worst: FlagLevel = 'OK';
@@ -1024,6 +1268,7 @@ export default function PermintaanScreen() {
       setUrgency('NORMAL');
       setPekerjaanGroupKey(null);
       setShowTier2Section(false);
+      resetBesiState();
       // Envelopes are stale the moment a request lands (spec §7) — drop them so
       // re-entering a path re-fetches instead of showing yesterday's sisa. The
       // banner and spinner belong to that dropped fetch, so they go with it.
@@ -1084,6 +1329,94 @@ export default function PermintaanScreen() {
             reason={line.overageReason}
             note={line.overageNote}
             onChange={patch => updateLine(line.id, patch)}
+          />
+        )}
+      </Card>
+    );
+  };
+
+  /** One diameter: aggregate sisa, the batang total, and its per-group split. */
+  const renderBesiRow = (row: RebarMatrixRow) => {
+    const materialId = row.material.id;
+    const splitByGroup = besiSplit[materialId] ?? {};
+    const typedTotal = Number.parseInt(besiTotal[materialId] ?? '', 10) || 0;
+    const dividedTotal = besiSplitTotal(materialId);
+    const captured = besiReason[materialId] ?? { reason: null, note: '' };
+
+    return (
+      <Card key={materialId}>
+        <View style={styles.lineHeader}>
+          <Text style={styles.demandName}>{row.material.name}</Text>
+          {!row.hasBaseline && (
+            <View style={styles.noBaselinePill}>
+              <Text style={styles.noBaselineText}>tanpa baseline</Text>
+            </View>
+          )}
+        </View>
+        <Text style={styles.demandMeta}>
+          {row.hasBaseline
+            ? `Sisa kebutuhan: ${row.remainingBatang.toLocaleString('id-ID')} batang (≈ ${Math.round(row.remainingBase).toLocaleString('id-ID')} ${row.material.unit})`
+            : 'Grup terpilih belum punya rencana untuk diameter ini.'}
+        </Text>
+
+        <Text style={styles.fieldLabel}>Jumlah (batang)</Text>
+        <TextInput
+          style={styles.input}
+          keyboardType="number-pad"
+          value={besiTotal[materialId] ?? ''}
+          onChangeText={value => setBesiTotalFor(materialId, value)}
+          placeholder="0"
+          placeholderTextColor={COLORS.textMuted}
+          accessibilityLabel={`Jumlah batang ${row.material.name}`}
+        />
+
+        {typedTotal > 0 && (
+          <>
+            <Text style={styles.fieldLabel}>Pembagian per grup (batang)</Text>
+            {besiScopeKeys.map(groupKey => {
+              const group = workGroupMap.get(groupKey);
+              if (!group) return null;
+              const line = linesWithResults.find(l => l.id === besiLineId(materialId, groupKey)) ?? null;
+              return (
+                <View key={groupKey} style={styles.splitRow}>
+                  <Text style={styles.splitLabel}>{group.label}</Text>
+                  <TextInput
+                    style={[styles.input, styles.splitInput]}
+                    keyboardType="number-pad"
+                    value={splitByGroup[groupKey] ?? ''}
+                    onChangeText={value => setBesiSplitFor(materialId, groupKey, value)}
+                    placeholder="0"
+                    placeholderTextColor={COLORS.textMuted}
+                    accessibilityLabel={`Jumlah ${row.material.name} untuk ${group.label}`}
+                  />
+                  {line?.lineResult && <FlagPanel result={line.lineResult} gateLabel="Gate 1" />}
+                  {line && isUnallocatableTier1(line) && (
+                    <Text style={styles.blockingHint}>
+                      Grup ini belum punya baseline untuk diameter ini — kosongkan atau pesan lewat Material Umum.
+                    </Text>
+                  )}
+                </View>
+              );
+            })}
+            <Text style={[styles.fieldHint, dividedTotal !== typedTotal && styles.fieldHintWarn]}>
+              Total dibagi: {dividedTotal.toLocaleString('id-ID')} batang dari {typedTotal.toLocaleString('id-ID')} batang yang diisi.
+            </Text>
+          </>
+        )}
+
+        {besiOverMaterialIds.has(materialId) && (
+          <OverageReasonPicker
+            reason={captured.reason}
+            note={captured.note}
+            onChange={patch => setBesiReason(prev => ({
+              ...prev,
+              [materialId]: {
+                reason: patch.overageReason !== undefined ? patch.overageReason : captured.reason,
+                note: patch.overageNote !== undefined ? patch.overageNote : captured.note,
+              },
+            }))}
+            title={`Alasan kelebihan — ${row.material.name}`}
+            hint="Berlaku untuk semua grup diameter ini yang melebihi alokasi."
           />
         )}
       </Card>
@@ -1261,6 +1594,130 @@ export default function PermintaanScreen() {
                         <Text style={styles.addSecondaryText}>Tambah Manual</Text>
                       </TouchableOpacity>
                     </View>
+                  </>
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {mode === 'besi' && (
+          <>
+            {groupEnvError && (
+              <View style={styles.softErrorBox}>
+                <Ionicons name="cloud-offline-outline" size={14} color={COLORS.info} />
+                <Text style={styles.softErrorText}>
+                  Data kebutuhan besi gagal dimuat ({groupEnvError}).
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setGroupEnvError(null);
+                    void loadGroupEnvelopes(workGroups.map(group => group.key));
+                  }}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.suggestLink}>Coba lagi</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {groupEnvLoading && rebarDemandGroupKeys.length === 0 && (
+              <ActivityIndicator size="small" color={COLORS.primary} style={{ marginTop: SPACE.base }} />
+            )}
+
+            {/* "No rebar plan" is an ANSWER, so it waits for the fetches to
+                resolve; before that an empty matrix is just a request in
+                flight and claiming otherwise would be a fabricated number. */}
+            {rebarDemandGroupKeys.length === 0 && !groupEnvLoading && !groupEnvError && besiEnvelopesReady && (
+              <Card>
+                <Text style={styles.emptyTitle}>Belum ada rencana besi beton</Text>
+                <Text style={styles.fieldHint}>
+                  Tidak ada grup pekerjaan dengan rencana besi beton di proyek ini, jadi tidak ada baseline yang bisa dipakai.
+                  Besi tetap bisa diminta lewat Material Umum / Lainnya.
+                </Text>
+                <TouchableOpacity onPress={() => enterMode('umum')} accessibilityRole="button">
+                  <Text style={styles.linkText}>Buka Material Umum / Lainnya</Text>
+                </TouchableOpacity>
+              </Card>
+            )}
+
+            {rebarDemandGroupKeys.length > 0 && besiStep === 'scope' && (
+              <>
+                <Text style={styles.sectionHead}>1. Lingkup Grup Pekerjaan</Text>
+                <Text style={styles.fieldHint}>
+                  Semua grup dengan rencana besi dipilih otomatis. Hapus centang grup yang tidak ikut dipesan.
+                </Text>
+                {rebarDemandGroupKeys.map(groupKey => {
+                  const group = workGroupMap.get(groupKey);
+                  if (!group) return null;
+                  const checked = besiScope.has(groupKey);
+                  return (
+                    <TouchableOpacity
+                      key={groupKey}
+                      style={styles.scopeRow}
+                      onPress={() => toggleBesiScope(groupKey)}
+                      accessibilityRole="checkbox"
+                      accessibilityState={{ checked }}
+                      accessibilityLabel={group.label}
+                    >
+                      <View style={[styles.scopeBox, checked && styles.scopeBoxOn]}>
+                        {checked && <Ionicons name="checkmark" size={14} color={COLORS.textInverse} />}
+                      </View>
+                      <Text style={styles.scopeLabel}>{group.label}</Text>
+                      <Text style={styles.scopeMeta}>
+                        sisa {groupRebarSisaBatang(rebarMaterials, rebarCells, groupKey).toLocaleString('id-ID')} batang
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+                <TouchableOpacity
+                  style={[styles.submitBtn, besiScopeKeys.length === 0 && styles.submitBtnDisabled]}
+                  onPress={() => setBesiStep('matrix')}
+                  disabled={besiScopeKeys.length === 0}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: besiScopeKeys.length === 0 }}
+                >
+                  <Text style={styles.submitBtnText}>
+                    Lanjut — {besiScopeKeys.length} grup
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            {rebarDemandGroupKeys.length > 0 && besiStep === 'matrix' && (
+              <>
+                <TouchableOpacity
+                  style={styles.backRow}
+                  onPress={() => setBesiStep('scope')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Ubah lingkup grup pekerjaan"
+                >
+                  <Ionicons name="chevron-back" size={18} color={COLORS.primary} />
+                  <Text style={styles.backText}>Ubah lingkup ({besiScopeKeys.length} grup)</Text>
+                </TouchableOpacity>
+
+                <Text style={styles.sectionHead}>2. Jumlah per Diameter</Text>
+                {besiMatrixRows.filter(row => row.hasBaseline).map(row => renderBesiRow(row))}
+
+                {besiOtherRows.length > 0 && (
+                  <>
+                    <TouchableOpacity
+                      style={styles.sectionToggle}
+                      onPress={() => setBesiShowOther(v => !v)}
+                      accessibilityRole="button"
+                      accessibilityState={{ expanded: besiOtherOpen }}
+                    >
+                      <Text style={styles.sectionToggleText}>
+                        Diameter lain — {besiOtherRows.length} item
+                        {besiOtherFilledCount > 0 ? ` · ${besiOtherFilledCount} diisi` : ''}
+                      </Text>
+                      <Ionicons
+                        name={besiOtherOpen ? 'chevron-up' : 'chevron-down'}
+                        size={16}
+                        color={COLORS.textSec}
+                      />
+                    </TouchableOpacity>
+                    {besiOtherOpen && besiOtherRows.map(row => renderBesiRow(row))}
                   </>
                 )}
               </>
@@ -2247,4 +2704,29 @@ const styles = StyleSheet.create({
     flex: 1, fontSize: TYPE.xs, fontFamily: FONTS.regular,
     color: COLORS.textSec, lineHeight: 17,
   },
+
+  scopeRow: {
+    flexDirection: 'row', alignItems: 'center', gap: SPACE.sm,
+    backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border,
+    borderRadius: RADIUS, paddingHorizontal: SPACE.md, paddingVertical: SPACE.md,
+    marginTop: SPACE.sm, minHeight: 52,
+  },
+  scopeBox: {
+    width: 20, height: 20, borderRadius: RADIUS_SM - 1, borderWidth: 2,
+    borderColor: COLORS.border, alignItems: 'center', justifyContent: 'center',
+  },
+  scopeBoxOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  scopeLabel: { flex: 1, fontSize: TYPE.sm, fontFamily: FONTS.medium, color: COLORS.text },
+  scopeMeta: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textSec },
+
+  noBaselinePill: {
+    paddingHorizontal: SPACE.sm, paddingVertical: 3,
+    borderRadius: RADIUS_SM, backgroundColor: COLORS.infoBg,
+  },
+  noBaselineText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.info },
+
+  splitRow: { marginTop: SPACE.sm, gap: SPACE.xs },
+  splitLabel: { fontSize: TYPE.sm, fontFamily: FONTS.medium, color: COLORS.text },
+  splitInput: { paddingVertical: SPACE.sm + 1 },
+  fieldHintWarn: { color: COLORS.warning },
 });
