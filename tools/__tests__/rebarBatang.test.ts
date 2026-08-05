@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   REBAR_KG_PER_M,
   REBAR_KG_PER_BATANG,
@@ -37,14 +39,17 @@ describe('rebarBatang', () => {
     expect(rebarFactorByCode(null)).toBeNull();
   });
 
-  it('exposes exactly the 12 rebar catalog rows', () => {
-    expect(REBAR_CATALOG_FACTORS).toHaveLength(12);
+  it('exposes exactly the 10 rebar catalog rows', () => {
+    expect(REBAR_CATALOG_FACTORS).toHaveLength(10);
     expect(REBAR_CATALOG_FACTORS.map((f) => f.code).sort()).toEqual([
       'REB-DE10', 'REB-DE13', 'REB-DE16', 'REB-DE19', 'REB-DE22',
-      'REB-DE25', 'REB-DE29', 'REB-DE32', 'REB-PL06', 'REB-PL08', 'REB-PL10', 'REB-PL12',
+      'REB-DE25', 'REB-DE29', 'REB-DE32', 'REB-PL06', 'REB-PL08',
     ]);
-    expect(rebarFactorByCode('REB-PL10')).toBe(7.4); // polos 10 mm — same Ø10 factor
     expect(rebarFactorByCode('REB-DE29')).toBe(62.22); // ulir 29 mm — SNI 0.006165·29²·12
+    // Deleted by the strict-50 catalogue rebuild — resolving them by code would
+    // promise a bar the catalogue no longer carries.
+    expect(rebarFactorByCode('REB-PL10')).toBeNull();
+    expect(rebarFactorByCode('REB-PL12')).toBeNull();
   });
 
   it('matches rebar factors from workbook component names', () => {
@@ -57,5 +62,36 @@ describe('rebarBatang', () => {
     expect(rebarFactorByName('Bendrat')).toBeNull();
     expect(rebarFactorByName('Beton decking')).toBeNull();
     expect(rebarFactorByName('Besi beton — waste (5%)')).toBeNull(); // aggregate waste line stays kg
+  });
+});
+
+describe('rebarBatang ↔ material catalogue', () => {
+  // Guards the drift this task fixed: material_master.csv is the catalogue's
+  // source of truth (strict-50 rebuild), tools/rebarBatang.ts must mirror it
+  // exactly or Mode Besi's diameter list and the kg↔batang factors diverge.
+  const CSV = fs.readFileSync(
+    path.join(__dirname, '../../assets/mock/material_master.csv'),
+    'utf8',
+  );
+
+  function catalogRebarRows(): Array<{ code: string; kgPerBatang: number }> {
+    return CSV.split(/\r?\n/)
+      .slice(1) // header row
+      .map((line) => line.split(','))
+      .filter((cells) => (cells[0] ?? '').startsWith('REB-'))
+      .map((cells) => ({ code: cells[0], kgPerBatang: Number(cells[6]) }));
+  }
+
+  it('REBAR_CATALOG_FACTORS matches every REB- row in material_master.csv', () => {
+    const byCode = (rows: Array<{ code: string; kgPerBatang: number }>) =>
+      Object.fromEntries(rows.map((r) => [r.code, r.kgPerBatang]));
+    expect(byCode(REBAR_CATALOG_FACTORS)).toEqual(byCode(catalogRebarRows()));
+  });
+
+  it('every catalogue rebar row carries a kg-per-batang factor', () => {
+    for (const row of catalogRebarRows()) {
+      expect(Number.isFinite(row.kgPerBatang)).toBe(true);
+      expect(row.kgPerBatang).toBeGreaterThan(0);
+    }
   });
 });

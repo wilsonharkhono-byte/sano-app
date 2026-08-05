@@ -31,13 +31,16 @@ export const REBAR_KG_PER_BATANG: Record<number, number> = Object.fromEntries(
   ]),
 );
 
-/** Catalog code → diameter for the 10 rebar rows (kg-estimated, batang-ordered). */
+/**
+ * Catalog code → diameter for the 10 rebar rows in material_master.csv
+ * (kg-estimated, batang-ordered). This map MUST mirror the catalogue: the
+ * strict-50 rebuild deleted REB-PL10 / REB-PL12, so they are absent here too.
+ * `tools/__tests__/rebarBatang.test.ts` fails if the two ever drift apart.
+ */
 const DIAMETER_BY_CODE: Record<string, number> = {
   'REB-PL06': 6,
   'REB-PL08': 8,
   'REB-DE10': 10,
-  'REB-PL10': 10,
-  'REB-PL12': 12,
   'REB-DE13': 13,
   'REB-DE16': 16,
   'REB-DE19': 19,
