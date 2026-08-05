@@ -3,13 +3,13 @@ import {
   ScrollView, View, Text, TextInput, TouchableOpacity,
   StyleSheet, Alert, ActivityIndicator, Modal, FlatList,
 } from 'react-native';
-import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import Card from '../components/Card';
 import FlagPanel from '../components/FlagPanel';
 import DateSelectField, { getTodayIsoDate } from '../components/DateSelectField';
 import MaterialNamingAssist from '../components/MaterialNamingAssist';
+import SelectSheet, { type SelectOption } from '../components/SelectSheet';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { computeWorkGroupGate1Flag, buildProjectEnvelopeOverageResult, type EnvelopeUnitDisplay } from '../gates/gate1';
@@ -43,6 +43,36 @@ import type {
 type RequestBasis = 'BOQ' | 'MATERIAL';
 
 const ACTIVE_REQUEST_BASIS: RequestBasis = 'MATERIAL';
+
+/** The three entry paths plus their landing (design spec §1). */
+type PermintaanMode = 'landing' | 'pekerjaan' | 'besi' | 'umum';
+
+const MODE_TILES: Array<{
+  key: Exclude<PermintaanMode, 'landing'>;
+  /** Ionicons glyph name — typed off the component so a typo fails to compile. */
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  title: string;
+  desc: string;
+}> = [
+  {
+    key: 'pekerjaan',
+    icon: 'construct-outline',
+    title: 'Permintaan Pekerjaan (BoQ)',
+    desc: 'Pilih grup pekerjaan dulu, lalu isi jumlah dari daftar kebutuhan materialnya.',
+  },
+  {
+    key: 'besi',
+    icon: 'git-commit-outline',
+    title: 'Pesan Besi Beton',
+    desc: 'Pesan besi per diameter dalam batang untuk beberapa grup pekerjaan sekaligus.',
+  },
+  {
+    key: 'umum',
+    icon: 'cube-outline',
+    title: 'Material Umum / Lainnya',
+    desc: 'Cari material bebas dari katalog atau tulis manual.',
+  },
+];
 
 interface MaterialOption {
   id: string;
@@ -272,6 +302,7 @@ export default function PermintaanScreen() {
   const [urgency, setUrgency] = useState<string>('NORMAL');
   const [commonNote, setCommonNote] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [mode, setMode] = useState<PermintaanMode>('landing');
   const [lines, setLines] = useState<RequestLine[]>([makeLine()]);
   const [materialOptions, setMaterialOptions] = useState<MaterialOption[]>([]);
   const [materialSearch, setMaterialSearch] = useState('');
@@ -290,6 +321,12 @@ export default function PermintaanScreen() {
   // Work-groups: the bulk unit a supervisor orders against (Tier 1 target).
   const workGroups = useMemo<WorkGroup[]>(() => buildWorkGroups(boqItems), [boqItems]);
   const workGroupMap = useMemo(() => new Map(workGroups.map(g => [g.key, g])), [workGroups]);
+
+  const workGroupOptions = useMemo<SelectOption[]>(() => workGroups.map(group => ({
+    value: group.key,
+    label: group.label,
+    meta: `${group.itemCount} item`,
+  })), [workGroups]);
 
   useEffect(() => {
     if (!project) return;
@@ -440,6 +477,36 @@ export default function PermintaanScreen() {
   const removeLine = (id: string) => {
     if (lines.length <= 1) return;
     setLines(prev => prev.filter(line => line.id !== id));
+  };
+
+  /** Enter a path. Material Umum keeps its one blank starter line; the two
+   *  BoQ-first paths start empty and materialize lines as quantities arrive. */
+  const enterMode = (next: PermintaanMode) => {
+    setLines(next === 'umum' ? [makeLine()] : []);
+    setMode(next);
+  };
+
+  /** Back to the landing. Unsubmitted input is confirmed away, never dropped
+   *  silently (design spec §1). */
+  const leaveMode = () => {
+    const hasInput = lines.some(line => isPositiveNumber(line.quantity));
+    if (!hasInput) {
+      setLines([]);
+      setMode('landing');
+      return;
+    }
+    Alert.alert(
+      'Batalkan permintaan ini?',
+      'Jumlah yang sudah diisi akan dihapus.',
+      [
+        { text: 'Lanjut Isi', style: 'cancel' },
+        {
+          text: 'Hapus & Kembali',
+          style: 'destructive',
+          onPress: () => { setLines([]); setMode('landing'); },
+        },
+      ],
+    );
   };
 
   const openMaterialPicker = (lineId: string) => {
@@ -610,7 +677,9 @@ export default function PermintaanScreen() {
         ? 'Perlu Review Estimator'
         : 'Siap Dikirim';
 
-  const shouldShowLines = lines.length > 0;
+  // The multi-line catalog form belongs to Material Umum only; the BoQ-first
+  // paths render their own inputs and materialize into the same `lines` state.
+  const shouldShowLines = mode === 'umum' && lines.length > 0;
 
   const handleSubmit = async () => {
     if (!profile || !project) return;
@@ -760,9 +829,10 @@ export default function PermintaanScreen() {
         overallFlag === 'OK' ? 'ok' : 'warning',
       );
 
-      setLines([makeLine()]);
+      setLines([]);
       setCommonNote('');
       setUrgency('NORMAL');
+      setMode('landing');
       await refresh();
     } catch (err: any) {
       Alert.alert('Gagal mengirim', err.message);
@@ -775,10 +845,44 @@ export default function PermintaanScreen() {
     <View style={styles.flex}>
       <Header />
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <Text style={styles.sectionHead}>Gate 1 — Permintaan Material</Text>
-        <Text style={styles.fieldHint}>
-          Pilih material dulu. Tier 1 wajib memilih satu item BoQ tujuan, Tier 2 otomatis dihitung sebagai bulk envelope, dan Tier 3 dicatat sebagai stok umum.
-        </Text>
+        {mode === 'landing' ? (
+          <>
+            <Text style={styles.sectionHead}>Gate 1 — Permintaan Material</Text>
+            <Text style={styles.fieldHint}>
+              Pilih cara pengajuan. Untuk material presisi, mulai dari pekerjaannya agar sisa kebutuhan terlihat.
+            </Text>
+            {MODE_TILES.map(tile => (
+              <TouchableOpacity
+                key={tile.key}
+                style={styles.modeTile}
+                onPress={() => enterMode(tile.key)}
+                accessibilityRole="button"
+                accessibilityLabel={tile.title}
+              >
+                <View style={styles.modeTileIcon}>
+                  <Ionicons name={tile.icon} size={20} color={COLORS.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.modeTileTitle}>{tile.title}</Text>
+                  <Text style={styles.modeTileDesc}>{tile.desc}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={COLORS.textSec} />
+              </TouchableOpacity>
+            ))}
+          </>
+        ) : (
+          <TouchableOpacity
+            style={styles.backRow}
+            onPress={leaveMode}
+            accessibilityRole="button"
+            accessibilityLabel="Kembali ke pilihan jenis permintaan"
+          >
+            <Ionicons name="chevron-back" size={18} color={COLORS.primary} />
+            <Text style={styles.backText}>
+              {MODE_TILES.find(t => t.key === mode)?.title ?? 'Permintaan'}
+            </Text>
+          </TouchableOpacity>
+        )}
 
         {shouldShowLines && (
           <>
@@ -920,27 +1024,34 @@ export default function PermintaanScreen() {
                     />
                   )}
 
+                  {mode === 'umum' && !line.isCustom && line.materialId && line.tier === 1 && (
+                    <View style={styles.suggestBox}>
+                      <Ionicons name="bulb-outline" size={14} color={COLORS.info} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.suggestText}>
+                          Material presisi lebih mudah lewat Permintaan Pekerjaan (BoQ) — sisa kebutuhan per grup langsung terlihat.
+                        </Text>
+                        <TouchableOpacity onPress={() => { leaveMode(); }} accessibilityRole="button">
+                          <Text style={styles.suggestLink}>Buka Permintaan Pekerjaan</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  )}
+
                   {line.tier === 1 && (
                     <>
                       <Text style={styles.fieldLabel}>
                         Grup Pekerjaan Tujuan <Text style={styles.req}>*</Text>
                       </Text>
-                      <View style={styles.pickerWrap}>
-                        <Picker
-                          selectedValue={line.workGroupKey ?? ''}
-                          onValueChange={value => updateLine(line.id, { workGroupKey: value || null })}
-                          style={{ color: COLORS.text }}
-                        >
-                          <Picker.Item label="— Pilih grup pekerjaan —" value="" />
-                          {workGroups.map(group => (
-                            <Picker.Item
-                              key={group.key}
-                              label={`${group.label} (${group.itemCount} item)`}
-                              value={group.key}
-                            />
-                          ))}
-                        </Picker>
-                      </View>
+                      <SelectSheet
+                        value={line.workGroupKey ?? ''}
+                        options={workGroupOptions}
+                        onChange={value => updateLine(line.id, { workGroupKey: value || null })}
+                        placeholder="— Pilih grup pekerjaan —"
+                        title="Grup Pekerjaan Tujuan"
+                        emptyText="Belum ada grup pekerjaan — BoQ proyek ini belum dipublish."
+                        accessibilityLabel={`Pilih grup pekerjaan untuk line ${idx + 1}`}
+                      />
                       <Text style={styles.fieldHint}>
                         Permintaan Tier 1 dipesan untuk seluruh grup pekerjaan (mis. semua pondasi) dan dialokasikan ke tiap item BoQ di dalamnya.
                       </Text>
@@ -1428,13 +1539,6 @@ const styles = StyleSheet.create({
     paddingTop: SPACE.md - 1,
   },
 
-  pickerWrap: {
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: RADIUS,
-    backgroundColor: COLORS.surface,
-  },
-
   row2: { flexDirection: 'row', gap: SPACE.sm },
 
   lineHeader: {
@@ -1772,5 +1876,73 @@ const styles = StyleSheet.create({
     color: COLORS.textSec,
     textAlign: 'center',
     paddingVertical: SPACE.lg,
+  },
+
+  modeTile: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.md,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: RADIUS,
+    padding: SPACE.md,
+    marginTop: SPACE.sm,
+    minHeight: 72,
+  },
+  modeTileIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: RADIUS_SM,
+    backgroundColor: COLORS.accentBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modeTileTitle: {
+    fontSize: TYPE.base,
+    fontFamily: FONTS.semibold,
+    color: COLORS.text,
+  },
+  modeTileDesc: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.regular,
+    color: COLORS.textSec,
+    marginTop: 2,
+    lineHeight: 17,
+  },
+
+  backRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACE.xs,
+    paddingVertical: SPACE.sm,
+    marginTop: SPACE.sm,
+  },
+  backText: {
+    fontSize: TYPE.base,
+    fontFamily: FONTS.semibold,
+    color: COLORS.primary,
+  },
+
+  suggestBox: {
+    flexDirection: 'row',
+    gap: SPACE.sm,
+    alignItems: 'flex-start',
+    backgroundColor: COLORS.infoBg,
+    borderRadius: RADIUS_SM,
+    padding: SPACE.sm,
+    marginTop: SPACE.sm,
+  },
+  suggestText: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.regular,
+    color: COLORS.textSec,
+    lineHeight: 17,
+  },
+  suggestLink: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.semibold,
+    color: COLORS.info,
+    marginTop: SPACE.xs,
   },
 });
