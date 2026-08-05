@@ -6,7 +6,8 @@
 --   Editor (remote migration history diverged — see project memory). Idempotent /
 --   re-paste-safe: DROP FUNCTION IF EXISTS + CREATE, GRANT re-issued.
 --
--- WHY: get_workgroup_envelope (039 → 041) answers "planned vs already-requested
+-- WHY: get_workgroup_envelope (039 → 041 → 061, its live plpgsql body) answers
+--   "planned vs already-requested
 --   for ONE material across this work-group's BoQ rows". The BoQ-first request
 --   flow needs those numbers for EVERY material in the group at once (one round
 --   trip instead of N), and Mode Besi needs them per work group across up to ten
@@ -41,9 +42,12 @@
 --   tools/materialUnitConversion.ts displayQty.
 --
 -- SECURITY INVOKER (spec §6): RLS composes on every table read, matching
---   get_workgroup_envelope (039/041 are LANGUAGE sql, i.e. INVOKER by default).
---   assert_project_access (061) runs first so a caller outside the project fails
---   loudly instead of silently receiving an empty set.
+--   get_workgroup_envelope (039/041 were LANGUAGE sql, i.e. INVOKER by default;
+--   061_envelope_views_security_invoker.sql:229-299 re-created it as plpgsql,
+--   still SECURITY INVOKER — that 061 body is the function's live definition
+--   today, cited throughout this file). assert_project_access (061) runs first
+--   so a caller outside the project fails loudly instead of silently receiving
+--   an empty set.
 
 DROP FUNCTION IF EXISTS get_workgroup_material_envelopes(UUID, UUID[]);
 
@@ -134,11 +138,46 @@ GRANT EXECUTE ON FUNCTION get_workgroup_material_envelopes(UUID, UUID[])
 -- EXPECTED RESULT: ZERO ROWS. Any row returned is a real divergence — fix it,
 -- never explain it away (CLAUDE.md §1.1).
 --
--- Known permitted difference: get_workgroup_envelope's latest-master subquery
--- (039:50-55 / 041:38-43) orders by created_at DESC with NO id tiebreaker, this
--- function adds `id DESC` per 054. They can only disagree when a project has two
--- project_material_master headers sharing a created_at timestamp — in which case
--- THIS function is the correct one and 039/041 is the row to fix.
+-- ⚠ PRECONDITION — run this FIRST, before trusting a 0-row result below. An
+--   empty p_boq_item_ids scope makes the divergence query return 0 rows
+--   VACUOUSLY, indistinguishable from a genuine pass: a mistyped chapter
+--   matches nothing, and so does a chapter that legitimately has no rows —
+--   including the pre-064 trap where a project's boq_items rows predate
+--   064_boq_items_subchapter.sql and still carry chapter = NULL, so the
+--   equality filter below matches zero rows and ids.boq_ids comes back '{}'.
+--   REQUIRE count > 0 before treating "0 rows" from the divergence query as
+--   green:
+--
+--   WITH ids AS (
+--     SELECT ARRAY(
+--       SELECT id FROM boq_items
+--       WHERE project_id = '<PROJECT_UUID>'::uuid
+--         AND superseded_at IS NULL
+--         AND chapter = '<CHAPTER OF ONE WORK GROUP>'
+--     ) AS boq_ids
+--   )
+--   SELECT count(*) FROM ids,
+--        LATERAL get_workgroup_material_envelopes('<PROJECT_UUID>'::uuid, ids.boq_ids) m;
+--   -- REQUIRE > 0. If this is 0, fix the project id / chapter (or, on a
+--   -- pre-064 project, pick a project_id filter that doesn't rely on chapter
+--   -- at all) before running the divergence query below — a 0-row divergence
+--   -- result under an empty scope proves nothing.
+--
+-- Known permitted differences from get_workgroup_envelope (039 → 041 → 061's
+-- live plpgsql body, 061:229-299) — neither is a bug:
+--   1. Latest-master subquery: get_workgroup_envelope (061:261-266, carried
+--      forward from 039:50-55 / 041:38-43) orders by created_at DESC with NO
+--      id tiebreaker; this function adds `id DESC` per 054. They can only
+--      disagree when a project has two project_material_master headers
+--      sharing a created_at timestamp — in which case THIS function is the
+--      correct one and 061 is the row to fix.
+--   2. Join shape: get_workgroup_envelope's planned CTE (061:252-260) INNER
+--      JOINs boq_items (bi ON bi.id = pmml.boq_item_id) to compute installed
+--      progress; this function's planned_rows CTE has no reason to read
+--      boq_items and does not join it. Practically unreachable given the
+--      boq_item_id FK (a pmml row can't reference a missing boq_items row),
+--      but the two queries are not walking an identical join set — calling
+--      the id-tiebreaker the ONLY difference would be inaccurate.
 --
 --   WITH ids AS (
 --     SELECT ARRAY(

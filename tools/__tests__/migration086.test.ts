@@ -44,6 +44,22 @@ describe('migration 086 — frozen contract surface', () => {
     expect(SQL).toMatch(/pol\.request_line_id = l\.id/);
   });
 
+  it('uses a FULL OUTER JOIN so an over-ordered material with no plan still surfaces', () => {
+    // A LEFT JOIN here would silently drop any material_id present only in
+    // allocation_rows (ordered/requested beyond, or outside, the current
+    // plan) instead of returning it with planned = 0.
+    expect(SQL).toMatch(/FULL OUTER JOIN allocation_rows x ON x\.mat_id = p\.mat_id/);
+  });
+
+  it('caps the live-PO probe at one row so a line split across POs is not double-counted', () => {
+    // Losing this LIMIT 1 would let the LATERAL join fan out one allocation
+    // row per matching purchase_order_lines row, so SUM(a.allocated_quantity)
+    // would count that allocation once per matching PO line instead of once.
+    expect(SQL).toMatch(
+      /LEFT JOIN LATERAL \(\s*\n\s*SELECT pol\.request_line_id[\s\S]*?LIMIT 1\s*\n\s*\) po_link ON true/,
+    );
+  });
+
   it('grants execute to authenticated', () => {
     expect(SQL).toMatch(/GRANT EXECUTE ON FUNCTION get_workgroup_material_envelopes\(UUID, UUID\[\]\)\s*\n?\s*TO authenticated/);
   });
