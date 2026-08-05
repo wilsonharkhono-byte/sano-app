@@ -10,6 +10,7 @@ import FlagPanel from '../components/FlagPanel';
 import DateSelectField, { getTodayIsoDate } from '../components/DateSelectField';
 import MaterialNamingAssist from '../components/MaterialNamingAssist';
 import SelectSheet, { type SelectOption } from '../components/SelectSheet';
+import OverageReasonPicker from '../components/OverageReasonPicker';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { computeWorkGroupGate1Flag, buildProjectEnvelopeOverageResult, type EnvelopeUnitDisplay } from '../gates/gate1';
@@ -18,11 +19,16 @@ import { supplierToBase } from '../../tools/materialUnitConversion';
 import { applyCatalogMaterialToLine } from '../../tools/materialSelection';
 import { supabase } from '../../tools/supabase';
 import { auditRequestSubmitIfCritical } from '../../tools/audit';
-import { getWorkGroupEnvelope, getMaterialBudget, getMaterialDrift } from '../../tools/envelopes';
-import { evaluateTier4Untracked, evaluateTier3BudgetSoft } from '../../tools/budgetGate';
 import {
-  requiresOverageReason, requiresOverageNote, OVERAGE_REASONS, OVERAGE_REASON_LABELS,
-} from '../../tools/requestOverage';
+  getWorkGroupEnvelope, getMaterialBudget, getMaterialDrift,
+  getWorkGroupMaterialEnvelopes, type WorkGroupMaterialEnvelope,
+} from '../../tools/envelopes';
+import {
+  buildWorkGroupDemand, formatSisaLabel,
+  type DemandRow, type DemandCatalogMaterial,
+} from '../../tools/workGroupDemand';
+import { evaluateTier4Untracked, evaluateTier3BudgetSoft } from '../../tools/budgetGate';
+import { requiresOverageReason, requiresOverageNote } from '../../tools/requestOverage';
 import { shouldShowDriftBadge, formatDriftBadge, type MaterialDrift } from '../../tools/planDrift';
 import {
   buildSubmitMaterialRequestPayload, type SubmitRequestLineInput,
@@ -317,6 +323,12 @@ export default function PermintaanScreen() {
   // already returns every material with a baseline snapshot in one round trip,
   // so there is no per-line lazy-load like the other caches above).
   const [driftCache, setDriftCache] = useState<Map<string, MaterialDrift>>(new Map());
+  // Path 1 / Mode Besi: all-materials envelope per work group (migration 086).
+  const [groupEnvCache, setGroupEnvCache] = useState<Map<string, WorkGroupMaterialEnvelope[]>>(new Map());
+  const [groupEnvLoading, setGroupEnvLoading] = useState(false);
+  const [groupEnvError, setGroupEnvError] = useState<string | null>(null);
+  const [pekerjaanGroupKey, setPekerjaanGroupKey] = useState<string | null>(null);
+  const [showTier2Section, setShowTier2Section] = useState(false);
 
   // Work-groups: the bulk unit a supervisor orders against (Tier 1 target).
   const workGroups = useMemo<WorkGroup[]>(() => buildWorkGroups(boqItems), [boqItems]);
@@ -438,6 +450,91 @@ export default function PermintaanScreen() {
     });
   }, [project, budgetCache]);
 
+  /**
+   * Warm the all-materials envelope for one or more work groups. A failure is
+   * NON-blocking (spec §7): the rows stay unloaded, an INFO banner offers a
+   * retry, and the rest of the screen keeps working.
+   */
+  const loadGroupEnvelopes = useCallback(async (groupKeys: string[]) => {
+    if (!project) return;
+    const missing = groupKeys.filter(key => !groupEnvCache.has(key) && workGroupMap.has(key));
+    if (missing.length === 0) return;
+
+    setGroupEnvLoading(true);
+    const results = await Promise.all(missing.map(async key => {
+      const group = workGroupMap.get(key)!;
+      const { rows, error } = await getWorkGroupMaterialEnvelopes(project.id, group.itemIds);
+      return { key, rows, error };
+    }));
+
+    setGroupEnvCache(prev => {
+      // Identity must stay stable when NOTHING loaded: this cache is a dep of
+      // loadGroupEnvelopes, which is a dep of the Path-1 effect. Handing back a
+      // fresh empty Map on a failed fetch would re-arm the effect and re-fetch
+      // forever instead of parking on the retry banner.
+      const loaded = results.filter(result => !result.error);
+      if (loaded.length === 0) return prev;
+      const next = new Map(prev);
+      for (const result of loaded) next.set(result.key, result.rows);
+      return next;
+    });
+    setGroupEnvError(results.find(r => r.error)?.error ?? null);
+    setGroupEnvLoading(false);
+  }, [project, workGroupMap, groupEnvCache]);
+
+  // Path 1: load the chosen group's demand as soon as it is picked.
+  useEffect(() => {
+    if (mode !== 'pekerjaan' || !pekerjaanGroupKey) return;
+    void loadGroupEnvelopes([pekerjaanGroupKey]);
+  }, [mode, pekerjaanGroupKey, loadGroupEnvelopes]);
+
+  const pekerjaanDemand = useMemo(() => {
+    if (!pekerjaanGroupKey) return null;
+    const rows = groupEnvCache.get(pekerjaanGroupKey);
+    if (!rows) return null;
+    return buildWorkGroupDemand(rows, materialOptions);
+  }, [pekerjaanGroupKey, groupEnvCache, materialOptions]);
+
+  /** Deterministic line id per (group, material) so re-renders never churn keys. */
+  const demandLineId = (groupKey: string, materialId: string) => `demand:${groupKey}:${materialId}`;
+
+  /**
+   * Typing a quantity on a demand row materializes a STANDARD RequestLine —
+   * same fields the catalog picker sets (applyCatalogMaterialToLine), with the
+   * chosen group preset for Tier 1. Clearing the field removes the line, so an
+   * emptied row leaves no trace in the payload. Tier 2+ rows keep workGroupKey
+   * null: they burn against the project envelope, not the group.
+   */
+  const setDemandQuantity = (material: DemandCatalogMaterial, groupKey: string, value: string) => {
+    const id = demandLineId(groupKey, material.id);
+    setLines(prev => {
+      if (!value.trim()) return prev.filter(line => line.id !== id);
+      if (prev.some(line => line.id === id)) {
+        return prev.map(line => (line.id === id ? { ...line, quantity: value } : line));
+      }
+      return [...prev, makeLine({
+        ...applyCatalogMaterialToLine(material),
+        id,
+        workGroupKey: material.tier === 1 ? groupKey : null,
+        quantity: value,
+      })];
+    });
+  };
+
+  /** In Path 1 a Tier-1 line belongs to the group the supervisor already chose. */
+  const presetGroupFor = (tier: 1 | 2 | 3 | 4): { workGroupKey?: string } =>
+    mode === 'pekerjaan' && pekerjaanGroupKey && tier === 1
+      ? { workGroupKey: pekerjaanGroupKey }
+      : {};
+
+  /**
+   * A Tier-1 line with a quantity but no allocation cannot be posted: handleSubmit
+   * refuses it ("belum punya baseline material"). Surfacing it inline turns a
+   * submit-time surprise into a visible state — the guard itself is untouched.
+   */
+  const isUnallocatableTier1 = (line: RequestLine) =>
+    line.tier === 1 && isPositiveNumber(line.quantity) && line.allocationPreview.length === 0;
+
   // Warm work-group envelope + breakdown for Tier-1 lines once both a group and
   // a catalog material are chosen. Without a materialId there is no baseline to
   // validate the bulk order against (the gate then returns a soft INFO).
@@ -474,8 +571,11 @@ export default function PermintaanScreen() {
     setLines(prev => [...prev, makeLine({ isCustom: true, tier: 3 })]);
   };
 
+  /** Removes a CARD-list line. The "keep one line" floor counts the cards the
+   *  list actually renders (manualLines), not every line in state — in Path 1
+   *  the demand rows also live in `lines` and must not pin a manual card open. */
   const removeLine = (id: string) => {
-    if (lines.length <= 1) return;
+    if (manualLines.length <= 1) return;
     setLines(prev => prev.filter(line => line.id !== id));
   };
 
@@ -528,7 +628,10 @@ export default function PermintaanScreen() {
   const applyMaterialSelection = async (material: MaterialOption) => {
     if (!materialPickerLineId) return;
 
-    updateLine(materialPickerLineId, applyCatalogMaterialToLine(material));
+    updateLine(materialPickerLineId, {
+      ...applyCatalogMaterialToLine(material),
+      ...presetGroupFor(material.tier),
+    });
 
     if (material.tier === 2) {
       await cacheTier2Context([material.id]);
@@ -633,6 +736,20 @@ export default function PermintaanScreen() {
     });
   }, [lines, workGroupMap, envelopeCache, breakdownCache, workGroupEnvCache, budgetCache]);
 
+  /**
+   * Lines the multi-line CARD list owns. Demand rows and Mode Besi cells render
+   * their own compact controls, so the card list must skip them or Path 1 would
+   * show every material twice. Path 1 still needs the card list for "Tambah
+   * material lain" / "Tambah Manual" (spec §2), which is why it is not gated on
+   * Material Umum alone.
+   */
+  const manualLines = useMemo(
+    () => linesWithResults.filter(
+      line => !line.id.startsWith('demand:') && !line.id.startsWith('besi:'),
+    ),
+    [linesWithResults],
+  );
+
   const overallFlag = useMemo<FlagLevel>(() => {
     let worst: FlagLevel = 'OK';
     for (const line of linesWithResults) {
@@ -687,9 +804,11 @@ export default function PermintaanScreen() {
         ? 'Perlu Review Estimator'
         : 'Siap Dikirim';
 
-  // The multi-line catalog form belongs to Material Umum only; the BoQ-first
-  // paths render their own inputs and materialize into the same `lines` state.
-  const shouldShowLines = mode === 'umum' && lines.length > 0;
+  // The multi-line catalog form renders only the lines the CARD list owns:
+  // Material Umum's own lines, plus the ones Path 1 adds through "Tambah
+  // material lain" / "Tambah Manual". Demand rows and Mode Besi cells render
+  // their own compact controls (see manualLines) and are excluded here.
+  const shouldShowLines = (mode === 'umum' || mode === 'pekerjaan') && manualLines.length > 0;
 
   const handleSubmit = async () => {
     if (!profile || !project) return;
@@ -842,6 +961,11 @@ export default function PermintaanScreen() {
       setLines([]);
       setCommonNote('');
       setUrgency('NORMAL');
+      setPekerjaanGroupKey(null);
+      setShowTier2Section(false);
+      // Envelopes are stale the moment a request lands (spec §7) — drop them so
+      // re-entering a path re-fetches instead of showing yesterday's sisa.
+      setGroupEnvCache(new Map());
       setMode('landing');
       await refresh();
     } catch (err: any) {
@@ -849,6 +973,57 @@ export default function PermintaanScreen() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  /** One demand row: sisa, quantity input, and — once filled — the standard
+   *  gate result, allocation preview and reason capture for its line. */
+  const renderDemandRow = (demandRow: DemandRow) => {
+    const groupKey = pekerjaanGroupKey!;
+    const id = demandLineId(groupKey, demandRow.materialId);
+    const line = linesWithResults.find(l => l.id === id) ?? null;
+    const inputUnit = demandRow.material.supplier_unit || demandRow.material.unit;
+
+    return (
+      <Card key={id}>
+        <Text style={styles.demandName}>{demandRow.material.name}</Text>
+        <Text style={styles.demandMeta}>
+          Sisa kebutuhan: {formatSisaLabel(demandRow)}
+          {demandRow.tier !== 1 ? ' · dipantau level proyek' : ''}
+        </Text>
+
+        <View style={styles.row2}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.fieldLabel}>Jumlah ({inputUnit})</Text>
+            <TextInput
+              style={styles.input}
+              keyboardType="numeric"
+              value={line?.quantity ?? ''}
+              onChangeText={value => setDemandQuantity(demandRow.material, groupKey, value)}
+              placeholder="0"
+              placeholderTextColor={COLORS.textMuted}
+              accessibilityLabel={`Jumlah ${demandRow.material.name}`}
+            />
+          </View>
+        </View>
+
+        {line?.lineResult && <FlagPanel result={line.lineResult} gateLabel="Gate 1" />}
+
+        {line && isUnallocatableTier1(line) && (
+          <Text style={styles.blockingHint}>
+            Belum ada baseline material di grup ini, jadi permintaan tidak bisa dialokasikan.
+            Ajukan lewat Material Umum / Lainnya.
+          </Text>
+        )}
+
+        {line && requiresOverageReason(line.lineResult) && (
+          <OverageReasonPicker
+            reason={line.overageReason}
+            note={line.overageNote}
+            onChange={patch => updateLine(line.id, patch)}
+          />
+        )}
+      </Card>
+    );
   };
 
   return (
@@ -907,13 +1082,128 @@ export default function PermintaanScreen() {
           </>
         )}
 
+        {mode === 'pekerjaan' && (
+          <>
+            <Text style={styles.sectionHead}>1. Grup Pekerjaan</Text>
+            <SelectSheet
+              value={pekerjaanGroupKey ?? ''}
+              options={workGroupOptions}
+              onChange={value => { setPekerjaanGroupKey(value || null); setLines([]); }}
+              placeholder="— Pilih grup pekerjaan —"
+              title="Grup Pekerjaan"
+              emptyText="Belum ada grup pekerjaan — BoQ proyek ini belum dipublish."
+              accessibilityLabel="Pilih grup pekerjaan"
+            />
+
+            {groupEnvError && (
+              <View style={styles.softErrorBox}>
+                <Ionicons name="cloud-offline-outline" size={14} color={COLORS.info} />
+                <Text style={styles.softErrorText}>
+                  Data kebutuhan material gagal dimuat ({groupEnvError}).
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setGroupEnvError(null);
+                    if (pekerjaanGroupKey) void loadGroupEnvelopes([pekerjaanGroupKey]);
+                  }}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.suggestLink}>Coba lagi</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {pekerjaanGroupKey && groupEnvLoading && !pekerjaanDemand && (
+              <ActivityIndicator size="small" color={COLORS.primary} style={{ marginTop: SPACE.base }} />
+            )}
+
+            {pekerjaanDemand && (
+              <>
+                <Text style={styles.sectionHead}>
+                  2. Kebutuhan Material — {workGroupMap.get(pekerjaanGroupKey!)?.label ?? ''}
+                </Text>
+
+                {pekerjaanDemand.tier1.length === 0 && pekerjaanDemand.tier2plus.length === 0 ? (
+                  <Card>
+                    <Text style={styles.emptyTitle}>Grup ini belum punya rencana material</Text>
+                    <Text style={styles.fieldHint}>
+                      BoQ grup ini belum terhubung ke material mana pun, jadi tidak ada sisa kebutuhan yang bisa ditampilkan.
+                      Material tetap bisa diminta lewat katalog.
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.addSecondaryBtn}
+                      onPress={addCatalogLine}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.addSecondaryText}>Tambah material lain</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => enterMode('umum')} accessibilityRole="button">
+                      <Text style={styles.linkText}>Buka Material Umum / Lainnya</Text>
+                    </TouchableOpacity>
+                  </Card>
+                ) : (
+                  <>
+                    {pekerjaanDemand.tier1.map(demandRow => renderDemandRow(demandRow))}
+
+                    {pekerjaanDemand.tier2plus.length > 0 && (
+                      <>
+                        <TouchableOpacity
+                          style={styles.sectionToggle}
+                          onPress={() => setShowTier2Section(v => !v)}
+                          accessibilityRole="button"
+                          accessibilityState={{ expanded: showTier2Section }}
+                        >
+                          <Text style={styles.sectionToggleText}>
+                            Material terkait (Tier 2+) — {pekerjaanDemand.tier2plus.length} item
+                          </Text>
+                          <Ionicons
+                            name={showTier2Section ? 'chevron-up' : 'chevron-down'}
+                            size={16}
+                            color={COLORS.textSec}
+                          />
+                        </TouchableOpacity>
+                        {showTier2Section && (
+                          <>
+                            <Text style={styles.fieldHint}>
+                              Material ini dipantau level proyek, bukan per grup pekerjaan.
+                            </Text>
+                            {pekerjaanDemand.tier2plus.map(demandRow => renderDemandRow(demandRow))}
+                          </>
+                        )}
+                      </>
+                    )}
+
+                    <View style={styles.addActionRow}>
+                      <TouchableOpacity
+                        style={styles.addLineBtn}
+                        onPress={addCatalogLine}
+                        accessibilityRole="button"
+                      >
+                        <Ionicons name="add-circle-outline" size={18} color={COLORS.primary} />
+                        <Text style={styles.addLineText}>Tambah material lain</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.addSecondaryBtn}
+                        onPress={addCustomLine}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.addSecondaryText}>Tambah Manual</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
+              </>
+            )}
+          </>
+        )}
+
         {shouldShowLines && (
           <>
             <Text style={styles.sectionHead}>
-              Material — {lines.length} item
+              Material — {manualLines.length} item
             </Text>
 
-            {linesWithResults.map((line, idx) => {
+            {manualLines.map((line, idx) => {
               const tierColor = TIER_COLORS[line.tier];
               const envelope = line.materialId ? envelopeCache.get(line.materialId) ?? null : null;
               // Bar tracks running request demand (permintaan berjalan) vs plan, so
@@ -938,7 +1228,7 @@ export default function PermintaanScreen() {
                       </Text>
                     </View>
                     <Text style={styles.lineNum}>#{idx + 1}</Text>
-                    {lines.length > 1 && (
+                    {manualLines.length > 1 && (
                       <TouchableOpacity
                         onPress={() => removeLine(line.id)}
                         style={styles.removeBtn}
@@ -999,7 +1289,10 @@ export default function PermintaanScreen() {
                         userId={profile?.id}
                         userRole={profile?.role}
                         onSelectCatalogMaterial={async (material) => {
-                          updateLine(line.id, applyCatalogMaterialToLine(material));
+                          updateLine(line.id, {
+                            ...applyCatalogMaterialToLine(material),
+                            ...presetGroupFor(material.tier ?? 3),
+                          });
 
                           if (material.tier === 2) {
                             await cacheTier2Context([material.id]);
@@ -1026,7 +1319,11 @@ export default function PermintaanScreen() {
                             <TouchableOpacity
                               key={tier}
                               style={[styles.inlineTierChip, isActive && styles.inlineTierChipActive]}
-                              onPress={() => updateLine(line.id, { tier, boqItemId: tier === 1 ? line.boqItemId : null })}
+                              onPress={() => updateLine(line.id, {
+                                tier,
+                                boqItemId: tier === 1 ? line.boqItemId : null,
+                                ...presetGroupFor(tier),
+                              })}
                             >
                               <Text style={[styles.inlineTierText, isActive && styles.inlineTierTextActive]}>
                                 Tier {tier}
@@ -1200,94 +1497,39 @@ export default function PermintaanScreen() {
                   )}
 
                   {requiresOverageReason(line.lineResult) && (
-                    <View style={[
-                      styles.reasonBox,
-                      !line.overageReason && styles.reasonBoxMissing,
-                    ]}>
-                      <Text style={styles.reasonLabel}>
-                        Alasan kelebihan alokasi <Text style={styles.req}>*</Text>
-                      </Text>
-                      <Text style={styles.reasonHint}>
-                        Permintaan ini membuat total melebihi rencana. Pilih alasan agar estimator bisa menindaklanjuti.
-                      </Text>
-                      <View style={styles.reasonChips}>
-                        {OVERAGE_REASONS.map(reason => {
-                          const selected = line.overageReason === reason;
-                          return (
-                            <TouchableOpacity
-                              key={reason}
-                              style={[styles.reasonChip, selected && styles.reasonChipActive]}
-                              onPress={() => updateLine(line.id, { overageReason: selected ? null : reason })}
-                              accessibilityRole="radio"
-                              accessibilityState={{ checked: selected }}
-                              accessibilityLabel={OVERAGE_REASON_LABELS[reason]}
-                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                            >
-                              <Text style={[styles.reasonChipText, selected && styles.reasonChipTextActive]}>
-                                {OVERAGE_REASON_LABELS[reason]}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                      {line.overageReason && (() => {
-                        const otherNoteMissing = requiresOverageNote(line.overageReason, line.overageNote);
-                        return (
-                          <>
-                            {line.overageReason === 'OTHER' && (
-                              <Text style={styles.reasonLabel}>
-                                Keterangan <Text style={styles.req}>*</Text>
-                              </Text>
-                            )}
-                            <TextInput
-                              style={[
-                                styles.input,
-                                styles.reasonNote,
-                                otherNoteMissing && styles.reasonNoteMissing,
-                              ]}
-                              value={line.overageNote}
-                              onChangeText={(text) => updateLine(line.id, { overageNote: text })}
-                              placeholder={
-                                line.overageReason === 'OTHER'
-                                  ? "Jelaskan alasan 'Lainnya'…"
-                                  : 'Catatan tambahan (opsional)…'
-                              }
-                              placeholderTextColor={COLORS.textMuted}
-                              multiline
-                            />
-                            {otherNoteMissing && (
-                              <Text style={styles.reasonNoteError}>
-                                Alasan &apos;Lainnya&apos; butuh keterangan
-                              </Text>
-                            )}
-                          </>
-                        );
-                      })()}
-                    </View>
+                    <OverageReasonPicker
+                      reason={line.overageReason}
+                      note={line.overageNote}
+                      onChange={patch => updateLine(line.id, patch)}
+                    />
                   )}
                 </Card>
               );
             })}
 
-            <View style={styles.addActionRow}>
-              <TouchableOpacity
-                style={styles.addLineBtn}
-                onPress={addCatalogLine}
-                accessibilityRole="button"
-              >
-                <Ionicons name="add-circle-outline" size={18} color={COLORS.primary} />
-                <Text style={styles.addLineText}>
-                  Tambah Material Katalog
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.addSecondaryBtn}
-                onPress={addCustomLine}
-                accessibilityRole="button"
-              >
-                <Text style={styles.addSecondaryText}>Tambah Manual</Text>
-              </TouchableOpacity>
-            </View>
+            {/* Path 1 has its own add-pair at the end of the demand list, so
+                this one belongs to Material Umum. */}
+            {mode === 'umum' && (
+              <View style={styles.addActionRow}>
+                <TouchableOpacity
+                  style={styles.addLineBtn}
+                  onPress={addCatalogLine}
+                  accessibilityRole="button"
+                >
+                  <Ionicons name="add-circle-outline" size={18} color={COLORS.primary} />
+                  <Text style={styles.addLineText}>
+                    Tambah Material Katalog
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.addSecondaryBtn}
+                  onPress={addCustomLine}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.addSecondaryText}>Tambah Manual</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </>
         )}
 
@@ -1469,69 +1711,6 @@ const styles = StyleSheet.create({
     marginTop: SPACE.md,
   },
   req: { color: COLORS.critical },
-
-  reasonBox: {
-    marginTop: SPACE.sm,
-    padding: SPACE.md,
-    borderRadius: RADIUS_SM,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.surfaceAlt,
-  },
-  reasonBoxMissing: {
-    borderColor: COLORS.critical,
-    backgroundColor: COLORS.criticalBg,
-  },
-  reasonLabel: {
-    fontSize: TYPE.sm,
-    fontFamily: FONTS.bold,
-    color: COLORS.text,
-  },
-  reasonHint: {
-    fontSize: TYPE.xs,
-    fontFamily: FONTS.regular,
-    color: COLORS.textSec,
-    marginTop: 2,
-    marginBottom: SPACE.sm,
-    lineHeight: 17,
-  },
-  reasonChips: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: SPACE.sm,
-  },
-  reasonChip: {
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 999,
-    paddingHorizontal: SPACE.md - 2,
-    paddingVertical: SPACE.sm - 1,
-    backgroundColor: COLORS.surface,
-  },
-  reasonChipActive: {
-    borderColor: COLORS.primary,
-    backgroundColor: `${COLORS.primary}15`,
-  },
-  reasonChipText: {
-    fontSize: TYPE.xs,
-    fontFamily: FONTS.semibold,
-    color: COLORS.textSec,
-  },
-  reasonChipTextActive: { color: COLORS.primary },
-  reasonNote: {
-    marginTop: SPACE.sm,
-    minHeight: 44,
-    textAlignVertical: 'top',
-  },
-  reasonNoteMissing: {
-    borderColor: COLORS.critical,
-  },
-  reasonNoteError: {
-    fontSize: TYPE.xs,
-    fontFamily: FONTS.regular,
-    color: COLORS.critical,
-    marginTop: 4,
-  },
 
   fieldHint: {
     fontSize: TYPE.xs,
@@ -1967,5 +2146,34 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.semibold,
     color: COLORS.info,
     marginTop: SPACE.xs,
+  },
+
+  demandName: { fontSize: TYPE.base, fontFamily: FONTS.semibold, color: COLORS.text },
+  demandMeta: {
+    fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec,
+    marginTop: 2, lineHeight: 17,
+  },
+  emptyTitle: { fontSize: TYPE.base, fontFamily: FONTS.semibold, color: COLORS.text },
+  blockingHint: {
+    fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.critical,
+    marginTop: SPACE.sm, lineHeight: 17,
+  },
+  sectionToggle: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    gap: SPACE.sm, paddingVertical: SPACE.md, marginTop: SPACE.sm,
+    borderTopWidth: 1, borderTopColor: COLORS.borderSub,
+  },
+  sectionToggleText: {
+    fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textSec,
+    textTransform: 'uppercase', letterSpacing: 0.3,
+  },
+  softErrorBox: {
+    flexDirection: 'row', alignItems: 'center', gap: SPACE.sm,
+    backgroundColor: COLORS.infoBg, borderRadius: RADIUS_SM,
+    padding: SPACE.sm, marginTop: SPACE.sm,
+  },
+  softErrorText: {
+    flex: 1, fontSize: TYPE.xs, fontFamily: FONTS.regular,
+    color: COLORS.textSec, lineHeight: 17,
   },
 });
