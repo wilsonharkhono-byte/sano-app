@@ -461,25 +461,36 @@ export default function PermintaanScreen() {
     if (missing.length === 0) return;
 
     setGroupEnvLoading(true);
-    const results = await Promise.all(missing.map(async key => {
-      const group = workGroupMap.get(key)!;
-      const { rows, error } = await getWorkGroupMaterialEnvelopes(project.id, group.itemIds);
-      return { key, rows, error };
-    }));
+    try {
+      const results = await Promise.all(missing.map(async key => {
+        const group = workGroupMap.get(key)!;
+        const { rows, error } = await getWorkGroupMaterialEnvelopes(project.id, group.itemIds);
+        return { key, rows, error };
+      }));
 
-    setGroupEnvCache(prev => {
-      // Identity must stay stable when NOTHING loaded: this cache is a dep of
-      // loadGroupEnvelopes, which is a dep of the Path-1 effect. Handing back a
-      // fresh empty Map on a failed fetch would re-arm the effect and re-fetch
-      // forever instead of parking on the retry banner.
-      const loaded = results.filter(result => !result.error);
-      if (loaded.length === 0) return prev;
-      const next = new Map(prev);
-      for (const result of loaded) next.set(result.key, result.rows);
-      return next;
-    });
-    setGroupEnvError(results.find(r => r.error)?.error ?? null);
-    setGroupEnvLoading(false);
+      setGroupEnvCache(prev => {
+        // Identity must stay stable when NOTHING loaded: this cache is a dep of
+        // loadGroupEnvelopes, which is a dep of the Path-1 effect. Handing back a
+        // fresh empty Map on a failed fetch would re-arm the effect and re-fetch
+        // forever instead of parking on the retry banner.
+        const loaded = results.filter(result => !result.error);
+        if (loaded.length === 0) return prev;
+        const next = new Map(prev);
+        for (const result of loaded) next.set(result.key, result.rows);
+        return next;
+      });
+      setGroupEnvError(results.find(r => r.error)?.error ?? null);
+    } catch (err: any) {
+      // getWorkGroupMaterialEnvelopes resolves {rows, error} rather than
+      // throwing, so this is the defensive path (transport blew up). Surface it
+      // through the same non-blocking retry banner instead of swallowing it.
+      setGroupEnvError(err?.message ?? 'Gagal memuat kebutuhan material');
+    } finally {
+      // Never leave the spinner armed: a stuck groupEnvLoading renders a
+      // permanent ActivityIndicator with no rows and no banner — the dead
+      // screen spec §7 forbids.
+      setGroupEnvLoading(false);
+    }
   }, [project, workGroupMap, groupEnvCache]);
 
   // Path 1: load the chosen group's demand as soon as it is picked.
@@ -497,6 +508,24 @@ export default function PermintaanScreen() {
 
   /** Deterministic line id per (group, material) so re-renders never churn keys. */
   const demandLineId = (groupKey: string, materialId: string) => `demand:${groupKey}:${materialId}`;
+
+  /** Rows inside the "Material terkait (Tier 2+)" disclosure that already carry
+   *  a materialized line. Drives both the toggle's count and tier2Open. */
+  const tier2FilledCount = useMemo(() => {
+    if (!pekerjaanDemand || !pekerjaanGroupKey) return 0;
+    return pekerjaanDemand.tier2plus.filter(row =>
+      lines.some(line => line.id === demandLineId(pekerjaanGroupKey, row.materialId)),
+    ).length;
+  }, [pekerjaanDemand, pekerjaanGroupKey, lines]);
+
+  /**
+   * The disclosure must not hide a filled row. Collapsing UNMOUNTS the row while
+   * its line survives in `lines`, so a quantity — or worse a missing overage
+   * reason, which DISABLES the submit button instead of firing a toast — would
+   * sit behind a closed section with the fixing control invisible: a dead button
+   * and no way to see why. Manual toggling still works while every row is empty.
+   */
+  const tier2Open = showTier2Section || tier2FilledCount > 0;
 
   /**
    * Typing a quantity on a demand row materializes a STANDARD RequestLine —
@@ -547,9 +576,25 @@ export default function PermintaanScreen() {
    * A Tier-1 line with a quantity but no allocation cannot be posted: handleSubmit
    * refuses it ("belum punya baseline material"). Surfacing it inline turns a
    * submit-time surprise into a visible state — the guard itself is untouched.
+   *
+   * Gated on the warm having RESOLVED. On the first keystroke of a demand row
+   * the envelope/breakdown fetches are still in flight, so allocationPreview is
+   * legitimately empty for a moment; without this gate every healthy Tier-1 row
+   * flashes the red no-baseline hint for the length of a round trip (seconds on
+   * a site connection). Only a resolved-and-still-empty preview is real.
    */
-  const isUnallocatableTier1 = (line: RequestLine) =>
-    line.tier === 1 && isPositiveNumber(line.quantity) && line.allocationPreview.length === 0;
+  const isUnallocatableTier1 = (line: RequestLine) => {
+    if (line.tier !== 1 || !isPositiveNumber(line.quantity)) return false;
+    if (line.allocationPreview.length > 0) return false;
+    // No ids means nothing is pending — the empty preview is already final.
+    if (!line.workGroupKey || !line.materialId) return true;
+    // `.has()`, never `.get()`: workGroupEnvCache stores `null` for "fetched,
+    // no baseline", so only key PRESENCE separates a resolved fetch from one
+    // still in flight. breakdownCache likewise always sets a key (possibly [])
+    // once it resolves, and it is what actually feeds buildWorkGroupAllocations.
+    return workGroupEnvCache.has(`${line.workGroupKey}::${line.materialId}`)
+      && breakdownCache.has(line.materialId);
+  };
 
   // Warm work-group envelope + breakdown for Tier-1 lines once both a group and
   // a catalog material are chosen. Without a materialId there is no baseline to
@@ -980,8 +1025,11 @@ export default function PermintaanScreen() {
       setPekerjaanGroupKey(null);
       setShowTier2Section(false);
       // Envelopes are stale the moment a request lands (spec §7) — drop them so
-      // re-entering a path re-fetches instead of showing yesterday's sisa.
+      // re-entering a path re-fetches instead of showing yesterday's sisa. The
+      // banner and spinner belong to that dropped fetch, so they go with it.
       setGroupEnvCache(new Map());
+      setGroupEnvError(null);
+      setGroupEnvLoading(false);
       setMode('landing');
       await refresh();
     } catch (err: any) {
@@ -1104,7 +1152,13 @@ export default function PermintaanScreen() {
             <SelectSheet
               value={pekerjaanGroupKey ?? ''}
               options={workGroupOptions}
-              onChange={value => { setPekerjaanGroupKey(value || null); setLines([]); }}
+              onChange={value => {
+                setPekerjaanGroupKey(value || null);
+                setLines([]);
+                // The banner belongs to the group being left — it must not
+                // accuse the newly picked one.
+                setGroupEnvError(null);
+              }}
               placeholder="— Pilih grup pekerjaan —"
               title="Grup Pekerjaan"
               emptyText="Belum ada grup pekerjaan — BoQ proyek ini belum dipublish."
@@ -1167,18 +1221,19 @@ export default function PermintaanScreen() {
                           style={styles.sectionToggle}
                           onPress={() => setShowTier2Section(v => !v)}
                           accessibilityRole="button"
-                          accessibilityState={{ expanded: showTier2Section }}
+                          accessibilityState={{ expanded: tier2Open }}
                         >
                           <Text style={styles.sectionToggleText}>
                             Material terkait (Tier 2+) — {pekerjaanDemand.tier2plus.length} item
+                            {tier2FilledCount > 0 ? ` · ${tier2FilledCount} diisi` : ''}
                           </Text>
                           <Ionicons
-                            name={showTier2Section ? 'chevron-up' : 'chevron-down'}
+                            name={tier2Open ? 'chevron-up' : 'chevron-down'}
                             size={16}
                             color={COLORS.textSec}
                           />
                         </TouchableOpacity>
-                        {showTier2Section && (
+                        {tier2Open && (
                           <>
                             <Text style={styles.fieldHint}>
                               Material ini dipantau level proyek, bukan per grup pekerjaan.
