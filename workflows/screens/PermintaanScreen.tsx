@@ -480,19 +480,29 @@ export default function PermintaanScreen() {
   };
 
   /** Enter a path. Material Umum keeps its one blank starter line; the two
-   *  BoQ-first paths start empty and materialize lines as quantities arrive. */
+   *  BoQ-first paths start empty and materialize lines as quantities arrive.
+   *  The header fields (note + urgency) belong to ONE submission, so they reset
+   *  with the lines — otherwise a draft abandoned in one path rides into the
+   *  next one, exactly as handleSubmit's post-submit reset already prevents. */
   const enterMode = (next: PermintaanMode) => {
     setLines(next === 'umum' ? [makeLine()] : []);
+    setCommonNote('');
+    setUrgency('NORMAL');
     setMode(next);
   };
 
   /** Back to the landing. Unsubmitted input is confirmed away, never dropped
    *  silently (design spec §1). */
   const leaveMode = () => {
+    const discard = () => {
+      setLines([]);
+      setCommonNote('');
+      setUrgency('NORMAL');
+      setMode('landing');
+    };
     const hasInput = lines.some(line => isPositiveNumber(line.quantity));
     if (!hasInput) {
-      setLines([]);
-      setMode('landing');
+      discard();
       return;
     }
     Alert.alert(
@@ -503,7 +513,7 @@ export default function PermintaanScreen() {
         {
           text: 'Hapus & Kembali',
           style: 'destructive',
-          onPress: () => { setLines([]); setMode('landing'); },
+          onPress: discard,
         },
       ],
     );
@@ -871,17 +881,30 @@ export default function PermintaanScreen() {
             ))}
           </>
         ) : (
-          <TouchableOpacity
-            style={styles.backRow}
-            onPress={leaveMode}
-            accessibilityRole="button"
-            accessibilityLabel="Kembali ke pilihan jenis permintaan"
-          >
-            <Ionicons name="chevron-back" size={18} color={COLORS.primary} />
-            <Text style={styles.backText}>
-              {MODE_TILES.find(t => t.key === mode)?.title ?? 'Permintaan'}
-            </Text>
-          </TouchableOpacity>
+          <>
+            <TouchableOpacity
+              style={styles.backRow}
+              onPress={leaveMode}
+              accessibilityRole="button"
+              accessibilityLabel="Kembali ke pilihan jenis permintaan"
+            >
+              <Ionicons name="chevron-back" size={18} color={COLORS.primary} />
+              <Text style={styles.backText}>
+                {MODE_TILES.find(t => t.key === mode)?.title ?? 'Permintaan'}
+              </Text>
+            </TouchableOpacity>
+
+            {/* Material Umum keeps the screen's original heading + tier
+                explanation verbatim — the landing only borrowed them. */}
+            {mode === 'umum' && (
+              <>
+                <Text style={styles.sectionHead}>Gate 1 — Permintaan Material</Text>
+                <Text style={styles.fieldHint}>
+                  Pilih material dulu. Tier 1 wajib memilih satu item BoQ tujuan, Tier 2 otomatis dihitung sebagai bulk envelope, dan Tier 3 dicatat sebagai stok umum.
+                </Text>
+              </>
+            )}
+          </>
         )}
 
         {shouldShowLines && (
