@@ -11,6 +11,7 @@ import {
   expandRebarMatrix,
   type RebarMaterial,
   type RebarGroupEnvelope,
+  type RebarCell,
 } from '../rebarMatrix';
 
 const bar = (id: string, code: string, kgPerBatang: number, name = code): RebarMaterial => ({
@@ -109,6 +110,27 @@ describe('buildMatrixRows', () => {
   });
 });
 
+describe('toBatang ceiling semantics for a factorless (kgPerBatang: null) material', () => {
+  const nullFactorMaterial: RebarMaterial = {
+    id: 'm-null', code: 'REB-DE99', name: 'Besi tanpa faktor', unit: 'kg', supplierUnit: 'batang', kgPerBatang: null,
+  };
+
+  it('buildMatrixRows rounds a fractional factorless remaining UP, not to nearest', () => {
+    const cells: RebarCell[] = [
+      { materialId: 'm-null', groupKey: 'pondasi', plannedBase: 5.3, remainingBase: 5.3 },
+    ];
+    const row = buildMatrixRows([nullFactorMaterial], cells, ['pondasi'])[0];
+    expect(row.remainingBatang).toBe(6);
+  });
+
+  it('groupRebarSisaBatang rounds a fractional factorless remaining UP, not to nearest', () => {
+    const cells: RebarCell[] = [
+      { materialId: 'm-null', groupKey: 'pondasi', plannedBase: 5.3, remainingBase: 5.3 },
+    ];
+    expect(groupRebarSisaBatang([nullFactorMaterial], cells, 'pondasi')).toBe(6);
+  });
+});
+
 describe('largestRemainderSplit', () => {
   it('sums exactly to the total', () => {
     expect(largestRemainderSplit(100, [1, 1, 1])).toEqual([34, 33, 33]);
@@ -131,6 +153,14 @@ describe('largestRemainderSplit', () => {
   it('rejects a non-integer or negative total (batang are whole)', () => {
     expect(largestRemainderSplit(10.5, [1, 1])).toBeNull();
     expect(largestRemainderSplit(-1, [1, 1])).toBeNull();
+  });
+
+  it('treats a NaN weight among valid ones as zero, never poisoning the split', () => {
+    expect(largestRemainderSplit(10, [5, NaN, 5])).toEqual([5, 0, 5]);
+  });
+
+  it('returns null when every weight is NaN — never fabricated garbage', () => {
+    expect(largestRemainderSplit(10, [NaN, NaN])).toBeNull();
   });
 });
 

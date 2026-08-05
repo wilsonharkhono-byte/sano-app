@@ -131,9 +131,15 @@ export function groupsWithRebarDemand(cells: RebarCell[]): string[] {
   return keys;
 }
 
-/** Whole batang for a base quantity; a factorless material passes through. */
+/**
+ * Whole batang for a base quantity; a factorless material passes through.
+ * Ordering always rounds UP: with a factor, baseToSupplierOrder already
+ * ceils, so Math.ceil here is a no-op; without one, baseToSupplierOrder
+ * returns the base quantity unchanged (possibly fractional) and Math.ceil
+ * is what enforces "you cannot buy 0.4 lonjor" for that branch too.
+ */
 function toBatang(base: number, kgPerBatang: number | null): number {
-  return Math.round(baseToSupplierOrder(base, kgPerBatang));
+  return Math.ceil(baseToSupplierOrder(base, kgPerBatang));
 }
 
 /**
@@ -206,15 +212,17 @@ export function splitBasisFor(
  * integer and the parts sum EXACTLY to `total` (largest-remainder / Hare
  * quota). Ties resolve to the lower index, so the result is deterministic.
  *
- * Returns null when there is nothing to divide by (no buckets, every weight 0,
- * or a non-integer/negative total). An even split would be a fabricated
- * proportion — the caller falls back or asks the user instead.
+ * Returns null when there is nothing to divide by (no buckets, every weight 0
+ * or non-finite, or a non-integer/negative total). An even split would be a
+ * fabricated proportion — the caller falls back or asks the user instead.
+ * A non-finite weight (NaN, ±Infinity) is treated as 0 rather than allowed to
+ * poison the sum — never fabricated garbage in the result.
  */
 export function largestRemainderSplit(total: number, weights: number[]): number[] | null {
   if (weights.length === 0) return null;
   if (!Number.isInteger(total) || total < 0) return null;
 
-  const safe = weights.map(w => Math.max(0, w));
+  const safe = weights.map(w => (Number.isFinite(w) ? Math.max(0, w) : 0));
   const totalWeight = safe.reduce((sum, w) => sum + w, 0);
   if (totalWeight <= 0) return null;
 
