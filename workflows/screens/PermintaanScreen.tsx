@@ -504,9 +504,21 @@ export default function PermintaanScreen() {
    * chosen group preset for Tier 1. Clearing the field removes the line, so an
    * emptied row leaves no trace in the payload. Tier 2+ rows keep workGroupKey
    * null: they burn against the project envelope, not the group.
+   *
+   * Materializing a TIER-2 line also warms its project envelope + BoQ breakdown,
+   * exactly as the catalog picker does on selection: without them the line has
+   * no allocationPreview, and handleSubmit's Tier-2 guard would refuse the WHOLE
+   * submission ("belum punya breakdown baseline"). Tier 1 is warmed by the
+   * existing lines effect (it carries both workGroupKey and materialId), Tier 3
+   * likewise for its Rupiah budget, and Tier 4 needs no baseline — so Tier 2 is
+   * the only grain that has to be warmed here.
    */
-  const setDemandQuantity = (material: DemandCatalogMaterial, groupKey: string, value: string) => {
+  const setDemandQuantity = async (material: DemandCatalogMaterial, groupKey: string, value: string) => {
     const id = demandLineId(groupKey, material.id);
+    // Only on materialization: re-warming per keystroke would refetch an
+    // envelope the cache already answers for.
+    const materializing = !!value.trim() && !lines.some(line => line.id === id);
+
     setLines(prev => {
       if (!value.trim()) return prev.filter(line => line.id !== id);
       if (prev.some(line => line.id === id)) {
@@ -519,6 +531,10 @@ export default function PermintaanScreen() {
         quantity: value,
       })];
     });
+
+    if (materializing && material.tier === 2) {
+      await cacheTier2Context([material.id]);
+    }
   };
 
   /** In Path 1 a Tier-1 line belongs to the group the supervisor already chose. */
@@ -998,7 +1014,7 @@ export default function PermintaanScreen() {
               style={styles.input}
               keyboardType="numeric"
               value={line?.quantity ?? ''}
-              onChangeText={value => setDemandQuantity(demandRow.material, groupKey, value)}
+              onChangeText={value => { void setDemandQuantity(demandRow.material, groupKey, value); }}
               placeholder="0"
               placeholderTextColor={COLORS.textMuted}
               accessibilityLabel={`Jumlah ${demandRow.material.name}`}
