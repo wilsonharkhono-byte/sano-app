@@ -338,7 +338,11 @@ export default function PermintaanScreen() {
   // per-group split rendered inline under the total it divides.
   const [besiStep, setBesiStep] = useState<'scope' | 'matrix'>('scope');
   const [besiScope, setBesiScope] = useState<Set<string>>(new Set());
-  const [besiScopeReady, setBesiScopeReady] = useState(false);
+  /** Groups the default-scope seed has already offered. Never a boolean latch:
+   *  the envelope cache can be PARTIALLY warm on entry (Path 1 leaves its group
+   *  cached), so a one-shot seed would default-select only the groups that
+   *  happened to be loaded on the first commit and silently under-order. */
+  const [besiSeededKeys, setBesiSeededKeys] = useState<Set<string>>(new Set());
   const [besiShowOther, setBesiShowOther] = useState(false);
   /** materialId → total batang typed by the supervisor. */
   const [besiTotal, setBesiTotal] = useState<Record<string, string>>({});
@@ -688,13 +692,25 @@ export default function PermintaanScreen() {
 
   const rebarDemandGroupKeys = useMemo(() => groupsWithRebarDemand(rebarCells), [rebarCells]);
 
-  // Default scope = every group with rebar demand, selected (spec §3 step 1).
-  // Seeded once per entry into Mode Besi so the user's edits are never overwritten.
+  /**
+   * Default scope = every group with rebar demand, selected (spec §3 step 1).
+   *
+   * ADDITIVE, not one-shot. Envelopes can arrive in more than one batch — Path 1
+   * caches its own group and `discard` deliberately keeps that cache, so Mode
+   * Besi's first commit can legitimately see one group and the rest a round trip
+   * later. A latched seed would leave those later groups UNCHECKED under a hint
+   * that promises "semua grup … dipilih otomatis": a silent under-order.
+   *
+   * The seeded set (not the scope itself) is what stops a re-add: a group the
+   * user unchecked stays seeded, so it is never offered again.
+   */
   useEffect(() => {
-    if (mode !== 'besi' || besiScopeReady || rebarDemandGroupKeys.length === 0) return;
-    setBesiScope(new Set(rebarDemandGroupKeys));
-    setBesiScopeReady(true);
-  }, [mode, besiScopeReady, rebarDemandGroupKeys]);
+    if (mode !== 'besi') return;
+    const fresh = rebarDemandGroupKeys.filter(key => !besiSeededKeys.has(key));
+    if (fresh.length === 0) return;
+    setBesiScope(prev => new Set([...prev, ...fresh]));
+    setBesiSeededKeys(prev => new Set([...prev, ...fresh]));
+  }, [mode, rebarDemandGroupKeys, besiSeededKeys]);
 
   const besiScopeKeys = useMemo(
     () => rebarDemandGroupKeys.filter(key => besiScope.has(key)),
@@ -737,7 +753,11 @@ export default function PermintaanScreen() {
       return [makeLine({
         ...applyCatalogMaterialToLine(material),
         id: besiLineId(draft.materialId, draft.workGroupKey),
-        workGroupKey: draft.workGroupKey,
+        // Mirrors Path 1's setDemandQuantity: only Tier 1 burns against a work
+        // group. Every REB-* row in the catalogue is Tier 1 today, but a
+        // reclassified one must not carry a group key its gate would then
+        // validate against the wrong grain.
+        workGroupKey: material.tier === 1 ? draft.workGroupKey : null,
         quantity: String(draft.quantityBatang),
         overageReason: captured?.reason ?? null,
         overageNote: captured?.note ?? '',
@@ -831,7 +851,9 @@ export default function PermintaanScreen() {
   const resetBesiState = () => {
     setBesiStep('scope');
     setBesiScope(new Set());
-    setBesiScopeReady(false);
+    // Clearing the seeded set is what makes the next entry re-seed from scratch
+    // instead of inheriting "already offered" from the previous draft.
+    setBesiSeededKeys(new Set());
     setBesiShowOther(false);
     setBesiTotal({});
     setBesiSplit({});
@@ -1046,10 +1068,14 @@ export default function PermintaanScreen() {
 
   /** Diameters with at least one line projected over 100% — each gets one picker.
    *  Lives here, not with the other Mode Besi memos, because it reads the GATE
-   *  results (linesWithResults), which are derived further down the file. */
+   *  results (linesWithResults), which are derived further down the file.
+   *  Scoped to `besi:` lines (the manualLines prefix idiom): keying on
+   *  materialId alone is only correct while Mode Besi owns every line, and that
+   *  is an invariant of the current render tree, not of this memo. */
   const besiOverMaterialIds = useMemo(() => {
     const ids = new Set<string>();
     for (const line of linesWithResults) {
+      if (!line.id.startsWith('besi:')) continue;
       if (line.materialId && requiresOverageReason(line.lineResult)) ids.add(line.materialId);
     }
     return ids;
@@ -1408,13 +1434,19 @@ export default function PermintaanScreen() {
           <OverageReasonPicker
             reason={captured.reason}
             note={captured.note}
-            onChange={patch => setBesiReason(prev => ({
-              ...prev,
-              [materialId]: {
-                reason: patch.overageReason !== undefined ? patch.overageReason : captured.reason,
-                note: patch.overageNote !== undefined ? patch.overageNote : captured.note,
-              },
-            }))}
+            // The untouched half of the patch is read from `prev`, never from
+            // the render-time `captured`: a reason and a note landing in the
+            // same tick would otherwise have the second write revert the first.
+            onChange={patch => setBesiReason(prev => {
+              const current = prev[materialId] ?? { reason: null, note: '' };
+              return {
+                ...prev,
+                [materialId]: {
+                  reason: patch.overageReason !== undefined ? patch.overageReason : current.reason,
+                  note: patch.overageNote !== undefined ? patch.overageNote : current.note,
+                },
+              };
+            })}
             title={`Alasan kelebihan — ${row.material.name}`}
             hint="Berlaku untuk semua grup diameter ini yang melebihi alokasi."
           />
@@ -1621,7 +1653,10 @@ export default function PermintaanScreen() {
               </View>
             )}
 
-            {groupEnvLoading && rebarDemandGroupKeys.length === 0 && (
+            {/* Keyed on "not every envelope has landed", not on an empty list:
+                a partially warm cache shows a real (short) scope list while the
+                rest is still in flight, and that state must still say so. */}
+            {groupEnvLoading && !besiEnvelopesReady && (
               <ActivityIndicator size="small" color={COLORS.primary} style={{ marginTop: SPACE.base }} />
             )}
 
@@ -1651,6 +1686,8 @@ export default function PermintaanScreen() {
                   const group = workGroupMap.get(groupKey);
                   if (!group) return null;
                   const checked = besiScope.has(groupKey);
+                  const sisaBatang = groupRebarSisaBatang(rebarMaterials, rebarCells, groupKey)
+                    .toLocaleString('id-ID');
                   return (
                     <TouchableOpacity
                       key={groupKey}
@@ -1658,15 +1695,16 @@ export default function PermintaanScreen() {
                       onPress={() => toggleBesiScope(groupKey)}
                       accessibilityRole="checkbox"
                       accessibilityState={{ checked }}
-                      accessibilityLabel={group.label}
+                      // The sisa is the number the keep-or-drop decision hangs
+                      // on, so it belongs in the label a screen reader hears —
+                      // the visual meta text is not announced on its own.
+                      accessibilityLabel={`${group.label} — sisa ${sisaBatang} batang`}
                     >
                       <View style={[styles.scopeBox, checked && styles.scopeBoxOn]}>
                         {checked && <Ionicons name="checkmark" size={14} color={COLORS.textInverse} />}
                       </View>
                       <Text style={styles.scopeLabel}>{group.label}</Text>
-                      <Text style={styles.scopeMeta}>
-                        sisa {groupRebarSisaBatang(rebarMaterials, rebarCells, groupKey).toLocaleString('id-ID')} batang
-                      </Text>
+                      <Text style={styles.scopeMeta}>sisa {sisaBatang} batang</Text>
                     </TouchableOpacity>
                   );
                 })}
