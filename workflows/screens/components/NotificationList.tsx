@@ -25,13 +25,17 @@ interface Props {
 type TypeStyle = { icon: keyof typeof Ionicons.glyphMap; color: string; bg: string };
 
 const TYPE_STYLES: Record<string, TypeStyle> = {
-  APPROVED:         { icon: 'checkmark-circle', color: COLORS.ok,       bg: COLORS.okBg },
-  REJECTED:         { icon: 'close-circle',     color: COLORS.critical, bg: COLORS.criticalBg },
-  AUTO_HOLD:        { icon: 'pause-circle',     color: COLORS.warning,  bg: COLORS.warningBg },
-  PO_READY:         { icon: 'cube',             color: COLORS.info,     bg: COLORS.infoBg },
-  RECEIPT_MISMATCH: { icon: 'alert-circle',     color: COLORS.high,     bg: COLORS.highBg },
-  CRITICAL:         { icon: 'warning',          color: COLORS.critical, bg: COLORS.criticalBg },
-  WARNING:          { icon: 'warning',          color: COLORS.warning,  bg: COLORS.warningBg },
+  APPROVED:                { icon: 'checkmark-circle', color: COLORS.ok,       bg: COLORS.okBg },
+  REJECTED:                { icon: 'close-circle',     color: COLORS.critical, bg: COLORS.criticalBg },
+  AUTO_HOLD:               { icon: 'pause-circle',     color: COLORS.warning,  bg: COLORS.warningBg },
+  PO_READY:                { icon: 'cube',             color: COLORS.info,     bg: COLORS.infoBg },
+  RECEIPT_MISMATCH:        { icon: 'alert-circle',     color: COLORS.high,     bg: COLORS.highBg },
+  REQUEST_PENDING:         { icon: 'time',             color: COLORS.info,     bg: COLORS.infoBg },
+  REQUEST_APPROVED_FOR_PO: { icon: 'cart',             color: COLORS.ok,       bg: COLORS.okBg },
+  PLAN_REVISED:            { icon: 'refresh-circle',   color: COLORS.info,     bg: COLORS.infoBg },
+  PLAN_CEILING_RAISE:      { icon: 'trending-up',      color: COLORS.warning,  bg: COLORS.warningBg },
+  CRITICAL:                { icon: 'warning',          color: COLORS.critical, bg: COLORS.criticalBg },
+  WARNING:                 { icon: 'warning',          color: COLORS.warning,  bg: COLORS.warningBg },
 };
 
 const DEFAULT_STYLE: TypeStyle = {

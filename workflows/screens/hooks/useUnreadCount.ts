@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AppState } from 'react-native';
 import { supabase } from '../../../tools/supabase';
 
 export function useUnreadCount(profileId: string | undefined): number {
@@ -26,9 +27,19 @@ export function useUnreadCount(profileId: string | undefined): number {
       )
       .subscribe();
 
+    // Self-heal on foreground: realtime channels can silently stop
+    // delivering events after the app backgrounds on a flaky connection
+    // (socket dies, no reconnect fires). Refreshing whenever the app
+    // becomes active re-reads the true server count independent of
+    // whether the realtime channel above is still healthy.
+    const appStateSub = AppState.addEventListener('change', nextState => {
+      if (nextState === 'active') { void refresh(); }
+    });
+
     return () => {
       alive = false;
       void supabase.removeChannel(channel);
+      appStateSub.remove();
     };
   }, [profileId]);
 

@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../../tools/supabase';
+import { markNotificationRead } from '../../tools/notificationsRead';
 import { NotificationList, type NotificationItem } from './components/NotificationList';
 import Header from '../components/Header';
 import { COLORS } from '../theme';
@@ -60,6 +61,17 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
     fetch().finally(() => setLoading(false));
   }, [fetch]);
 
+  // Reconcile on focus: a per-item read acknowledgement can silently fail to
+  // reach the server on a flaky field connection (see markNotificationRead).
+  // Re-running fetch() whenever this screen regains focus re-reads the true
+  // server state, so a stale-read item (or one someone else marked read)
+  // corrects itself without waiting for the realtime channel below.
+  useFocusEffect(
+    useCallback(() => {
+      void fetch();
+    }, [fetch]),
+  );
+
   // Realtime subscription for live updates.
   useEffect(() => {
     const channel = supabase.channel(`notifications:${profileId}`)
@@ -79,12 +91,29 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
     return () => { void supabase.removeChannel(channel); };
   }, [profileId]);
 
-  const handlePress = useCallback(async (item: NotificationItem) => {
+  const handlePress = useCallback((item: NotificationItem) => {
     if (!item.readAt) {
       const readAt = new Date().toISOString();
       setItems(prev => prev.map(i => i.id === item.id ? { ...i, readAt } : i));
-      void supabase.from('notifications').update({ read_at: readAt }).eq('id', item.id);
+      // Fire the write but do NOT await it before navigating — supabase-js
+      // has no default request timeout, so on a slow field connection an
+      // await here would stall the tap-to-deeplink response. Handle the
+      // result asynchronously instead: revert the optimistic flip if it
+      // didn't actually land. Safe to update state after navigation —
+      // NotificationsScreen is registered as a bottom-tabs Tab.Screen
+      // (workflows/navigation.tsx, office/navigation.tsx,
+      // office/PrincipalNavigation.tsx) with no unmountOnBlur, so it stays
+      // mounted when navigating to another tab; even in the hypothetical
+      // unmounted case, React 18+ makes a post-unmount setState a silent
+      // no-op, and the useFocusEffect fetch() above reconciles true server
+      // state whenever the user returns here anyway.
+      void markNotificationRead(item.id, readAt).then(result => {
+        if (!result.ok) {
+          setItems(prev => prev.map(i => i.id === item.id ? { ...i, readAt: null } : i));
+        }
+      });
     }
+    // Navigate immediately — never gated on the write above.
     const target = resolveNotificationRoute(item.deeplinkScreen, profile?.role);
     try {
       navigation.navigate(target, item.deeplinkParams ?? {});
