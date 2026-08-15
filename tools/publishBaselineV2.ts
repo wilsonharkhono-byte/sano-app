@@ -393,6 +393,30 @@ export function zeroPlannedBoqCodes(rows: StagingRowV2[]): string[] {
   return codes;
 }
 
+/**
+ * Codes of BoQ staging rows whose `recipe` is present but is NOT a recipe
+ * object — the signature of a row whose structural payload was overwritten by a
+ * scalar. The import-review correction editor used to stringify parsed_data on
+ * save, replacing a row's whole recipe with "[object Object]"; publish then read
+ * `recipe?.components ?? []` off that string, got nothing, and planned zero
+ * materials for the row while reporting success. The editor no longer does this
+ * (tools/stagingCorrection.ts), but rows corrupted before the fix are still in
+ * the DB, so publish reports them instead of quietly planning nothing.
+ *
+ * An ABSENT or null recipe is fine and not flagged: prelim/earthwork/steel rows
+ * legitimately carry no breakdown. Arrays are flagged — a recipe is never a list.
+ */
+export function malformedRecipeBoqCodes(rows: StagingRowV2[]): string[] {
+  const codes: string[] = [];
+  for (const r of rows) {
+    if (r.row_type !== 'boq') continue;
+    const pd = r.parsed_data as { code?: string; recipe?: unknown };
+    if (pd.recipe == null) continue;
+    if (typeof pd.recipe !== 'object' || Array.isArray(pd.recipe)) codes.push(pd.code ?? '');
+  }
+  return codes;
+}
+
 export interface BoqItemInsert {
   project_id: string;
   code: string;
@@ -619,22 +643,37 @@ export function buildMasterLinesV2(
  * sheet's ABSOLUTE Volume (no BoQ multiplier); these have no BoQ relation.
  * REJECTED rows are skipped; unresolved materials are returned (not invented).
  * Duplicate materials sum. Runs alongside buildMasterLinesV2 into the same master.
+ *
+ * `skipped` names every row that was dropped for a blank name or a non-positive
+ * volume. It exists because on 2026-08-15 an inserted spreadsheet column shifted
+ * the Others sheet's fields, every row parsed with volume 0, and all 13 project
+ * materials vanished from the baseline while publish still reported success —
+ * a silent hole in the plan is exactly what CLAUDE.md §1.1 forbids. The caller
+ * surfaces these through the publish result's `warnings`.
  */
 export function buildProjectMaterialLines(
   rows: StagingRowV2[],
   masterId: string,
   catalog: CatalogRow[],
   aliasMap: Map<string, string>,
-): { lines: MasterLineRecord[]; unresolved: string[] } {
+): { lines: MasterLineRecord[]; unresolved: string[]; skipped: string[] } {
   const byMaterial = new Map<string, MasterLineRecord>();
   const unresolved: string[] = [];
+  const skipped: string[] = [];
   for (const r of rows) {
     if (r.row_type !== 'material') continue;
     const pd = r.parsed_data as { name?: string; unit?: string; volume?: unknown; project_material?: boolean };
     if (!pd.project_material || r.review_status === 'REJECTED') continue;
     const name = typeof pd.name === 'string' ? pd.name.trim() : '';
     const volume = toNumber(pd.volume);
-    if (!name || !(volume > 0)) continue;
+    if (!name) {
+      skipped.push(`row ${r.row_number}: blank material name`);
+      continue;
+    }
+    if (!(volume > 0)) {
+      skipped.push(`${name}: volume ${volume}`);
+      continue;
+    }
     const materialId = resolveCatalogId(name, catalog, aliasMap);
     if (materialId == null) {
       unresolved.push(name);
@@ -653,7 +692,7 @@ export function buildProjectMaterialLines(
       });
     }
   }
-  return { lines: [...byMaterial.values()], unresolved };
+  return { lines: [...byMaterial.values()], unresolved, skipped };
 }
 
 export interface ProjectPriceBookInsert {
@@ -675,15 +714,22 @@ export interface ProjectPriceBookInsert {
  * from it. material_id is resolved through the same alias/fuzzy cascade as
  * the master lines; rows with no positive price or an out-of-range tier are
  * skipped (never guessed). RAB projects stage no project_material rows, so
- * this returns [] and their (office-ingested) price book is never touched.
+ * this returns no rows and their (office-ingested) price book is never touched.
+ *
+ * Every skip is REPORTED (`skipped`, one entry per row with its reason) rather
+ * than swallowed: a missing price-book row means the material has no Tier-3
+ * Rupiah envelope at all (Gate-1 renders TIER3_NO_BUDGET), which looks like a
+ * gate bug months later if nobody was told at publish time. Same lesson as the
+ * 2026-08-15 column-shift incident — see buildProjectMaterialLines.
  */
 export function buildProjectPriceBook(
   rows: StagingRowV2[],
   projectId: string,
   catalog: CatalogRow[],
   aliasMap: Map<string, string>,
-): ProjectPriceBookInsert[] {
+): { rows: ProjectPriceBookInsert[]; skipped: string[] } {
   const out: ProjectPriceBookInsert[] = [];
+  const skipped: string[] = [];
   for (const r of rows) {
     if (r.row_type !== 'material') continue;
     const pd = r.parsed_data as {
@@ -697,7 +743,19 @@ export function buildProjectPriceBook(
     const name = typeof pd.name === 'string' ? pd.name.trim() : '';
     const price = toNumber(pd.reference_unit_price);
     const tier = toNumber(pd.tier);
-    if (!name || !(price > 0) || ![1, 2, 3, 4].includes(tier)) continue;
+    if (!name) {
+      skipped.push(`row ${r.row_number}: blank material name`);
+      continue;
+    }
+    // Both reasons are reported together so one fix round-trip clears the row,
+    // instead of the estimator fixing the price only to hit the tier next time.
+    const reasons: string[] = [];
+    if (!(price > 0)) reasons.push('no unit price');
+    if (![1, 2, 3, 4].includes(tier)) reasons.push(`tier ${tier} is not 1–4`);
+    if (reasons.length > 0) {
+      skipped.push(`${name}: ${reasons.join(', ')}`);
+      continue;
+    }
     out.push({
       project_id: projectId,
       material_id: resolveCatalogId(name, catalog, aliasMap),
@@ -707,7 +765,7 @@ export function buildProjectPriceBook(
       tier,
     });
   }
-  return out;
+  return { rows: out, skipped };
 }
 
 export interface BaselineSnapshotRow {
@@ -1385,9 +1443,21 @@ export async function publishBaselineV2(
   const boqMasterLines = buildMasterLinesV2(masterLineInputs, master.id as string);
   // Project-level Tier-2/3 "Others" materials (simplified format): master lines
   // with boq_item_id = NULL and the sheet's absolute Volume. No BoQ relation.
-  const { lines: projectMasterLines, unresolved: projectUnresolved } =
+  const { lines: projectMasterLines, unresolved: projectUnresolved, skipped: projectSkipped } =
     buildProjectMaterialLines(rows, master.id as string, catalog, aliasMap);
   for (const n of projectUnresolved) unresolvedComponents.push(`Others (project-level): ${n}`);
+  // A dropped Others row is a hole in the project's material plan, so it rides
+  // the same `warnings` channel the screen already toasts — never a silent
+  // `continue` (2026-08-15: a column shift zeroed all 13 volumes and publish
+  // reported plain success).
+  for (const s of projectSkipped) warnings.push(`Others row not planned — ${s}`);
+  // A BoQ row whose recipe was flattened by an old correction edit plans NO
+  // materials at all. It still publishes (its take-off volume is real), but the
+  // gap must be stated so the estimator re-imports instead of trusting an
+  // envelope that is quietly missing that row's steel.
+  for (const c of malformedRecipeBoqCodes(rows)) {
+    warnings.push(`BoQ ${c}: resep rusak (hasil koreksi lama) — tidak ada material yang direncanakan; import ulang baris ini.`);
+  }
   const masterLines = [...boqMasterLines, ...projectMasterLines];
   let masterLineFailedCount = 0;
   const failedMasterMaterialIds = new Set<string>();
@@ -1411,7 +1481,9 @@ export async function publishBaselineV2(
   // staged project-level materials — RAB publishes have none, so an
   // office-ingested price book is never wiped. Non-fatal: a price-book write
   // failure degrades to the (visible) TIER3_NO_BUDGET warning, not a lost plan.
-  const priceBookRows = buildProjectPriceBook(rows, projectId, catalog, aliasMap);
+  const { rows: priceBookRows, skipped: priceBookSkipped } =
+    buildProjectPriceBook(rows, projectId, catalog, aliasMap);
+  for (const s of priceBookSkipped) warnings.push(`Others price/tier missing — ${s}`);
   if (priceBookRows.length > 0) {
     const { error: pbDelErr } = await supabase
       .from('ahs_price_book')

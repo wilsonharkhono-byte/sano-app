@@ -27,6 +27,11 @@ import {
 } from '../../tools/baseline';
 import { previewNewMasterTotals, type RevisionContext } from '../../tools/publishBaselineV2';
 import {
+  draftFromParsedData,
+  editableParsedFields,
+  applyCorrectionDraft,
+} from '../../tools/stagingCorrection';
+import {
   computePlanRevisionDiff,
   lowerBelowOrderedPct,
   type PlanRevisionClassification,
@@ -552,9 +557,7 @@ export default function BaselineScreen({
 
   const startRowCorrection = useCallback((row: ImportStagingRow, anomalyId?: string | null) => {
     const parsed = (row.parsed_data ?? {}) as Record<string, unknown>;
-    const draft = Object.fromEntries(
-      Object.entries(parsed).map(([key, value]) => [key, value == null ? '' : String(value)]),
-    );
+    const draft = draftFromParsedData(parsed);
 
     setEditingRowId(row.id);
     setEditingAnomalyId(anomalyId ?? null);
@@ -612,25 +615,10 @@ export default function BaselineScreen({
     }
 
     const original = targetRow.parsed_data as Record<string, unknown>;
-    const modifiedData = Object.fromEntries(
-      Object.entries(original).map(([key, value]) => {
-        const draftValue = editDraft[key] ?? '';
-
-        if (value === null || value === undefined) {
-          return [key, draftValue.trim() === '' ? null : draftValue];
-        }
-        if (typeof value === 'number') {
-          const normalized = draftValue.trim().replace(',', '.');
-          const parsed = Number(normalized);
-          return [key, Number.isFinite(parsed) ? parsed : value];
-        }
-        if (typeof value === 'boolean') {
-          const normalized = draftValue.trim().toLowerCase();
-          return [key, ['true', '1', 'ya', 'yes'].includes(normalized)];
-        }
-        return [key, draftValue];
-      }),
-    );
+    // Structural fields (recipe and its components) are carried through
+    // untouched — see tools/stagingCorrection.ts for why writing them back from
+    // the flat editor used to erase a row's materials.
+    const modifiedData = applyCorrectionDraft(original, editDraft);
 
     await reviewStagingRow(
       targetRow.id,
@@ -1534,7 +1522,7 @@ export default function BaselineScreen({
               : 'Ubah hasil parse sebelum baseline dipublish.'}
           </Text>
 
-          {Object.entries((row.parsed_data ?? {}) as Record<string, unknown>).map(([key]) => {
+          {editableParsedFields((row.parsed_data ?? {}) as Record<string, unknown>).map((key) => {
             const dropdownOptions = row.row_type === 'material' ? MATERIAL_DROPDOWNS[key] : null;
             const label = fieldLabel(key);
             const helperText = FIELD_HINTS[key];

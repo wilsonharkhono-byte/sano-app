@@ -38,6 +38,7 @@ import { shouldShowDriftBadge, formatDriftBadge, type MaterialDrift } from '../.
 import {
   buildSubmitMaterialRequestPayload, type SubmitRequestLineInput,
 } from '../../tools/submitMaterialRequest';
+import { resolveTier2Allocations } from '../../tools/tier2Allocation';
 import { buildWorkGroups } from '../../tools/boqWorkGroups';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, RADIUS_SM } from '../theme';
 import type {
@@ -183,36 +184,6 @@ function makeLine(overrides: Partial<RequestLine> = {}): RequestLine {
 
 function roundQty(value: number) {
   return Math.round(value * 100) / 100;
-}
-
-function buildTier2Allocations(
-  breakdown: EnvelopeBoqBreakdown[],
-  requestedQty: number,
-): AllocationPreview[] {
-  if (requestedQty <= 0 || breakdown.length === 0) return [];
-
-  const totalPlanned = breakdown.reduce((sum, row) => sum + Number(row.planned_quantity ?? 0), 0);
-  if (totalPlanned <= 0) return [];
-
-  let allocatedSoFar = 0;
-
-  return breakdown.map((row, index) => {
-    const baseQty = requestedQty * (Number(row.planned_quantity ?? 0) / totalPlanned);
-    const allocatedQuantity = index === breakdown.length - 1
-      ? roundQty(requestedQty - allocatedSoFar)
-      : roundQty(baseQty);
-
-    allocatedSoFar = roundQty(allocatedSoFar + allocatedQuantity);
-
-    return {
-      boqItemId: row.boq_item_id,
-      boqCode: row.boq_code,
-      boqLabel: row.boq_label,
-      allocatedQuantity,
-      proportionPct: Number(row.pct_of_total ?? 0),
-      allocationBasis: 'TIER2_ENVELOPE',
-    };
-  });
 }
 
 /**
@@ -1027,7 +998,13 @@ export default function PermintaanScreen() {
         return {
           ...line,
           lineResult: buildTier2Result(envelope, requestedBaseQty, envDisplay),
-          allocationPreview: buildTier2Allocations(breakdownCache.get(line.materialId) ?? [], requestedBaseQty),
+          // Task B: the per-BoQ breakdown is empty for project-level "Others"
+          // master lines (boq_item_id NULL — migration 082), since
+          // get_envelope_boq_breakdown INNER JOINs boq_items. Falls back to a
+          // GENERAL_STOCK allocation when the project envelope shows real
+          // planned demand for this material; stays [] (hard block) when it
+          // doesn't. Gate 1 above is unaffected — same envelope, same result.
+          allocationPreview: resolveTier2Allocations(breakdownCache.get(line.materialId) ?? [], envelope, requestedBaseQty),
         };
       }
 
@@ -2025,7 +2002,14 @@ export default function PermintaanScreen() {
                   {line.allocationPreview.length > 0 && (
                     <View style={styles.allocationBox}>
                       <Text style={styles.allocationTitle}>
-                        {line.tier === 2 ? 'Alokasi Otomatis' : line.tier === 1 ? 'BoQ Terkunci' : 'Alokasi Stok'}
+                        {/* Task B: a Tier-2 line can resolve to GENERAL_STOCK
+                            (project-level "Others" material, no per-BoQ
+                            breakdown) — label it like Tier 3/4's stock
+                            allocation instead of the misleading "Otomatis"
+                            per-BoQ title. */}
+                        {line.allocationPreview[0]?.allocationBasis === 'GENERAL_STOCK'
+                          ? 'Alokasi Stok'
+                          : line.tier === 2 ? 'Alokasi Otomatis' : line.tier === 1 ? 'BoQ Terkunci' : 'Alokasi Stok'}
                       </Text>
                       {line.allocationPreview.slice(0, 3).map(preview => (
                         <View key={`${line.id}-${preview.boqItemId ?? preview.boqCode}-${preview.allocationBasis}`} style={styles.allocationRow}>

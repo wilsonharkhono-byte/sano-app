@@ -22,4 +22,11 @@ describe('rebar batang component builder', () => {
   it('throws on a diameter with no batang mapping', () => {
     expect(() => buildRebarComponent(25, 10, 5, 'S', 'A1')).toThrow(/diameter 25/);
   });
+
+  it('refuses a non-positive basis instead of emitting a silent coefficient 0', () => {
+    // A 0 basis used to yield quantityPerUnit 0 — the lonjor count vanished from
+    // the plan with no signal. Callers must pass a real basis (see tier1.ts,
+    // which stages rebar-only areas as planned = 1 'ls').
+    expect(() => buildRebarComponent(10, 517, 0, 'SANO Input Tier 1', 'D14')).toThrow(/basis/i);
+  });
 });

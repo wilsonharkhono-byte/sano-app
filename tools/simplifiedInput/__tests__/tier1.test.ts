@@ -52,3 +52,48 @@ describe('parseTier1Sheet', () => {
     expect(rows[1].raw_data.subChapter).toBe('Tangga');
   });
 });
+
+describe('parseTier1Sheet rebar-only work areas', () => {
+  // Real case: "Umum ; Kolom Balok Praktis" — practical columns/beams cast from
+  // the surrounding pours, so the estimator left Beton Readymix blank but still
+  // took off 684 lonjor ø8 + 805 lonjor ø10 (~9,200 kg of rebar).
+  const rows = parseTier1Sheet(
+    tier1Sheet([
+      ['Umum ; Kolom Balok Praktis', null as unknown as number, 684, 805, 0, 0, 0, 0],
+      ['Lt. 1 ; Judul Saja', null as unknown as number, 0, 0, 0, 0, 0, 0],
+    ]),
+  );
+
+  it('stages a publishable lump-sum row instead of a planned = 0 ghost', () => {
+    const r = rows[0];
+    expect(r.parsed_data.planned).toBe(1);
+    expect(r.parsed_data.unit).toBe('ls');
+    expect(r.needs_review).toBe(false);
+    expect(r.raw_data.chapter).toBe('Umum');
+    expect(r.raw_data.subChapter).toBe('Kolom Balok Praktis');
+  });
+
+  it('omits the Beton Readymix component rather than claiming 0 m³', () => {
+    const comps = (rows[0].parsed_data.recipe as any).components;
+    expect(comps.some((c: any) => c.materialName === BETON_MATERIAL_NAME)).toBe(false);
+    expect(comps).toHaveLength(2);
+  });
+
+  it('INVARIANT: planned × coefficient reproduces the sheet lonjor count EXACTLY', () => {
+    const planned = rows[0].parsed_data.planned as number;
+    const comps = (rows[0].parsed_data.recipe as any).components;
+    const d8 = comps.find((c: any) => c.materialName === 'Besi beton polos 8 mm');
+    const d10 = comps.find((c: any) => c.materialName === 'Besi beton ulir 10 mm');
+    expect(d8.unit).toBe('batang');
+    expect(planned * d8.quantityPerUnit).toBe(684);
+    expect(planned * d10.quantityPerUnit).toBe(805);
+  });
+
+  it('leaves a truly empty work area (no beton, no rebar) at planned 0 as before', () => {
+    const r = rows[1];
+    expect(r.parsed_data.planned).toBe(0);
+    expect(r.parsed_data.unit).toBe('m³');
+    expect(r.needs_review).toBe(true);
+    expect((r.parsed_data.recipe as any).components).toHaveLength(1); // the beton lump only
+  });
+});
