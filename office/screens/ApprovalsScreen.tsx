@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { ScrollView, View, Text, TouchableOpacity, StyleSheet, useWindowDimensions } from 'react-native';
+import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, useWindowDimensions } from 'react-native';
 import Header from '../../workflows/components/Header';
 import Card from '../../workflows/components/Card';
 import Badge from '../../workflows/components/Badge';
@@ -14,6 +14,9 @@ import {
 } from '../../tools/siteChanges';
 import { getEnvelopesByMaterialIds, type EnvelopeWithPrice } from '../../tools/envelopes';
 import { displayQty } from '../../tools/materialUnitConversion';
+import { MRStatus, type MRStatusType } from '../../tools/constants';
+import { validateRequestStatusTransition } from '../../tools/rolePermissions';
+import { getRequestActionAffordances } from '../../tools/requestActionAffordances';
 import { MaterialUsagePanel } from './components/MaterialUsagePanel';
 import type { OverageReason } from '../../tools/types';
 import type { CeilingRaisePayloadEntry } from '../../tools/ceilingRaiseGate';
@@ -28,7 +31,7 @@ interface CeilingRaiseTask {
 }
 type MTNFilter = 'ALL' | 'AWAITING' | 'APPROVED' | 'REJECTED' | 'RECEIVED';
 type PerubahanFilter = 'ALL' | 'pending' | 'disetujui' | 'ditolak' | 'selesai';
-type RequestFilter = 'ALL' | 'PENDING' | 'UNDER_REVIEW' | 'APPROVED' | 'REJECTED' | 'AUTO_HOLD';
+type RequestFilter = 'ALL' | 'PENDING' | 'UNDER_REVIEW' | 'APPROVED' | 'REJECTED' | 'AUTO_HOLD' | 'RETURNED';
 
 interface MTNRequest {
   id: string;
@@ -57,6 +60,14 @@ interface MaterialRequest {
   target_date: string;
   created_at: string;
   common_note: string | null;
+  // Migration 088 — the admin's "cannot fulfil this" hand-back. Kept separate
+  // from reviewed_by/reviewed_at so returning a request never erases who
+  // approved it. The reason survives a later re-decision as the audit record,
+  // so every reader must gate on overall_status === RETURNED rather than on
+  // returned_reason being present.
+  returned_reason: string | null;
+  returned_by: string | null;
+  returned_at: string | null;
   material_request_lines?: MaterialRequestLineSummary[];
 }
 
@@ -110,6 +121,8 @@ function statusFlag(status: string) {
       return 'INFO' as const;
     case 'AUTO_HOLD':
       return 'CRITICAL' as const;
+    case 'RETURNED':
+      return 'WARNING' as const;
     default:
       return 'WARNING' as const;
   }
@@ -184,6 +197,11 @@ export default function ApprovalsScreen() {
   // fail-honest: show payload values flagged "tidak terverifikasi", never block.
   const [ceilingLiveMap, setCeilingLiveMap] = useState<Map<string, { name: string | null; planned_before: number; ordered: number }>>(new Map());
   const [ceilingLiveVerified, setCeilingLiveVerified] = useState(true);
+  // "Kembalikan ke estimator" is an inline form anchored under the card it
+  // belongs to (house pattern: row-level edit expands in place, never a modal),
+  // so only the id of the card being returned plus its draft reason are state.
+  const [returnFormId, setReturnFormId] = useState<string | null>(null);
+  const [returnReason, setReturnReason] = useState('');
   const [profileNames, setProfileNames] = useState<Record<string, string>>({});
   const [boqLabels, setBoqLabels] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
@@ -298,7 +316,7 @@ export default function ApprovalsScreen() {
       const profileIds = Array.from(new Set([
         ...nextMtns.flatMap(row => [row.requested_by, row.reviewed_by]),
         ...nextChanges.flatMap(row => [row.reported_by, row.reviewed_by]),
-        ...nextRequests.flatMap(row => [row.requested_by, row.reviewed_by]),
+        ...nextRequests.flatMap(row => [row.requested_by, row.reviewed_by, row.returned_by]),
       ].filter(Boolean))) as string[];
 
       if (profileIds.length > 0) {
@@ -372,39 +390,88 @@ export default function ApprovalsScreen() {
     } catch (err: any) { toast(err.message, 'critical'); }
   };
 
-  const handleRequest = async (id: string, action: 'APPROVED' | 'REJECTED') => {
+  // The estimator's / principal's verdict, plus the estimator's optional
+  // re-open of a returned request (PENDING). Every call is pre-flighted against
+  // the same §5.2 table migration 088's trigger enforces, so an illegal move is
+  // refused in Indonesian here instead of surfacing as a raw Postgres exception.
+  const handleRequest = async (request: MaterialRequest, next: 'APPROVED' | 'REJECTED' | 'PENDING') => {
     if (!profile) return;
+    const check = validateRequestStatusTransition(profile.role, request.overall_status as MRStatusType, next);
+    if (!check.allowed) { toast(check.reason, 'critical'); return; }
+    // Re-opening is not a verdict, so it must not stamp reviewed_by/reviewed_at:
+    // those record who approved or rejected, and overwriting them with the
+    // re-opener would destroy that trail. The next verdict re-stamps them.
+    const patch = next === 'PENDING'
+      ? { overall_status: next }
+      : { overall_status: next, reviewed_by: profile.id, reviewed_at: new Date().toISOString() };
     try {
-      const { data, error } = await supabase.from('material_request_headers').update({
-        overall_status: action,
-        reviewed_by: profile.id,
-        reviewed_at: new Date().toISOString(),
-      }).eq('id', id).select('id');
+      const { data, error } = await supabase.from('material_request_headers')
+        .update(patch).eq('id', request.id).select('id');
       if (error) throw error;
       if (!data || data.length === 0) {
         toast('Anda tidak ditugaskan ke proyek ini — verdict tidak tersimpan', 'critical');
         return;
       }
-      toast(`Permintaan ${action === 'APPROVED' ? 'disetujui' : 'ditolak'}`, action === 'APPROVED' ? 'ok' : 'warning');
+      toast(
+        next === 'APPROVED' ? 'Permintaan disetujui' : next === 'REJECTED' ? 'Permintaan ditolak' : 'Permintaan dibuka kembali',
+        next === 'APPROVED' ? 'ok' : 'warning',
+      );
       await loadData();
     } catch (err: any) { toast(err.message, 'critical'); }
   };
 
   // Principal-only: escalate material request back to hold
-  const handleRequestHold = async (id: string) => {
+  const handleRequestHold = async (request: MaterialRequest) => {
     if (!profile) return;
+    const check = validateRequestStatusTransition(profile.role, request.overall_status as MRStatusType, MRStatus.AUTO_HOLD);
+    if (!check.allowed) { toast(check.reason, 'critical'); return; }
     try {
       const { data, error } = await supabase.from('material_request_headers').update({
-        overall_status: 'AUTO_HOLD',
+        overall_status: MRStatus.AUTO_HOLD,
         reviewed_by: profile.id,
         reviewed_at: new Date().toISOString(),
-      }).eq('id', id).select('id');
+      }).eq('id', request.id).select('id');
       if (error) throw error;
       if (!data || data.length === 0) {
         toast('Anda tidak ditugaskan ke proyek ini — verdict tidak tersimpan', 'critical');
         return;
       }
       toast('Permintaan ditahan', 'warning');
+      await loadData();
+    } catch (err: any) { toast(err.message, 'critical'); }
+  };
+
+  // Admin (or principal) hands an APPROVED request back to the estimator with a
+  // mandatory written reason — spec §2.5's answer to the silent stall. The
+  // pre-flight covers BOTH the role and the empty reason, and deliberately
+  // rejects a whitespace-only reason client-side rather than letting the user
+  // discover it as a server error after the round trip.
+  const handleRequestReturn = async (request: MaterialRequest) => {
+    if (!profile) return;
+    const reason = returnReason.trim();
+    const check = validateRequestStatusTransition(
+      profile.role,
+      request.overall_status as MRStatusType,
+      MRStatus.RETURNED,
+      { returnReason: reason },
+    );
+    if (!check.allowed) { toast(check.reason, 'critical'); return; }
+    try {
+      const { data, error } = await supabase.from('material_request_headers').update({
+        overall_status: MRStatus.RETURNED,
+        returned_reason: reason,
+        // returned_by / returned_at are pinned from auth.uid() by 088's guard,
+        // so the client never asserts its own authorship — and reviewed_by is
+        // left alone, keeping the record of who approved the request.
+      }).eq('id', request.id).select('id');
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        toast('Anda tidak ditugaskan ke proyek ini — pengembalian tidak tersimpan', 'critical');
+        return;
+      }
+      toast('Permintaan dikembalikan ke estimator', 'warning');
+      setReturnFormId(null);
+      setReturnReason('');
       await loadData();
     } catch (err: any) { toast(err.message, 'critical'); }
   };
@@ -460,6 +527,7 @@ export default function ApprovalsScreen() {
     APPROVED: countBy(requests, 'APPROVED', 'overall_status'),
     REJECTED: countBy(requests, 'REJECTED', 'overall_status'),
     AUTO_HOLD: countBy(requests, 'AUTO_HOLD', 'overall_status'),
+    RETURNED: countBy(requests, 'RETURNED', 'overall_status'),
   }), [requests]);
 
   const filteredMtns = useMemo(
@@ -481,14 +549,18 @@ export default function ApprovalsScreen() {
     return [...base].sort((a, b) => changeWeight(a) - changeWeight(b));
   }, [changes, perubahanFilter]);
 
-  // Priority weight for requests — CRITICAL flag and AUTO_HOLD first
+  // Priority weight for requests — CRITICAL flag and AUTO_HOLD first. RETURNED
+  // sits with the other open states rather than in the closed tail: it is a
+  // request actively waiting on the reviewer, so burying it under APPROVED and
+  // REJECTED rows would hide live work.
   const reqWeight = (r: MaterialRequest) => {
     if (r.overall_flag === 'CRITICAL') return 0;
     if (r.overall_status === 'AUTO_HOLD') return 1;
     if (r.overall_flag === 'HIGH' || r.overall_flag === 'WARNING') return 2;
-    if (r.overall_status === 'PENDING') return 3;
-    if (r.overall_status === 'UNDER_REVIEW') return 4;
-    return 5;
+    if (r.overall_status === MRStatus.RETURNED) return 3;
+    if (r.overall_status === 'PENDING') return 4;
+    if (r.overall_status === 'UNDER_REVIEW') return 5;
+    return 6;
   };
 
   const filteredRequests = useMemo(() => {
@@ -500,7 +572,9 @@ export default function ApprovalsScreen() {
   const tabs: Array<{ key: Tab; label: string; count: number }> = [
     { key: 'mtn', label: 'MTN', count: mtnCounts.AWAITING },
     { key: 'perubahan', label: 'Perubahan', count: changeCounts.pending },
-    { key: 'requests', label: 'Permintaan', count: requestCounts.PENDING + requestCounts.UNDER_REVIEW + requestCounts.AUTO_HOLD },
+    // RETURNED counts as outstanding work: it is back in the reviewer's court
+    // and, unlike APPROVED/REJECTED, still needs someone to act.
+    { key: 'requests', label: 'Permintaan', count: requestCounts.PENDING + requestCounts.UNDER_REVIEW + requestCounts.AUTO_HOLD + requestCounts.RETURNED },
     { key: 'ceiling', label: 'Plafon', count: ceilingTasks.length },
   ];
 
@@ -649,6 +723,7 @@ export default function ApprovalsScreen() {
                 { key: 'PENDING', label: 'Pending', count: requestCounts.PENDING },
                 { key: 'UNDER_REVIEW', label: 'Review', count: requestCounts.UNDER_REVIEW },
                 { key: 'AUTO_HOLD', label: 'Hold', count: requestCounts.AUTO_HOLD },
+                { key: 'RETURNED', label: 'Returned', count: requestCounts.RETURNED },
                 { key: 'APPROVED', label: 'Approved', count: requestCounts.APPROVED },
                 { key: 'REJECTED', label: 'Rejected', count: requestCounts.REJECTED },
               ],
@@ -658,7 +733,12 @@ export default function ApprovalsScreen() {
 
             {filteredRequests.length === 0 ? (
               <Card><Text style={styles.empty}>{loading ? 'Memuat...' : 'Tidak ada permintaan untuk filter ini.'}</Text></Card>
-            ) : filteredRequests.map(request => (
+            ) : filteredRequests.map(request => {
+              // Which buttons this card may offer is a role × status question,
+              // answered once in tools/requestActionAffordances.ts so the screen
+              // stays a renderer and the §3 matrix keeps a single implementation.
+              const actions = getRequestActionAffordances(profile?.role, request.overall_status);
+              return (
               <Card key={request.id} borderColor={statusFlag(request.overall_status) === 'CRITICAL' ? COLORS.critical : statusFlag(request.overall_status) === 'OK' ? COLORS.ok : COLORS.warning}>
                 <View style={styles.itemHeader}>
                   <View style={{ flex: 1, gap: 6 }}>
@@ -701,23 +781,86 @@ export default function ApprovalsScreen() {
                 {request.common_note ? <Text style={styles.itemNote}>{request.common_note}</Text> : null}
                 <Text style={styles.meta}>Pengaju: {actorName(request.requested_by)}</Text>
                 {request.reviewed_by ? <Text style={styles.meta}>Diproses oleh: {actorName(request.reviewed_by)} · {formatDate(request.reviewed_at)}</Text> : null}
-                {(request.overall_status === 'AUTO_HOLD' || request.overall_status === 'PENDING' || request.overall_status === 'UNDER_REVIEW') && (
+                {/* The hand-back banner. Gated on the STATUS, never on the reason
+                    being present: 088 keeps returned_reason as the audit record
+                    after the estimator re-decides, so a reason-gated banner would
+                    keep shouting at a request that is no longer returned. */}
+                {request.overall_status === MRStatus.RETURNED && (
+                  <>
+                    <Text style={styles.returnedReason}>
+                      Dikembalikan admin: {request.returned_reason?.trim() || '(alasan tidak tercatat)'}
+                    </Text>
+                    <Text style={styles.meta}>
+                      Dikembalikan oleh: {actorName(request.returned_by)} · {formatDate(request.returned_at)}
+                    </Text>
+                  </>
+                )}
+                {actions.showDecide && (
                   <View style={styles.actionRow}>
-                    <TouchableOpacity style={[styles.actionBtn, styles.rejectBtn]} onPress={() => handleRequest(request.id, 'REJECTED')}>
+                    <TouchableOpacity style={[styles.actionBtn, styles.rejectBtn]} onPress={() => handleRequest(request, 'REJECTED')}>
                       <Text style={[styles.actionText, { color: COLORS.critical }]}>Tolak</Text>
                     </TouchableOpacity>
-                    {profile?.role === 'principal' && request.overall_status !== 'AUTO_HOLD' && (
-                      <TouchableOpacity style={[styles.actionBtn, styles.holdBtn]} onPress={() => handleRequestHold(request.id)}>
+                    {actions.showHold && (
+                      <TouchableOpacity style={[styles.actionBtn, styles.holdBtn]} onPress={() => handleRequestHold(request)}>
                         <Text style={[styles.actionText, { color: COLORS.warning }]}>Tahan</Text>
                       </TouchableOpacity>
                     )}
-                    <TouchableOpacity style={[styles.actionBtn, styles.approveBtn]} onPress={() => handleRequest(request.id, 'APPROVED')}>
+                    {/* Re-opening sits BESIDE the verdict, so a returned request
+                        can be re-approved directly — the round trip must not
+                        cost an extra click (spec §5.2). */}
+                    {actions.showReopen && (
+                      <TouchableOpacity style={[styles.actionBtn, styles.reviewBtn]} onPress={() => handleRequest(request, 'PENDING')}>
+                        <Text style={[styles.actionText, { color: COLORS.info }]}>Buka Kembali</Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity style={[styles.actionBtn, styles.approveBtn]} onPress={() => handleRequest(request, 'APPROVED')}>
                       <Text style={[styles.actionText, { color: '#fff' }]}>Approve / Override</Text>
                     </TouchableOpacity>
                   </View>
                 )}
+                {actions.showReturn && returnFormId !== request.id && (
+                  <View style={styles.actionRow}>
+                    <TouchableOpacity
+                      style={[styles.actionBtn, styles.holdBtn]}
+                      onPress={() => { setReturnFormId(request.id); setReturnReason(''); }}
+                    >
+                      <Text style={[styles.actionText, { color: COLORS.warning }]}>Kembalikan ke estimator</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+                {/* Re-checking showReturn here (not just the open-form id) means a
+                    refresh that moved this request out of APPROVED closes the form
+                    rather than leaving a submit button the server would refuse. */}
+                {actions.showReturn && returnFormId === request.id && (
+                  <View style={styles.returnForm}>
+                    <Text style={styles.label}>Alasan pengembalian (wajib)</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={returnReason}
+                      onChangeText={setReturnReason}
+                      placeholder="Contoh: stok supplier kosong, spesifikasi belum jelas"
+                      placeholderTextColor={COLORS.textSec}
+                      multiline
+                    />
+                    <View style={styles.actionRow}>
+                      <TouchableOpacity
+                        style={styles.actionBtn}
+                        onPress={() => { setReturnFormId(null); setReturnReason(''); }}
+                      >
+                        <Text style={[styles.actionText, { color: COLORS.textSec }]}>Batal</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={[styles.actionBtn, styles.approveBtn]} onPress={() => handleRequestReturn(request)}>
+                        <Text style={[styles.actionText, { color: '#fff' }]}>Kirim</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+                {/* A withheld action is explained, never left as blank space —
+                    an absent button must not read as a broken screen (spec §6). */}
+                {actions.withheldNotice ? <Text style={styles.withheldNote}>{actions.withheldNotice}</Text> : null}
               </Card>
-            ))}
+              );
+            })}
           </>
         )}
 
@@ -901,6 +1044,34 @@ const styles = StyleSheet.create({
     marginTop: 1,
     marginBottom: 4,
     lineHeight: 15,
+  },
+  returnedReason: {
+    fontSize: TYPE.sm,
+    fontFamily: FONTS.semibold,
+    color: COLORS.warning,
+    marginTop: SPACE.sm,
+    lineHeight: 18,
+  },
+  withheldNote: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.md },
+  returnForm: { marginTop: SPACE.md, gap: SPACE.sm - 2 },
+  label: {
+    fontSize: TYPE.xs,
+    fontFamily: FONTS.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    color: COLORS.textSec,
+  },
+  input: {
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: RADIUS,
+    padding: SPACE.md,
+    minHeight: 64,
+    textAlignVertical: 'top',
+    fontSize: TYPE.base,
+    fontFamily: FONTS.regular,
+    color: COLORS.text,
   },
   actionRow: { flexDirection: 'row', gap: SPACE.sm, marginTop: SPACE.md },
   actionBtn: {

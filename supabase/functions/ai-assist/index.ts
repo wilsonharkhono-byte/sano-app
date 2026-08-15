@@ -213,7 +213,9 @@ async function fetchLiveProjectSnapshot(
       .from('material_request_headers')
       .select('overall_status')
       .eq('project_id', projectId)
-      .in('overall_status', ['PENDING', 'UNDER_REVIEW', 'AUTO_HOLD']),
+      // RETURNED counts as outstanding per spec §5.5 — it is parked with the
+      // estimator, not finished work.
+      .in('overall_status', ['PENDING', 'UNDER_REVIEW', 'AUTO_HOLD', 'RETURNED']),
     supabase
       .from('purchase_orders')
       .select('po_number, supplier, status')

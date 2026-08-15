@@ -68,7 +68,9 @@ export default function OfficeHomeScreen() {
     Promise.all([
       supabase.from('mtn_requests').select('id', { count: 'exact', head: true }).eq('project_id', project.id).eq('status', 'AWAITING'),
       supabase.from('site_changes').select('id', { count: 'exact', head: true }).eq('project_id', project.id).eq('decision', 'pending'),
-      supabase.from('material_request_headers').select('id', { count: 'exact', head: true }).eq('project_id', project.id).in('overall_status', ['PENDING', 'UNDER_REVIEW', 'AUTO_HOLD']),
+      // RETURNED counts as outstanding per spec §5.5 — it is parked with the
+      // estimator, not finished work.
+      supabase.from('material_request_headers').select('id', { count: 'exact', head: true }).eq('project_id', project.id).in('overall_status', ['PENDING', 'UNDER_REVIEW', 'AUTO_HOLD', 'RETURNED']),
     ]).then(([mtn, perubahan, req]) => {
       setPending({ mtn: mtn.count ?? 0, perubahan: perubahan.count ?? 0, requests: req.count ?? 0 });
     });

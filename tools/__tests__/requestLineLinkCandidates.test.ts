@@ -1,7 +1,13 @@
-import { getRequestLineLinkCandidates, type RequestLineLinkCandidate } from '../requestLineLinkCandidates';
+import {
+  getRequestLineLinkCandidates,
+  type RequestLineLinkCandidate,
+  type LinkedPoLineQuantity,
+} from '../requestLineLinkCandidates';
 
 // Base fixture — override per test. `overall_status` models the JOIN to
 // material_request_headers the picker reads (only APPROVED headers qualify).
+// `quantity` is the request line's approved_qty — the ceiling `remaining` is
+// derived from (spec §4.1).
 function line(partial: Partial<RequestLineLinkCandidate> & { id: string }): RequestLineLinkCandidate {
   return {
     material_id: 'mat-semen',
@@ -10,6 +16,15 @@ function line(partial: Partial<RequestLineLinkCandidate> & { id: string }): Requ
     unit: 'sak',
     target_date: '2026-07-01',
     overall_status: 'APPROVED',
+    ...partial,
+  };
+}
+
+// A non-cancelled-by-default existing PO line referencing a request line.
+function poLine(partial: Partial<LinkedPoLineQuantity> & { request_line_id: string }): LinkedPoLineQuantity {
+  return {
+    quantity: 10,
+    po_status: 'OPEN',
     ...partial,
   };
 }
@@ -24,34 +39,82 @@ describe('getRequestLineLinkCandidates', () => {
       line({ id: 'e', overall_status: 'APPROVED' }),
     ];
 
-    const result = getRequestLineLinkCandidates(lines, { draftMaterialId: null, linkedRequestLineIds: [] });
+    const result = getRequestLineLinkCandidates(lines, { draftMaterialId: null, linkedPoLines: [] });
 
     expect(result.map(r => r.id)).toEqual(['e']);
   });
 
-  it('excludes a line already linked to a PO (id present in linkedRequestLineIds)', () => {
-    const lines = [
-      line({ id: 'linked-1' }),
-      line({ id: 'unlinked-1' }),
-    ];
+  it('a line with no linked PO lines is fully available (remaining === approved_qty)', () => {
+    const lines = [line({ id: 'unlinked-1', quantity: 10 })];
 
-    const result = getRequestLineLinkCandidates(lines, {
-      draftMaterialId: null,
-      linkedRequestLineIds: ['linked-1'],
-    });
+    const result = getRequestLineLinkCandidates(lines, { draftMaterialId: null, linkedPoLines: [] });
 
     expect(result.map(r => r.id)).toEqual(['unlinked-1']);
+    expect(result[0].remaining).toBe(10);
   });
 
-  it('accepts linkedRequestLineIds as a Set, same as an array', () => {
-    const lines = [line({ id: 'linked-1' }), line({ id: 'unlinked-1' })];
+  it('partial link leaves remainder available and displays it', () => {
+    const lines = [line({ id: 'semen-1', quantity: 10 })];
 
     const result = getRequestLineLinkCandidates(lines, {
       draftMaterialId: null,
-      linkedRequestLineIds: new Set(['linked-1']),
+      linkedPoLines: [poLine({ request_line_id: 'semen-1', quantity: 4 })],
     });
 
-    expect(result.map(r => r.id)).toEqual(['unlinked-1']);
+    expect(result.map(r => r.id)).toEqual(['semen-1']);
+    expect(result[0].remaining).toBe(6);
+  });
+
+  it('full link removes the line from the picker (remaining === 0)', () => {
+    const lines = [line({ id: 'semen-1', quantity: 10 })];
+
+    const result = getRequestLineLinkCandidates(lines, {
+      draftMaterialId: null,
+      linkedPoLines: [poLine({ request_line_id: 'semen-1', quantity: 10 })],
+    });
+
+    expect(result.map(r => r.id)).toEqual([]);
+  });
+
+  it('a CANCELLED PO frees the linked quantity back — the line reappears with full remaining', () => {
+    const lines = [line({ id: 'semen-1', quantity: 10 })];
+
+    const result = getRequestLineLinkCandidates(lines, {
+      draftMaterialId: null,
+      linkedPoLines: [poLine({ request_line_id: 'semen-1', quantity: 10, po_status: 'CANCELLED' })],
+    });
+
+    expect(result.map(r => r.id)).toEqual(['semen-1']);
+    expect(result[0].remaining).toBe(10);
+  });
+
+  it('a CANCELLED PO line does not count toward the linked total even alongside a non-cancelled partial link', () => {
+    const lines = [line({ id: 'semen-1', quantity: 10 })];
+
+    const result = getRequestLineLinkCandidates(lines, {
+      draftMaterialId: null,
+      linkedPoLines: [
+        poLine({ request_line_id: 'semen-1', quantity: 4, po_status: 'OPEN' }),
+        poLine({ request_line_id: 'semen-1', quantity: 6, po_status: 'CANCELLED' }),
+      ],
+    });
+
+    expect(result.map(r => r.id)).toEqual(['semen-1']);
+    expect(result[0].remaining).toBe(6); // 10 - 4 (only the non-cancelled 4 counts)
+  });
+
+  it('over-link cannot make remaining negative (floor at 0) — the line is excluded, not offered with a negative remainder', () => {
+    const lines = [line({ id: 'over-linked', quantity: 10 })];
+
+    const result = getRequestLineLinkCandidates(lines, {
+      draftMaterialId: null,
+      linkedPoLines: [
+        poLine({ request_line_id: 'over-linked', quantity: 6 }),
+        poLine({ request_line_id: 'over-linked', quantity: 7 }), // sums to 13 > 10
+      ],
+    });
+
+    expect(result).toEqual([]);
   });
 
   it('when the draft line has a catalog material_id, restricts candidates to that exact material', () => {
@@ -63,7 +126,7 @@ describe('getRequestLineLinkCandidates', () => {
 
     const result = getRequestLineLinkCandidates(lines, {
       draftMaterialId: 'mat-semen',
-      linkedRequestLineIds: [],
+      linkedPoLines: [],
     });
 
     expect(result.map(r => r.id)).toEqual(['same-mat']);
@@ -78,23 +141,23 @@ describe('getRequestLineLinkCandidates', () => {
 
     const result = getRequestLineLinkCandidates(lines, {
       draftMaterialId: null,
-      linkedRequestLineIds: [],
+      linkedPoLines: [],
     });
 
     expect(result.map(r => r.id)).toEqual(['mat-a', 'mat-b', 'free-text']);
   });
 
-  it('combines all three filters: APPROVED-only, unlinked-only, material-matched', () => {
+  it('combines all filters: APPROVED-only, remaining > 0, material-matched', () => {
     const lines = [
       line({ id: 'good', material_id: 'mat-semen', overall_status: 'APPROVED' }),
       line({ id: 'wrong-material', material_id: 'mat-besi', overall_status: 'APPROVED' }),
-      line({ id: 'already-linked', material_id: 'mat-semen', overall_status: 'APPROVED' }),
+      line({ id: 'fully-linked', material_id: 'mat-semen', overall_status: 'APPROVED', quantity: 10 }),
       line({ id: 'not-approved', material_id: 'mat-semen', overall_status: 'PENDING' }),
     ];
 
     const result = getRequestLineLinkCandidates(lines, {
       draftMaterialId: 'mat-semen',
-      linkedRequestLineIds: ['already-linked'],
+      linkedPoLines: [poLine({ request_line_id: 'fully-linked', quantity: 10 })],
     });
 
     expect(result.map(r => r.id)).toEqual(['good']);
@@ -107,7 +170,7 @@ describe('getRequestLineLinkCandidates', () => {
       line({ id: 'middle', target_date: '2026-07-20' }),
     ];
 
-    const result = getRequestLineLinkCandidates(lines, { draftMaterialId: null, linkedRequestLineIds: [] });
+    const result = getRequestLineLinkCandidates(lines, { draftMaterialId: null, linkedPoLines: [] });
 
     expect(result.map(r => r.id)).toEqual(['sooner', 'middle', 'later']);
   });
@@ -115,13 +178,13 @@ describe('getRequestLineLinkCandidates', () => {
   it('returns an empty array when there are no eligible lines', () => {
     const lines = [line({ id: 'a', overall_status: 'PENDING' })];
 
-    const result = getRequestLineLinkCandidates(lines, { draftMaterialId: null, linkedRequestLineIds: [] });
+    const result = getRequestLineLinkCandidates(lines, { draftMaterialId: null, linkedPoLines: [] });
 
     expect(result).toEqual([]);
   });
 
   it('returns an empty array for empty input', () => {
-    const result = getRequestLineLinkCandidates([], { draftMaterialId: null, linkedRequestLineIds: [] });
+    const result = getRequestLineLinkCandidates([], { draftMaterialId: null, linkedPoLines: [] });
     expect(result).toEqual([]);
   });
 });
