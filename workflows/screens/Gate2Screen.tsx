@@ -28,7 +28,9 @@ import {
   getRequestLineLinkCandidates,
   candidateDisplayName,
   type RequestLineLinkCandidate,
+  type LinkedPoLineQuantity,
 } from '../../tools/requestLineLinkCandidates';
+import { canManagePurchaseOrders } from '../../tools/rolePermissions';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS, FLAG_COLORS, FLAG_BG } from '../theme';
 import type {
   AhsLine,
@@ -103,7 +105,22 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
   const { show: toast } = useToast();
 
   const role = profile?.role ?? 'supervisor';
-  const canManagePOs = role === 'admin' || role === 'estimator';
+  // Role-derived, not screen-derived (spec §6): the single source of truth for
+  // "who may create/edit purchase orders" is tools/rolePermissions.ts, shared
+  // with ApprovalsScreen. `poPermission.allowed` gates every mutating control
+  // below; `poPermission.reason` is the Indonesian one-liner shown in its place
+  // (spec §6: a withheld control must never read as a bug).
+  //
+  // Full visibility, restricted action (spec §2.6/§3): every office role
+  // (admin, estimator, principal) sees the whole procurement screen — the
+  // estimator just can't create/edit a PO from it. Principal previously had
+  // NO create-PO surface here at all (only the Gate-2 approval queue below);
+  // §3's capability matrix marks principal ✅ for "Create/edit purchase
+  // orders", so principal now sees this section too, in addition to their
+  // unchanged (migration 060) approval queue.
+  const poPermission = canManagePurchaseOrders(role);
+  const canEditPOs = poPermission.allowed;
+  const showProcurementSection = role === 'admin' || role === 'estimator' || role === 'principal';
 
   // Shared state
   const [poList, setPoList] = useState<POWithLines[]>([]);
@@ -133,10 +150,13 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
   const [materialSearch, setMaterialSearch] = useState('');
   const [boqPickerVisible, setBoqPickerVisible] = useState(false);
   const [boqSearch, setBoqSearch] = useState('');
-  // Optional request→PO link (Task 2.8): APPROVED request lines for this project
-  // and the set of request_line_ids already consumed by existing PO lines.
+  // Optional request→PO link (Task 2.8, partial-linking per 2026-08-15 spec
+  // §2.4/§4.1): APPROVED request lines for this project, and every existing
+  // purchase_order_lines row that links to one — quantity + owning PO status,
+  // so getRequestLineLinkCandidates can derive `remaining` itself rather than
+  // trusting a pre-filtered id set (CLAUDE.md §1.1: arithmetic over real rows).
   const [requestLineCandidates, setRequestLineCandidates] = useState<RequestLineLinkCandidate[]>([]);
-  const [linkedRequestLineIds, setLinkedRequestLineIds] = useState<Set<string>>(new Set());
+  const [linkedPoLines, setLinkedPoLines] = useState<LinkedPoLineQuantity[]>([]);
   const [requestPickerLineId, setRequestPickerLineId] = useState<string | null>(null);
 
   // Principal: approval queue
@@ -250,15 +270,19 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
           overall_status: row.material_request_headers?.overall_status ?? '',
         })),
       );
-      const cancelledPoIds = new Set(
-        purchaseOrders.filter(po => po.status === POStatus.CANCELLED).map(po => po.id),
-      );
-      setLinkedRequestLineIds(new Set(
+      // Every PO status by po_id, including CANCELLED — passed through so
+      // getRequestLineLinkCandidates derives `remaining` itself (spec §4.1);
+      // this screen does not pre-filter CANCELLED out.
+      const poStatusById = new Map(purchaseOrders.map(po => [po.id, po.status as string]));
+      setLinkedPoLines(
         lines
-          .filter(l => !cancelledPoIds.has(l.po_id))
-          .map(l => l.request_line_id)
-          .filter((id): id is string => Boolean(id)),
-      ));
+          .filter((l): l is PurchaseOrderLine & { request_line_id: string } => Boolean(l.request_line_id))
+          .map(l => ({
+            request_line_id: l.request_line_id,
+            quantity: Number(l.quantity ?? 0),
+            po_status: poStatusById.get(l.po_id) ?? POStatus.OPEN,
+          })),
+      );
 
       const masterLines = (masterLinesRes.data as ProjectMaterialMasterLine[]) ?? [];
       const priceHist = (priceRes.data as PriceHistory[]) ?? [];
@@ -507,27 +531,39 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
     return `${candidateDisplayName(rl, catalogNameById)} · ${rl.quantity.toLocaleString('id-ID')} ${rl.unit}`;
   }, [requestLineById, catalogNameById]);
 
-  // Candidates for the OPEN picker: APPROVED-only + not already linked (in the
-  // DB via existing PO lines, or on another draft line of this same form) +
-  // material-matched when the draft line is a catalog material. Free-text draft
-  // lines see every eligible request line — admin judgment.
+  // Candidates for the OPEN picker: APPROVED-only + remaining > 0 (spec §2.4/
+  // §4.1 — partial linking, not a one-touch exclusion) + material-matched when
+  // the draft line is a catalog material. Free-text draft lines see every
+  // eligible request line — admin judgment.
+  //
+  // A request line already claimed by ANOTHER draft line of this same
+  // in-progress form counts toward its linked total too (as a "virtual" PO
+  // line at that draft line's own quantity, base-converted) — otherwise two
+  // lines in one unsaved PO could both claim the same remaining quantity, and
+  // the picker would show more available than actually exists once this PO is
+  // saved.
   const requestCandidatesForActiveLine = useMemo(() => {
-    if (!activeRequestDraftLine) return [] as RequestLineLinkCandidate[];
-    const taken = new Set(linkedRequestLineIds);
-    for (const line of draftLines) {
-      if (line.id !== activeRequestDraftLine.id && line.request_line_id) taken.add(line.request_line_id);
-    }
+    if (!activeRequestDraftLine) return [];
+    const draftLinks: LinkedPoLineQuantity[] = draftLines
+      .filter(line => line.id !== activeRequestDraftLine.id && line.request_line_id)
+      .map(line => ({
+        request_line_id: line.request_line_id as string,
+        quantity: isPositiveNumber(line.quantity)
+          ? supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit)
+          : 0,
+        po_status: POStatus.OPEN, // a draft line is never a cancelled PO
+      }));
     return getRequestLineLinkCandidates(requestLineCandidates, {
       draftMaterialId: activeRequestDraftLine.material_id || null,
-      linkedRequestLineIds: taken,
+      linkedPoLines: [...linkedPoLines, ...draftLinks],
     });
-  }, [activeRequestDraftLine, draftLines, linkedRequestLineIds, requestLineCandidates]);
+  }, [activeRequestDraftLine, draftLines, linkedPoLines, requestLineCandidates]);
 
-  const selectRequestLink = (lineId: string, candidate: RequestLineLinkCandidate) => {
+  const selectRequestLink = (lineId: string, candidate: RequestLineLinkCandidate & { remaining: number }) => {
     const name = candidateDisplayName(candidate, catalogNameById);
     updateDraftLine(lineId, {
       request_line_id: candidate.id,
-      request_line_label: `${name} · ${candidate.quantity.toLocaleString('id-ID')} ${candidate.unit}`,
+      request_line_label: `${name} · sisa ${candidate.remaining.toLocaleString('id-ID')} dari ${candidate.quantity.toLocaleString('id-ID')} ${candidate.unit}`,
     });
     setRequestPickerLineId(null);
   };
@@ -942,6 +978,13 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
             title={getPurchaseOrderDisplayNumber(selectedPO)}
             subtitle={`${selectedPO.supplier} · ${selectedPO.lines.length} line item`}
           >
+            {/* Full visibility, restricted action (spec §2.6/§6): the estimator
+                sees every line and its Gate 2 checks below, just not the
+                editable price/vendor/justification/escalate controls. */}
+            {!canEditPOs && (
+              <Text style={styles.hint}>{poPermission.reason}</Text>
+            )}
+
             {selectedPO.lines.map((line, idx) => {
               const g2 = selectedPO.gate2?.[idx];
               const edit = lineEdits[line.id] ?? { price: line.unit_price?.toString() ?? '', vendor: selectedPO.supplier, justification: '' };
@@ -964,22 +1007,30 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                     </View>
                   ) : null}
 
-                  <Text style={styles.fieldLabel}>Harga Satuan (Rp per {line.unit || 'unit'})</Text>
-                  <TextInput placeholderTextColor={COLORS.textMuted}
-                    style={styles.input}
-                    keyboardType="numeric"
-                    value={edit.price}
-                    onChangeText={v => setLineEdits(prev => ({ ...prev, [line.id]: { ...edit, price: v } }))}
-                    placeholder="0"
-                  />
+                  {canEditPOs ? (
+                    <>
+                      <Text style={styles.fieldLabel}>Harga Satuan (Rp per {line.unit || 'unit'})</Text>
+                      <TextInput placeholderTextColor={COLORS.textMuted}
+                        style={styles.input}
+                        keyboardType="numeric"
+                        value={edit.price}
+                        onChangeText={v => setLineEdits(prev => ({ ...prev, [line.id]: { ...edit, price: v } }))}
+                        placeholder="0"
+                      />
 
-                  <Text style={styles.fieldLabel}>Vendor</Text>
-                  <TextInput placeholderTextColor={COLORS.textMuted}
-                    style={styles.input}
-                    value={edit.vendor}
-                    onChangeText={v => setLineEdits(prev => ({ ...prev, [line.id]: { ...edit, vendor: v } }))}
-                    placeholder={selectedPO.supplier}
-                  />
+                      <Text style={styles.fieldLabel}>Vendor</Text>
+                      <TextInput placeholderTextColor={COLORS.textMuted}
+                        style={styles.input}
+                        value={edit.vendor}
+                        onChangeText={v => setLineEdits(prev => ({ ...prev, [line.id]: { ...edit, vendor: v } }))}
+                        placeholder={selectedPO.supplier}
+                      />
+                    </>
+                  ) : (
+                    <Text style={styles.lineDetail}>
+                      Harga Rp{(line.unit_price ?? 0).toLocaleString('id-ID')}/{line.unit} — vendor {selectedPO.supplier}
+                    </Text>
+                  )}
 
                   {/* Gate 2 check results */}
                   {g2 && (
@@ -990,8 +1041,8 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                     </View>
                   )}
 
-                  {/* Justification field for WARNING+ */}
-                  {g2 && (g2.overall.flag === 'WARNING' || g2.overall.flag === 'HIGH' || g2.overall.flag === 'CRITICAL') && (
+                  {/* Justification field for WARNING+ — an edit control, admin/principal only. */}
+                  {canEditPOs && g2 && (g2.overall.flag === 'WARNING' || g2.overall.flag === 'HIGH' || g2.overall.flag === 'CRITICAL') && (
                     <>
                       <Text style={styles.fieldLabel}>Justifikasi <Text style={{ color: COLORS.critical }}>*</Text></Text>
                       <TextInput placeholderTextColor={COLORS.textMuted}
@@ -1004,8 +1055,8 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                     </>
                   )}
 
-                  {/* Escalate button for HIGH/CRITICAL */}
-                  {g2?.requiresPrincipal && (
+                  {/* Escalate button for HIGH/CRITICAL — admin/principal only. */}
+                  {canEditPOs && g2?.requiresPrincipal && (
                     <TouchableOpacity style={styles.escalateBtn} onPress={() => handleEscalate(selectedPO, idx)}>
                       <Ionicons name="arrow-up-circle" size={16} color={COLORS.textInverse} />
                       <Text style={styles.escalateBtnText}>Eskalasi ke Principal</Text>
@@ -1017,9 +1068,11 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
               );
             })}
 
-            <TouchableOpacity style={styles.saveBtn} onPress={() => handleSavePrices(selectedPO)}>
-              <Text style={styles.saveBtnText}>Simpan Harga & Validasi</Text>
-            </TouchableOpacity>
+            {canEditPOs && (
+              <TouchableOpacity style={styles.saveBtn} onPress={() => handleSavePrices(selectedPO)}>
+                <Text style={styles.saveBtnText}>Simpan Harga & Validasi</Text>
+              </TouchableOpacity>
+            )}
           </Card>
         </>
       ) : showCreateForm ? (
@@ -1029,7 +1082,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
             <Text style={styles.backRowText}>Kembali ke Daftar PO</Text>
           </TouchableOpacity>
 
-          <Card title="Buat Purchase Order" subtitle="Admin atau Estimator dapat membuat daftar PO baru untuk proyek aktif.">
+          <Card title="Buat Purchase Order" subtitle="Admin atau Prinsipal dapat membuat daftar PO baru untuk proyek aktif.">
             <Text style={styles.fieldLabel}>Supplier <Text style={{ color: COLORS.critical }}>*</Text></Text>
             <TextInput placeholderTextColor={COLORS.textMuted}
               style={styles.input}
@@ -1333,10 +1386,14 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       ) : (
         <>
           <View style={styles.topActionRow}>
-            <TouchableOpacity style={styles.createBtn} onPress={() => setShowCreateForm(true)}>
-              <Ionicons name="add-circle" size={16} color={COLORS.textInverse} />
-              <Text style={styles.createBtnText}>Buat PO Baru</Text>
-            </TouchableOpacity>
+            {canEditPOs ? (
+              <TouchableOpacity style={styles.createBtn} onPress={() => setShowCreateForm(true)}>
+                <Ionicons name="add-circle" size={16} color={COLORS.textInverse} />
+                <Text style={styles.createBtnText}>Buat PO Baru</Text>
+              </TouchableOpacity>
+            ) : (
+              <Text style={styles.hint}>{poPermission.reason}</Text>
+            )}
           </View>
 
           {poList.length === 0 && !loading && (
@@ -1375,10 +1432,11 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                       <Badge flag={po.status === 'OPEN' ? 'WARNING' : 'OK'} label={po.status} />
                     </View>
                   </View>
-                  {/* Admin cancel — only an OPEN PO (which, by construction, has no
-                      receipts yet) can be cancelled. A PO with deliveries is
+                  {/* Cancel is a PO edit action — admin/principal only (spec §6).
+                      Only an OPEN PO (which, by construction, has no receipts
+                      yet) can be cancelled. A PO with deliveries is
                       short-closed via a final receive instead (Task 2.7). */}
-                  {po.status === 'OPEN' && (
+                  {canEditPOs && po.status === 'OPEN' && (
                     <TouchableOpacity
                       style={styles.cancelPoBtn}
                       onPress={() => handleCancelPO(po)}
@@ -1520,7 +1578,7 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
 
         {loading && <Text style={styles.hint}>Memuat data harga...</Text>}
 
-        {canManagePOs && renderManager()}
+        {showProcurementSection && renderManager()}
         {role === 'principal' && renderPrincipal()}
 
         {/* Supervisor sees read-only summary */}
@@ -1682,7 +1740,10 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   <View style={{ flex: 1 }}>
                     <Text style={styles.optionTitle}>{candidateDisplayName(item, catalogNameById)}</Text>
                     <Text style={styles.optionMeta}>
-                      {item.quantity.toLocaleString('id-ID')} {item.unit}
+                      {/* Remaining unlinked qty, not just the request's total approved
+                          qty (spec §2.4/§4.1) — a partially-linked line shows what is
+                          actually left to order. */}
+                      Sisa {item.remaining.toLocaleString('id-ID')} dari {item.quantity.toLocaleString('id-ID')} {item.unit}
                       {item.target_date ? ` · butuh ${new Date(item.target_date).toLocaleDateString('id-ID')}` : ''}
                     </Text>
                   </View>

@@ -47,4 +47,23 @@ describe('resolveNotificationRoute', () => {
     expect(resolveNotificationRoute('ApprovalsScreen', undefined)).toBe('Approvals');
     expect(resolveNotificationRoute('ApprovalsScreen', null)).toBe('Approvals');
   });
+
+  // ── RETURNED notification routing (spec §5.4 item 3) ────────────────────
+  // Migration 088's notify_header_status_change enqueues the new RETURNED
+  // notification with deeplink_screen = 'ApprovalsScreen', targeting the
+  // estimator — same shape as its APPROVED/REJECTED/AUTO_HOLD/REQUEST_PENDING
+  // siblings above. No new BASE_ROUTE_MAP entry is required (the map keys on
+  // deeplink_screen, not notification type), but these assertions pin that
+  // down explicitly rather than leaving it to be true "by construction".
+  it('routes a RETURNED notification (ApprovalsScreen deeplink) to Approvals for the estimator', () => {
+    expect(resolveNotificationRoute('ApprovalsScreen', 'estimator')).toBe('Approvals');
+  });
+
+  it('would fall back a RETURNED notification to Permintaan for a supervisor, same as its siblings', () => {
+    // RETURNED targets the estimator role only (spec §5.4 item 2), so a
+    // supervisor should never actually receive one — this pins the same
+    // defensive fallback already relied on for REQUEST_PENDING above, should
+    // that targeting ever change.
+    expect(resolveNotificationRoute('ApprovalsScreen', 'supervisor')).toBe('Permintaan');
+  });
 });

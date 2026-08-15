@@ -1172,7 +1172,15 @@ export async function generateApprovalSLAUser(
   }> = [];
   const entityBuckets = new Map<string, number[]>();
   const pendingByQueue = [
-    { label: 'Permintaan Material', count: requestRows.filter((row: MRHeaderRow) => !row.reviewed_at && [MRStatus.PENDING, MRStatus.UNDER_REVIEW, MRStatus.AUTO_HOLD].includes(row.overall_status as any)).length },
+    // RETURNED is open work per spec §5.5 (parked with the estimator, not
+    // finished), so it belongs in this queue with PENDING/UNDER_REVIEW/
+    // AUTO_HOLD. It cannot use the same `!row.reviewed_at` gate as those
+    // three, though: RETURNED is only reachable from APPROVED (migration 088
+    // §5.2), and 088 deliberately leaves reviewed_by/reviewed_at pointing at
+    // the estimator's *original* decision rather than clearing them on
+    // return (own returned_by/returned_at pair instead) — so reviewed_at is
+    // already set on every real RETURNED row. Gate RETURNED on status alone.
+    { label: 'Permintaan Material', count: requestRows.filter((row: MRHeaderRow) => (row.overall_status === MRStatus.RETURNED || !row.reviewed_at) && [MRStatus.PENDING, MRStatus.UNDER_REVIEW, MRStatus.AUTO_HOLD, MRStatus.RETURNED].includes(row.overall_status as any)).length },
     { label: 'VO Menunggu Review', count: voRows.filter((row: VoSlaRow) => !row.reviewed_at && row.status === VOStatus.AWAITING).length },
     { label: 'MTN Menunggu Review', count: mtnRows.filter((row: MtnSlaRow) => !row.reviewed_at && row.status === MTNStatus.AWAITING).length },
     { label: 'Approval Task Pending', count: taskRows.filter((row: ApprovalTaskRow) => !row.action).length },
@@ -1790,6 +1798,15 @@ export async function generateExceptionHandlingLoad(
     if (!assignee.last_touch || (row.acted_at && row.acted_at > assignee.last_touch)) assignee.last_touch = row.acted_at;
   });
 
+  // Deliberately NOT adding a parallel `returned_requests` count here (spec
+  // §5.5 review, M2): the ExceptionHandlingData summary shape lives in
+  // tools/reportDataTypes.ts and is consumed by tools/excel.ts and
+  // tools/pdf.ts — none of them owned by this fix, and TS's excess-property
+  // check on this literal (`Promise<ReportPayload>`, discriminated on `type`)
+  // would reject a new field until that type gained it too. Spec §5.5 names
+  // exactly three "outstanding work" surfaces to fix (OfficeHomeScreen,
+  // reports.ts's pending-by-queue counter above, and ai-assist) — this
+  // exception-load report isn't one of them and is out of scope here.
   return {
     type: 'exception_handling_load',
     title: 'Beban Penanganan Exception',

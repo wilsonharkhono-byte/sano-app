@@ -29,8 +29,8 @@ jest.mock('../envelopes', () => ({
   getMaterialDrift: jest.fn(),
 }));
 
-import { generateMaterialBalanceReport, generateReceiptLog } from '../reports';
-import type { MaterialBalanceData, ReceiptLogData } from '../reportDataTypes';
+import { generateMaterialBalanceReport, generateReceiptLog, generateApprovalSLAUser } from '../reports';
+import type { MaterialBalanceData, ReceiptLogData, ApprovalSLAData } from '../reportDataTypes';
 import { supabase } from '../supabase';
 import { deriveMaterialBalanceWithControl, derivePoReceivedTotals } from '../derivation';
 import { getMaterialDrift } from '../envelopes';
@@ -168,5 +168,60 @@ describe('generateReceiptLog — supervisor price redaction', () => {
     const payload = await generateReceiptLog('proj-1');
     const data = payload.data as ReceiptLogData;
     expect(data.show_costs).toBe(false);
+  });
+});
+
+// Spec §5.5 — "Is a returned request still open demand?": yes, it is live
+// work parked with the estimator, exactly like PENDING. The Approval SLA
+// report's "Permintaan Material" queue counter must therefore count RETURNED
+// rows the same way it counts PENDING/UNDER_REVIEW/AUTO_HOLD.
+//
+// RETURNED is not a fresh row, though: it can only be reached from APPROVED
+// (migration 088 §5.2), which means the estimator's original reviewed_at is
+// already set and 088 deliberately leaves reviewed_by/reviewed_at pointing at
+// that original reviewer (design note in 088 §1 — the admin's return uses its
+// own returned_by/returned_at pair, not reviewed_at). A naive `!row.reviewed_at
+// && status IN (...)` filter would therefore silently drop every RETURNED row
+// even after RETURNED is added to the status list, because reviewed_at is
+// truthy. The fixture below pins a RETURNED row with reviewed_at already set
+// to catch exactly that regression.
+describe('generateApprovalSLAUser — RETURNED counts as outstanding (spec §5.5)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    const requestRows = [
+      { requested_by: 'u1', reviewed_by: null, created_at: '2026-08-01T00:00:00Z', reviewed_at: null, overall_status: 'PENDING' },
+      { requested_by: 'u2', reviewed_by: null, created_at: '2026-08-01T00:00:00Z', reviewed_at: null, overall_status: 'UNDER_REVIEW' },
+      { requested_by: 'u3', reviewed_by: null, created_at: '2026-08-01T00:00:00Z', reviewed_at: null, overall_status: 'AUTO_HOLD' },
+      // Approved-then-returned: reviewed_at is already set (points at the
+      // original estimator decision, per 088), yet this row is live work.
+      { requested_by: 'u4', reviewed_by: null, created_at: '2026-08-01T00:00:00Z', reviewed_at: '2026-08-02T00:00:00Z', overall_status: 'RETURNED' },
+      // Controls: genuinely resolved rows must NOT be counted.
+      { requested_by: 'u5', reviewed_by: null, created_at: '2026-08-01T00:00:00Z', reviewed_at: '2026-08-02T00:00:00Z', overall_status: 'APPROVED' },
+      { requested_by: 'u6', reviewed_by: null, created_at: '2026-08-01T00:00:00Z', reviewed_at: '2026-08-02T00:00:00Z', overall_status: 'REJECTED' },
+    ];
+    const emptyChain = () => ({
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockResolvedValue({ data: [], error: null }),
+    });
+    const chains: Record<string, any> = {
+      material_request_headers: {
+        select: jest.fn().mockReturnThis(),
+        eq: jest.fn().mockResolvedValue({ data: requestRows, error: null }),
+      },
+      vo_entries: emptyChain(),
+      mtn_requests: emptyChain(),
+      approval_tasks: emptyChain(),
+      opname_headers: emptyChain(),
+      mandor_attendance: emptyChain(),
+      mandor_kasbon: emptyChain(),
+    };
+    (mockSupabase.from as jest.Mock).mockImplementation((table: string) => chains[table]);
+  });
+
+  it('counts PENDING + UNDER_REVIEW + AUTO_HOLD + RETURNED in the "Permintaan Material" queue, excluding APPROVED/REJECTED', async () => {
+    const payload = await generateApprovalSLAUser('proj-1');
+    const data = payload.data as ApprovalSLAData;
+    const queueItem = data.pending_by_queue.find(item => item.label === 'Permintaan Material');
+    expect(queueItem?.count).toBe(4);
   });
 });

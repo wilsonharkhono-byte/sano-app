@@ -20,6 +20,14 @@
 // tap time (rather than fixing the server-side deeplink) also repairs every
 // notification already stored with the old deeplink.
 //
+// RETURNED (approval/PO separation-of-duties spec §5.4 item 3) joins that
+// same list: migration 088's notify_header_status_change enqueues it with
+// deeplink_screen = 'ApprovalsScreen', same as its siblings, targeting the
+// estimator who must act next. It needs no new entry in BASE_ROUTE_MAP —
+// the map keys on deeplink_screen, not notification type, and
+// 'ApprovalsScreen' already resolves correctly for every role — but it is
+// called out here, and covered below, so that fact is not left implicit.
+//
 // Used by workflows/App.tsx (push-notification tap listener, all roles) and
 // workflows/screens/NotificationsScreen.tsx (in-app list shared by
 // supervisor AND principal — hence the role parameter, not a hardcoded map).

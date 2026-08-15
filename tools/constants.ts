@@ -71,14 +71,27 @@ export const PO_STATUS_LABELS: Record<POStatusType, string> = {
 };
 
 // ── Material Request Header Status ──────────────────────────────────────────
+// RETURNED (2026-08-15, approval/PO separation-of-duties spec §4) is the admin's
+// "cannot fulfil this APPROVED request" outcome — it lands back in the
+// estimator's queue with a mandatory reason. See tools/rolePermissions.ts for
+// the legal-transition table (spec §5.2) and migration 088 for the DB-side twin.
 export const MRStatus = {
   PENDING: 'PENDING',
   UNDER_REVIEW: 'UNDER_REVIEW',
   APPROVED: 'APPROVED',
   REJECTED: 'REJECTED',
   AUTO_HOLD: 'AUTO_HOLD',
+  RETURNED: 'RETURNED',
 } as const;
 export type MRStatusType = (typeof MRStatus)[keyof typeof MRStatus];
+
+// NOTE: no MR_STATUS_LABELS map here (unlike PO_STATUS_LABELS above). The one
+// place that renders MR status labels — ApprovalsScreen.tsx's request filter
+// chips — deliberately uses plain English labels ('Pending', 'Review',
+// 'Hold', 'Returned', 'Approved', 'Rejected') rather than Indonesian ones, so
+// a status→label map wasn't wired up (spec §5.5 review, M3: a prior draft
+// added this map but nothing consumed it). If a second consumer needs
+// Indonesian labels for these statuses, add the map back then.
 
 // ── Material Transfer Note (MTN) Line Status ────────────────────────────────
 export const MTNStatus = {

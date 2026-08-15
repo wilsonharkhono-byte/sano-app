@@ -191,6 +191,43 @@ This creates a dual-layer gate (TS + DB). Per project memory, **the TS and DB
 halves must change in lockstep** — the same constraint that governs migrations
 033/048/049. The spec for any future change to either half must say so.
 
+### 5.4 Notifying the estimator that a request was returned
+
+A returned request that notifies nobody is a silent stall by another name, and
+locked decision §2.5 exists precisely to abolish that. The existing path does
+**not** carry it: migration 085's `notify_header_status_change` early-returns
+unless the new status is `AUTO_HOLD`, `APPROVED` or `REJECTED`, and the
+`notifications.type` CHECK (migration 067) has no `RETURNED` value. Adding a
+branch without widening the CHECK would fail *silently*, because the enqueue is
+wrapped in `EXCEPTION WHEN OTHERS THEN RAISE WARNING`.
+
+Migration 088 therefore must also:
+
+1. Widen the `notifications.type` CHECK to admit `RETURNED`.
+2. `CREATE OR REPLACE` `notify_header_status_change` to emit on `RETURNED`,
+   targeting the estimator role (the actor who must act next), carrying the
+   return reason in the detail payload so the notification is self-explanatory.
+3. Add `RETURNED` to the notification routing map (`tools/notificationRouting.ts`)
+   so the notification deeplinks to the Approvals screen like its siblings.
+
+Both SQL changes are `CREATE OR REPLACE` / `DROP CONSTRAINT IF EXISTS` and ship
+inside 088, so there is one paste, not two.
+
+### 5.5 Is a returned request still open demand?
+
+Yes — it is live work parked with the estimator, exactly like `PENDING`. Two
+surfaces currently disagree and must be aligned to that answer: migration 072's
+`v_material_envelope_status.total_requested` already counts it (it excludes only
+`REJECTED`), while migration 069's `compute_tier2_flag` uses an explicit
+whitelist that omits it. 069's whitelist gains `RETURNED`. Both are advisory
+signals, so this changes no gate — but a request must not read as demand on one
+screen and not another.
+
+Every "outstanding work" counter must likewise treat `RETURNED` as open:
+`office/screens/OfficeHomeScreen.tsx`, `tools/reports.ts`, and
+`supabase/functions/ai-assist/index.ts` all filter on
+`('PENDING','UNDER_REVIEW','AUTO_HOLD')` today.
+
 ## 6. UI changes
 
 Both roles keep `OfficeNavigation` unchanged — no navigator split, per §2.6.
@@ -262,9 +299,9 @@ so the matrix in §3 has exactly one implementation. Screens stay thin.
   whether request-time holds should return is a separate decision.
 - **No automated request→PO conversion** (July spec §7, unchanged).
 - **No navigator split** — deliberately rejected in favour of full visibility.
-- Notification routing for the new `RETURNED` state reuses the existing
-  header-status notification path (migration 034/066); no new notification
-  type is introduced.
+*(The original draft of this spec claimed the `RETURNED` state could reuse the
+existing notification path with no new type. That was wrong — see §5.4, which
+supersedes it.)*
 
 ## 10. Acceptance criteria
 
