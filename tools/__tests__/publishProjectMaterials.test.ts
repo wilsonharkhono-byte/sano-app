@@ -52,6 +52,39 @@ describe('buildProjectMaterialLines', () => {
     expect(lines[0]).toMatchObject({ material_id: 'mat-semen', planned_quantity: 125, boq_item_id: null });
     expect(unresolved).toEqual(['Unobtanium X']);
   });
+
+  // The 2026-08-15 incident: a column shift made every Others row parse with
+  // volume 0, and the `continue` below dropped all 13 project materials while
+  // publish still reported success. A dropped row must now be reported.
+  it('reports rows dropped for zero/absent volume instead of dropping them silently', () => {
+    const rows = [
+      materialRow({ name: 'Semen PC', unit: 'sak', volume: 0, project_material: true }),
+      materialRow({ name: 'Pasir Pasang', unit: 'm3', project_material: true }),
+      materialRow({ name: 'Besi', unit: 'kg', volume: -5, project_material: true }),
+    ];
+    const { lines, skipped } = buildProjectMaterialLines(rows, 'm', catalog as never, new Map());
+    expect(lines).toHaveLength(0);
+    expect(skipped).toEqual([
+      'Semen PC: volume 0',
+      'Pasir Pasang: volume 0',
+      'Besi: volume -5',
+    ]);
+  });
+
+  it('reports a blank material name (row identified by its staging row number)', () => {
+    const row = materialRow({ name: '   ', unit: 'sak', volume: 10, project_material: true });
+    row.row_number = 7;
+    const { lines, skipped } = buildProjectMaterialLines([row], 'm', catalog as never, new Map());
+    expect(lines).toHaveLength(0);
+    expect(skipped).toEqual(['row 7: blank material name']);
+  });
+
+  it('reports nothing when every row lands', () => {
+    const rows = [materialRow({ name: 'Semen PC', unit: 'sak', volume: 10, project_material: true })];
+    const { lines, skipped } = buildProjectMaterialLines(rows, 'm', catalog as never, new Map());
+    expect(lines).toHaveLength(1);
+    expect(skipped).toEqual([]);
+  });
 });
 
 describe('buildProjectPriceBook', () => {
@@ -60,7 +93,7 @@ describe('buildProjectPriceBook', () => {
       materialRow({ name: 'Semen PC', unit: 'sak 40 kg', volume: 5456, reference_unit_price: 60000, tier: 2, project_material: true }),
       materialRow({ name: 'Pasir Pasang', unit: 'm3', volume: 347.45, reference_unit_price: 350000, tier: 3, project_material: true }),
     ];
-    const pb = buildProjectPriceBook(rows, 'proj-1', catalog as never, new Map());
+    const { rows: pb } = buildProjectPriceBook(rows, 'proj-1', catalog as never, new Map());
     expect(pb).toEqual([
       { project_id: 'proj-1', material_id: 'mat-semen', material_name: 'Semen PC', unit: 'sak 40 kg', unit_price: 60000, tier: 2 },
       { project_id: 'proj-1', material_id: 'mat-pasir', material_name: 'Pasir Pasang', unit: 'm3', unit_price: 350000, tier: 3 },
@@ -71,7 +104,7 @@ describe('buildProjectPriceBook', () => {
     const rows = [
       materialRow({ name: 'Unobtanium X', unit: 'kg', volume: 5, reference_unit_price: 1000, tier: 3, project_material: true }),
     ];
-    const pb = buildProjectPriceBook(rows, 'p', catalog as never, new Map());
+    const { rows: pb } = buildProjectPriceBook(rows, 'p', catalog as never, new Map());
     expect(pb).toEqual([
       { project_id: 'p', material_id: null, material_name: 'Unobtanium X', unit: 'kg', unit_price: 1000, tier: 3 },
     ]);
@@ -84,6 +117,36 @@ describe('buildProjectPriceBook', () => {
       materialRow({ name: 'Semen PC', unit: 'sak', volume: 10, reference_unit_price: 500, tier: 2, project_material: true }, 'REJECTED'),
       materialRow({ name: 'Semen PC', unit: 'sak', volume: 10, reference_unit_price: 500, tier: 2 }),                          // not project_material
     ];
-    expect(buildProjectPriceBook(rows, 'p', catalog as never, new Map())).toHaveLength(0);
+    expect(buildProjectPriceBook(rows, 'p', catalog as never, new Map()).rows).toHaveLength(0);
+  });
+
+  // A price-book row that never lands means no Tier-3 Rupiah envelope for that
+  // material (Gate-1 shows TIER3_NO_BUDGET) — the estimator has to hear about it.
+  it('reports each skipped row with its reason (price / tier / blank name)', () => {
+    const badTier = materialRow({ name: 'Semen PC', unit: 'sak', volume: 10, reference_unit_price: 500, tier: 9, project_material: true });
+    const blank = materialRow({ name: '', unit: 'sak', volume: 10, reference_unit_price: 500, tier: 2, project_material: true });
+    blank.row_number = 4;
+    const rows = [
+      materialRow({ name: 'Pasir Pasang', unit: 'm3', volume: 10, reference_unit_price: 0, tier: 3, project_material: true }),
+      badTier,
+      blank,
+      materialRow({ name: 'Besi', unit: 'kg', volume: 10, reference_unit_price: 0, tier: 0, project_material: true }),
+    ];
+    const { rows: pb, skipped } = buildProjectPriceBook(rows, 'p', catalog as never, new Map());
+    expect(pb).toHaveLength(0);
+    expect(skipped).toEqual([
+      'Pasir Pasang: no unit price',
+      'Semen PC: tier 9 is not 1–4',
+      'row 4: blank material name',
+      'Besi: no unit price, tier 0 is not 1–4',
+    ]);
+  });
+
+  it('reports nothing for REJECTED or non-project rows (deliberately out of scope)', () => {
+    const rows = [
+      materialRow({ name: 'Semen PC', unit: 'sak', volume: 10, reference_unit_price: 0, tier: 2, project_material: true }, 'REJECTED'),
+      materialRow({ name: 'Semen PC', unit: 'sak', volume: 10, reference_unit_price: 0, tier: 2 }),
+    ];
+    expect(buildProjectPriceBook(rows, 'p', catalog as never, new Map()).skipped).toEqual([]);
   });
 });

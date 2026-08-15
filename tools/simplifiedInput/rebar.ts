@@ -32,20 +32,31 @@ export const REBAR_COLUMNS: Array<{ col: string; diameter: number }> = [
 
 /**
  * One rebar diameter of one work area → a recipe component in batang.
- * coefficient = lonjor per beton-m³, so master_planned = betonM3 × coefficient
- * = the original whole-lonjor count (in batang, before publish's batang→kg
- * conversion). unitPrice 0 (Tier-1 material cost untracked).
+ * coefficient = lonjor per unit of the row's planned basis, so
+ * master_planned = planned × coefficient = the original whole-lonjor count (in
+ * batang, before publish's batang→kg conversion). The basis is the beton m³ for
+ * a normal work area and 1 for a rebar-only one staged as a lump sum (see
+ * tier1.ts). unitPrice 0 (Tier-1 material cost untracked).
+ *
+ * A non-positive basis is refused rather than silently yielding coefficient 0:
+ * that is how a rebar-only work area's ~9,200 kg of steel used to disappear
+ * from every envelope with no signal (CLAUDE.md §1.1 — absent beats wrong).
  */
 export function buildRebarComponent(
   diameter: number,
   lonjor: number,
-  betonM3: number,
+  plannedBasis: number,
   sourceSheet: string,
   sourceAddress: string,
 ): RecipeComponent {
   const name = REBAR_NAME_BY_DIAMETER[diameter];
   if (!name) throw new Error(`No rebar name mapping for diameter ${diameter}`);
-  const quantityPerUnit = betonM3 > 0 ? lonjor / betonM3 : 0;
+  if (!(plannedBasis > 0)) {
+    throw new Error(
+      `Rebar component ø${diameter} at ${sourceSheet}!${sourceAddress} has a non-positive planned basis (${plannedBasis}) — the caller must stage a positive basis`,
+    );
+  }
+  const quantityPerUnit = lonjor / plannedBasis;
   return {
     sourceCell: { sheet: sourceSheet, address: sourceAddress },
     referencedCell: { sheet: sourceSheet, address: sourceAddress },
