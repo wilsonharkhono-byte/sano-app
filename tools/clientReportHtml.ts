@@ -15,6 +15,15 @@
 //      extra rows flow onto further A4 pages.
 //   4. The corner registration marks are screen-only: Chrome cannot paint them
 //      at the paper edge (see the print CSS note inside BLUEPRINT_CSS).
+//   5. Photo captions are NEVER truncated. The black overlay bar on each photo
+//      carries only "Figur N" (both always short), and the real caption text
+//      moves to a numbered legend rendered directly below the gallery, where it
+//      wraps freely. The legend sits OUTSIDE #gallery so the justified-layout
+//      script never sees it as a photo. The per-photo date rides along in the
+//      overlay and the legend on WEEKLY reports only — a daily report is one
+//      date, already stated in the metadata strip, so repeating it per photo is
+//      noise; for the same reason a daily "01 Update Lapangan" row leads with a
+//      zero-padded row number instead of its date (photos keep "Figur N").
 
 import { Platform } from 'react-native';
 import type { ClientReportDraft } from './clientReport';
@@ -264,8 +273,27 @@ const REPORT_MEDIA_CSS = `
     font-size:10px; padding:6px 10px; display:flex; gap:8px; align-items:center; }
   .gcap .d{ color:var(--sand-lt); font-weight:600; letter-spacing:.08em; text-transform:uppercase;
     font-size:9px; white-space:nowrap; }
+  /* the overlay carries only "Figur N" + the date, so the nowrap/ellipsis below
+     is purely defensive — with that content it can never actually trigger. */
   .gcap .t{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* caption legend — the real caption text, below the gallery, wrapping freely.
+     Mirrors the "01 Update Lapangan" .row treatment one step smaller. */
+  .figlegend{ margin-top:8px; }
+  .flrow{ display:grid; grid-template-columns:52px 52px 1fr; gap:10px; align-items:baseline;
+    padding:4px 0; border-bottom:1px solid var(--line-sub); }
+  .flrow:first-child{ border-top:1px solid var(--line-sub); }
+  /* daily reports drop the per-photo date (the strip already states it), so the
+     row loses its middle column. */
+  .figlegend.nodate .flrow{ grid-template-columns:52px 1fr; }
+  .fl-no{ font-size:8.5px; font-weight:600; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--sand); white-space:nowrap; }
+  .fl-d{ font-size:8.5px; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--ink-3); white-space:nowrap; }
+  .fl-t{ font-size:9.5px; color:var(--ink-2); line-height:1.45; }
   *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  /* BLUEPRINT_CSS's @media print break-inside rule is verbatim-locked, so the
+     legend rows get their own additive print rule here. */
+  @media print{ .flrow{ break-inside:avoid; } }
 `;
 
 // Self-contained gallery layout, embedded in the report so it justifies itself
@@ -340,18 +368,44 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
     ? `<div class="val">${esc(draft.crewTotal)} orang</div>${draft.crewBreakdown ? `<div class="crew">${esc(draft.crewBreakdown)}</div>` : ''}`
     : `<div class="val">—</div>`;
 
-  const updateRows = draft.updates.map((u) => `
-      <div class="row"><span class="date">${esc(u.date)}</span><span class="area">${esc(u.area)}</span><span class="note">${esc(u.note)}</span></div>`).join('');
+  // A DAILY report covers ONE date, already stated in the metadata strip, so
+  // repeating it per item is noise. This single flag governs both the per-photo
+  // dates (overlay + legend, below) and the "01 Update Lapangan" leading column:
+  // on daily that column carries a zero-padded row number instead of the date.
+  // Same span/class either way — the number inherits the sand uppercase style.
+  const showDates = draft.kind !== 'harian';
+
+  const updateRows = draft.updates.map((u, i) => `
+      <div class="row"><span class="date">${showDates ? esc(u.date) : String(i + 1).padStart(2, '0')}</span><span class="area">${esc(u.area)}</span><span class="note">${esc(u.note)}</span></div>`).join('');
 
   // All photos (hero first, then the rest) go into one gallery. Each renders as
   // a real <img> (not CSS background-image), which prints reliably — browsers
   // omit background images from PDF output by default. The embedded
   // GALLERY_SCRIPT measures them at load and arranges the justified rows;
   // sizing lives in REPORT_MEDIA_CSS so no inline % leaks into the body.
+  // The overlay bar carries "Figur N" (+ the date on weekly reports) — both
+  // always short, so no caption is ever clipped. The caption text itself goes to
+  // the legend below. `showDates` (declared above) drops the per-photo date on a
+  // daily report, in the overlay and in the legend alike. Photos stay "Figur N"
+  // in both kinds — only the update rows swap their date for a row number.
   const photos = draft.hero ? [draft.hero, ...draft.thumbs] : draft.thumbs;
+  const galleryFigures = photos.map((p, i) => `
+        <figure class="gitem"><img src="${esc(p.url)}" alt="" /><figcaption class="gcap"><span class="d">Figur ${i + 1}</span>${showDates ? `<span class="t">${esc(p.date)}</span>` : ''}</figcaption></figure>`).join('');
+  // Legend rows only for photos that actually have a caption. It is a SIBLING of
+  // #gallery — GALLERY_SCRIPT iterates and re-appends #gallery's children, so a
+  // legend node inside it would be swept into a justified row.
+  const legendRows = photos
+    .map((p, i) => ({ p, no: i + 1 }))
+    .filter(({ p }) => String(p.caption ?? '').trim() !== '')
+    .map(({ p, no }) => `
+        <div class="flrow"><span class="fl-no">Figur ${no}</span>${showDates ? `<span class="fl-d">${esc(p.date)}</span>` : ''}<span class="fl-t">${esc(p.caption)}</span></div>`)
+    .join('');
+  // .nodate collapses the row grid to two columns when the date span is absent.
+  const legend = legendRows
+    ? `<div class="figlegend${showDates ? '' : ' nodate'}">${legendRows}</div>`
+    : '';
   const gallery = photos.length
-    ? `<div class="gallery" id="gallery">${photos.map((p) => `
-        <figure class="gitem"><img src="${esc(p.url)}" alt="" /><figcaption class="gcap"><span class="d">${esc(p.date)}</span><span class="t">${esc(p.caption)}</span></figcaption></figure>`).join('')}</div>`
+    ? `<div class="gallery" id="gallery">${galleryFigures}</div>${legend}`
     : '';
 
   return `<!doctype html>
