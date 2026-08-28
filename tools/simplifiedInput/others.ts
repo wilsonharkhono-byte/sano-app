@@ -1,5 +1,6 @@
 import * as XLSX from 'xlsx';
 import type { StagingRowV2 } from '../boqParserV2/types';
+import { headerCandidates } from './headers';
 
 export const OTHERS_SHEET_NAME = 'SANO Input Others';
 const DATA_START_ROW = 3; // 1-indexed: row 1 header, row 2 blank
@@ -42,23 +43,6 @@ function strAt(ws: XLSX.WorkSheet, addr: string | null, row: number): string {
   if (!addr) return '';
   const c = ws[`${addr}${row}`];
   return c && c.v != null ? String(c.v).trim() : '';
-}
-
-function normalizeHeader(raw: string): string {
-  return raw.toLowerCase().replace(/[^a-z0-9/]+/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-/**
- * The label spellings a header cell offers for matching: as written, and with a
- * trailing parenthesized annotation stripped — "Volume (m3)" and "Harga Satuan
- * (Rp)" are routine estimator edits that must not degrade the parse to
- * volume/price null. Only a TRAILING "(…)" is stripped; anything else stays
- * exact so "Total Harga" still cannot claim the price column.
- */
-function headerCandidates(raw: string): string[] {
-  const full = normalizeHeader(raw);
-  const stripped = normalizeHeader(raw.replace(/\s*\([^)]*\)\s*$/, ''));
-  return stripped && stripped !== full ? [full, stripped] : [full];
 }
 
 /**

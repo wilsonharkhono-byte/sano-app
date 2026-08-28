@@ -15,6 +15,10 @@ const FLAG_COPY: Record<string, FlagExplanation> = {
     why: 'Komponen ini berisi angka langsung tanpa rumus, jadi parser tidak bisa memastikan asal biayanya.',
     saran: 'Periksa angkanya. Setuju jika sudah benar; Koreksi jika perlu diperbaiki.',
   },
+  unrecognized_beton_grade: {
+    why: 'Kolom "Mutu Beton" baris ini berisi nilai yang tidak dikenali, jadi mutu betonnya tidak bisa dipastikan dan betonnya dicatat tanpa mutu.',
+    saran: 'Koreksi mutunya di file jadi format K-350 atau fc\' 25, lalu upload ulang — supaya betonnya cocok ke katalog dan ikut terhitung di batas kuantitas.',
+  },
 };
 
 /**
