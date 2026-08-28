@@ -788,6 +788,8 @@ interface PubHarness {
     /** Task 3.1 — codes passed to the supersede/resurrect .in('code', …) update. */
     supersedeCodes?: string[];
     resurrectCodes?: string[];
+    /** The ahs_price_book insert batch (simplified-format Others rows). */
+    priceBookBatch?: unknown;
   };
 }
 
@@ -867,6 +869,12 @@ function makePubHarness(cfg: PubCfg): PubHarness {
       }
       case 'material_baseline_snapshots':
         captured.snapshotBatch = ctx.payload;
+        return { data: null, error: null };
+      case 'ahs_price_book':
+        // Simplified-format projects only (rows flagged project_material).
+        // delete-then-insert; the insert batch is captured so tests can assert
+        // WHICH Others rows earned a price row.
+        if (ctx.op === 'insert') captured.priceBookBatch = ctx.payload;
         return { data: null, error: null };
       case 'plan_revisions':
         captured.revisionInsert = ctx.payload;
@@ -1387,5 +1395,258 @@ describe('publishBaselineV2 — ceiling-raise gate wiring (Task 2.12)', () => {
 
     expect(result.success).toBe(true);
     expect(result.warnings?.some(w => /consume_approval_task failed/i.test(w))).toBe(true);
+  });
+});
+
+// ─── publishBaselineV2 — unresolved material components + price book ─────────
+//
+// SBY-001 (2026-08): the simplified sheet's "Beton Readymix" component matched
+// nothing in material_catalog, so every one of its lines got material_id NULL,
+// was skipped from project_material_master_lines, and ~821 m³ of concrete
+// carried ZERO planned demand — every per-material quantity gate disarmed for
+// it — while the estimator saw "publish berhasil". The only trace was a
+// console.warn nobody reads. The same publish wrote two junk ahs_price_book
+// rows for an Others row whose Material cell held a work-item label.
+//
+//   (s) unresolved component names ride the `warnings` channel the screen
+//       toasts, listing DISTINCT names with the occurrence count.
+//   (t) an Others row the catalog does not know earns NO price-book row.
+//   (u) a clean publish raises no such warning.
+
+/** A BoQ staging row with an arbitrary component list. */
+function boqRowWith(
+  code: string,
+  planned: number,
+  components: Array<{ materialName: string; quantityPerUnit: number; unit: string; lineType?: string }>,
+): unknown {
+  return {
+    id: `srow-${code}`, row_number: 1, row_type: 'boq', raw_data: {},
+    parsed_data: {
+      code, label: `Item ${code}`, unit: 'm3', planned,
+      recipe: { components: components.map(c => ({ unitPrice: 0, lineType: 'material', ...c })) },
+    },
+  };
+}
+
+/** An Others-sheet (project-level) material staging row. */
+function othersRow(rowNumber: number, pd: Record<string, unknown>): unknown {
+  return {
+    id: `srow-oth-${rowNumber}`, row_number: rowNumber, row_type: 'material',
+    raw_data: { project_material: true },
+    parsed_data: { project_material: true, ...pd },
+    review_status: 'PENDING',
+  };
+}
+
+describe('publishBaselineV2 — unresolved components surface as warnings', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockRpc.mockResolvedValue({ data: null, error: null });
+  });
+
+  it('(s) names the distinct unresolved materials in `warnings`, with the occurrence count', async () => {
+    const h = makePubHarness({
+      // "Beton Readymix" appears on BOTH BoQ rows (2 occurrences, 1 name) and
+      // "Kolom Balok Praktis" once on the Others sheet → 3 occurrences, 2 names.
+      stagingRows: [
+        boqRowWith('A.1', 2, [
+          { materialName: 'Besi beton ulir 13 mm', quantityPerUnit: 10, unit: 'kg' },
+          { materialName: 'Beton Readymix', quantityPerUnit: 1, unit: 'm³' },
+        ]),
+        boqRowWith('A.2', 3, [{ materialName: 'Beton Readymix', quantityPerUnit: 1, unit: 'm³' }]),
+        othersRow(3, { name: 'Kolom Balok Praktis', unit: 'sak 40 kg', volume: 4582, reference_unit_price: 75000, tier: 1 }),
+      ],
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: null,
+      latestVersion: null,
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1');
+
+    expect(result.success).toBe(true);
+    const warning = result.warnings?.find(w => /tidak terhubung ke katalog/i.test(w));
+    expect(warning).toBeDefined();
+    // The gap is stated in the estimator's language, names the offenders, and
+    // says plainly that they are NOT guarded.
+    expect(warning).toContain('Beton Readymix');
+    expect(warning).toContain('Kolom Balok Praktis');
+    expect(warning).toContain('TIDAK dikawal per-material');
+    // 3 unresolved component occurrences…
+    expect(warning).toMatch(/^3 komponen material /);
+    // …but each NAME is listed once, not once per BoQ row that used it.
+    expect(warning!.match(/Beton Readymix/g)).toHaveLength(1);
+    expect(result.unresolvedComponentCount).toBe(3);
+    // The resolvable component still published normally.
+    expect(result.masterLineCount).toBe(1);
+  });
+
+  it('(t) an Others row the catalog does not know earns NO ahs_price_book row', async () => {
+    const h = makePubHarness({
+      stagingRows: [
+        boqRowWith('A.1', 2, [{ materialName: 'Besi beton ulir 13 mm', quantityPerUnit: 10, unit: 'kg' }]),
+        // Junk row: a work-item label over a copy of the real material's figures.
+        othersRow(2, { name: 'Kolom Balok Praktis', unit: 'sak 40 kg', volume: 4582, reference_unit_price: 75000, tier: 1 }),
+        othersRow(3, { name: 'Semen PCC 50 kg', unit: 'zak', volume: 4582, reference_unit_price: 75000, tier: 2 }),
+      ],
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: null,
+      latestVersion: null,
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1');
+
+    expect(result.success).toBe(true);
+    const pb = (h.captured.priceBookBatch ?? []) as Array<{ material_name: string; material_id: string | null }>;
+    // Only the real material is priced — and it is LINKED, so
+    // v_material_budget_status can actually join it.
+    expect(pb).toEqual([
+      expect.objectContaining({ material_name: 'Semen PCC 50 kg', material_id: 'id-pcc', tier: 2 }),
+    ]);
+    expect(result.warnings?.some(w => /no price book entry — Kolom Balok Praktis/.test(w))).toBe(true);
+  });
+
+  it('(u) a publish where every component resolves raises no unresolved warning', async () => {
+    const h = makePubHarness({
+      stagingRows: pubStagingRows(),
+      catalog: PUB_CATALOG,
+      oldCurrentVersion: null,
+      latestVersion: null,
+    });
+    mockSupabase.from.mockImplementation(h.fromImpl as never);
+
+    const result = await publishBaselineV2('sess-1', 'proj-1');
+
+    expect(result.success).toBe(true);
+    expect(result.unresolvedComponentCount).toBe(0);
+    expect(result.warnings?.some(w => /tidak terhubung ke katalog/i.test(w))).toBe(false);
+  });
+});
+
+// ─── buildProposedAggregatesFromStaging — Others must not be blind (2026-08-25) ──
+//
+// Root cause: buildProposedAggregatesFromStaging aggregated only
+// buildMasterLinesV2 (BoQ-recipe master lines) and never merged in
+// buildProjectMaterialLines (simplified-format project-level "Others"
+// materials), unlike the real publish (~:1481). Both of this function's
+// consumers were blind to Others as a result:
+//   - previewNewMasterTotals (the 2.11 re-publish diff feeding
+//     BaselineScreen.tsx and the republish harness) showed every UNCHANGED
+//     Others material as falsely REMOVED, firing REMOVED_WITH_ACTIVITY
+//     whenever one had an open request/PO;
+//   - the 2.12 ceiling-raise gate's p_proposed could not see Others totals
+//     at all.
+//
+// buildProjectMaterialLines is already covered in isolation by
+// publishProjectMaterials.test.ts; these tests lock in that
+// buildProposedAggregatesFromStaging actually MERGES it in.
+
+import { buildProposedAggregatesFromStaging, buildSessionLineInputs as _buildSessionLineInputs } from '../publishBaselineV2';
+import { computePlanRevisionDiff, type MaterialActivity, type PlanMasterRow } from '../planRevisionDiff';
+
+describe('buildProposedAggregatesFromStaging — includes project-level Others materials', () => {
+  const catalogById = new Map(PUB_CATALOG.map(c => [c.id, c]));
+
+  it('aggregates totals for BOTH the boq-recipe population and the Others population', () => {
+    const rows = [
+      ...pubStagingRows(), // A.1: 2 × 10 kg Besi → id-d13 = 20. A.2: 3 × 5 zak Semen → id-pcc = 15.
+      // Others sheet row for a DIFFERENT material than either BoQ recipe uses is not
+      // in PUB_CATALOG, so reuse Semen PCC to prove the Others total lands and ADDS
+      // on top of the recipe total for the same material_id (proof it's not silently
+      // replacing/dropping the boq population).
+      othersRow(3, { name: 'Semen PCC 50 kg', unit: 'zak', volume: 4582, reference_unit_price: 75000, tier: 2 }),
+    ];
+
+    const totals = buildProposedAggregatesFromStaging(rows as never, PUB_CATALOG, catalogById, new Map());
+
+    expect(totals.get('id-d13')).toBe(20); // boq population untouched
+    expect(totals.get('id-pcc')).toBe(15 + 4582); // boq (15) + Others sheet volume (4582)
+  });
+
+  it('surfaces an Others-only material (no BoQ recipe references it) with the sheet volume', () => {
+    const rows = [
+      othersRow(1, { name: 'Semen PCC 50 kg', unit: 'zak', volume: 4582, reference_unit_price: 75000, tier: 2 }),
+    ];
+
+    const totals = buildProposedAggregatesFromStaging(rows as never, PUB_CATALOG, catalogById, new Map());
+
+    expect(totals.size).toBe(1);
+    expect(totals.get('id-pcc')).toBe(4582);
+  });
+});
+
+describe('buildProposedAggregatesFromStaging → computePlanRevisionDiff — the 2026-08-25 incident', () => {
+  // Third catalog material so the scenario has an unchanged-with-activity Others
+  // material (id-pcc) AND a genuinely new one (id-new) in the same staged set.
+  const catalog: CatalogRow[] = [
+    ...PUB_CATALOG,
+    { id: 'id-new', code: 'NEW-1', name: 'Material Baru', category: 'x', tier: 3, unit: 'kg' },
+  ];
+  const catalogById = new Map(catalog.map(c => [c.id, c]));
+
+  // The re-publish scenario: current master = rebar (id-d13) + one Others material
+  // (id-pcc) that has an open request (activity). Staged rows re-state BOTH
+  // unchanged, plus stage a brand-new Others material (id-new).
+  const currentMasterRows: PlanMasterRow[] = [
+    { material_id: 'id-d13', planned_quantity: 20 },
+    { material_id: 'id-pcc', planned_quantity: 4582 },
+  ];
+  const activity = new Map<string, MaterialActivity>([
+    ['id-pcc', { ordered: 0, requested: 500, receiptsExist: false }], // has activity
+    ['id-new', { ordered: 0, requested: 10, receiptsExist: false }], // has activity too, so ADDED still emits a line
+  ]);
+
+  function stagedRows() {
+    return [
+      boqRowWith('A.1', 2, [{ materialName: 'Besi beton ulir 13 mm', quantityPerUnit: 10, unit: 'kg' }]), // → id-d13 = 20, unchanged
+      othersRow(2, { name: 'Semen PCC 50 kg', unit: 'zak', volume: 4582, reference_unit_price: 75000, tier: 2 }), // → id-pcc = 4582, unchanged
+      othersRow(3, { name: 'Material Baru', unit: 'kg', volume: 50, reference_unit_price: 1000, tier: 3 }), // → id-new, ADDED
+    ];
+  }
+
+  it('fix: the unchanged Others material produces no REMOVED line and no warning class', () => {
+    const proposed = buildProposedAggregatesFromStaging(stagedRows() as never, catalog, catalogById, new Map());
+    const newMasterRows: PlanMasterRow[] = [...proposed.entries()].map(([material_id, planned_quantity]) => ({ material_id, planned_quantity }));
+
+    const diff = computePlanRevisionDiff(newMasterRows, currentMasterRows, activity);
+
+    expect(diff.warningClasses).toEqual([]);
+    expect(diff.lines.some(l => l.material_id === 'id-pcc')).toBe(false); // unchanged → not even a line
+    expect(diff.lines.find(l => l.classification === 'REMOVED_WITH_ACTIVITY')).toBeUndefined();
+    // The genuinely new material is a plain, warning-free ADDED record.
+    const added = diff.lines.find(l => l.material_id === 'id-new');
+    expect(added?.classification).toBe('ADDED');
+  });
+
+  it('incident reproduction: aggregating ONLY the boq-recipe population (the pre-fix path) falsely REMOVEs the unchanged Others material', () => {
+    // Reconstructs the pre-fix computation inline (buildMasterLinesV2 alone, no
+    // buildProjectMaterialLines merge) to prove this is a real regression test,
+    // not a tautology: the SAME staged rows, run through the OLD aggregation,
+    // reproduce the incident.
+    const rows = stagedRows();
+    const skipSet = new Set(zeroPlannedBoqCodes(rows as never));
+    const publishable = new Set<string>();
+    for (const r of rows as never as { row_type: string; parsed_data: { code?: string } }[]) {
+      if (r.row_type !== 'boq') continue;
+      const code = r.parsed_data.code ?? '';
+      if (!code || skipSet.has(code)) continue;
+      if (buildBoqItemInsert(r as never, '') != null) publishable.add(code);
+    }
+    const { masterLineInputs } = _buildSessionLineInputs(
+      rows as never, catalog, catalogById, new Map(), null,
+      (code) => (publishable.has(code) ? code : undefined),
+    );
+    const preFixMasterLines = buildMasterLinesV2(masterLineInputs, 'proposed');
+    const preFixNewMasterRows: PlanMasterRow[] = preFixMasterLines.map(l => ({ material_id: l.material_id, planned_quantity: l.planned_quantity }));
+
+    const diff = computePlanRevisionDiff(preFixNewMasterRows, currentMasterRows, activity);
+
+    // The incident: id-pcc is absent from the boq-only aggregation even though
+    // it is unchanged on the Others sheet, so the diff sees it as REMOVED —
+    // and because it has activity, that's REMOVED_WITH_ACTIVITY.
+    expect(diff.warningClasses).toContain('REMOVED_WITH_ACTIVITY');
+    const removed = diff.lines.find(l => l.material_id === 'id-pcc');
+    expect(removed?.classification).toBe('REMOVED_WITH_ACTIVITY');
   });
 });

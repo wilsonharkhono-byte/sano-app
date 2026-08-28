@@ -100,13 +100,45 @@ describe('buildProjectPriceBook', () => {
     ]);
   });
 
-  it('keeps an unresolved material by name (material_id null) so the office can link it later', () => {
+  // A name the catalog does not know can never join v_material_budget_status
+  // (047:75-82 joins on material_id), and nothing backfills material_id on this
+  // table — so a material_id NULL row was inert AND read as a real price. It is
+  // now skipped, matching buildProjectMaterialLines, and reported.
+  it('skips a material the catalog does not know instead of writing a NULL-material_id row', () => {
     const rows = [
       materialRow({ name: 'Unobtanium X', unit: 'kg', volume: 5, reference_unit_price: 1000, tier: 3, project_material: true }),
     ];
-    const { rows: pb } = buildProjectPriceBook(rows, 'p', catalog as never, new Map());
-    expect(pb).toEqual([
-      { project_id: 'p', material_id: null, material_name: 'Unobtanium X', unit: 'kg', unit_price: 1000, tier: 3 },
+    const { rows: pb, skipped } = buildProjectPriceBook(rows, 'p', catalog as never, new Map());
+    expect(pb).toEqual([]);
+    expect(skipped).toEqual(['Unobtanium X: not in material catalog (no envelope to price)']);
+  });
+
+  // SBY-001 (2026-08): the Others sheet carried two junk rows whose Material
+  // cell held a WORK-ITEM label ("Kolom Balok Praktis") over a copy of the Semen
+  // PC / Batako figures. Master lines dropped them (unresolved); the price book
+  // kept them, so the live book showed 15 rows including two phantom materials
+  // priced identically to real ones. The two builders must agree on which rows
+  // are real.
+  it('drops the exact junk rows that master lines drop (SBY-001 "Kolom Balok Praktis" shape)', () => {
+    const rows = [
+      materialRow({ name: 'Kolom Balok Praktis', unit: 'sak 40 kg', volume: 4582, reference_unit_price: 75000, tier: 1, project_material: true }),
+      materialRow({ name: 'Kolom Balok Praktis', unit: 'm3', volume: 8628, reference_unit_price: 350000, tier: 1, project_material: true }),
+      materialRow({ name: 'Semen PC', unit: 'sak 40 kg', volume: 4582, reference_unit_price: 75000, tier: 2, project_material: true }),
+      materialRow({ name: 'Pasir Pasang', unit: 'm3', volume: 369.97, reference_unit_price: 350000, tier: 3, project_material: true }),
+    ];
+    const { rows: pb, skipped } = buildProjectPriceBook(rows, 'p', catalog as never, new Map());
+    const { lines } = buildProjectMaterialLines(rows, 'm', catalog as never, new Map());
+
+    expect(pb.map(r => r.material_name)).toEqual(['Semen PC', 'Pasir Pasang']);
+    expect(pb.every(r => r.material_id != null)).toBe(true);
+    // Same membership as the master lines for these rows — the two builders no
+    // longer disagree about which NAMES are real. (They still differ on the
+    // other axes by design: master lines need volume > 0, price rows need a
+    // price + tier.)
+    expect(pb.map(r => r.material_id).sort()).toEqual(lines.map(l => l.material_id).sort());
+    expect(skipped).toEqual([
+      'Kolom Balok Praktis: not in material catalog (no envelope to price)',
+      'Kolom Balok Praktis: not in material catalog (no envelope to price)',
     ]);
   });
 
