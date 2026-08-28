@@ -203,27 +203,80 @@ describe('opnameRpc', () => {
   // ─── getLaborPaymentSummary ─────────────────────────────────────────
 
   describe('getLaborPaymentSummary', () => {
-    it('queries contracts, opnames, kasbon, and rates for the project', async () => {
-      // The new implementation makes multiple .from() calls in parallel,
-      // each with different chain methods. Provide a fully chainable mock.
-      const makeChain = (data: any[] = []) => {
-        const chain: Record<string, jest.Mock> = {};
-        const resolver = { data, error: null };
-        chain.select = jest.fn().mockReturnValue(chain);
-        chain.eq = jest.fn().mockReturnValue(chain);
-        chain.in = jest.fn().mockReturnValue(chain);
-        chain.order = jest.fn().mockResolvedValue(resolver);
-        // For calls that end without .order (e.g. mandor_contract_rates)
-        chain.then = jest.fn((resolve: any) => resolve(resolver));
-        return chain;
-      };
+    // The implementation makes multiple .from() calls in parallel, each with
+    // different chain methods. Provide a fully chainable mock.
+    const makeChain = (data: any[] = []) => {
+      const chain: Record<string, jest.Mock> = {};
+      const resolver = { data, error: null };
+      chain.select = jest.fn().mockReturnValue(chain);
+      chain.eq = jest.fn().mockReturnValue(chain);
+      chain.in = jest.fn().mockReturnValue(chain);
+      chain.order = jest.fn().mockResolvedValue(resolver);
+      // For calls that end without .order (e.g. mandor_contract_rates)
+      chain.then = jest.fn((resolve: any) => resolve(resolver));
+      return chain;
+    };
 
+    it('queries contracts, opnames, kasbon, and rates for the project', async () => {
       mockFrom.mockImplementation(() => makeChain([]));
 
       const result = await getLaborPaymentSummary('project-uuid-1');
 
       expect(mockFrom).toHaveBeenCalledWith('mandor_contracts');
       expect(result).toEqual([]);
+    });
+
+    // Guards tools/opnameRpc.ts:169-172 — contract_vs_boq_variance_pct must
+    // fall back to undefined (not 0) when there's no AHS labor baseline to
+    // compare against, e.g. every project ingested via the simplified
+    // "SANO Input" format, where ahs_lines.unit_price is 0 by design. A
+    // literal 0 would render as "0% variance / on budget" instead of
+    // "no AHS data" — see tools/opname.ts:460-463 for the reference pattern.
+    it('reports contract_vs_boq_variance_pct as undefined when boq labor budget is 0', async () => {
+      mockFrom.mockImplementation((table: string) => {
+        switch (table) {
+          case 'mandor_contracts':
+            return makeChain([{ id: 'contract-1', mandor_name: 'Pak Budi', trade_categories: ['besi'] }]);
+          case 'opname_headers':
+            return makeChain([]);
+          case 'mandor_kasbon':
+            return makeChain([]);
+          case 'mandor_contract_rates':
+            return makeChain([{ contract_id: 'contract-1', contracted_rate: 500000, boq_labor_rate: 0 }]);
+          default:
+            return makeChain([]);
+        }
+      });
+
+      const result = await getLaborPaymentSummary('project-uuid-1');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].total_boq_labor_budget).toBe(0);
+      expect(result[0].total_contracted_budget).toBe(500000);
+      expect(result[0].contract_vs_boq_variance_pct).toBeUndefined();
+    });
+
+    it('reports a real contract_vs_boq_variance_pct when boq labor budget is positive', async () => {
+      mockFrom.mockImplementation((table: string) => {
+        switch (table) {
+          case 'mandor_contracts':
+            return makeChain([{ id: 'contract-2', mandor_name: 'Pak Joko', trade_categories: ['besi'] }]);
+          case 'opname_headers':
+            return makeChain([]);
+          case 'mandor_kasbon':
+            return makeChain([]);
+          case 'mandor_contract_rates':
+            return makeChain([{ contract_id: 'contract-2', contracted_rate: 550000, boq_labor_rate: 500000 }]);
+          default:
+            return makeChain([]);
+        }
+      });
+
+      const result = await getLaborPaymentSummary('project-uuid-1');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].total_boq_labor_budget).toBe(500000);
+      expect(result[0].contract_vs_boq_variance_pct).toBe(10);
     });
   });
 

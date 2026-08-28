@@ -24,7 +24,7 @@ export interface LaborPaymentSummary {
   total_kasbon: number;
   total_boq_labor_budget: number;
   total_contracted_budget: number;
-  contract_vs_boq_variance_pct: number;
+  contract_vs_boq_variance_pct?: number;
   latest_approved_week: number | null;
   latest_approved_date: string | null;
 }
@@ -167,9 +167,12 @@ export async function getLaborPaymentSummary(
     const latest = contractOpnames
       .sort((a, b) => (b.opname_date ?? '').localeCompare(a.opname_date ?? ''))
       [0];
+    // budgets.boq is permanently 0 for projects ingested via the simplified
+    // "SANO Input" format (ahs_lines.unit_price is 0 by design there) — a
+    // literal 0% would read as "on budget" instead of "no AHS baseline".
     const variancePct = budgets.boq > 0
       ? Math.round(((budgets.contracted - budgets.boq) / budgets.boq) * 1000) / 10
-      : 0;
+      : undefined;
 
     return {
       project_id: projectId,
