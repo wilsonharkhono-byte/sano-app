@@ -6,6 +6,8 @@
  */
 
 import { supabase } from './supabase';
+import { UserRole, type UserRoleType } from './constants';
+import { canAssignRole, canChangeMemberRole, canManageTeamMember } from './rolePermissions';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -33,6 +35,33 @@ export interface ProfileOption {
   full_name: string;
   role: string;
   phone: string | null;
+}
+
+/**
+ * Who is performing a team write, and what the affected member is today.
+ *
+ * Every mutating call below takes one of these because of migration 090:
+ *   • ROLE — granting or revoking `principal` is refused for EVERY actor here,
+ *     principal included. That seat is edited directly in SQL. Admin and
+ *     principal still reshuffle supervisor / estimator / admin freely.
+ *   • ROSTER — adding or removing a principal MEMBER needs a principal actor;
+ *     admin and estimator keep the rest of the roster (migrations 023 + 037).
+ *
+ * The server-side triggers are authoritative — these client checks exist so
+ * the app surfaces the Indonesian reason from tools/rolePermissions.ts instead
+ * of a raw Postgres exception, and so a denied action never leaves the device.
+ */
+export interface TeamMemberActor {
+  /** Role of the signed-in user performing the write. */
+  actorRole: UserRoleType;
+  /** Role the affected member holds right now. */
+  memberRole: UserRoleType;
+}
+
+export interface RoleChangeActor {
+  actorRole: UserRoleType;
+  /** Role the member holds BEFORE the change — guarded as tightly as the new one. */
+  memberCurrentRole: UserRoleType;
 }
 
 export const ROLE_LABELS: Record<string, string> = {
@@ -78,11 +107,13 @@ export async function createProject(
 
   if (error) return { error: error.message };
 
-  // Auto-assign the creator so they immediately have access
-  await supabase.from('project_assignments').insert({
-    project_id: data.id,
-    user_id:    authData.user.id,
-  });
+  // Auto-assign the creator so they immediately have access. Upsert, not
+  // insert: a principal creator is already on the roster — migration 093's
+  // projects trigger assigns every principal to each new project.
+  await supabase.from('project_assignments').upsert(
+    { project_id: data.id, user_id: authData.user.id },
+    { onConflict: 'project_id,user_id', ignoreDuplicates: true },
+  );
 
   return { data };
 }
@@ -141,7 +172,11 @@ export async function listAllProfiles(): Promise<ProfileOption[]> {
 export async function addUserToProject(
   projectId: string,
   userId: string,
+  actor: TeamMemberActor,
 ): Promise<{ error?: string }> {
+  const perm = canManageTeamMember(actor.actorRole, actor.memberRole);
+  if (!perm.allowed) return { error: perm.reason };
+
   const { error } = await supabase
     .from('project_assignments')
     .insert({ project_id: projectId, user_id: userId });
@@ -152,7 +187,11 @@ export async function addUserToProject(
 
 export async function removeUserFromProject(
   assignmentId: string,
+  actor: TeamMemberActor,
 ): Promise<{ error?: string }> {
+  const perm = canManageTeamMember(actor.actorRole, actor.memberRole);
+  if (!perm.allowed) return { error: perm.reason };
+
   const { error } = await supabase
     .from('project_assignments')
     .delete()
@@ -177,7 +216,15 @@ export interface InviteInput {
  */
 export async function inviteUser(
   input: InviteInput,
+  actor: { actorRole: UserRoleType },
 ): Promise<{ data?: { user_id: string; email: string; full_name: string; role: string }; error?: string }> {
+  // Registering a brand-new user IS granting them a role, so it goes through
+  // the same gate as changing an existing one. The edge function re-checks
+  // this server-side; it runs on the service-role key, which the migration 090
+  // triggers deliberately let through.
+  const perm = canAssignRole(actor.actorRole, input.role as UserRoleType);
+  if (!perm.allowed) return { error: perm.reason };
+
   const { data, error } = await supabase.functions.invoke('invite-user', {
     body: input,
   });
@@ -193,9 +240,15 @@ export async function inviteUser(
 export async function updateUserRole(
   userId: string,
   newRole: string,
+  actor: RoleChangeActor,
 ): Promise<{ error?: string }> {
-  const validRoles = ['supervisor', 'estimator', 'admin', 'principal'];
+  const validRoles: string[] = [
+    UserRole.SUPERVISOR, UserRole.ESTIMATOR, UserRole.ADMIN, UserRole.PRINCIPAL,
+  ];
   if (!validRoles.includes(newRole)) return { error: 'Role tidak valid' };
+
+  const perm = canChangeMemberRole(actor.actorRole, actor.memberCurrentRole, newRole as UserRoleType);
+  if (!perm.allowed) return { error: perm.reason };
 
   const { error } = await supabase
     .from('profiles')

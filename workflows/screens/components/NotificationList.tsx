@@ -12,6 +12,9 @@ export interface NotificationItem {
   readAt: string | null;
   deeplinkScreen: string;
   deeplinkParams: Record<string, unknown> | null;
+  /** Name of the project the notification belongs to — users on several
+   *  projects read one merged list, so every row names its project. */
+  projectName?: string | null;
 }
 
 interface Props {
@@ -102,6 +105,9 @@ const NotificationRow = React.memo(function NotificationRow({
         <Ionicons name={ts.icon} size={18} color={ts.color} />
       </View>
       <View style={styles.rowContent}>
+        {!!item.projectName && (
+          <Text style={styles.project} numberOfLines={1}>{item.projectName}</Text>
+        )}
         <View style={styles.titleRow}>
           <Text style={[styles.title, unread && styles.titleUnread]} numberOfLines={1}>
             {item.title}
@@ -191,6 +197,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   rowContent: { flex: 1, gap: 2 },
+  project: {
+    fontFamily: FONTS.semibold,
+    fontSize: TYPE.xs,
+    color: COLORS.textMuted,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm },
   title: { flex: 1, fontFamily: FONTS.medium, fontSize: TYPE.base, color: COLORS.text },
   titleUnread: { fontFamily: FONTS.semibold },
