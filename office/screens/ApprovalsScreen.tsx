@@ -12,13 +12,17 @@ import {
   CHANGE_TYPE_LABELS, IMPACT_LABELS, DECISION_LABELS,
   type SiteChange, type Decision,
 } from '../../tools/siteChanges';
-import { getEnvelopesByMaterialIds, type EnvelopeWithPrice } from '../../tools/envelopes';
+import {
+  getEnvelopesByMaterialIds, getWorkGroupMaterialEnvelopes,
+  type EnvelopeWithPrice, type WorkGroupMaterialEnvelope,
+} from '../../tools/envelopes';
 import { displayQty } from '../../tools/materialUnitConversion';
 import { MRStatus, type MRStatusType } from '../../tools/constants';
 import { validateRequestStatusTransition } from '../../tools/rolePermissions';
 import { getRequestActionAffordances } from '../../tools/requestActionAffordances';
+import { buildWorkGroups } from '../../tools/boqWorkGroups';
 import { MaterialUsagePanel } from './components/MaterialUsagePanel';
-import type { OverageReason } from '../../tools/types';
+import type { OverageReason, WorkGroup } from '../../tools/types';
 import type { CeilingRaisePayloadEntry } from '../../tools/ceilingRaiseGate';
 
 type Tab = 'mtn' | 'perubahan' | 'requests' | 'ceiling';
@@ -103,7 +107,10 @@ interface MaterialRequestAllocationSummary {
   boq_item_id: string | null;
   allocated_quantity: number;
   proportion_pct: number;
-  allocation_basis: 'DIRECT' | 'TIER2_ENVELOPE' | 'GENERAL_STOCK';
+  // 'WORKGROUP_ENVELOPE' (PermintaanScreen.tsx:218) was previously missing from
+  // this union — Tier-1 work-group lines write allocations with this basis, and
+  // the missing case silently fell through the DIRECT-only lookup below.
+  allocation_basis: 'DIRECT' | 'TIER2_ENVELOPE' | 'GENERAL_STOCK' | 'WORKGROUP_ENVELOPE';
 }
 
 function statusFlag(status: string) {
@@ -171,7 +178,7 @@ function describeRequestScope(request: MaterialRequest, boqLabels: Record<string
 }
 
 export default function ApprovalsScreen() {
-  const { project, profile } = useProject();
+  const { project, profile, boqItems } = useProject();
   const { show: toast } = useToast();
   const { width } = useWindowDimensions();
   const isTablet  = width >= BREAKPOINTS.tablet;
@@ -207,6 +214,21 @@ export default function ApprovalsScreen() {
   const [loading, setLoading] = useState(false);
   const [envelopeMap, setEnvelopeMap] = useState<Map<string, EnvelopeWithPrice>>(new Map());
   const [boqItemMap, setBoqItemMap] = useState<Map<string, { planned: number; installed: number; code: string; label: string }>>(new Map());
+  // Tier-1 work-group grain (design spec §3 remediation): classify the
+  // project's boq_items into the same work groups PermintaanScreen builds
+  // (tools/boqWorkGroups.ts) so a WORKGROUP_ENVELOPE allocation's boq_item_id
+  // can be traced back to its group, then fetch that group's live per-material
+  // envelope (migration 086) — one round trip per distinct group referenced by
+  // the requests on screen, cached by group key.
+  const workGroups = useMemo<WorkGroup[]>(() => buildWorkGroups(boqItems), [boqItems]);
+  const itemIdToGroup = useMemo(() => {
+    const map = new Map<string, WorkGroup>();
+    for (const group of workGroups) {
+      for (const itemId of group.itemIds) map.set(itemId, group);
+    }
+    return map;
+  }, [workGroups]);
+  const [groupEnvelopeMap, setGroupEnvelopeMap] = useState<Map<string, WorkGroupMaterialEnvelope[]>>(new Map());
 
   const loadData = useCallback(async () => {
     if (!project) return;
@@ -365,6 +387,47 @@ export default function ApprovalsScreen() {
   }, [project]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Warm the group-grain envelope (migration 086, one call per group) for every
+  // Tier-1 line on screen that has a WORKGROUP_ENVELOPE allocation and no DIRECT
+  // one. `itemIdToGroup` depends on `boqItems`, which loads independently via
+  // useProject() — this effect re-fires as either that or `requests` settles, and
+  // is a no-op once every referenced group is cached (mirrors PermintaanScreen's
+  // cacheWorkGroupEnvelope pattern).
+  useEffect(() => {
+    if (!project) return;
+    const missing = new Map<string, string[]>(); // group key -> group itemIds
+    for (const req of requests) {
+      for (const line of req.material_request_lines ?? []) {
+        if (line.tier !== 1) continue;
+        const allocations = line.material_request_line_allocations ?? [];
+        const hasDirect = allocations.some(a => a.allocation_basis === 'DIRECT');
+        if (hasDirect) continue;
+        const wgAlloc = allocations.find(a => a.allocation_basis === 'WORKGROUP_ENVELOPE' && a.boq_item_id);
+        if (!wgAlloc?.boq_item_id) continue;
+        const group = itemIdToGroup.get(wgAlloc.boq_item_id);
+        if (!group || groupEnvelopeMap.has(group.key) || missing.has(group.key)) continue;
+        missing.set(group.key, group.itemIds);
+      }
+    }
+    if (missing.size === 0) return;
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        Array.from(missing.entries()).map(async ([key, itemIds]) => {
+          const { rows } = await getWorkGroupMaterialEnvelopes(project.id, itemIds);
+          return [key, rows] as const;
+        }),
+      );
+      if (cancelled) return;
+      setGroupEnvelopeMap(prev => {
+        const next = new Map(prev);
+        for (const [key, rows] of entries) next.set(key, rows);
+        return next;
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [project, requests, itemIdToGroup, groupEnvelopeMap]);
 
   const handleMTN = async (id: string, approve: boolean) => {
     if (!profile) return;
@@ -757,6 +820,31 @@ export default function ApprovalsScreen() {
                     (a) => a.boq_item_id && a.allocation_basis === 'DIRECT',
                   );
                   const boqItem = firstAllocation?.boq_item_id ? boqItemMap.get(firstAllocation.boq_item_id) ?? null : null;
+                  // Tier-1 WORKGROUP_ENVELOPE grain (design spec §3 remediation):
+                  // only computed when there's no DIRECT allocation — mirrors
+                  // MaterialUsagePanel's own !props.boqItem branch condition.
+                  let groupEnvelope: { label: string; planned: number; ordered: number; requested: number; unit: string } | null = null;
+                  if (line.tier === 1 && !boqItem) {
+                    const wgAllocation = line.material_request_line_allocations?.find(
+                      (a) => a.boq_item_id && a.allocation_basis === 'WORKGROUP_ENVELOPE',
+                    );
+                    const group = wgAllocation?.boq_item_id ? itemIdToGroup.get(wgAllocation.boq_item_id) : null;
+                    const groupRows = group ? groupEnvelopeMap.get(group.key) : null;
+                    const materialRow = groupRows?.find(r => r.material_id === line.material_id);
+                    if (group && materialRow) {
+                      groupEnvelope = {
+                        label: group.label,
+                        planned: materialRow.planned,
+                        ordered: materialRow.ordered,
+                        requested: materialRow.requested,
+                        // Base unit — same material as the project-grain envelope,
+                        // whose unit comes from v_material_envelope_status; the
+                        // work-group RPC returns base units too (086 header),
+                        // falling back to the line's own stored (base) unit.
+                        unit: envelope?.unit ?? line.unit,
+                      };
+                    }
+                  }
                   return (
                     <View key={line.id} style={{ marginTop: SPACE.sm }}>
                       <Text style={styles.itemSub}>
@@ -772,6 +860,7 @@ export default function ApprovalsScreen() {
                         boqItemId={firstAllocation?.boq_item_id ?? null}
                         envelope={envelope}
                         boqItem={boqItem}
+                        groupEnvelope={groupEnvelope}
                         overageReason={line.overage_reason}
                         overageNote={line.overage_note}
                       />

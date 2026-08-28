@@ -208,6 +208,117 @@ describe('MaterialUsagePanel — Tier 1', () => {
     // Falls back to envelope-style display; should not crash, should show envelope numbers
     expect(getByText(/Envelope kuantitas/i)).toBeTruthy();
   });
+
+  // Design spec §3 remediation — Change 1: a WORKGROUP_ENVELOPE line (no DIRECT
+  // boq_item allocation) must show the WORK-GROUP grain prominently, not just
+  // the project-wide figures. Change 2: the Tier-1 line must not claim
+  // "Anggaran tidak tersedia" — cost isn't tracked per material at Tier 1 by
+  // design.
+  it('renders the group-grain envelope panel + Tier-1 cost wording when groupEnvelope is provided', () => {
+    const { getByText, getAllByText, queryByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-besi-d13"
+        tier={1}
+        requestedQuantity={200}
+        requestedUnit="kg"
+        boqItemId="boq-t1-005"
+        envelope={tier2Envelope({
+          tier: 1, material_name: 'Besi D13', unit: 'kg',
+          total_planned: 50000, total_ordered: 8000, total_requested: 10996,
+          baseline_unit_price: null, envelope_total_rupiah: null, envelope_used_rupiah: null, envelope_remaining_rupiah: null,
+        })}
+        boqItem={null}
+        groupEnvelope={{ label: 'Lantai 1 ; Boredpile', planned: 1600, ordered: 400, requested: 1174.6, unit: 'kg' }}
+      />,
+    );
+    // Group grain, prominent, explicitly labeled.
+    expect(getByText(/Envelope kuantitas — Grup: Lantai 1 ; Boredpile/)).toBeTruthy();
+    expect(getByText(/Rencana grup: 1\.600 kg/)).toBeTruthy();
+    expect(getByText(/Sudah di-PO \(grup\): 400 kg/)).toBeTruthy();
+    // requested 1174.6 includes this request's own 200 → self-excluded: 974.6.
+    expect(getByText(/Permintaan berjalan lain \(grup\): 974[,.]6 kg/)).toBeTruthy();
+    // Both the project-grain overage panel (rendered unconditionally above) and
+    // the new group panel show "Permintaan ini" with the same quantity — assert
+    // it appears in both rather than picking one.
+    expect(getAllByText(/Permintaan ini: 200 kg/)).toHaveLength(2);
+    // Proyeksi grup = 400 + 974.6 + 200 = 1574.6 / 1600 = 98%.
+    expect(getByText(/Proyeksi grup: 1\.574[,.]6 kg \(98%\)/)).toBeTruthy();
+    // Project grain stays visible too, explicitly labeled so the two can't be confused.
+    expect(getByText(/Envelope kuantitas — Proyek/)).toBeTruthy();
+    // Change 2: Tier-1 wording, not the Tier-2 "Anggaran tidak tersedia" copy.
+    expect(getByText(/Tier 1: kontrol kuantitas — biaya tidak dilacak per material\./)).toBeTruthy();
+    expect(queryByText(/Anggaran tidak tersedia/i)).toBeNull();
+  });
+
+  it('flags the group envelope as critical when the group projection exceeds 100%', () => {
+    // planned 1000, ordered 1200, requested == thisQty (self-excludes to 0
+    // otherOpen) → projected 1200 + 0 + 500 = 1700 = 170% > 100.
+    const { getByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-besi-d13"
+        tier={1}
+        requestedQuantity={500}
+        requestedUnit="kg"
+        boqItemId="boq-t1-005"
+        envelope={tier2Envelope({ tier: 1, material_name: 'Besi D13', unit: 'kg', total_planned: 50000 })}
+        boqItem={null}
+        groupEnvelope={{ label: 'Lantai 1 ; Boredpile', planned: 1000, ordered: 1200, requested: 500, unit: 'kg' }}
+      />,
+    );
+    expect(getByText(/⚠ Melebihi alokasi grup/i)).toBeTruthy();
+  });
+
+  it('shows a no-baseline note (not a fake 0%) when the group has no planned demand', () => {
+    const { getByText, queryByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-besi-d13"
+        tier={1}
+        requestedQuantity={50}
+        requestedUnit="kg"
+        boqItemId="boq-t1-009"
+        envelope={tier2Envelope({ tier: 1, material_name: 'Besi D13', unit: 'kg', total_planned: 50000 })}
+        boqItem={null}
+        groupEnvelope={{ label: 'Atap', planned: 0, ordered: 0, requested: 0, unit: 'kg' }}
+      />,
+    );
+    expect(getByText(/Tidak ada alokasi pembanding untuk grup ini/)).toBeTruthy();
+    expect(queryByText(/\(0%\)/)).toBeNull();
+  });
+
+  it('falls back to the project-grain-only panel (old behavior) when groupEnvelope is null', () => {
+    const { getByText, queryByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-besi-d13"
+        tier={1}
+        requestedQuantity={50}
+        requestedUnit="kg"
+        boqItemId="boq-t1-009"
+        envelope={tier2Envelope({
+          tier: 1, material_name: 'Besi D13', unit: 'kg', total_planned: 50000,
+          baseline_unit_price: null, envelope_total_rupiah: null, envelope_used_rupiah: null, envelope_remaining_rupiah: null,
+        })}
+        boqItem={null}
+        groupEnvelope={null}
+      />,
+    );
+    expect(queryByText(/Envelope kuantitas — Grup:/)).toBeNull();
+    expect(getByText(/Envelope kuantitas — Proyek/)).toBeTruthy();
+    expect(getByText(/Tier 1: kontrol kuantitas — biaya tidak dilacak per material\./)).toBeTruthy();
+  });
+
+  it('keeps the original Tier-2 "Anggaran tidak tersedia" wording unchanged', () => {
+    const { getByText, queryByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-bata"
+        tier={2}
+        requestedQuantity={200}
+        requestedUnit="pcs"
+        envelope={tier2Envelope({ baseline_unit_price: null, envelope_total_rupiah: null, envelope_used_rupiah: null, envelope_remaining_rupiah: null })}
+      />,
+    );
+    expect(getByText(/Anggaran tidak tersedia \(harga acuan kosong di AHS\)\./)).toBeTruthy();
+    expect(queryByText(/kontrol kuantitas/i)).toBeNull();
+  });
 });
 
 describe('MaterialUsagePanel — Tier 3', () => {
