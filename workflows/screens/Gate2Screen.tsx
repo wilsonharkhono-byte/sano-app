@@ -21,9 +21,11 @@ import {
   evaluatePoQuantityGate,
   buildOverridePayload,
   checkOverrideCoverage,
+  envelopeLegs,
   type PoGateEnvelope,
   type PoGateLine,
 } from '../../tools/poQuantityGate';
+import { remainingToOrder } from '../../tools/envelopeMath';
 import {
   getRequestLineLinkCandidates,
   candidateDisplayName,
@@ -80,11 +82,19 @@ interface DraftPOLine {
   base_qty_per_supplier_unit: number | null;
   /** Typed per SUPPLIER unit (Rp/batang for rebar); submit converts to Rp/base. */
   unit_price: string;
-  /** Optional request→PO traceability link (Task 2.8): the APPROVED
-      material_request_lines.id this PO line fulfills. null = unlinked. */
+  /** Request→PO traceability link (Task 2.8): the APPROVED
+      material_request_lines.id this PO line fulfills. null = unlinked.
+      Since 2026-08-31 this is PRE-SELECTED automatically when a catalog
+      material is chosen — the admin edits or clears it, rather than
+      remembering to set it. An unlinked line is still creatable (legit
+      unplanned buys exist); it just warns. */
   request_line_id: string | null;
   /** Display label for the linked request ("<name> <qty> <unit>") — chip text. */
   request_line_label: string | null;
+  /** True when the link was pre-selected by the app, not picked by the admin —
+      surfaced in the chip so an automatic choice never looks like a decision
+      the admin made. */
+  request_link_auto?: boolean;
 }
 
 type DraftBoqMode = 'single' | 'multi' | 'general';
@@ -187,9 +197,12 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
           .limit(1),
         // Project-grain envelope figures for the hard PO quantity gate (lockstep
         // with migration 071's create_purchase_order: remaining = planned − ordered).
+        // total_requested comes along for CONTEXT ONLY — the admin needs to see
+        // how much request demand is standing behind the headroom. It never
+        // enters the gate comparison (see the chip below).
         supabase
           .from('v_material_envelope_status')
-          .select('material_id, material_name, total_planned, total_ordered')
+          .select('material_id, material_name, total_planned, total_ordered, total_requested')
           .eq('project_id', project.id),
         // Decided-in-favor quantity-override tasks the admin can retry a breaching
         // PO with. Gate2Screen now renders only Approve/Reject for po_qty_gate
@@ -220,12 +233,13 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       setMaterialOptions((materialRes.data as MaterialOption[]) ?? []);
 
       const envMap = new Map<string, PoGateEnvelope>();
-      for (const row of (envelopeRes.data as Array<{ material_id: string; material_name: string; total_planned: number; total_ordered: number }> ?? [])) {
+      for (const row of (envelopeRes.data as Array<{ material_id: string; material_name: string; total_planned: number; total_ordered: number; total_requested: number }> ?? [])) {
         envMap.set(row.material_id, {
           material_id: row.material_id,
           material_name: row.material_name,
           total_planned: Number(row.total_planned ?? 0),
           total_ordered: Number(row.total_ordered ?? 0),
+          total_requested: Number(row.total_requested ?? 0),
         });
       }
       setEnvelopeByMaterial(envMap);
@@ -542,10 +556,12 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
   // lines in one unsaved PO could both claim the same remaining quantity, and
   // the picker would show more available than actually exists once this PO is
   // saved.
-  const requestCandidatesForActiveLine = useMemo(() => {
-    if (!activeRequestDraftLine) return [];
+  const requestCandidatesForLine = useCallback((
+    lineId: string,
+    materialId: string | null,
+  ) => {
     const draftLinks: LinkedPoLineQuantity[] = draftLines
-      .filter(line => line.id !== activeRequestDraftLine.id && line.request_line_id)
+      .filter(line => line.id !== lineId && line.request_line_id)
       .map(line => ({
         request_line_id: line.request_line_id as string,
         quantity: isPositiveNumber(line.quantity)
@@ -554,23 +570,128 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
         po_status: POStatus.OPEN, // a draft line is never a cancelled PO
       }));
     return getRequestLineLinkCandidates(requestLineCandidates, {
-      draftMaterialId: activeRequestDraftLine.material_id || null,
+      draftMaterialId: materialId,
       linkedPoLines: [...linkedPoLines, ...draftLinks],
     });
-  }, [activeRequestDraftLine, draftLines, linkedPoLines, requestLineCandidates]);
+  }, [draftLines, linkedPoLines, requestLineCandidates]);
+
+  const requestCandidatesForActiveLine = useMemo(() => {
+    if (!activeRequestDraftLine) return [];
+    return requestCandidatesForLine(
+      activeRequestDraftLine.id,
+      activeRequestDraftLine.material_id || null,
+    );
+  }, [activeRequestDraftLine, requestCandidatesForLine]);
+
+  const requestLinkLabel = useCallback((candidate: RequestLineLinkCandidate & { remaining: number }) =>
+    `${candidateDisplayName(candidate, catalogNameById)} · sisa ${candidate.remaining.toLocaleString('id-ID')} dari ${candidate.quantity.toLocaleString('id-ID')} ${candidate.unit}`,
+  [catalogNameById]);
+
+  /**
+   * The link the app pre-selects for a catalog material (2026-08-31 fix).
+   *
+   * Manual, optional linking meant the link was NEVER written — 0 rows DB-wide —
+   * so the group-grain envelope RPC could never move quantity out of `requested`
+   * into `ordered`, supervisors never saw that their request had been bought,
+   * and the project view double-counted request + PO. Linking has to be the
+   * DEFAULT, not a remembered extra step.
+   *
+   * "Best" = the first candidate from getRequestLineLinkCandidates, which sorts
+   * by target_date ascending — the APPROVED line with remaining unlinked
+   * quantity that the site needs SOONEST. Ties keep source order (stable sort).
+   * Only for catalog materials: a free-text draft line may link to ANY eligible
+   * request line, so guessing one for the admin would be an assumption, not a
+   * default.
+   */
+  const autoRequestLinkFor = useCallback((lineId: string, materialId: string | null) => {
+    if (!materialId) return null;
+    return requestCandidatesForLine(lineId, materialId)[0] ?? null;
+  }, [requestCandidatesForLine]);
+
+  /**
+   * Draft lines that will be created UNLINKED while a linkable APPROVED request
+   * exists. Warned about inline and at submit — never blocked (an unplanned buy
+   * with no request behind it is legitimate).
+   */
+  const unlinkedLinesWithCandidates = useMemo(() => {
+    const ids = new Set<string>();
+    for (const line of draftLines) {
+      if (line.request_line_id || !line.material_id) continue;
+      if (requestCandidatesForLine(line.id, line.material_id).length > 0) ids.add(line.id);
+    }
+    return ids;
+  }, [draftLines, requestCandidatesForLine]);
+
+  /**
+   * Per material: APPROVED request quantity still awaiting a PO — link-aware
+   * (`remaining` = approved_qty − Σ linked non-cancelled PO qty, derived over
+   * real rows in requestLineCandidates.ts). This is the honest "menunggu PO"
+   * figure; the view's total_requested is NOT (it counts every non-REJECTED
+   * request whether or not a PO already fulfils it). BASE units.
+   */
+  const awaitingPoByMaterial = useMemo(() => {
+    const byMaterial = new Map<string, number>();
+    const candidates = getRequestLineLinkCandidates(requestLineCandidates, {
+      draftMaterialId: null,
+      linkedPoLines,
+    });
+    for (const c of candidates) {
+      if (!c.material_id) continue; // free-text request lines match no envelope
+      byMaterial.set(c.material_id, (byMaterial.get(c.material_id) ?? 0) + c.remaining);
+    }
+    return byMaterial;
+  }, [requestLineCandidates, linkedPoLines]);
+
+  /**
+   * Per material: total APPROVED request quantity, linked or not. Subtracted
+   * from the view's total_requested to isolate the demand that is NOT approved
+   * yet (PENDING / HOLD / RETURNED) — context the admin has never had.
+   */
+  const approvedRequestedByMaterial = useMemo(() => {
+    const byMaterial = new Map<string, number>();
+    for (const c of requestLineCandidates) {
+      if (!c.material_id) continue;
+      byMaterial.set(c.material_id, (byMaterial.get(c.material_id) ?? 0) + c.quantity);
+    }
+    return byMaterial;
+  }, [requestLineCandidates]);
 
   const selectRequestLink = (lineId: string, candidate: RequestLineLinkCandidate & { remaining: number }) => {
-    const name = candidateDisplayName(candidate, catalogNameById);
     updateDraftLine(lineId, {
       request_line_id: candidate.id,
-      request_line_label: `${name} · sisa ${candidate.remaining.toLocaleString('id-ID')} dari ${candidate.quantity.toLocaleString('id-ID')} ${candidate.unit}`,
+      request_line_label: requestLinkLabel(candidate),
+      request_link_auto: false, // an explicit admin choice
     });
     setRequestPickerLineId(null);
   };
 
   const clearRequestLink = (lineId: string) => {
-    updateDraftLine(lineId, { request_line_id: null, request_line_label: null });
+    updateDraftLine(lineId, { request_line_id: null, request_line_label: null, request_link_auto: false });
   };
+
+  /**
+   * Envelope arithmetic (sisa / diminta / kelebihan) is BASE-unit (kg), but the
+   * admin types this line in SUPPLIER units (batang). Printing a raw base number
+   * next to a batang input reads as the same unit and is off by ~7-12×, so every
+   * envelope figure on a draft line goes through here and shows BOTH:
+   * "X batang (≈ Y kg)". Display-only — kg stays the stored/gated unit always
+   * (tools/rebarBatang.ts, tools/materialUnitConversion.ts).
+   */
+  const formatDraftQty = useCallback((baseQty: number, line: DraftPOLine) => {
+    const mat = line.material_id ? materialById.get(line.material_id) : undefined;
+    const info = mat
+      ? { unit: mat.unit, supplier_unit: mat.supplier_unit, base_qty_per_supplier_unit: mat.base_qty_per_supplier_unit }
+      : {
+          unit: line.base_unit || line.unit,
+          supplier_unit: line.unit || null,
+          base_qty_per_supplier_unit: line.base_qty_per_supplier_unit,
+        };
+    const d = displayQty(baseQty, info);
+    const n = (value: number) => value.toLocaleString('id-ID', { maximumFractionDigits: 2 });
+    return d.converted
+      ? `${n(d.qty)} ${d.unit} (≈ ${n(d.baseQty)} ${d.baseUnit})`
+      : `${n(d.qty)} ${d.unit}`.trim();
+  }, [materialById]);
 
   /** Stored PO lines are BASE-unit (kg); show batang for rebar with kg note. */
   const formatStoredLineQty = useCallback((line: Pick<PurchaseOrderLine, 'quantity' | 'unit' | 'material_id'>) => {
@@ -592,6 +713,11 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
   };
 
   const selectCatalogMaterial = (lineId: string, material: MaterialOption) => {
+    // Picking the material is also where the request→PO link is decided: any
+    // previous link is dropped (it may no longer match the material) and the
+    // best APPROVED candidate for the NEW material is pre-selected in its place.
+    // The admin can change it via the picker or clear it with the chip's ✕.
+    const auto = autoRequestLinkFor(lineId, material.id);
     updateDraftLine(lineId, {
       material_id: material.id,
       material_name: material.name,
@@ -599,16 +725,15 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       unit: material.supplier_unit || material.unit,
       base_unit: material.unit,
       base_qty_per_supplier_unit: material.base_qty_per_supplier_unit ?? null,
-      // Material changed → a previously linked request line may no longer
-      // match; drop the optional link rather than carry a stale one.
-      request_line_id: null,
-      request_line_label: null,
+      request_line_id: auto?.id ?? null,
+      request_line_label: auto ? requestLinkLabel(auto) : null,
+      request_link_auto: Boolean(auto),
     });
     closeMaterialPicker();
   };
 
   const clearCatalogMaterial = (lineId: string) => {
-    updateDraftLine(lineId, { material_id: '', material_name: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, request_line_id: null, request_line_label: null });
+    updateDraftLine(lineId, { material_id: '', material_name: '', unit: '', base_unit: '', base_qty_per_supplier_unit: null, request_line_id: null, request_line_label: null, request_link_auto: false });
     closeMaterialPicker();
   };
 
@@ -742,6 +867,12 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
       }
     }
 
+    // Unlinked lines that COULD have been linked (2026-08-31 fix). Warned, never
+    // blocked: an unplanned buy with no request behind it is legitimate, and the
+    // admin is the one who knows which case this is. Counted before the awaits
+    // below so the message reflects what was actually submitted.
+    const unlinkedSubmitted = populatedLines.filter(line => unlinkedLinesWithCandidates.has(line.id));
+
     try {
       const poNumber = getNextPurchaseOrderNumber(project.code, purchaseOrders);
       // BASE-unit canonical: office types batang qty × Rp/batang for rebar;
@@ -811,7 +942,14 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
 
       await refresh();
       await loadData();
-      toast('PO berhasil dibuat', 'ok');
+      if (unlinkedSubmitted.length > 0) {
+        toast(
+          `PO dibuat — ${unlinkedSubmitted.length} baris tidak ditautkan ke permintaan APPROVED yang ada (${unlinkedSubmitted.map(l => l.material_name).join(', ')}); kuantitasnya akan terhitung dobel di tampilan proyek sampai ditautkan.`,
+          'warning',
+        );
+      } else {
+        toast('PO berhasil dibuat', 'ok');
+      }
       resetCreateForm();
     } catch (err: any) {
       // The server gate RAISEs with a stable 'PO_QTY_BREACH:' prefix — surface it clearly.
@@ -1265,42 +1403,71 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                   </View>
                 </View>
 
-                {/* Optional request→PO traceability link (Task 2.8). Non-blocking:
-                    an unlinked line is created with request_line_id NULL. */}
+                {/* Request→PO traceability link (Task 2.8). Pre-selected on
+                    material pick (2026-08-31); still editable and still
+                    non-blocking — an unlinked line is created with
+                    request_line_id NULL, it just warns below. */}
                 {line.request_line_id ? (
-                  <View style={styles.requestLinkChip}>
-                    <Ionicons name="link-outline" size={12} color={COLORS.primary} />
-                    <Text style={styles.requestLinkChipText}>↔ Permintaan {line.request_line_label}</Text>
-                    <TouchableOpacity
-                      onPress={() => clearRequestLink(line.id)}
-                      accessibilityRole="button"
-                      accessibilityLabel="Hapus tautan permintaan"
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                    >
-                      <Ionicons name="close-circle" size={16} color={COLORS.textSec} />
-                    </TouchableOpacity>
-                  </View>
+                  <>
+                    <View style={styles.requestLinkChip}>
+                      <Ionicons name="link-outline" size={12} color={COLORS.primary} />
+                      <Text style={styles.requestLinkChipText}>↔ Permintaan {line.request_line_label}</Text>
+                      <TouchableOpacity
+                        onPress={() => setRequestPickerLineId(line.id)}
+                        accessibilityRole="button"
+                        accessibilityLabel="Ganti tautan permintaan"
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      >
+                        <Ionicons name="swap-horizontal" size={16} color={COLORS.textSec} />
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => clearRequestLink(line.id)}
+                        accessibilityRole="button"
+                        accessibilityLabel="Hapus tautan permintaan"
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      >
+                        <Ionicons name="close-circle" size={16} color={COLORS.textSec} />
+                      </TouchableOpacity>
+                    </View>
+                    {line.request_link_auto && (
+                      <Text style={styles.requestLinkAutoNote}>
+                        Ditautkan otomatis ke permintaan APPROVED tertua yang masih tersisa — ganti atau hapus bila keliru.
+                      </Text>
+                    )}
+                  </>
                 ) : (
-                  <TouchableOpacity style={styles.requestLinkBtn} onPress={() => setRequestPickerLineId(line.id)}>
-                    <Ionicons name="link-outline" size={14} color={COLORS.textSec} />
-                    <Text style={styles.requestLinkBtnText}>Tautkan ke permintaan (opsional)</Text>
-                  </TouchableOpacity>
-                )}
-
-                {/* Hard quantity gate signal (mirrors migration 071). */}
-                {(() => {
-                  if (!line.material_id && !line.material_name.trim()) return null;
-                  const breach = line.material_id ? breachByMaterial.get(line.material_id) : undefined;
-                  if (breach) {
-                    return (
-                      <View style={[styles.gateChip, styles.gateChipCritical]}>
-                        <Ionicons name="alert-circle" size={14} color={COLORS.critical} />
-                        <Text style={styles.gateChipCriticalText}>
-                          Melebihi alokasi — diminta {breach.attempted.toLocaleString('id-ID')}, sisa {breach.remaining.toLocaleString('id-ID')} (kelebihan {breach.over.toLocaleString('id-ID')})
+                  <>
+                    <TouchableOpacity style={styles.requestLinkBtn} onPress={() => setRequestPickerLineId(line.id)}>
+                      <Ionicons name="link-outline" size={14} color={COLORS.textSec} />
+                      <Text style={styles.requestLinkBtnText}>Tautkan ke permintaan</Text>
+                    </TouchableOpacity>
+                    {unlinkedLinesWithCandidates.has(line.id) && (
+                      <View style={styles.linkWarnRow}>
+                        <Ionicons name="warning-outline" size={14} color={COLORS.warning} />
+                        <Text style={styles.linkWarnText}>
+                          Baris ini tidak ditautkan ke permintaan APPROVED yang ada — kuantitas akan terhitung dobel di tampilan proyek sampai ditautkan.
                         </Text>
                       </View>
-                    );
-                  }
+                    )}
+                  </>
+                )}
+
+                {/* Hard quantity gate signal (mirrors migration 071 / 088:671),
+                    plus the request context behind it.
+
+                    THE label rule: the gate compares against "Sisa untuk di-PO"
+                    = planned − ordered (envelopeMath.remainingToOrder). Requests
+                    are NEVER subtracted here — a PO fulfils a request, so
+                    subtracting it too would double-block the very order the
+                    request asked for. The awaiting-PO line below is context, not
+                    a second budget.
+
+                    Every quantity prints in the SUPPLIER unit the admin typed in
+                    (batang) with the stored base kg alongside — the envelope is
+                    kg, the input is batang, and an unlabeled number is ~7-12×
+                    wrong. */}
+                {(() => {
+                  if (!line.material_id && !line.material_name.trim()) return null;
                   const measured = line.material_id ? envelopeByMaterial.get(line.material_id) : undefined;
                   if (!measured || !(measured.total_planned > 0)) {
                     return (
@@ -1310,11 +1477,57 @@ export default function Gate2Screen({ onBack, showBackButton = true }: { onBack:
                       </View>
                     );
                   }
-                  const remaining = measured.total_planned - measured.total_ordered;
+
+                  const awaitingPo = line.material_id ? awaitingPoByMaterial.get(line.material_id) ?? 0 : 0;
+                  const legs = envelopeLegs(measured, awaitingPo);
+                  // Demand that is not APPROVED yet (PENDING / HOLD / RETURNED):
+                  // the view's total_requested counts every non-REJECTED request,
+                  // so the approved part subtracts out to leave exactly that.
+                  const notYetApproved = Math.max(
+                    0,
+                    (measured.total_requested ?? 0)
+                      - (line.material_id ? approvedRequestedByMaterial.get(line.material_id) ?? 0 : 0),
+                  );
+
+                  const breach = line.material_id ? breachByMaterial.get(line.material_id) : undefined;
+                  const contextLines = (
+                    <>
+                      {awaitingPo > 0 && (
+                        <Text style={styles.gateChipSubText}>
+                          · dari itu {formatDraftQty(awaitingPo, line)} menunggu PO (permintaan APPROVED)
+                        </Text>
+                      )}
+                      {notYetApproved > 0 && (
+                        <Text style={styles.gateChipSubText}>
+                          · {formatDraftQty(notYetApproved, line)} lagi diminta tapi belum disetujui
+                        </Text>
+                      )}
+                    </>
+                  );
+
+                  if (breach) {
+                    return (
+                      <View style={[styles.gateChip, styles.gateChipCritical]}>
+                        <Ionicons name="alert-circle" size={14} color={COLORS.critical} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.gateChipCriticalText}>
+                            Melebihi alokasi — diminta {formatDraftQty(breach.attempted, line)}, sisa untuk di-PO {formatDraftQty(breach.remaining, line)} (kelebihan {formatDraftQty(breach.over, line)})
+                          </Text>
+                          {contextLines}
+                        </View>
+                      </View>
+                    );
+                  }
+
                   return (
                     <View style={[styles.gateChip, styles.gateChipOk]}>
                       <Ionicons name="checkmark-circle" size={14} color={COLORS.ok} />
-                      <Text style={styles.gateChipOkText}>Sisa alokasi {remaining.toLocaleString('id-ID')}</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.gateChipOkText}>
+                          Sisa untuk di-PO: {formatDraftQty(remainingToOrder(legs), line)}
+                        </Text>
+                        {contextLines}
+                      </View>
                     </View>
                   );
                 })()}
@@ -1936,7 +2149,11 @@ const styles = StyleSheet.create({
   requestLinkChipText: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.primary, flexShrink: 1 },
   requestLinkBtn: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 6, marginTop: SPACE.sm, paddingVertical: SPACE.xs },
   requestLinkBtnText: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.textSec, textDecorationLine: 'underline' },
-  gateChip: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', marginTop: SPACE.sm, paddingHorizontal: SPACE.sm, paddingVertical: SPACE.xs, borderRadius: RADIUS },
+  requestLinkAutoNote: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: SPACE.xs },
+  linkWarnRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginTop: SPACE.xs, paddingHorizontal: SPACE.sm, paddingVertical: SPACE.xs, borderRadius: RADIUS, backgroundColor: FLAG_BG.WARNING },
+  linkWarnText: { flex: 1, fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.warning },
+  gateChip: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, alignSelf: 'stretch', marginTop: SPACE.sm, paddingHorizontal: SPACE.sm, paddingVertical: SPACE.xs, borderRadius: RADIUS },
+  gateChipSubText: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: 2 },
   gateChipCritical: { backgroundColor: FLAG_BG.CRITICAL },
   gateChipCriticalText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.critical, flexShrink: 1 },
   gateChipWarning: { backgroundColor: FLAG_BG.WARNING },
