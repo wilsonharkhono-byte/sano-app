@@ -53,12 +53,47 @@ describe('Task 2.4 — Tier-1 soft cap + running total', () => {
     expect(r.msg).toContain('jauh melebihi alokasi');
   });
 
-  it('omits the PO leg at group grain but appends project PO context when provided', () => {
-    const group = env({ total_ordered: 100 });
+  it('names the group PO leg (094) and still appends project PO context', () => {
+    // Pre-094 the group envelope carried one request-based figure in
+    // total_ordered and the PO segment was suppressed. The legs are split now
+    // (get_workgroup_material_envelopes), so the running total names all three.
+    const group = env({ total_ordered: 100, total_requested: 40 });
     const proj = env({ total_ordered: 700, total_planned: 5000, unit: 'kg' });
     const r = computeWorkGroupGate1Flag(group, 50, 'Pondasi', null, proj);
-    expect(r.msg).not.toContain('Sudah di-PO'); // group grain has no PO dimension
+    expect(r.msg).toContain('Sudah di-PO 100 kg');
+    expect(r.msg).toContain('permintaan berjalan 40 kg');
+    expect(r.msg).toContain('permintaan ini 50 kg');
+    // Project grain is a WIDER scope, so it is not a duplicate of the above.
     expect(r.msg).toContain('Proyek: sudah di-PO 700 kg dari rencana 5.000 kg');
+  });
+});
+
+describe('migration 094 — splitting the group legs must not move any severity', () => {
+  // 086's ordered + requested equals the pre-094 single total_ordered by
+  // construction (that identity is the migration's verification query). So a
+  // group whose demand is split any which way must produce the SAME flag and
+  // the same projected % as one carrying it all in one leg.
+  const splits: Array<[number, number]> = [[600, 0], [300, 300], [0, 600]];
+
+  it.each(splits)('ordered=%p requested=%p → identical burn', (ordered, requested) => {
+    const r = computeWorkGroupGate1Flag(
+      env({ total_ordered: ordered, total_requested: requested }), 500, 'Pondasi',
+    );
+    // (600 + 500) / 1000 = 110% → over-total, capped at WARNING.
+    expect(r.overage?.projectedPct).toBeCloseTo(110, 5);
+    expect(r.flag).toBe('WARNING');
+    expect(requiresOverageReason(r)).toBe(true);
+  });
+
+  it('the pace advisory counts open requests too, not just the PO leg', () => {
+    // 0 on a PO but 900 kg of requests in flight against a group only 10%
+    // installed: the material is being stockpiled regardless of whether the
+    // admin has cut the PO yet. Reading total_ordered alone would miss it.
+    const r = computeWorkGroupGate1Flag(
+      env({ total_ordered: 0, total_requested: 900, total_installed: 100 }), 0.0001, 'Pondasi',
+    );
+    const text = `${r.msg} ${r.extra?.msg ?? ''}`;
+    expect(text).toMatch(/progres/i);
   });
 });
 
