@@ -513,8 +513,10 @@ export async function generateMaterialBalanceReport(
       total_materials: balances.length,
       over_received: balances.filter(b => b.received > b.planned).length,
       // Task 3.3: shared on_site-based predicate — same rule as the
-      // LaporanScreen tile and the per-row Status column below.
-      needs_procurement: balances.filter(b => needsProcurement({ planned: b.planned, on_site: b.on_site })).length,
+      // LaporanScreen tile and the per-row Status column below, on_order
+      // included so a fully-ordered material doesn't count here while the
+      // rows beneath say "Sudah dipesan — menunggu kedatangan".
+      needs_procurement: balances.filter(b => needsProcurement({ planned: b.planned, on_site: b.on_site, on_order: b.on_order })).length,
       over_budget: balances.filter(b => b.control === 'RP' && (b.burn_pct ?? 0) > 100).length,
       balances: rows,
     },
