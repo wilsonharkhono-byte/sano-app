@@ -133,10 +133,20 @@ export interface MaterialBalance {
   installed: number;
   on_site: number;  // received - installed
   unit: string;
+  // ── On-order leg (additive) ─────────────────────────────────────────
+  // Sourced from v_material_envelope_status (072), NOT from purchase_orders/
+  // material_request_* directly — that view already owns the CANCELLED/
+  // REJECTED filtering and the CLOSED_SHORT per-line receipt cap, so this
+  // reuses that truth instead of re-deriving it. Optional so any caller
+  // constructing a MaterialBalance by hand (tests, older code) still
+  // type-checks without them; deriveMaterialBalance always populates them.
+  ordered?: number;    // total non-CANCELLED PO quantity for this material
+  requested?: number;  // total non-REJECTED material_request quantity
+  on_order?: number;   // max(0, ordered − received) — open-order cover for the current shortage
 }
 
 export async function deriveMaterialBalance(projectId: string): Promise<MaterialBalance[]> {
-  const [boqTotals, { data: boqItems }, { data: latestAhs }, { data: purchaseOrders }, { data: receipts }] = await Promise.all([
+  const [boqTotals, { data: boqItems }, { data: latestAhs }, { data: purchaseOrders }, { data: receipts }, { data: envelopeStatusRows }] = await Promise.all([
     deriveBoqInstalledTotals(projectId),
     // Task 3.1: active-plan-only. `boqPlannedMap`/`boqItems` below feed BOTH
     // the ahs_lines path (already scoped to the latest ahs_version, whose
@@ -168,6 +178,17 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
     supabase
       .from('receipts')
       .select('id, po_id, receipt_lines(material_id, material_name, quantity_actual)')
+      .eq('project_id', projectId),
+    // Task: on-order leg. v_material_envelope_status (072) is keyed strictly
+    // by material_id (v_material_envelopes inner-joins material_catalog), so
+    // there is no name-only row to fetch here — the name-fallback below exists
+    // only so a MaterialBalance bucket that itself has no material_id (an
+    // unlinked ahs_lines/master line) can still pick up the ordered/requested
+    // total by matching the view's material_name, the same two-tier lookup
+    // pattern already used for `received` (receivedById / receivedByName).
+    supabase
+      .from('v_material_envelope_status')
+      .select('material_id, material_name, total_ordered, total_requested')
       .eq('project_id', projectId),
   ]);
 
@@ -205,6 +226,31 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
       const key = normalizeMaterialKey(line.material_name || poMaterialMap.get(receipt.po_id));
       if (!key) continue;
       receivedByName.set(key, (receivedByName.get(key) ?? 0) + qty);
+    }
+  }
+
+  // Ordered/requested totals from v_material_envelope_status — already
+  // aggregated per material by the view (one row per material_id), so no
+  // running sum needed here, just id/name maps mirroring receivedById/
+  // receivedByName above.
+  const orderedById = new Map<string, number>();
+  const orderedByName = new Map<string, number>();
+  const requestedById = new Map<string, number>();
+  const requestedByName = new Map<string, number>();
+
+  for (const row of envelopeStatusRows ?? []) {
+    const materialId = (row as { material_id?: string | null }).material_id ?? null;
+    const materialName = (row as { material_name?: string | null }).material_name ?? null;
+    const ordered = Number((row as { total_ordered?: number | null }).total_ordered ?? 0);
+    const requested = Number((row as { total_requested?: number | null }).total_requested ?? 0);
+    if (materialId) {
+      orderedById.set(materialId, ordered);
+      requestedById.set(materialId, requested);
+    }
+    const nameKey = normalizeMaterialKey(materialName);
+    if (nameKey) {
+      orderedByName.set(nameKey, ordered);
+      requestedByName.set(nameKey, requested);
     }
   }
 
@@ -432,6 +478,12 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
     // key for legacy/unlinked receipt lines.
     const receivedForId = bucket.material_id ? receivedById.get(bucket.material_id) : undefined;
     const received = receivedForId ?? receivedByName.get(normalizeMaterialKey(materialName)) ?? 0;
+    // Same id-first/name-fallback lookup for the on-order leg (see the maps'
+    // construction above for why the view is always material_id-keyed).
+    const orderedForId = bucket.material_id ? orderedById.get(bucket.material_id) : undefined;
+    const ordered = orderedForId ?? orderedByName.get(normalizeMaterialKey(materialName)) ?? 0;
+    const requestedForId = bucket.material_id ? requestedById.get(bucket.material_id) : undefined;
+    const requested = requestedForId ?? requestedByName.get(normalizeMaterialKey(materialName)) ?? 0;
 
     // Quantities are stored in the material's BASE unit (kg for rebar). Rebar is
     // ordered/stocked/counted as whole SUPPLIER units (batang) — you can't hold a
@@ -444,6 +496,8 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
     const toDisplay = (q: number) => round3(baseToSupplierOrder(q, factor));
     const receivedDisp = toDisplay(received);
     const installedDisp = toDisplay(bucket.installed);
+    const orderedDisp = toDisplay(ordered);
+    const requestedDisp = toDisplay(requested);
 
     return {
       material_name: materialName,
@@ -454,6 +508,11 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
       // Saldo from the already-rounded components so the row reads consistently.
       on_site: round3(receivedDisp - installedDisp),
       unit: inSupplierUnits ? (material?.supplier_unit || 'batang') : (bucket.unit || material?.unit || '—'),
+      ordered: orderedDisp,
+      requested: requestedDisp,
+      // Open-order cover for the CURRENT shortage — never negative (an
+      // already-received order isn't "still coming").
+      on_order: round3(Math.max(0, orderedDisp - receivedDisp)),
     };
   });
 

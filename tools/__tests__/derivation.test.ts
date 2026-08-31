@@ -20,6 +20,7 @@ jest.mock('../supabase', () => ({
 
 import { deriveMaterialBalance } from '../derivation';
 import { supabase } from '../supabase';
+import { needsProcurement } from '../materialThresholds';
 
 const mockSupabase = supabase as jest.Mocked<typeof supabase>;
 
@@ -58,6 +59,11 @@ function wireSupabase(opts: {
     // deriveMaterialBalance always queries material_catalog for asset names
     // (is_asset exclusion), even when no bucket carries a material_id.
     material_catalog: { data: [] },
+    // deriveMaterialBalance always queries the on-order leg (v_material_envelope_status).
+    // Default empty — the same "no envelope row" fallback the report itself
+    // uses (ordered/requested/on_order all default to 0) — so every existing
+    // fixture that doesn't care about on-order still passes unchanged.
+    v_material_envelope_status: { data: [] },
     ...opts.tables,
   };
   (mockSupabase.from as jest.Mock).mockImplementation((table: string) => {
@@ -266,6 +272,8 @@ describe('deriveMaterialBalance — structured (ahs_lines) baseline', () => {
         case 'project_material_master':
         case 'project_material_master_lines':
           return makeQuery({ data: [] }); // no project-level (NULL-boq) lines in this fixture
+        case 'v_material_envelope_status':
+          return makeQuery({ data: [] }); // no on-order rows in this fixture
         default:
           throw new Error(`Unexpected from('${table}')`);
       }
@@ -610,6 +618,170 @@ describe('deriveMaterialBalance — received & on_site', () => {
     // only the material_id link can bridge them.
     expect(balances[0].material_name).toBe('Besi D8');
     expect(balances[0].received).toBe(6);
+  });
+});
+
+describe('deriveMaterialBalance — on-order leg (v_material_envelope_status)', () => {
+  it('credits a fully-ordered-but-not-yet-received material: on_order = ordered, and it no longer needs procurement', async () => {
+    // The live-verified bug this task fixes: the report never read purchase
+    // orders, so a material fully covered by an open PO still looked like a
+    // bare-shelf shortage. Here on_site is 0 (nothing received yet) but the
+    // envelope view shows the full 100 already on order.
+    wireSupabase({
+      rpc: { derive_boq_installed: { data: [] } },
+      tables: {
+        boq_items: {
+          data: [{ id: 'boq-1', planned: 10, installed: 0, unit: 'kg', tier1_material: null, tier2_material: null }],
+        },
+        ahs_versions: { data: [{ id: 'ahs-v1' }] },
+        purchase_orders: { data: [] },
+        receipts: { data: [] },
+        ahs_lines: {
+          data: [
+            {
+              material_id: 'mat-1', usage_rate: 0, coefficient: 10, waste_factor: 0,
+              unit: 'kg', boq_item_id: 'boq-1', material_spec: 'Besi beton',
+              line_type: 'material', material_catalog: { name: 'Besi D8' },
+            },
+          ],
+        },
+        material_catalog: { data: [{ id: 'mat-1', name: 'Besi D8', unit: 'kg' }] },
+        v_material_envelope_status: {
+          data: [{ material_id: 'mat-1', material_name: 'Besi D8', total_ordered: 100, total_requested: 100 }],
+        },
+      },
+    });
+
+    const balances = await deriveMaterialBalance('proj-1');
+
+    expect(balances).toHaveLength(1);
+    const b = balances[0];
+    expect(b.planned).toBe(100); // 10 * coeff 10
+    expect(b.received).toBe(0);
+    expect(b.on_site).toBe(0);
+    expect(b.ordered).toBe(100);
+    expect(b.requested).toBe(100);
+    // on_order = max(0, ordered − received) = 100 − 0 = 100
+    expect(b.on_order).toBe(100);
+
+    // Integration with the (now on_order-aware) threshold predicate: without
+    // crediting the order this would flag ("Perlu Pengadaan"); with it, the
+    // shortage reads as already covered.
+    expect(needsProcurement({ planned: b.planned, on_site: b.on_site })).toBe(true); // old behavior, uncredited
+    expect(needsProcurement({ planned: b.planned, on_site: b.on_site, on_order: b.on_order })).toBe(false); // covered
+  });
+
+  it('caps on_order at 0 once the order has actually arrived (received >= ordered)', async () => {
+    wireSupabase({
+      rpc: { derive_boq_installed: { data: [] } },
+      tables: {
+        boq_items: {
+          data: [{ id: 'boq-1', planned: 10, installed: 0, unit: 'kg', tier1_material: null, tier2_material: null }],
+        },
+        ahs_versions: { data: [{ id: 'ahs-v1' }] },
+        purchase_orders: { data: [{ id: 'po-1', material_name: 'Besi D8' }] },
+        receipts: {
+          data: [{ id: 'r-1', po_id: 'po-1', receipt_lines: [{ material_id: 'mat-1', material_name: 'Besi D8', quantity_actual: 100 }] }],
+        },
+        ahs_lines: {
+          data: [
+            {
+              material_id: 'mat-1', usage_rate: 0, coefficient: 10, waste_factor: 0,
+              unit: 'kg', boq_item_id: 'boq-1', material_spec: 'Besi beton',
+              line_type: 'material', material_catalog: { name: 'Besi D8' },
+            },
+          ],
+        },
+        material_catalog: { data: [{ id: 'mat-1', name: 'Besi D8', unit: 'kg' }] },
+        v_material_envelope_status: {
+          data: [{ material_id: 'mat-1', material_name: 'Besi D8', total_ordered: 100, total_requested: 100 }],
+        },
+      },
+    });
+
+    const balances = await deriveMaterialBalance('proj-1');
+    expect(balances[0].received).toBe(100);
+    expect(balances[0].on_order).toBe(0); // fully received — nothing still "in flight"
+  });
+
+  it('falls back to on_order/ordered/requested = 0 when there is no envelope row for the material — behavior identical to today', async () => {
+    wireSupabase({
+      rpc: {
+        derive_boq_installed: {
+          data: [{ boq_item_id: 'boq-1', total_installed: 2, entry_count: 1, last_entry_at: null }],
+        },
+      },
+      tables: {
+        boq_items: {
+          data: [{ id: 'boq-1', planned: 10, installed: 0, unit: 'kg', tier1_material: null, tier2_material: null }],
+        },
+        ahs_versions: { data: [{ id: 'ahs-v1' }] },
+        purchase_orders: { data: [{ id: 'po-1', material_name: 'Besi D8' }] },
+        receipts: {
+          data: [{ id: 'r-1', po_id: 'po-1', receipt_lines: [{ material_name: 'Besi D8', quantity_actual: 7 }, { material_name: 'Besi D8', quantity_actual: 3 }] }],
+        },
+        ahs_lines: {
+          data: [
+            {
+              material_id: 'mat-1', usage_rate: 0, coefficient: 1, waste_factor: 0,
+              unit: 'kg', boq_item_id: 'boq-1', material_spec: 'Besi beton',
+              line_type: 'material', material_catalog: { name: 'Besi D8' },
+            },
+          ],
+        },
+        material_catalog: { data: [{ id: 'mat-1', name: 'Besi D8', unit: 'kg' }] },
+        // No fixture entry for v_material_envelope_status — wireSupabase's
+        // default (empty data) applies, exercising the "no envelope row" path.
+      },
+    });
+
+    const balances = await deriveMaterialBalance('proj-1');
+
+    expect(balances).toHaveLength(1);
+    const b = balances[0];
+    // Unchanged from the pre-existing "received & on_site" test with this
+    // exact fixture shape — the on-order leg must not perturb the rest.
+    expect(b.planned).toBe(10);
+    expect(b.installed).toBe(2);
+    expect(b.received).toBe(10);
+    expect(b.on_site).toBe(8);
+    expect(b.ordered).toBe(0);
+    expect(b.requested).toBe(0);
+    expect(b.on_order).toBe(0);
+  });
+
+  it('matches ordered/requested by name when the balance bucket has no material_id (mirrors the received-by-name fallback)', async () => {
+    wireSupabase({
+      rpc: { derive_boq_installed: { data: [] } },
+      tables: {
+        boq_items: {
+          data: [{ id: 'boq-1', planned: 2, installed: 0, unit: 'm3', tier1_material: null, tier2_material: null }],
+        },
+        ahs_versions: { data: [{ id: 'ahs-v1' }] },
+        purchase_orders: { data: [] },
+        receipts: { data: [] },
+        ahs_lines: {
+          data: [
+            {
+              material_id: null, usage_rate: 0, coefficient: 1.05, waste_factor: 0,
+              unit: 'm3', boq_item_id: 'boq-1', material_spec: 'Beton readymix K-350',
+              line_type: 'material', material_catalog: null,
+            },
+          ],
+        },
+        // material_id is null on the envelope row too — name is the only link.
+        v_material_envelope_status: {
+          data: [{ material_id: null, material_name: 'Beton readymix K-350', total_ordered: 5, total_requested: 5 }],
+        },
+      },
+    });
+
+    const balances = await deriveMaterialBalance('proj-1');
+
+    expect(balances).toHaveLength(1);
+    expect(balances[0].material_name).toBe('Beton readymix K-350');
+    expect(balances[0].ordered).toBe(5);
+    expect(balances[0].on_order).toBe(5); // received 0
   });
 });
 

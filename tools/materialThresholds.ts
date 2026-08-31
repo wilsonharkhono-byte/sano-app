@@ -34,19 +34,65 @@
 // tools/derivation.ts `MaterialBalance.on_site` and the Material Balance
 // report's documented caveat). Treat "needs procurement" as a planning
 // signal, not a certified stockout.
+//
+// Follow-up (live-verified diagnosis, 2026-08-31): the report never read
+// purchase_orders/material_request_* quantities, so a fully-ordered-but-not-
+// yet-delivered material still flagged "Perlu Pengadaan" while Gate2 already
+// showed zero remaining allocation — roles saw contradictory stories.
+// `needsProcurement` now takes an optional `on_order` leg (tools/derivation.ts
+// MaterialBalance.on_order, from v_material_envelope_status) that offsets the
+// shortage; `isShortOnSite` exposes the old on_site-only signal so callers can
+// distinguish "genuinely short" from "short but already ordered" and surface
+// that third state distinctly instead of collapsing it into either extreme.
 
 /** Below this fraction of `planned`, remaining on-site stock is low enough to flag. */
 export const PROCUREMENT_THRESHOLD_PCT = 0.1;
 
 /**
- * true when the material's remaining on-site stock is at or below 10% of the
- * planned quantity. Guarded to `planned > 0` — a material with no plan (zero
- * or negative planned qty) has nothing to be "under" against, so it never
- * flags regardless of on_site (including a negative on_site, which is instead
- * surfaced separately as a deficit — see excel.ts/pdf.ts "Defisit" branch,
- * which takes precedence over this predicate in the Status column).
+ * true when the material's remaining ON-SITE stock ALONE — ignoring any open
+ * purchase order — is at or below 10% of planned. This is the raw physical-
+ * stock signal; `needsProcurement` below is the caller-facing predicate and
+ * additionally credits stock already on order. Use this one when you need to
+ * tell "genuinely short" apart from "short on-site but an order is already in
+ * flight" (see tools/excel.ts / tools/pdf.ts / LaporanScreen's "Sudah dipesan
+ * — menunggu kedatangan" status, which needs exactly that distinction).
+ * Guarded to `planned > 0`, same as needsProcurement.
  */
-export function needsProcurement({ planned, on_site }: { planned: number; on_site: number }): boolean {
+export function isShortOnSite({ planned, on_site }: { planned: number; on_site: number }): boolean {
   if (!(planned > 0)) return false;
   return on_site <= planned * PROCUREMENT_THRESHOLD_PCT;
+}
+
+/**
+ * true when the material's remaining on-site stock is at or below 10% of the
+ * planned quantity AND that shortage is not already covered by quantity on
+ * an open purchase order. `on_order` (tools/derivation.ts MaterialBalance.on_order
+ * = max(0, ordered − received), sourced from v_material_envelope_status) is
+ * ADDED to on_site before the threshold check — a material sitting at 2%
+ * on-site with a PO covering the rest reads as fine here, not as a false
+ * "Perlu Pengadaan" the admin has already resolved.
+ *
+ * `on_order` defaults to 0, so a caller that hasn't wired the envelope-status
+ * fetch — or a material with no v_material_envelope_status row at all (no PO
+ * ever raised for it) — gets EXACTLY today's on_site-only behavior. Never
+ * crashes on a missing on_order; there is nothing to look up here, it is
+ * just an optional number.
+ *
+ * Guarded to `planned > 0` — a material with no plan (zero or negative
+ * planned qty) has nothing to be "under" against, so it never flags
+ * regardless of on_site/on_order (including a negative on_site, which is
+ * instead surfaced separately as a deficit — see excel.ts/pdf.ts "Defisit"
+ * branch, which takes precedence over this predicate in the Status column).
+ */
+export function needsProcurement({
+  planned,
+  on_site,
+  on_order = 0,
+}: {
+  planned: number;
+  on_site: number;
+  on_order?: number;
+}): boolean {
+  if (!(planned > 0)) return false;
+  return on_site + on_order <= planned * PROCUREMENT_THRESHOLD_PCT;
 }

@@ -24,7 +24,7 @@ import type {
 } from './reportDataTypes';
 import { SanoDoc, C, FS, PDF } from './pdf-layout';
 import { formatDriftPct } from './planDrift';
-import { needsProcurement } from './materialThresholds';
+import { needsProcurement, isShortOnSite } from './materialThresholds';
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -174,15 +174,19 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
         // Material shrinks from 0.22 to 0.16 in the showCosts layout to make
         // room for the Drift column below (0.22+...+0.05 = 1.00 without it;
         // 0.16+...+0.05+0.06 = 1.00 with it).
-        { header: 'Material', width: showCosts ? 0.16 : 0.47 },
+        // "Dipesan (PO)" (on-order leg, additive) trims 0.07 elsewhere in each
+        // layout so the row still sums to 1.00: Material 0.47→0.40 without
+        // costs; Anggaran 0.13→0.09 + Terpakai 0.12→0.09 with costs.
+        { header: 'Material', width: showCosts ? 0.16 : 0.40 },
         { header: 'Sat.', width: 0.05 },
         { header: 'Rencana', width: 0.09, align: 'right' },
         { header: 'Diterima', width: 0.09, align: 'right' },
+        { header: 'Dipesan (PO)', width: 0.07, align: 'right' },
         { header: 'Status', width: 0.12 },
         { header: 'Kontrol', width: 0.07 },
         ...(showCosts ? [
-          { header: 'Anggaran (Rp)', width: 0.13, align: 'right' as const },
-          { header: 'Terpakai (Rp)', width: 0.12, align: 'right' as const },
+          { header: 'Anggaran (Rp)', width: 0.09, align: 'right' as const },
+          { header: 'Terpakai (Rp)', width: 0.09, align: 'right' as const },
         ] : []),
         { header: 'Burn %', width: 0.06, align: 'right' },
         { header: 'Flag', width: 0.05 },
@@ -195,15 +199,31 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
         const planned = b.planned ?? 0;
         const installed = b.installed ?? 0;
         const onSite = b.on_site ?? received - installed;
-        // Task 3.3: shared on_site-based predicate (tools/materialThresholds.ts) —
-        // same rule as the LaporanScreen tile and the reports.ts summary count.
-        const status = onSite < 0 ? 'Defisit' : needsProcurement({ planned, on_site: onSite }) ? 'Perlu Pengadaan' : 'Aman';
+        // Open-order cover for the current shortage (tools/derivation.ts
+        // MaterialBalance.on_order, from v_material_envelope_status). Not yet
+        // in reportDataTypes.ts's MaterialBalanceData shape — reports.ts spreads
+        // the full row through at runtime, so read it via a local cast instead
+        // of widening that shared type from here.
+        const onOrder = (b as { on_order?: number }).on_order ?? 0;
+        // Task 3.3 + on-order fix: shared on_site-based predicate
+        // (tools/materialThresholds.ts) — same rule as the LaporanScreen tile
+        // and the reports.ts summary count. A material short on-site but fully
+        // covered by an open PO reads as "already ordered", not "Perlu
+        // Pengadaan".
+        const status = onSite < 0
+          ? 'Defisit'
+          : needsProcurement({ planned, on_site: onSite, on_order: onOrder })
+            ? 'Perlu Pengadaan'
+            : isShortOnSite({ planned, on_site: onSite })
+              ? 'Sudah dipesan'
+              : 'Aman';
         const isRp = b.control === 'RP';
         return [
           b.material_name ?? b.name ?? '—',
           b.unit ?? '—',
           String(planned),
           String(received),
+          String(onOrder),
           status,
           b.control ?? '—',
           ...(showCosts ? [
@@ -220,7 +240,8 @@ async function buildMaterialBalance(sd: SanoDoc, d: MaterialBalanceData): Promis
     // budget above), so the Status column is not derivable from the visible
     // Rencana/Diterima pair — explain the rule in a footnote.
     sd.text(
-      'Status "Perlu Pengadaan": estimasi saldo on-site (diterima − terpasang) ≤ 10% dari rencana. ' +
+      'Status "Perlu Pengadaan": estimasi saldo on-site (diterima − terpasang) + Dipesan (PO) ≤ 10% dari rencana. ' +
+        '"Sudah dipesan": saldo on-site rendah tapi sudah tertutup oleh PO yang masih terbuka, menunggu kedatangan. ' +
         'Saldo on-site adalah estimasi (terpasang dihitung dari progres BoQ), bukan hitungan stok tersertifikasi.',
       { size: FS.xs },
     );
