@@ -9,9 +9,13 @@ import {
 const FLAG_ORDER: FlagLevel[] = ['OK', 'INFO', 'WARNING', 'HIGH', 'CRITICAL'];
 
 /**
- * Server-side tier-aware gate check. Call from envelopes.ts checkMaterialRequest()
- * when Supabase is available. This client-side version is the fallback used
- * by PermintaanScreen for immediate UI feedback before server validation.
+ * Client-side tier-aware gate check used by PermintaanScreen for immediate UI
+ * feedback before server validation. The authoritative twin is migration 069's
+ * compute_tier*_flag family (the server always re-decides on submit).
+ *
+ * (This used to say "call from envelopes.ts checkMaterialRequest()". That
+ * function was dead and was deleted on 2026-08-31 — see the note where it lived
+ * in tools/envelopes.ts.)
  */
 export function computeGate1Flag(
   item: BoqItem,
@@ -218,15 +222,28 @@ export function buildProjectEnvelopeOverageResult(
  * quantity); copy is the running total, grain named ("Grup: <label>"). A group
  * with no planned demand yields a soft INFO (never a fake-correct OK).
  *
- * TIER-1 GRAIN SIMPLIFICATION (Task 2.4, mirrored in migration 069 header):
- * POs carry no work-group dimension, so at group grain the burn stays on
- * request allocations (env.total_ordered here is request-based — see
- * getWorkGroupEnvelope) with the PO leg omitted (poOrdered = null). When the
- * PROJECT envelope is available it is shown alongside for PO context only — it
- * does NOT change the group-grain severity.
+ * PO LEG AT GROUP GRAIN (changed 2026-08-31, migration 094):
+ * The group-grain envelope now carries SPLIT legs. `total_ordered` is genuinely
+ * PO-ordered demand (allocations linked to a non-CANCELLED PO) and
+ * `total_requested` is the open remainder — see getWorkGroupEnvelope, which
+ * takes both from get_workgroup_material_envelopes (086). Before this, a single
+ * request-based figure was mirrored into both fields and the PO segment was
+ * suppressed (poOrdered = null) because the grain genuinely could not see PO
+ * quantity. It can now, so the running total names all three parts.
+ *
+ * ⚠ SEVERITY IS UNCHANGED BY THAT SPLIT — and must stay so. projected is still
+ * ordered + requested + this request, which is exactly the old single figure
+ * plus this request (086's ordered + requested sums to the pre-split
+ * total_ordered by construction; the identity is 086's verification query).
+ * Only the COPY gains a "Sudah di-PO …" segment. Anyone re-pointing the burn to
+ * the PO leg alone would silently halve a live gate input.
+ *
+ * When the PROJECT envelope is passed it is still appended for project-grain PO
+ * context — a different scope from the group, so it does not duplicate the
+ * group's own PO segment and it does NOT change severity.
  *
  * SERVER TWIN — compute_tier1_workgroup_flag in migration 069 keeps the same
- * request-based burn and the INFO-on-missing-baseline rule, capped at WARNING.
+ * total-demand burn and the INFO-on-missing-baseline rule, capped at WARNING.
  * The progressPaceFlag advisory (1d) below is CLIENT-ONLY (never HIGH/CRITICAL,
  * so it never promotes AUTO_HOLD) — the server enforces only the burn check.
  */
@@ -248,19 +265,21 @@ export function computeWorkGroupGate1Flag(
     };
   }
 
-  // 1a — group envelope burn (request allocations vs planned; no PO leg at this
-  // grain). projected = permintaan berjalan (group) + permintaan ini.
+  // 1a — group envelope burn. projected = sudah di-PO (group) + permintaan
+  // berjalan (group) + permintaan ini. The sum is identical to the pre-094
+  // single-figure burn; the split only names the parts (see the ⚠ above).
   const c = makeOverageComponents({
     grainLabel: `Grup: ${groupLabel}`,
-    poOrdered: null,
-    otherOpen: Number(envelope.total_ordered ?? 0),
+    poOrdered: Number(envelope.total_ordered ?? 0),
+    otherOpen: Number(envelope.total_requested ?? 0),
     thisRequest: requestedQty,
     planned: Number(envelope.total_planned ?? 0),
     unit: envelope.unit,
   });
   const burn = buildOverageResult(c, '1a', { infoBand: false, fmt: displayFmt(display) });
 
-  // Project-wide PO context (display only) — the group grain cannot see PO qty.
+  // Project-wide PO context (display only) — a WIDER scope than the group, so it
+  // answers a different question than the group's own di-PO segment above.
   if (projectEnvelope && Number(projectEnvelope.total_planned ?? 0) > 0) {
     const projPo = Number(projectEnvelope.total_ordered ?? 0);
     const projPlanned = Number(projectEnvelope.total_planned ?? 0);
@@ -285,11 +304,18 @@ export function computeWorkGroupGate1Flag(
  * share of the group's planned material runs well ahead of the installed share
  * (progress). Returns null within a normal procurement lead so small early
  * orders (at 0% progress) never trip it.
+ *
+ * "Ordered" here means ALL committed demand — total_ordered (on a live PO) plus
+ * total_requested (in flight) — not the PO leg alone. Pre-094 the group envelope
+ * carried one combined figure in total_ordered; reading only that field after
+ * the 094 split would quietly narrow this advisory to PO'd quantity and stop
+ * flagging a group whose stock-piling is all sitting in the approval queue.
  */
 function progressPaceFlag(env: MaterialEnvelopeStatus, requestedQty: number): GateResult | null {
   if (env.total_planned <= 0) return null;
   const installedPct = ((env.total_installed ?? 0) / env.total_planned) * 100;
-  const orderedPct = ((env.total_ordered + requestedQty) / env.total_planned) * 100;
+  const committed = Number(env.total_ordered ?? 0) + Number(env.total_requested ?? 0);
+  const orderedPct = ((committed + requestedQty) / env.total_planned) * 100;
   const ahead = orderedPct - installedPct;
   if (ahead <= 40) return null; // within a reasonable lead — no flag
   const msg = `Pemesanan ${orderedPct.toFixed(0)}% dari rencana, tapi progres terpasang baru ${installedPct.toFixed(0)}% `
