@@ -41,8 +41,8 @@ const tier2Envelope = (m: Partial<EnvelopeWithPrice> = {}): EnvelopeWithPrice =>
 });
 
 describe('MaterialUsagePanel — Tier 2', () => {
-  it('renders quantity envelope with burn percent', () => {
-    const { getByText } = render(
+  it('renders quantity envelope with burn percent and both remaining figures', () => {
+    const { getByText, getAllByText } = render(
       <MaterialUsagePanel
         materialId="mat-bata"
         tier={2}
@@ -51,12 +51,41 @@ describe('MaterialUsagePanel — Tier 2', () => {
         envelope={tier2Envelope()}
       />,
     );
-    // "Di-PO" surfaces the SANO PO qty (total_ordered); "Permintaan berjalan"
-    // is the separate request-demand figure (total_requested).
+    // "Di-PO" surfaces the SANO PO qty (total_ordered).
     expect(getByText(/Di-PO: 200 \/ 5\.000 pcs/)).toBeTruthy();
     expect(getByText(/4%/)).toBeTruthy();
-    expect(getByText(/Permintaan berjalan: 350 pcs/)).toBeTruthy();
-    expect(getByText(/Sisa untuk di-PO: 4\.800 pcs/)).toBeTruthy();
+    // total_requested 350 self-excludes this request's own 200 → 150
+    // other-open, labeled EXACTLY like the Block-A overage panel above it
+    // (both are project grain for a Tier-2 line, so the two panels agree
+    // byte-for-byte — hence 2 matches, not a collision).
+    expect(getAllByText(/Permintaan berjalan lain: 150 pcs/)).toHaveLength(2);
+    expect(getAllByText(/Permintaan ini: 200 pcs/)).toHaveLength(2);
+    // remainingToOrder = planned(5.000) − ordered(200) = 4.800 (hard cap,
+    // requests not subtracted).
+    expect(getByText(/Sisa untuk di-PO \(batas keras\): 4\.800 pcs/)).toBeTruthy();
+    // remainingFree = max(0, 5.000 − 200 − 350) = 4.450 (all commitments
+    // subtracted, including this request since it's already counted in
+    // total_requested at review time).
+    expect(getByText(/Sisa bebas \(belum terikat permintaan\): 4\.450 pcs/)).toBeTruthy();
+  });
+
+  it('falls back to the self-inclusive label on Block B when the request quantity is not a finite number', () => {
+    // Defensive branch: MaterialUsagePanelProps.requestedQuantity is typed as
+    // a required `number`, so this is not reachable from ApprovalsScreen
+    // today — asserted directly to document the "self-exclusion isn't
+    // possible" contract from the task brief without needing a new caller.
+    // Block A (renderOverageRunningTotal) is a separate, pre-existing code
+    // path this task doesn't touch, so this only asserts Block B's own text.
+    const { getByText } = render(
+      <MaterialUsagePanel
+        materialId="mat-bata"
+        tier={2}
+        requestedQuantity={NaN}
+        requestedUnit="pcs"
+        envelope={tier2Envelope()}
+      />,
+    );
+    expect(getByText(/Permintaan berjalan \(termasuk permintaan ini\): 350 pcs/)).toBeTruthy();
   });
 
   it('renders Rupiah envelope when baseline_unit_price is present', () => {
@@ -116,7 +145,7 @@ describe('MaterialUsagePanel — Tier 2', () => {
   it('renders the recomputed Signal-1 overage running total (planned/di-PO/berjalan/ini/proyeksi) + reason', () => {
     // planned 1000, di-PO 900, total_requested 110 (incl. this 50) → other-open
     // 60; projected 900+60+50 = 1010 = 101%.
-    const { getByText } = render(
+    const { getByText, getAllByText } = render(
       <MaterialUsagePanel
         materialId="mat-bata"
         tier={2}
@@ -129,8 +158,11 @@ describe('MaterialUsagePanel — Tier 2', () => {
     );
     expect(getByText(/Rencana: 1\.000 kg/)).toBeTruthy();
     expect(getByText(/Sudah di-PO: 900 kg/)).toBeTruthy();
-    expect(getByText(/Permintaan berjalan lain: 60 kg/)).toBeTruthy();
-    expect(getByText(/Permintaan ini: 50 kg/)).toBeTruthy();
+    // Block B (Envelope kuantitas) below shares the same project grain, so it
+    // renders the identical self-excluded figures too — 2 matches each, not
+    // a collision (see the label-collision test above for the same pattern).
+    expect(getAllByText(/Permintaan berjalan lain: 60 kg/)).toHaveLength(2);
+    expect(getAllByText(/Permintaan ini: 50 kg/)).toHaveLength(2);
     expect(getByText(/Proyeksi: 1\.010 kg \(101%\)/)).toBeTruthy();
     expect(getByText(/Melebihi total alokasi/i)).toBeTruthy();
     expect(getByText(/Alasan pengaju: Volume RAB kurang — RAB kurang di zona B/)).toBeTruthy();
@@ -237,14 +269,23 @@ describe('MaterialUsagePanel — Tier 1', () => {
     expect(getByText(/Sudah di-PO \(grup\): 400 kg/)).toBeTruthy();
     // requested 1174.6 includes this request's own 200 → self-excluded: 974.6.
     expect(getByText(/Permintaan berjalan lain \(grup\): 974[,.]6 kg/)).toBeTruthy();
-    // Both the project-grain overage panel (rendered unconditionally above) and
-    // the new group panel show "Permintaan ini" with the same quantity — assert
-    // it appears in both rather than picking one.
-    expect(getAllByText(/Permintaan ini: 200 kg/)).toHaveLength(2);
+    // Three panels now show "Permintaan ini" with the same quantity: the
+    // project-grain overage panel (Block A, unconditional), the group panel
+    // (Block C), and the project-grain "Envelope kuantitas" panel (Block B) —
+    // which, since Task 1, also self-excludes and shows its own "Permintaan
+    // ini" line instead of a raw total.
+    expect(getAllByText(/Permintaan ini: 200 kg/)).toHaveLength(3);
+    // Block A and Block B are both project grain against the same envelope,
+    // so their self-excluded "other open" figures (10.996 total_requested −
+    // 200 this request = 10.796) now agree byte-for-byte too.
+    expect(getAllByText(/Permintaan berjalan lain: 10\.796 kg/)).toHaveLength(2);
     // Proyeksi grup = 400 + 974.6 + 200 = 1574.6 / 1600 = 98%.
     expect(getByText(/Proyeksi grup: 1\.574[,.]6 kg \(98%\)/)).toBeTruthy();
     // Project grain stays visible too, explicitly labeled so the two can't be confused.
     expect(getByText(/Envelope kuantitas — Proyek/)).toBeTruthy();
+    // Grain disclosure (Task 2): the group panel's header states the
+    // denominator relationship to the project plan inline.
+    expect(getByText(/Rencana grup: 1\.600 kg — dari total proyek 50\.000 kg/)).toBeTruthy();
     // Change 2: Tier-1 wording, not the Tier-2 "Anggaran tidak tersedia" copy.
     expect(getByText(/Tier 1: kontrol kuantitas — biaya tidak dilacak per material\./)).toBeTruthy();
     expect(queryByText(/Anggaran tidak tersedia/i)).toBeNull();

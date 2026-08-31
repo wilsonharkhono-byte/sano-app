@@ -4,6 +4,7 @@ import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../../workflows/theme';
 import type { EnvelopeWithPrice } from '../../../tools/envelopes';
 import { makeOverageComponents, OVERAGE_REASON_LABELS } from '../../../tools/requestOverage';
 import type { OverageReason } from '../../../tools/types';
+import { remainingFree, remainingToOrder } from '../../../tools/envelopeMath';
 
 export interface MaterialUsagePanelProps {
   materialId: string | null;
@@ -62,17 +63,44 @@ function burnColor(burnPct: number): string {
  * docs/superpowers/specs/2026-07-10-two-signal-overallocation-design.md).
  * Tier 2 keeps the original AHS-price-missing wording unchanged.
  */
-function renderTier2Like(env: EnvelopeWithPrice, tier: 1 | 2 | 3 | 4 | null): React.ReactElement {
+function renderTier2Like(env: EnvelopeWithPrice, tier: 1 | 2 | 3 | 4 | null, thisQty: number): React.ReactElement {
   const overBudget = env.burn_pct > 100;
   const burnTextColor = burnColor(env.burn_pct);
+  // `requested` here is the raw view column (v_material_envelope_status.total_
+  // requested), not a PO-link-deduplicated figure — tools/envelopeMath.ts's
+  // header documents that this makes remainingFree() read pessimistically
+  // until request→PO linking is subtracted out. No link-aware figure is
+  // available on this props surface today, so this is the same known,
+  // pre-existing caveat every other total_requested consumer in this file
+  // already carries (see renderOverageRunningTotal / renderTier1GroupPanel).
+  const legs = { planned: env.total_planned, ordered: env.total_ordered, requested: env.total_requested };
+  // Self-exclusion mirrors renderOverageRunningTotal / renderTier1GroupPanel:
+  // by the time this panel renders (ApprovalsScreen, reviewing an already-
+  // persisted request) the line's own quantity is already counted inside
+  // total_requested. `thisQty` is a required prop on this component, so it is
+  // always "known" here — the else branch exists defensively for a caller
+  // that ever passes a non-finite quantity, never reachable today.
+  const qtyKnown = Number.isFinite(thisQty);
+  const otherOpen = qtyKnown ? Math.max(0, env.total_requested - thisQty) : env.total_requested;
   return (
     <View style={[styles.panel, overBudget && styles.panelCritical]}>
       <Text style={styles.sectionLabel}>{tier === 1 ? 'Envelope kuantitas — Proyek' : 'Envelope kuantitas'}</Text>
       <Text style={[styles.lineMain, { color: burnTextColor }]}>
         Di-PO: {fmtNum(env.total_ordered)} / {fmtNum(env.total_planned)} {env.unit} ({env.burn_pct.toFixed(0)}%)
       </Text>
-      <Text style={styles.lineSub}>Permintaan berjalan: {fmtNum(env.total_requested)} {env.unit}</Text>
-      <Text style={styles.lineSub}>Sisa untuk di-PO: {fmtNum(env.remaining_to_order)} {env.unit}</Text>
+      {qtyKnown ? (
+        <>
+          {/* Self-excluded, labeled exactly like the Block-A overage panel's
+              "Permintaan berjalan lain" so the two never read as different
+              numbers for the same concept one word apart. */}
+          <Text style={styles.lineSub}>Permintaan berjalan lain: {fmtNum(otherOpen)} {env.unit}</Text>
+          <Text style={styles.lineSub}>Permintaan ini: {fmtNum(thisQty)} {env.unit}</Text>
+        </>
+      ) : (
+        <Text style={styles.lineSub}>Permintaan berjalan (termasuk permintaan ini): {fmtNum(env.total_requested)} {env.unit}</Text>
+      )}
+      <Text style={styles.lineSub}>Sisa untuk di-PO (batas keras): {fmtNum(remainingToOrder(legs))} {env.unit}</Text>
+      <Text style={styles.lineSub}>Sisa bebas (belum terikat permintaan): {fmtNum(remainingFree(legs))} {env.unit}</Text>
       {env.baseline_unit_price != null && env.envelope_total_rupiah != null ? (
         <>
           <Text style={[styles.sectionLabel, { marginTop: SPACE.sm }]}>Anggaran</Text>
@@ -112,10 +140,18 @@ function renderTier2Like(env: EnvelopeWithPrice, tier: 1 | 2 | 3 | 4 | null): Re
  * renders in ApprovalsScreen the line's own allocation is already persisted
  * and counted in the group's requested total — mirroring
  * `renderOverageRunningTotal`'s self-exclusion for the project grain above.
+ *
+ * `projectPlanned` (design spec §3 remediation, grain-disclosure follow-up):
+ * this panel and `renderTier2Like(env, 1)` always render together for a
+ * WORKGROUP_ENVELOPE line (see the call site), stacking two DIFFERENT
+ * denominators — group-planned here, project-planned there — with no cue that
+ * one is a subset of the other. State the relationship once, inline in this
+ * panel's header line, rather than repeating it in both panels.
  */
 function renderTier1GroupPanel(
   group: NonNullable<MaterialUsagePanelProps['groupEnvelope']>,
   thisQty: number,
+  projectPlanned: number,
 ): React.ReactElement {
   if (group.planned <= 0) {
     return (
@@ -141,7 +177,9 @@ function renderTier1GroupPanel(
   return (
     <View style={[styles.panel, over && styles.panelCritical]}>
       <Text style={styles.sectionLabel}>Envelope kuantitas — Grup: {group.label}</Text>
-      <Text style={styles.lineSub}>Rencana grup: {fmtNum(group.planned)} {group.unit}</Text>
+      <Text style={styles.lineSub}>
+        Rencana grup: {fmtNum(group.planned)} {group.unit} — dari total proyek {fmtNum(projectPlanned)} {group.unit}
+      </Text>
       <Text style={styles.lineSub}>Sudah di-PO (grup): {fmtNum(group.ordered)} {group.unit}</Text>
       <Text style={styles.lineSub}>Permintaan berjalan lain (grup): {fmtNum(otherOpen)} {group.unit}</Text>
       <Text style={styles.lineSub}>Permintaan ini: {fmtNum(thisQty)} {group.unit}</Text>
@@ -236,7 +274,7 @@ export function MaterialUsagePanel(props: MaterialUsagePanelProps): React.ReactE
 /** Tier-specific supplementary detail below the Signal-1 overage panel. */
 function renderTierDetail(props: MaterialUsagePanelProps, env: EnvelopeWithPrice): React.ReactElement {
   if (props.tier === 2) {
-    return renderTier2Like(env, 2);
+    return renderTier2Like(env, 2, props.requestedQuantity);
   }
 
   if (props.tier === 1) {
@@ -248,8 +286,8 @@ function renderTierDetail(props: MaterialUsagePanelProps, env: EnvelopeWithPrice
       // to the project-grain panel alone — same defensive behavior as before.
       return (
         <>
-          {props.groupEnvelope && renderTier1GroupPanel(props.groupEnvelope, props.requestedQuantity)}
-          {renderTier2Like(env, 1)}
+          {props.groupEnvelope && renderTier1GroupPanel(props.groupEnvelope, props.requestedQuantity, env.total_planned)}
+          {renderTier2Like(env, 1, props.requestedQuantity)}
         </>
       );
     }

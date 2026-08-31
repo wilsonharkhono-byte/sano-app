@@ -34,6 +34,7 @@ import {
 } from '../../tools/rebarMatrix';
 import { evaluateTier4Untracked, evaluateTier3BudgetSoft } from '../../tools/budgetGate';
 import { requiresOverageReason, requiresOverageNote } from '../../tools/requestOverage';
+import { burnPct as computeBurnPct, remainingFree, type EnvelopeLegs } from '../../tools/envelopeMath';
 import { shouldShowDriftBadge, formatDriftBadge, type MaterialDrift } from '../../tools/planDrift';
 import {
   buildSubmitMaterialRequestPayload, type SubmitRequestLineInput,
@@ -1749,14 +1750,28 @@ export default function PermintaanScreen() {
             {manualLines.map((line, idx) => {
               const tierColor = TIER_COLORS[line.tier];
               const envelope = line.materialId ? envelopeCache.get(line.materialId) ?? null : null;
-              // Bar tracks running request demand (permintaan berjalan) vs plan, so
-              // it agrees with the Tier-2 gate result on the same card. The view's
-              // own burn_pct is now PO-based (di-PO) and shown as its own figure.
               const plannedQty = Number(envelope?.total_planned ?? 0);
               const requestedQtyEnv = Number(envelope?.total_requested ?? 0);
               const orderedQtyEnv = Number(envelope?.total_ordered ?? 0);
-              const burnPct = plannedQty > 0 ? (requestedQtyEnv / plannedQty) * 100 : 0;
-              const barColor = burnPct > 100 ? COLORS.critical : burnPct > 80 ? COLORS.warning : COLORS.ok;
+              // This line's own typed quantity in the material's BASE unit — same
+              // conversion as `requestedBaseQty` inside the linesWithResults gate
+              // memo above (not reused from there because that memo doesn't carry
+              // it back out per line).
+              const thisBaseQty = line.materialId && isPositiveNumber(line.quantity)
+                ? supplierToBase(parseFloat(line.quantity), line.base_qty_per_supplier_unit)
+                : 0;
+              const envelopeLegs: EnvelopeLegs = { planned: plannedQty, ordered: orderedQtyEnv, requested: requestedQtyEnv };
+              // Bar now shares ONE basis with the Tier-2 gate message on the same
+              // card (buildProjectEnvelopeOverageResult → makeOverageComponents:
+              // poOrdered + otherOpen + thisRequest, all over `planned`) instead of
+              // the old requested-only burn that ignored POs and the quantity being
+              // typed. Null when there's no plan to burn against — never a fake 0%.
+              const committedBurnPct = computeBurnPct(envelopeLegs, 'committed', thisBaseQty);
+              const barColor = committedBurnPct == null ? COLORS.textSec
+                : committedBurnPct > 100 ? COLORS.critical
+                : committedBurnPct > 80 ? COLORS.warning
+                : COLORS.ok;
+              const sisaBebas = remainingFree(envelopeLegs);
               // Signal-2 plan drift (spec §4) — context only, no Rp; shown as a
               // badge next to the envelope figures regardless of Signal-1 status.
               const drift = line.materialId ? driftCache.get(line.materialId) ?? null : null;
@@ -1968,7 +1983,7 @@ export default function PermintaanScreen() {
                         Envelope — {envelope.boq_item_count} item BoQ
                       </Text>
                       <View style={styles.envelopeBar}>
-                        <View style={[styles.envelopeBarFill, { width: `${Math.min(burnPct, 100)}%`, backgroundColor: barColor }]} />
+                        <View style={[styles.envelopeBarFill, { width: `${Math.min(committedBurnPct ?? 0, 100)}%`, backgroundColor: barColor }]} />
                       </View>
                       <View style={styles.row2}>
                         <Text style={styles.envelopeStat}>
@@ -1987,8 +2002,15 @@ export default function PermintaanScreen() {
                         {line.base_qty_per_supplier_unit != null &&
                           ` (≈ ${(orderedQtyEnv / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
                       </Text>
+                      <Text style={styles.envelopeStat}>
+                        Sisa bebas: {Math.round(sisaBebas).toLocaleString('id-ID')} {envelope.unit}
+                        {line.base_qty_per_supplier_unit != null &&
+                          ` (≈ ${(sisaBebas / line.base_qty_per_supplier_unit).toFixed(1)} ${line.unit})`}
+                      </Text>
                       <Text style={[styles.envelopePct, { color: barColor }]}>
-                        {burnPct.toFixed(0)}% dari rencana (permintaan)
+                        {committedBurnPct != null
+                          ? `${committedBurnPct.toFixed(0)}% dari rencana (di-PO + permintaan + baris ini)`
+                          : 'Tanpa rencana pembanding'}
                       </Text>
                       {showDrift && (
                         <View style={styles.driftBadge}>
