@@ -26,6 +26,7 @@ interface NotificationRow {
   read_at: string | null;
   deeplink_screen: string;
   deeplink_params: Record<string, unknown> | null;
+  projects?: { name: string } | null;
 }
 
 function rowToItem(row: NotificationRow): NotificationItem {
@@ -38,6 +39,7 @@ function rowToItem(row: NotificationRow): NotificationItem {
     readAt: row.read_at,
     deeplinkScreen: row.deeplink_screen,
     deeplinkParams: row.deeplink_params,
+    projectName: row.projects?.name ?? null,
   };
 }
 
@@ -50,11 +52,11 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
   const fetch = useCallback(async () => {
     const { data } = await supabase
       .from('notifications')
-      .select('id, type, title, body, created_at, read_at, deeplink_screen, deeplink_params')
+      .select('id, type, title, body, created_at, read_at, deeplink_screen, deeplink_params, projects(name)')
       .eq('recipient_user_id', profileId)
       .order('created_at', { ascending: false })
       .limit(200);
-    setItems((data ?? []).map(rowToItem));
+    setItems(((data ?? []) as unknown as NotificationRow[]).map(rowToItem));
   }, [profileId]);
 
   useEffect(() => {
@@ -83,13 +85,15 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
           table: 'notifications',
           filter: `recipient_user_id=eq.${profileId}`,
         },
-        payload => {
-          setItems(prev => [rowToItem(payload.new as NotificationRow), ...prev]);
+        () => {
+          // Refetch instead of prepending payload.new: the realtime payload
+          // carries no joined project name, so the row would render unlabeled.
+          void fetch();
         },
       )
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [profileId]);
+  }, [profileId, fetch]);
 
   const handlePress = useCallback((item: NotificationItem) => {
     if (!item.readAt) {

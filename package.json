@@ -89,6 +89,7 @@
     ],
     "testPathIgnorePatterns": [
       "/node_modules/",
+      "/.claude/worktrees/",
       "__tests__/fixtures\\.ts$",
       "__tests__/_serverGateHarness\\.ts$",
       "supabase/functions/",

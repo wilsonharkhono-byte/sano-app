@@ -76,4 +76,17 @@ describe('NotificationList', () => {
     fireEvent.press(getByText('Permintaan butuh review'));
     expect(onPress).toHaveBeenCalledWith(items[0]);
   });
+
+  it('labels a row with its project name when provided, and omits the label otherwise', () => {
+    const withProject: NotificationItem[] = [
+      { ...items[0], projectName: 'BDG D-18' },
+      items[1], // no projectName — legacy rows / unreadable project
+    ];
+    const { getByText, queryByText } = render(
+      <NotificationList items={withProject} onPress={() => {}} />,
+    );
+    expect(getByText('BDG D-18')).toBeTruthy();
+    // The unlabeled row still renders normally.
+    expect(queryByText('Permintaan disetujui')).toBeTruthy();
+  });
 });

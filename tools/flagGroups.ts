@@ -15,6 +15,7 @@ export interface ParentBlockSubGroup {
 export const FLAG_GROUP_LABELS: Record<string, string> = {
   orphan_ahs_block: 'Blok harga tidak dipakai BoQ',
   literal_component: 'Komponen angka langsung (tanpa rumus)',
+  unrecognized_beton_grade: 'Mutu beton tidak dikenali',
   __other__: 'Lainnya',
 };
 
@@ -22,29 +23,34 @@ export const FLAG_GROUP_LABELS: Record<string, string> = {
 // batchable orphan group benefits from up-front context.
 export const FLAG_GROUP_HINTS: Record<string, string> = {
   orphan_ahs_block: 'Resep harga ini ada di sheet Analisa, tapi tidak ada baris BoQ yang memakainya.',
+  unrecognized_beton_grade:
+    'Nilai di kolom "Mutu Beton" tidak dikenali, jadi betonnya dicatat tanpa mutu dan tidak cocok ke katalog.',
 };
 
-// Fixed top-level order. Both the orphan-block and literal-component groups
-// support batch actions (Setujui/Tolak semua) — they can hold dozens of rows
-// each and the decision is reversible before publish, so one-by-one review is
-// needless friction. `__other__` stays per-row (heterogeneous reasons).
-const GROUP_ORDER = ['orphan_ahs_block', 'literal_component', '__other__'] as const;
+// Fixed top-level order. The orphan-block and literal-component groups support
+// batch actions (Setujui/Tolak semua) — they can hold dozens of rows each and
+// the decision is reversible before publish, so one-by-one review is needless
+// friction. `unrecognized_beton_grade` is deliberately NOT batchable: each row
+// carries its own bad value and needs its own correction, so a blanket
+// "Setujui semua" would rubber-stamp a batch of unresolved concrete. `__other__`
+// stays per-row too (heterogeneous reasons).
+const GROUP_ORDER = ['orphan_ahs_block', 'literal_component', 'unrecognized_beton_grade', '__other__'] as const;
 const BATCHABLE = new Set<string>(['orphan_ahs_block', 'literal_component']);
+// A Set (not an object) so prototype keys like "constructor" can't masquerade
+// as a known reason.
+const KNOWN_REASONS = new Set<string>(GROUP_ORDER.filter((k) => k !== '__other__'));
 
 function reasonKey(row: ImportStagingRow): string {
   const raw = (row.raw_data ?? {}) as Record<string, unknown>;
   const fr = raw.flag_reason;
-  if (fr === 'orphan_ahs_block' || fr === 'literal_component') return fr;
-  return '__other__';
+  return typeof fr === 'string' && KNOWN_REASONS.has(fr) ? fr : '__other__';
 }
 
 /** Bucket flagged rows by flag_reason into ordered groups; empty groups omitted. */
 export function groupReviewRows(rows: ImportStagingRow[]): ReviewGroup[] {
-  const buckets: Record<string, ImportStagingRow[]> = {
-    orphan_ahs_block: [],
-    literal_component: [],
-    __other__: [],
-  };
+  const buckets: Record<string, ImportStagingRow[]> = Object.fromEntries(
+    GROUP_ORDER.map((k) => [k, [] as ImportStagingRow[]]),
+  );
   for (const r of rows) buckets[reasonKey(r)].push(r);
   return GROUP_ORDER.filter(k => buckets[k].length > 0).map(k => ({
     key: k,

@@ -534,7 +534,13 @@ export default function TerimaScreen() {
                     <Text style={styles.hint}>Diterima</Text>
                   </View>
                   <View style={styles.poMetric}>
-                    <Text style={[styles.poMetricValue, { color: remainingQty > 0 ? COLORS.warning : COLORS.ok }]}>{formatPoQty(remainingQty)}</Text>
+                    {/* Floored at 0, matching the "Sisa total PO" line in the
+                        receive form below: an over-receipt (received > ordered)
+                        leaves nothing still to come, and "Sisa −40 kg" reads as
+                        a shortfall — the opposite of what happened. The overage
+                        itself is not hidden; it stays visible as Diterima >
+                        Dipesan and in the receipt gate. */}
+                    <Text style={[styles.poMetricValue, { color: remainingQty > 0 ? COLORS.warning : COLORS.ok }]}>{formatPoQty(Math.max(0, remainingQty))}</Text>
                     <Text style={styles.hint}>Sisa</Text>
                   </View>
                 </View>

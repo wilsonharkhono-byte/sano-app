@@ -28,8 +28,10 @@ import { generateReport, recordReportExport, type ReportPayload, type ReportType
 import { ReportPreview } from '../components/ReportPreview';
 import { deriveMaterialBalance } from '../../tools/derivation';
 import { computeOverallProgress } from '../../tools/progressMath';
-import { needsProcurement } from '../../tools/materialThresholds';
+import { needsProcurement, isShortOnSite } from '../../tools/materialThresholds';
 import { getProjectTeam, listAllProfiles, addUserToProject, removeUserFromProject, availableProfiles, type TeamMember, type ProfileOption, ROLE_LABELS } from '../../tools/projectManagement';
+import { canManageTeamMember } from '../../tools/rolePermissions';
+import { type UserRoleType } from '../../tools/constants';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 type Section = 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'katalog' | 'mandor' | 'opname' | 'attendance' | 'client-report';
@@ -52,6 +54,10 @@ export default function LaporanScreen() {
   const route = useRoute<any>();
   const { project, profile, boqItems, purchaseOrders, defects, milestones, refresh } = useProject();
   const { show: toast } = useToast();
+  // Estimators manage team membership here (migration 037), but principal
+  // members are out of reach (migration 090): only a principal actor may add
+  // or remove a principal, and this panel never edits roles at all.
+  const actorRole = (profile?.role ?? '') as UserRoleType;
   const [activeSection, setActiveSection] = useState<Section>(route.params?.initialSection ?? 'overview');
   const [focusedContractId, setFocusedContractId] = useState<string | undefined>(route.params?.contractId);
   const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
@@ -62,6 +68,10 @@ export default function LaporanScreen() {
     total: number;
     lowStock: number;
     deficit: number;
+    // Task: short on-site but already covered by an open PO — distinct from
+    // lowStock (which now nets out on_order) so this state reads as
+    // "handled, waiting on delivery" rather than disappearing into "OK".
+    onOrder: number;
   } | null>(null);
 
   useEffect(() => {
@@ -98,11 +108,13 @@ export default function LaporanScreen() {
     }
   }, [allProfiles.length]);
 
-  const handleAddMember = async (userId: string) => {
+  const handleAddMember = async (candidate: ProfileOption) => {
     if (!project) return;
     setTeamBusy(true);
     try {
-      const { error } = await addUserToProject(project.id, userId);
+      const { error } = await addUserToProject(project.id, candidate.id, {
+        actorRole, memberRole: candidate.role as UserRoleType,
+      });
       if (error) { toast(error, 'critical'); return; }
       toast('Anggota ditambahkan', 'ok');
       setMemberPickerOpen(false);
@@ -115,7 +127,9 @@ export default function LaporanScreen() {
     const run = async () => {
       setTeamBusy(true);
       try {
-        const { error } = await removeUserFromProject(member.assignment_id);
+        const { error } = await removeUserFromProject(member.assignment_id, {
+          actorRole, memberRole: member.role as UserRoleType,
+        });
         if (error) { toast(error, 'critical'); return; }
         toast('Anggota dihapus', 'warning');
         loadTeam();
@@ -195,8 +209,16 @@ export default function LaporanScreen() {
           // Task 3.3: tools/materialThresholds.ts — same predicate drives the
           // Material Balance report's "Perlu Pengadaan" summary count and
           // per-row Status column, so this tile never disagrees with an export.
-          lowStock: balances.filter((item) => needsProcurement({ planned: item.planned, on_site: item.on_site })).length,
+          // Now on_order-aware: a material fully covered by an open PO no
+          // longer counts here (it shows under onOrder below instead).
+          lowStock: balances.filter((item) => needsProcurement({ planned: item.planned, on_site: item.on_site, on_order: item.on_order })).length,
           deficit: balances.filter((item) => item.on_site < 0).length,
+          // Short on-site alone, but the shortage is covered by an open PO —
+          // "Sudah dipesan — menunggu kedatangan", not "Perlu Pengadaan".
+          onOrder: balances.filter((item) =>
+            isShortOnSite({ planned: item.planned, on_site: item.on_site }) &&
+            !needsProcurement({ planned: item.planned, on_site: item.on_site, on_order: item.on_order }),
+          ).length,
         });
       })
       .catch((err) => {
@@ -370,6 +392,9 @@ export default function LaporanScreen() {
   }
 
   const isEstimatorOrAdmin = profile?.role === 'estimator' || profile?.role === 'admin' || profile?.role === 'principal';
+  const addableProfiles = availableProfiles(allProfiles, projectTeam).filter(
+    p => canManageTeamMember(actorRole, p.role as UserRoleType).allowed,
+  );
   const isSupervisor = profile?.role === 'supervisor';
 
   const tabs: Array<{ key: Section; label: string; icon: string }> = [
@@ -434,6 +459,10 @@ export default function LaporanScreen() {
                 <Text style={[styles.metricValue, { color: COLORS.warning }]}>{materialBalanceSummary?.lowStock ?? 0}</Text>
               </View>
               <View style={styles.metricRow}>
+                <Text style={styles.metricLabel}>Sudah Dipesan — Menunggu Kedatangan</Text>
+                <Text style={[styles.metricValue, { color: COLORS.info }]}>{materialBalanceSummary?.onOrder ?? 0}</Text>
+              </View>
+              <View style={styles.metricRow}>
                 <Text style={styles.metricLabel}>Defisit On-Site</Text>
                 <Text style={[styles.metricValue, { color: COLORS.critical }]}>{materialBalanceSummary?.deficit ?? 0}</Text>
               </View>
@@ -474,7 +503,7 @@ export default function LaporanScreen() {
                       <Text style={styles.teamName}>{member.full_name}</Text>
                       <Text style={styles.teamRole}>{ROLE_LABELS[member.role] ?? member.role}</Text>
                     </View>
-                    {isEstimatorOrAdmin && (
+                    {isEstimatorOrAdmin && canManageTeamMember(actorRole, member.role as UserRoleType).allowed && (
                       <TouchableOpacity
                         onPress={() => handleRemoveMember(member)}
                         disabled={teamBusy}
@@ -503,14 +532,14 @@ export default function LaporanScreen() {
 
                   {memberPickerOpen && (
                     <View style={styles.memberPicker}>
-                      {availableProfiles(allProfiles, projectTeam).length === 0 ? (
+                      {addableProfiles.length === 0 ? (
                         <Text style={styles.hint}>Tidak ada pengguna lain untuk ditambahkan.</Text>
                       ) : (
-                        availableProfiles(allProfiles, projectTeam).map(p => (
+                        addableProfiles.map(p => (
                           <TouchableOpacity
                             key={p.id}
                             style={styles.memberOption}
-                            onPress={() => handleAddMember(p.id)}
+                            onPress={() => handleAddMember(p)}
                             disabled={teamBusy}
                           >
                             <Text style={styles.memberOptionName}>{p.full_name}</Text>

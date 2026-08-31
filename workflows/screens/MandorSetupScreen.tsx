@@ -736,8 +736,14 @@ export default function MandorSetupScreen({
             {loading && <ActivityIndicator style={{ marginTop: SPACE.lg }} color={COLORS.primary} />}
 
             {rates.map(rate => {
-              const varPct = rate.variance_pct ?? 0;
-              const varColor = varPct > 20 ? COLORS.critical : varPct > 10 ? COLORS.warning : varPct < -10 ? COLORS.info : COLORS.ok;
+              // rate.variance_pct is undefined (not 0) when boq_labor_rate is
+              // 0 — i.e. no AHS baseline to compare against (see
+              // tools/opname.ts getContractRates). Don't fall back to 0 here;
+              // that would render "+0%" and read as "on budget" when there's
+              // actually nothing to compare.
+              const varPct = rate.variance_pct;
+              const varColor = varPct === undefined ? COLORS.textSec
+                : varPct > 20 ? COLORS.critical : varPct > 10 ? COLORS.warning : varPct < -10 ? COLORS.info : COLORS.ok;
               const isEditing = editingRate === rate.boq_item_id;
 
               return (
@@ -774,7 +780,7 @@ export default function MandorSetupScreen({
                         </Text>
                       )}
                     </View>
-                    {rate.contracted_rate > 0 && !isEditing && (
+                    {rate.contracted_rate > 0 && !isEditing && varPct !== undefined && (
                       <View style={[styles.varBadge, { backgroundColor: varColor + '22' }]}>
                         <Text style={[styles.varText, { color: varColor }]}>
                           {varPct > 0 ? '+' : ''}{varPct.toFixed(0)}%

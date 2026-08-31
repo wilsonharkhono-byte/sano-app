@@ -411,9 +411,15 @@ export default function OfficeReportsScreen() {
                   .filter(Boolean)
                   .sort()
                   .reverse()[0];
-                const avgVariance = laborSummary.length > 0
-                  ? Math.round(laborSummary.reduce((s, m) => s + (m.contract_vs_boq_variance_pct ?? 0), 0) / laborSummary.length * 10) / 10
-                  : 0;
+                // Only average mandors that actually have an AHS baseline —
+                // contract_vs_boq_variance_pct is undefined (not 0) when
+                // total_boq_labor_budget is 0, e.g. projects ingested via the
+                // simplified "SANO Input" format. Folding those in as 0%
+                // would misreport "on budget" for mandors with no baseline.
+                const mandorsWithVariance = laborSummary.filter(m => m.contract_vs_boq_variance_pct !== undefined);
+                const avgVariance = mandorsWithVariance.length > 0
+                  ? Math.round(mandorsWithVariance.reduce((s, m) => s + (m.contract_vs_boq_variance_pct ?? 0), 0) / mandorsWithVariance.length * 10) / 10
+                  : undefined;
                 return (
                   <>
                     <View style={styles.kpiRow}>
@@ -422,8 +428,8 @@ export default function OfficeReportsScreen() {
                         <Text style={styles.kpiLabel}>Opname Disetujui</Text>
                       </View>
                       <View style={styles.kpiTile}>
-                        <Text style={[styles.kpiValue, { color: Math.abs(avgVariance) > 10 ? COLORS.critical : Math.abs(avgVariance) > 5 ? COLORS.warning : COLORS.ok }]}>
-                          {avgVariance > 0 ? '+' : ''}{avgVariance}%
+                        <Text style={[styles.kpiValue, { color: avgVariance === undefined ? COLORS.textSec : Math.abs(avgVariance) > 10 ? COLORS.critical : Math.abs(avgVariance) > 5 ? COLORS.warning : COLORS.ok }]}>
+                          {avgVariance === undefined ? '—' : `${avgVariance > 0 ? '+' : ''}${avgVariance}%`}
                         </Text>
                         <Text style={styles.kpiLabel}>Avg Rate Variance</Text>
                       </View>
@@ -445,10 +451,13 @@ export default function OfficeReportsScreen() {
                         <View style={{ alignItems: 'flex-end' }}>
                           <Text style={styles.mandorAmount}>{m.approved_opname_count}x</Text>
                           <Text style={[styles.mandorPct, {
-                            color: Math.abs(m.contract_vs_boq_variance_pct ?? 0) > 10 ? COLORS.critical
-                              : Math.abs(m.contract_vs_boq_variance_pct ?? 0) > 5 ? COLORS.warning : COLORS.textSec
+                            color: m.contract_vs_boq_variance_pct === undefined ? COLORS.textSec
+                              : Math.abs(m.contract_vs_boq_variance_pct) > 10 ? COLORS.critical
+                              : Math.abs(m.contract_vs_boq_variance_pct) > 5 ? COLORS.warning : COLORS.textSec
                           }]}>
-                            {(m.contract_vs_boq_variance_pct ?? 0) > 0 ? '+' : ''}{Math.round(m.contract_vs_boq_variance_pct ?? 0)}% var
+                            {m.contract_vs_boq_variance_pct === undefined
+                              ? '— var'
+                              : `${m.contract_vs_boq_variance_pct > 0 ? '+' : ''}${Math.round(m.contract_vs_boq_variance_pct)}% var`}
                           </Text>
                         </View>
                       </View>

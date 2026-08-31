@@ -12,6 +12,13 @@
 // ALL quantities are BASE units (kg for rebar, not batang). The caller converts
 // supplier units → base before handing lines here, matching what the PO rows and
 // the RPC store.
+//
+// The remaining-arithmetic itself lives in tools/envelopeMath.ts — the single
+// canonical module every surface shares. This file only decides WHICH question
+// the PO gate asks: remainingToOrder ("Sisa untuk di-PO", planned − ordered),
+// never remainingFree.
+
+import { remainingToOrder, type EnvelopeLegs } from './envelopeMath';
 
 /** One draft/incoming PO line, in BASE units. Free-text lines have material_id null. */
 export interface PoGateLine {
@@ -29,6 +36,14 @@ export interface PoGateEnvelope {
   total_planned: number;
   /** total_ordered — non-CANCELLED SANO PO lines already booked (base units). */
   total_ordered: number;
+  /**
+   * total_requested — every non-REJECTED material_request_line (072:412-419),
+   * base units. CONTEXT ONLY: it is NOT part of the gate comparison, and it is
+   * NOT link-aware (a request a PO already fulfils is still counted here, which
+   * is the project-view double-count). Optional so existing callers that only
+   * need the gate keep compiling.
+   */
+  total_requested?: number;
 }
 
 /** A material whose aggregated attempt exceeds its remaining envelope. */
@@ -77,6 +92,25 @@ export interface OverridePayloadEntry {
 const EPSILON = 1e-9;
 
 /**
+ * Adapt a project-grain envelope row to the canonical {@link EnvelopeLegs}.
+ *
+ * `requestedOverride` is where a LINK-AWARE outstanding-request figure goes —
+ * approved request quantity minus what linked, non-cancelled PO lines already
+ * cover (tools/requestLineLinkCandidates.ts derives exactly that as its
+ * `remaining`). Without an override the leg falls back to the view's
+ * total_requested, which counts requests a PO already fulfils and therefore
+ * reads pessimistically once POs exist. The gate itself never looks at the
+ * requested leg — only the surrounding display does.
+ */
+export function envelopeLegs(env: PoGateEnvelope, requestedOverride?: number): EnvelopeLegs {
+  return {
+    planned: env.total_planned,
+    ordered: env.total_ordered,
+    requested: requestedOverride ?? env.total_requested ?? 0,
+  };
+}
+
+/**
  * Evaluate the PO quantity gate for a set of incoming lines against project-grain
  * envelopes. Aggregates attempted quantity PER material_id first, so a single
  * over-order split across two lines is still caught as the material total (the
@@ -120,7 +154,11 @@ export function evaluatePoQuantityGate(
       unmeasured.push({ material_id: materialId, material_name: env?.material_name ?? name, attempted });
       continue;
     }
-    const remaining = env.total_planned - env.total_ordered;
+    // THE hard-gate headroom, via the canonical module: planned − ordered, with
+    // requests deliberately absent (a PO fulfils a request — subtracting the
+    // request as well would double-block the order it asked for). Same formula
+    // as before, now named and shared with every other surface.
+    const remaining = remainingToOrder(envelopeLegs(env));
     if (attempted > remaining + EPSILON) {
       breaches.push({
         material_id: materialId,

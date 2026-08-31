@@ -8,7 +8,7 @@ import * as XLSX from 'xlsx';
 import { encode } from 'base64-arraybuffer';
 import type { ReportPayload } from './reports';
 import { formatDriftPct } from './planDrift';
-import { needsProcurement } from './materialThresholds';
+import { needsProcurement, isShortOnSite } from './materialThresholds';
 import type {
   ProgressSummaryData,
   MaterialBalanceData,
@@ -276,7 +276,7 @@ export function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) 
 
   const header = [
     'Nama Material', 'Satuan', 'Volume Direncanakan', 'Volume Diterima',
-    'Volume Terpasang', 'Saldo On-Site', 'Status',
+    'Volume Terpasang', 'Saldo On-Site', 'Dipesan (PO)', 'Status',
     'Tier', 'Kontrol',
     ...(showCosts ? ['Anggaran (Rp)', 'Terpakai (Rp)'] : []),
     'Burn %', 'Flag',
@@ -289,9 +289,23 @@ export function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) 
     const planned = b.planned ?? 0;
     const installed = b.installed ?? 0;
     const onSite = b.on_site ?? received - installed;
-    // Task 3.3: shared on_site-based predicate (tools/materialThresholds.ts) —
-    // same rule as the LaporanScreen tile and the reports.ts summary count.
-    const status = onSite < 0 ? 'Defisit di Lapangan' : needsProcurement({ planned, on_site: onSite }) ? 'Perlu Pengadaan' : 'Aman';
+    // Open-order cover for the current shortage (tools/derivation.ts
+    // MaterialBalance.on_order, from v_material_envelope_status). The shared
+    // type in reportDataTypes.ts doesn't declare this field yet, but reports.ts
+    // spreads the full MaterialBalanceRow into `balances`, so it rides along at
+    // runtime — read it via a local cast rather than widening that shared type.
+    const onOrder = (b as { on_order?: number }).on_order ?? 0;
+    // Task 3.3 + on-order fix: shared on_site-based predicate
+    // (tools/materialThresholds.ts) — same rule as the LaporanScreen tile and
+    // the reports.ts summary count. A material short on-site but fully covered
+    // by an open PO reads as "already ordered", not "needs procurement".
+    const status = onSite < 0
+      ? 'Defisit di Lapangan'
+      : needsProcurement({ planned, on_site: onSite, on_order: onOrder })
+        ? 'Perlu Pengadaan'
+        : isShortOnSite({ planned, on_site: onSite })
+          ? 'Sudah dipesan — menunggu kedatangan'
+          : 'Aman';
     const isRp = b.control === 'RP';
     return [
       b.material_name ?? b.name ?? '—',
@@ -300,6 +314,7 @@ export function buildMaterialBalance(wb: XLSX.WorkBook, d: MaterialBalanceData) 
       String(received),
       String(installed),
       String(onSite),
+      String(onOrder),
       status,
       b.tier == null ? '—' : String(b.tier),
       b.control ?? '—',

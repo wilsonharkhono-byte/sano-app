@@ -88,6 +88,19 @@ serve(async (req: Request) => {
     const validRoles = ['supervisor', 'estimator', 'admin', 'principal'];
     const targetRole = validRoles.includes(role) ? role : 'supervisor';
 
+    // The principal seat is never minted from the app (migration 090):
+    // changes touching 'principal' are SQL-only, so this invite path refuses
+    // the role for EVERY caller — the principal included. The check must live
+    // here, not just in the DB: everything below runs on the service-role
+    // key, and the 090 triggers deliberately let a NULL auth.uid() through so
+    // the Dashboard can seat a principal directly.
+    if (targetRole === 'principal') {
+      return new Response(
+        JSON.stringify({ error: 'Peran prinsipal hanya dibuat langsung lewat database (SQL), bukan dari aplikasi.' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
+    }
+
     // ── 3. Create user via Admin API (service role) ─────────────────
     const adminClient = createClient(supabaseUrl, serviceKey);
 

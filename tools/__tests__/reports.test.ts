@@ -110,6 +110,28 @@ describe('generateMaterialBalanceReport — supervisor price redaction', () => {
   });
 });
 
+describe('generateMaterialBalanceReport — needs_procurement summary count', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockDeriveBalance.mockResolvedValue([
+      // genuinely short: 5% on-site, nothing on order → counts
+      { material_name: 'Semen', material_id: 'm1', planned: 100, received: 60, installed: 55, on_site: 5, on_order: 0, unit: 'sak', tier: 3, control: 'RP', burn_pct: 40, flag: 'OK' },
+      // short on-site but fully ordered → must NOT count (row Status says
+      // "Sudah dipesan — menunggu kedatangan"; header must agree)
+      { material_name: 'Besi D13', material_id: 'm2', planned: 100, received: 2, installed: 0, on_site: 2, on_order: 98, unit: 'kg', tier: 1, control: 'QTY', flag: 'OK' },
+      // healthy stock → does not count
+      { material_name: 'Pasir', material_id: 'm3', planned: 100, received: 90, installed: 10, on_site: 80, on_order: 0, unit: 'm3', tier: 3, control: 'RP', burn_pct: 20, flag: 'OK' },
+    ]);
+  });
+
+  it('nets on_order against the shortage, matching the per-row Status column', async () => {
+    const payload = await generateMaterialBalanceReport('proj-1', { viewerRole: 'supervisor' });
+    const data = payload.data as MaterialBalanceData;
+    expect(data.needs_procurement).toBe(1);
+    expect(data.total_materials).toBe(3);
+  });
+});
+
 describe('generateReceiptLog — supervisor price redaction', () => {
   beforeEach(() => {
     jest.clearAllMocks();

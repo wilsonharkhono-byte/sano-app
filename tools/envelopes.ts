@@ -11,16 +11,15 @@
 //   Tier 4 (nails, oil, consumables): untracked — never gated, always approved.
 
 import { supabase } from './supabase';
-import { MRStatus } from './constants';
+import { remainingToOrder, burnPct } from './envelopeMath';
 import type {
   MaterialEnvelopeStatus,
   MaterialBudgetStatus,
   EnvelopeBoqBreakdown,
-  FlagLevel,
   GateResult,
   AhsLine,
 } from './types';
-import { evaluateTier3Budget, evaluateTier4Untracked } from './budgetGate';
+import { evaluateTier3Budget } from './budgetGate';
 import { summarizeAhsBaselinePrices } from '../workflows/gates/gate2';
 import type { MaterialBaselinePriceSummary } from '../workflows/gates/gate2';
 import { fetchAllPaged } from './queryHelpers';
@@ -121,13 +120,38 @@ export async function getEnvelopeBreakdown(
 }
 
 /**
- * Work-group envelope: planned vs ordered for a material across a specific set
- * of BoQ rows (the work-group). Mirrors getMaterialEnvelope but row-scoped, so
- * burn is computed for the group only — not the whole project.
+ * Work-group envelope: planned / ordered / requested for ONE material across a
+ * specific set of BoQ rows (the work-group). Mirrors getMaterialEnvelope but
+ * row-scoped, so burn is computed for the group only — not the whole project.
  *
- * Returns a MaterialEnvelopeStatus shape so the existing Tier-2 gate branch can
- * consume it unchanged. Fields the RPC does not compute (tier, total_received,
- * material_code) are filled with neutral defaults.
+ * ─── WHERE THE NUMBERS COME FROM (changed 2026-08-31, migration 094) ────────
+ *
+ * The burn legs come from `get_workgroup_material_envelopes` (migration 086),
+ * which already returns planned / ordered / requested SPLIT and honest:
+ *   ordered   = group demand linked to a non-CANCELLED SANO PO
+ *   requested = the rest (non-rejected, not yet on a live PO)
+ *
+ * They used to come from `get_workgroup_envelope`, whose column named
+ * `total_ordered` actually held REQUEST allocations and whose
+ * `remaining_to_order` was planned − REQUESTS (061:269-285) — the same column
+ * names as the project view carrying the opposite meaning. This wrapper papered
+ * over that by mirroring one figure into two fields; migration 094 rebuilds the
+ * RPC honestly and this function stops depending on the rotten columns.
+ *
+ * `get_workgroup_envelope` is still called, but ONLY for the four columns whose
+ * meaning is IDENTICAL before and after 094: material_name, unit,
+ * total_installed and boq_item_count. total_installed has no substitute — 086
+ * cannot return it (its result type is frozen; adding a column needs DROP +
+ * CREATE, which would couple every 086 caller to a deploy) and it cannot be
+ * derived client-side without re-resolving the project's latest material master.
+ * It is what feeds gate1's check-1d progress-pace advisory.
+ *
+ * That split is what makes this safe in EITHER deploy order — code-then-paste or
+ * paste-then-code: no column whose meaning 094 changes crosses this boundary.
+ *
+ * Returns a MaterialEnvelopeStatus shape so the existing Tier-1/2 gate branches
+ * consume it unchanged. Fields neither source computes (tier, total_received,
+ * material_code) keep their neutral defaults.
  */
 export async function getWorkGroupEnvelope(
   projectId: string,
@@ -135,45 +159,78 @@ export async function getWorkGroupEnvelope(
   boqItemIds: string[],
 ): Promise<MaterialEnvelopeStatus | null> {
   if (boqItemIds.length === 0) return null;
-  const { data, error } = await supabase
-    .rpc('get_workgroup_envelope', {
-      p_project_id: projectId,
-      p_material_id: materialId,
-      p_boq_item_ids: boqItemIds,
-    })
-    .single();
 
-  if (error || !data) return null;
-  const row = data as {
-    material_id: string;
+  const [legs, meta] = await Promise.all([
+    getWorkGroupMaterialEnvelopes(projectId, boqItemIds),
+    supabase
+      .rpc('get_workgroup_envelope', {
+        p_project_id: projectId,
+        p_material_id: materialId,
+        p_boq_item_ids: boqItemIds,
+      })
+      .single(),
+  ]);
+
+  // A failed legs fetch is "we don't know", NOT "planned is 0": returning a
+  // zeroed envelope would make the gate render a confident "no baseline" for a
+  // material that may well have one. null → the caller shows the soft
+  // "Tidak ada alokasi pembanding" heads-up, which is the honest answer.
+  if (legs.error) return null;
+  if (meta.error || !meta.data) return null;
+
+  const row = meta.data as {
     material_name: string;
     unit: string;
-    total_planned: number;
-    total_ordered: number;
     total_installed: number;
-    remaining_to_order: number;
-    burn_pct: number;
     boq_item_count: number;
   };
+
+  // planned/ordered/requested are taken from 086 even where get_workgroup_envelope
+  // also reports planned: 086 resolves "latest master" with the `id DESC`
+  // tiebreaker (054), so it is the deterministic one when two masters share a
+  // created_at second. (094 adds the same tiebreaker to the RPC, after which the
+  // two agree by construction.) A material absent from the group's plan simply
+  // has no row here → planned 0, which the gate reads as "no baseline".
+  const found = legs.rows.find(r => r.material_id === materialId);
+  // EnvelopeLegs, in tools/envelopeMath.ts terms. 086's `requested` leg is
+  // already the OUTSTANDING figure that module's contract demands (allocations
+  // NOT linked to a live PO), so remainingFree / burnPct('committed') are exact
+  // here rather than pessimistic.
+  const groupLegs = {
+    planned: found?.planned ?? 0,
+    ordered: found?.ordered ?? 0,
+    requested: found?.requested ?? 0,
+  };
+  const { planned: totalPlanned, ordered: totalOrdered, requested: totalRequested } = groupLegs;
+
   return {
-    material_id: row.material_id,
+    material_id: materialId,
     project_id: projectId,
     material_code: null,
     material_name: row.material_name,
     tier: 1,
     unit: row.unit,
-    total_planned: Number(row.total_planned ?? 0),
-    total_ordered: Number(row.total_ordered ?? 0),
-    // The work-group RPC (get_workgroup_envelope) still derives total_ordered from
-    // request allocations — it has no PO-scoped split yet (that lands in Task 2.4).
-    // So at work-group grain the RPC's "ordered" IS the requested demand; mirror it
-    // into total_requested to keep the field coherent (never displayed via the
-    // di-PO / permintaan-berjalan split, which is project-grain only).
-    total_requested: Number(row.total_ordered ?? 0),
+    total_planned: totalPlanned,
+    // Real PO leg at group grain — no longer a mirror of the request figure.
+    total_ordered: totalOrdered,
+    total_requested: totalRequested,
     total_received: 0,
     total_installed: Number(row.total_installed ?? 0),
-    remaining_to_order: Number(row.remaining_to_order ?? 0),
-    burn_pct: Number(row.burn_pct ?? 0),
+    // planned − ordered, RAW (may go negative) — the hard-gate semantic, named
+    // and owned by tools/envelopeMath.ts remainingToOrder. Same convention as
+    // v_material_envelope_status.remaining_to_order and as the server gates
+    // (071, 088:671), so the name means ONE thing at every grain. The floored,
+    // request-aware figure is remainingFree(legs) — callers that want "sisa
+    // bebas" call envelopeMath directly rather than reading a field here.
+    remaining_to_order: remainingToOrder(groupLegs),
+    // Total committed demand against plan (ordered + requested) — numerically
+    // what the old RPC's burn_pct reported, since it summed every non-rejected
+    // allocation into one figure. No gate threshold moves.
+    //
+    // `?? 0` only fires when planned <= 0, and every consumer branches on
+    // total_planned <= 0 BEFORE looking at burn_pct (gate1's "Tidak ada alokasi
+    // pembanding"), so the 0 is never rendered as "nothing used yet".
+    burn_pct: burnPct(groupLegs, 'committed') ?? 0,
     boq_item_count: Number(row.boq_item_count ?? 0),
   };
 }
@@ -324,227 +381,28 @@ export async function allocateTier2Order(
 }
 
 // ─── Gate 1 Envelope Check ──────────────────────────────────────────
-
-const ENVELOPE_WARNING_PCT = 80;
-const ENVELOPE_CRITICAL_PCT = 100;
-
-/**
- * LEGACY / DEAD — no production callers. NOT the server twin since 069
- * (uncapped severities, pre-069 formula). Do not resurrect without
- * re-deriving from compute_tier*_flag. Live client gates:
- * workflows/gates/gate1.ts, PermintaanScreen buildTier2Result /
- * buildProjectEnvelopeOverageResult, tools/budgetGate.ts
- * evaluateTier3BudgetSoft.
- *
- * Gate 1 check for Tier 2 materials.
- * Instead of checking against a single BoQ item, checks against
- * the aggregated envelope across all BoQ items using this material.
- *
- * Returns a GateResult with appropriate flag level:
- *   OK: order within comfortable range
- *   INFO: order is fine but approaching threshold
- *   WARNING: order pushes envelope past 80%
- *   HIGH: order pushes envelope past 100%
- *   CRITICAL: order significantly exceeds envelope
- */
-export async function checkTier2Envelope(
-  projectId: string,
-  materialId: string,
-  requestedQty: number,
-): Promise<GateResult> {
-  const envelope = await getMaterialEnvelope(projectId, materialId);
-
-  if (!envelope) {
-    return {
-      flag: 'INFO',
-      check: 'envelope_missing',
-      msg: 'No material envelope found — material may not be in baseline AHS',
-    };
-  }
-
-  // Burn on total_requested (request demand), NOT total_ordered (SANO PO qty).
-  // Pre-069 formula, frozen — see the dead-code warning above. The live server
-  // twin is compute_tier2_flag (069), which burns PO-ordered + other-open +
-  // this request against total_planned, capped at WARNING.
-  const newTotal = envelope.total_requested + requestedQty;
-  const newBurnPct = envelope.total_planned > 0
-    ? (newTotal / envelope.total_planned) * 100
-    : 0;
-
-  // Check various thresholds
-  if (newBurnPct > ENVELOPE_CRITICAL_PCT + 20) {
-    return {
-      flag: 'CRITICAL',
-      check: 'envelope_exceeded',
-      msg: `Order of ${requestedQty} ${envelope.unit} would exceed envelope by ${(newBurnPct - 100).toFixed(0)}%. Total: ${newTotal.toLocaleString('id-ID')} / ${envelope.total_planned.toLocaleString('id-ID')} ${envelope.unit} (${newBurnPct.toFixed(0)}%). Requires principal override.`,
-      extra: {
-        flag: 'INFO',
-        check: 'envelope_detail',
-        msg: `${envelope.material_name} serves ${envelope.boq_item_count} BoQ items`,
-      },
-    };
-  }
-
-  if (newBurnPct > ENVELOPE_CRITICAL_PCT) {
-    return {
-      flag: 'HIGH',
-      check: 'envelope_over',
-      msg: `Order would push ${envelope.material_name} to ${newBurnPct.toFixed(0)}% of envelope (${newTotal.toLocaleString('id-ID')} / ${envelope.total_planned.toLocaleString('id-ID')} ${envelope.unit}). Exceeds planned quantity.`,
-    };
-  }
-
-  if (newBurnPct > ENVELOPE_WARNING_PCT) {
-    return {
-      flag: 'WARNING',
-      check: 'envelope_warning',
-      msg: `${envelope.material_name} envelope at ${newBurnPct.toFixed(0)}% after this order (${newTotal.toLocaleString('id-ID')} / ${envelope.total_planned.toLocaleString('id-ID')} ${envelope.unit}). Approaching limit.`,
-    };
-  }
-
-  if (newBurnPct > 50) {
-    return {
-      flag: 'INFO',
-      check: 'envelope_info',
-      msg: `${envelope.material_name}: ${newBurnPct.toFixed(0)}% of envelope used (${newTotal.toLocaleString('id-ID')} / ${envelope.total_planned.toLocaleString('id-ID')} ${envelope.unit})`,
-    };
-  }
-
-  return {
-    flag: 'OK',
-    check: 'envelope_ok',
-    msg: `${envelope.material_name}: ${newBurnPct.toFixed(0)}% of envelope (${newTotal.toLocaleString('id-ID')} / ${envelope.total_planned.toLocaleString('id-ID')} ${envelope.unit})`,
-  };
-}
-
-// ─── Tier-Aware Gate 1 Dispatcher ────────────────────────────────────
-
-/**
- * LEGACY / DEAD — no production callers. NOT the server twin since 069
- * (uncapped severities, pre-069 formula). Do not resurrect without
- * re-deriving from compute_tier*_flag. Live client gates:
- * workflows/gates/gate1.ts, PermintaanScreen buildTier2Result /
- * buildProjectEnvelopeOverageResult, tools/budgetGate.ts
- * evaluateTier3BudgetSoft.
- *
- * Unified Gate 1 material check that branches by tier.
- *
- *   Tier 1 → check against specific BoQ item planned quantity
- *   Tier 2 → check against aggregated material envelope
- *   Tier 3 → Rupiah budget envelope; Tier 4 → untracked
- */
-export async function checkMaterialRequest(
-  projectId: string,
-  materialId: string | null,
-  materialTier: 1 | 2 | 3 | 4,
-  boqItemId: string,
-  requestedQty: number,
-  /**
-   * Per-unit BASE price (pre-markup, before profit margin). MUST NOT be
-   * the post-markup display price. Recommended sources:
-   *   - `ahs_lines.unit_price` (already pre-markup post Phase 0)
-   *   - `material_catalog.reference_price` (catalog base price)
-   * Markup factor (1.15, etc.) is tracked separately in
-   * `import_sessions.parser_metadata` and applied at quote/billing time,
-   * not at envelope/spend-cap evaluation.
-   */
-  unitPrice?: number,
-): Promise<GateResult> {
-  switch (materialTier) {
-    case 1:
-      return checkTier1Direct(projectId, boqItemId, materialId, requestedQty);
-    case 2:
-      if (!materialId) {
-        return { flag: 'WARNING', check: 'tier2_no_material', msg: 'Tier 2 check requires material_id for envelope lookup' };
-      }
-      return checkTier2Envelope(projectId, materialId, requestedQty);
-    case 3:
-      return checkTier3Budget(projectId, materialId, requestedQty, unitPrice);
-    case 4:
-      return evaluateTier4Untracked();
-    default:
-      return { flag: 'OK', check: 'tier_unknown', msg: 'Unknown material tier' };
-  }
-}
-
-/**
- * LEGACY / DEAD — no production callers. NOT the server twin since 069
- * (uncapped severities, pre-069 formula). Do not resurrect without
- * re-deriving from compute_tier*_flag. Live client gates:
- * workflows/gates/gate1.ts, PermintaanScreen buildTier2Result /
- * buildProjectEnvelopeOverageResult, tools/budgetGate.ts
- * evaluateTier3BudgetSoft.
- *
- * Tier 1: direct quantity check against a specific BoQ item.
- * Order maps 1:1 to the planned quantity.
- */
-async function checkTier1Direct(
-  projectId: string,
-  boqItemId: string,
-  materialId: string | null,
-  requestedQty: number,
-): Promise<GateResult> {
-  // Get the BoQ item's planned quantity
-  const { data: boqItem } = await supabase
-    .from('boq_items')
-    .select('code, label, planned, installed, unit')
-    .eq('id', boqItemId)
-    .single();
-
-  if (!boqItem) {
-    return { flag: 'WARNING', check: 'boq_not_found', msg: 'BoQ item not found' };
-  }
-
-  // Get already-ordered quantity for this material + BoQ item using persisted allocations.
-  let allocationQuery = supabase
-    .from('material_request_line_allocations')
-    .select(`
-      allocated_quantity,
-      material_request_lines!inner(
-        material_id,
-        material_request_headers!inner(project_id, overall_status)
-      )
-    `)
-    .eq('boq_item_id', boqItemId)
-    .eq('material_request_lines.material_request_headers.project_id', projectId);
-
-  if (materialId) {
-    allocationQuery = allocationQuery.eq('material_request_lines.material_id', materialId);
-  }
-
-  const { data: allocatedOrders } = await allocationQuery;
-
-  const alreadyOrdered = (allocatedOrders ?? [])
-    .filter((row) => {
-      const r = row as unknown as { material_request_lines?: { material_request_headers?: { overall_status?: string } } };
-      return r.material_request_lines?.material_request_headers?.overall_status !== MRStatus.REJECTED;
-    })
-    .reduce((sum: number, row) => sum + Number((row as unknown as { allocated_quantity?: number }).allocated_quantity ?? 0), 0);
-
-  const remaining = boqItem.planned - alreadyOrdered;
-  const overOrderPct = remaining > 0 ? ((requestedQty - remaining) / remaining) * 100 : 100;
-
-  if (requestedQty > remaining * 1.2) {
-    return {
-      flag: 'HIGH',
-      check: 'tier1_over',
-      msg: `Request of ${requestedQty} ${boqItem.unit} exceeds remaining ${remaining.toFixed(1)} for "${boqItem.label}" (${boqItem.code}). Over by ${overOrderPct.toFixed(0)}%.`,
-    };
-  }
-
-  if (requestedQty > remaining) {
-    return {
-      flag: 'WARNING',
-      check: 'tier1_slight_over',
-      msg: `Request slightly exceeds remaining: ${requestedQty} vs ${remaining.toFixed(1)} ${boqItem.unit} for "${boqItem.label}"`,
-    };
-  }
-
-  return {
-    flag: 'OK',
-    check: 'tier1_ok',
-    msg: `${requestedQty} / ${remaining.toFixed(1)} ${boqItem.unit} remaining for "${boqItem.label}"`,
-  };
-}
+//
+// DELETED 2026-08-31 (migration 094 change): checkTier2Envelope,
+// checkMaterialRequest and checkTier1Direct lived here. All three were dead —
+// no production caller anywhere in the app (verified by grep across *.ts/*.tsx)
+// — and all three had been frozen at the PRE-069 band mapping, which still
+// escalated to HIGH above 100% of envelope and CRITICAL above 120%. Request
+// time never hard-blocks on quantity (spec §3: severity caps at WARNING), so
+// resurrecting any of them would have re-introduced uncapped severities that
+// disagree with the server. Their comments had said as much since 069; keeping
+// them around only invited someone to wire them back up.
+//
+// The LIVE gate surfaces, which are the ones to change:
+//   • workflows/gates/gate1.ts — computeWorkGroupGate1Flag (Tier-1 work group)
+//     and buildProjectEnvelopeOverageResult (Tier-2/3 project grain)
+//   • workflows/screens/PermintaanScreen.tsx — buildTier2Result /
+//     buildProjectEnvelopeOverageResult wiring
+//   • tools/budgetGate.ts — evaluateTier3Budget / evaluateTier3BudgetSoft
+//   • tools/requestOverage.ts — the shared band mapping, twinned with
+//     migration 069's compute_tier*_flag
+//
+// checkTier3Budget (above) is deliberately KEPT: it is a thin, current wrapper
+// over evaluateTier3Budget with no stale band logic of its own.
 
 // ─── Batch Envelope + Baseline Price ────────────────────────────────
 

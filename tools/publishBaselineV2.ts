@@ -716,6 +716,21 @@ export interface ProjectPriceBookInsert {
  * skipped (never guessed). RAB projects stage no project_material rows, so
  * this returns no rows and their (office-ingested) price book is never touched.
  *
+ * A row whose name does NOT resolve to a catalog material is SKIPPED, exactly as
+ * buildProjectMaterialLines skips it — the two builders read the same rows and
+ * must agree on which ones are real. It used to be kept with material_id NULL
+ * "so the office can link it later", but nothing ever backfills material_id on
+ * this table (grep ahs_price_book: only 047's create, priceBookIngest's
+ * delete+insert and this function write it), and the next publish's
+ * delete-then-insert would wipe a manual link anyway. So the row was inert —
+ * v_material_budget_status joins pb2.material_id = env.material_id (047:75-82),
+ * which NULL can never satisfy — while still looking like a real price. Live
+ * proof (SBY-001, 2026-08): the Others sheet carried two junk rows whose
+ * Material cell held a WORK-ITEM label ("Kolom Balok Praktis") over a copy of
+ * the Semen PC / Batako figures. Master lines dropped them; the price book kept
+ * them, so the project's book showed 15 rows with two phantom materials priced
+ * at 75,000/sak and 5,000/bh. An unlinkable row buys nothing and reads as fact.
+ *
  * Every skip is REPORTED (`skipped`, one entry per row with its reason) rather
  * than swallowed: a missing price-book row means the material has no Tier-3
  * Rupiah envelope at all (Gate-1 renders TIER3_NO_BUDGET), which looks like a
@@ -756,9 +771,18 @@ export function buildProjectPriceBook(
       skipped.push(`${name}: ${reasons.join(', ')}`);
       continue;
     }
+    // Checked LAST so a row that also lacks a price/tier still reports those
+    // first — they are the fixable-in-the-file reasons, and an estimator who
+    // fixes the price only to be told "not in catalog" next round has burned a
+    // round-trip. A name that survives to here is a real material or a junk row.
+    const materialId = resolveCatalogId(name, catalog, aliasMap);
+    if (materialId == null) {
+      skipped.push(`${name}: not in material catalog (no envelope to price)`);
+      continue;
+    }
     out.push({
       project_id: projectId,
-      material_id: resolveCatalogId(name, catalog, aliasMap),
+      material_id: materialId,
       material_name: name,
       unit: pd.unit ?? '',
       unit_price: price,
@@ -827,7 +851,16 @@ export function buildBaselineSnapshotRows(
 export interface SessionLineInputs {
   ahsLineInserts: Record<string, unknown>[];
   masterLineInputs: MasterLineInput[];
+  /** Human-readable "<boq code>: <name>" lines, one per unresolved occurrence. */
   unresolvedComponents: string[];
+  /**
+   * The bare material NAMES that failed catalog resolution, one entry per
+   * occurrence (duplicates kept so the caller can report both a count and a
+   * distinct list). Deliberately separate from `unresolvedComponents`, which
+   * also carries batang-conversion failures — those DID resolve to a catalog
+   * material and must not be reported as missing from it.
+   */
+  unresolvedMaterialNames: string[];
 }
 
 /**
@@ -853,6 +886,7 @@ export function buildSessionLineInputs(
 ): SessionLineInputs {
   const ahsLineInserts: Record<string, unknown>[] = [];
   const unresolvedComponents: string[] = [];
+  const unresolvedMaterialNames: string[] = [];
   const masterLineInputs: MasterLineInput[] = [];
   for (const r of rows) {
     if (r.row_type !== 'boq') continue;
@@ -875,6 +909,7 @@ export function buildSessionLineInputs(
         : null;
       if (lineType === 'material' && materialId == null) {
         unresolvedComponents.push(`${pd.code}: ${name}`);
+        unresolvedMaterialNames.push(name);
       }
       // Batang-denominated components normalize to the material's base unit
       // (kg) before anything is stored; failures go to review, never guessed.
@@ -915,7 +950,7 @@ export function buildSessionLineInputs(
       });
     }
   }
-  return { ahsLineInserts, masterLineInputs, unresolvedComponents };
+  return { ahsLineInserts, masterLineInputs, unresolvedComponents, unresolvedMaterialNames };
 }
 
 /**
@@ -932,6 +967,14 @@ export function buildSessionLineInputs(
  * surface post-publish as `warnings`). Keying master lines by BoQ code rather than
  * the real boq_item UUID is irrelevant to the result — aggregatePlannedByMaterial
  * sums by material_id only.
+ *
+ * Also includes project-level (simplified-format "Others") materials, mirroring
+ * the real publish's merge of buildProjectMaterialLines into the insert (~:1481).
+ * Incident (2026-08-25): before this, a simplified-format re-publish's diff and
+ * ceiling gate were BOTH blind to Others — previewNewMasterTotals showed every
+ * unchanged Others material as falsely REMOVED (firing REMOVED_WITH_ACTIVITY
+ * whenever one had an open request), and the gate's p_proposed could not see
+ * Others totals at all.
  */
 export function buildProposedAggregatesFromStaging(
   rows: StagingRowV2[],
@@ -956,7 +999,8 @@ export function buildProposedAggregatesFromStaging(
     (code) => (publishable.has(code) ? code : undefined),
   );
   const masterLines = buildMasterLinesV2(masterLineInputs, 'proposed');
-  return aggregatePlannedByMaterial(masterLines);
+  const { lines: projectLines } = buildProjectMaterialLines(rows, 'proposed', catalog, aliasMap);
+  return aggregatePlannedByMaterial([...masterLines, ...projectLines]);
 }
 
 /**
@@ -1406,7 +1450,7 @@ export async function publishBaselineV2(
   // no breakdown (prelim/earthwork/steel) carry no components → no lines.
   //
   // tier has no meaning for a disaggregated line, so we use the catalog base tier (1).
-  const { ahsLineInserts, masterLineInputs, unresolvedComponents } = buildSessionLineInputs(
+  const { ahsLineInserts, masterLineInputs, unresolvedComponents, unresolvedMaterialNames } = buildSessionLineInputs(
     rows,
     catalog,
     catalogById,
@@ -1446,6 +1490,29 @@ export async function publishBaselineV2(
   const { lines: projectMasterLines, unresolved: projectUnresolved, skipped: projectSkipped } =
     buildProjectMaterialLines(rows, master.id as string, catalog, aliasMap);
   for (const n of projectUnresolved) unresolvedComponents.push(`Others (project-level): ${n}`);
+  // Every material whose NAME failed catalog resolution — the BoQ recipe's
+  // components and the Others sheet's rows alike. Each one is a material_id NULL
+  // line: it never becomes a master line (buildMasterLinesV2 / buildProjectMaterialLines
+  // both drop it), so the material has NO planned demand and EVERY per-material
+  // quantity gate is disarmed for it, while publish otherwise reports plain
+  // success. This was console.warn-only until now — invisible to the estimator,
+  // the one person who can fix the sheet's spelling or ask for a catalog alias.
+  // Live proof (SBY-001, 2026-08): the Tier-1 sheet's "Beton Readymix" component
+  // matched nothing in the catalog, so ~821 m³ of concrete carried zero planned
+  // demand behind a clean "publish berhasil". Reported as DISTINCT names with the
+  // occurrence count: one missing alias fires on every BoQ row that uses it, and
+  // 800 repetitions of one name is not a report (CLAUDE.md §1.1 — an admitted gap
+  // beats a silent one).
+  const unresolvedCount = unresolvedMaterialNames.length + projectUnresolved.length;
+  const unresolvedNames = [...new Set([...unresolvedMaterialNames, ...projectUnresolved])];
+  if (unresolvedNames.length > 0) {
+    const shown = unresolvedNames.slice(0, 10).join(', ');
+    const more = unresolvedNames.length > 10 ? ` +${unresolvedNames.length - 10} lainnya` : '';
+    warnings.push(
+      `${unresolvedCount} komponen material tidak terhubung ke katalog dan TIDAK dikawal ` +
+      `per-material: ${shown}${more}`,
+    );
+  }
   // A dropped Others row is a hole in the project's material plan, so it rides
   // the same `warnings` channel the screen already toasts — never a silent
   // `continue` (2026-08-15: a column shift zeroed all 13 volumes and publish
@@ -1483,7 +1550,10 @@ export async function publishBaselineV2(
   // failure degrades to the (visible) TIER3_NO_BUDGET warning, not a lost plan.
   const { rows: priceBookRows, skipped: priceBookSkipped } =
     buildProjectPriceBook(rows, projectId, catalog, aliasMap);
-  for (const s of priceBookSkipped) warnings.push(`Others price/tier missing — ${s}`);
+  // Prefix is deliberately generic: a row can now drop for a missing price, an
+  // out-of-range tier, a blank name OR a name the catalog does not know, and
+  // "price/tier missing" would have mislabelled the last one.
+  for (const s of priceBookSkipped) warnings.push(`Others row has no price book entry — ${s}`);
   if (priceBookRows.length > 0) {
     const { error: pbDelErr } = await supabase
       .from('ahs_price_book')

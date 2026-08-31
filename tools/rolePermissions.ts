@@ -143,3 +143,96 @@ export function validateRequestStatusTransition(
 function fromCheck(perm: PermissionCheck): TransitionCheck {
   return { allowed: perm.allowed, reason: perm.reason };
 }
+
+// ── Team management — the principal seat is SQL-only ────────────────────────
+//
+// Rule (user, 2026-08-19): "Admin can add or change structure of principal.
+// This should not be possible. They can only modify supervisor, estimator, and
+// admin. Principal should be out of touch by all, except principal." Refined
+// the same day: "principal assigning should only be reserved to me as
+// principal, or editing through SQL. not any form of UI."
+//
+// So the ROLE dimension is absolute: no app actor — principal included — may
+// grant or revoke `principal` from any screen. The seat is edited directly in
+// SQL (Dashboard / service role). The ROSTER dimension is principal-only: a
+// principal may still add or remove a principal on a project team in-app
+// (and createProject's self-assign depends on this at the DB layer).
+//
+// Why it matters beyond the team screen: `principal` is the escalation
+// authority in every other gate above (canManuallyHoldRequest, the AUTO_HOLD
+// clearance, ceiling raises). An admin who could mint a principal — or demote
+// the sitting one and take the seat — collapses all of them at once, the same
+// class of hole migration 057 closed for self-escalation.
+//
+// The guard covers the OLD role as well as the new one: blocking only
+// "→ principal" would still let an actor demote the principal to supervisor
+// first and hand the empty seat to themselves.
+//
+// DB-side twin: migration 090 (enforce_profile_role_immutable +
+// enforce_principal_assignment_guard). That layer is authoritative; these
+// helpers exist so the UI can withhold a chip and say why before a write.
+
+/** Roles that may manage project team membership at all — mirrors is_project_assignment_manager() (migrations 023 + 037). */
+const TEAM_MANAGERS: UserRoleType[] = [UserRole.ESTIMATOR, UserRole.ADMIN, UserRole.PRINCIPAL];
+
+/** Roles that may change another member's role — mirrors profiles_update_managers (024) + the 057 trigger. */
+const ROLE_ASSIGNERS: UserRoleType[] = [UserRole.ADMIN, UserRole.PRINCIPAL];
+
+const PRINCIPAL_VIA_SQL = 'Peran prinsipal tidak diubah dari aplikasi — hanya langsung lewat database (SQL).';
+
+/**
+ * May `actorRole` grant `targetRole` to somebody from the app? Admin and
+ * principal hand out supervisor / estimator / admin; NOBODY hands out the
+ * principal seat here — that is done directly in SQL.
+ */
+export function canAssignRole(actorRole: UserRoleType, targetRole: UserRoleType): PermissionCheck {
+  if (!ROLE_ASSIGNERS.includes(actorRole)) return deny('Pengubahan peran dilakukan admin atau prinsipal.');
+  if (targetRole === UserRole.PRINCIPAL) return deny(PRINCIPAL_VIA_SQL);
+  return ALLOW;
+}
+
+/**
+ * May `actorRole` move a member from `currentRole` to `newRole` from the app?
+ * Denied for every actor when either end of the move is the principal seat —
+ * the demote-then-reassign path is the one worth closing.
+ */
+export function canChangeMemberRole(
+  actorRole: UserRoleType,
+  currentRole: UserRoleType,
+  newRole: UserRoleType,
+): PermissionCheck {
+  if (currentRole === UserRole.PRINCIPAL || newRole === UserRole.PRINCIPAL) {
+    if (!ROLE_ASSIGNERS.includes(actorRole)) return deny('Pengubahan peran dilakukan admin atau prinsipal.');
+    return deny(PRINCIPAL_VIA_SQL);
+  }
+  return canAssignRole(actorRole, newRole);
+}
+
+/**
+ * May `actorRole` add `memberRole` to a project team, or remove them from it?
+ * Estimators are team managers too (migration 037), so they are named here and
+ * are held to the same principal rule as admins.
+ */
+export function canManageTeamMember(actorRole: UserRoleType, memberRole: UserRoleType): PermissionCheck {
+  if (!TEAM_MANAGERS.includes(actorRole)) return deny('Pengelolaan tim dilakukan admin atau prinsipal.');
+  if (memberRole === UserRole.PRINCIPAL && actorRole !== UserRole.PRINCIPAL) {
+    return deny('Anggota prinsipal hanya bisa dikelola oleh prinsipal.');
+  }
+  return ALLOW;
+}
+
+/**
+ * The role chips a team screen may render for `actorRole`, in display order.
+ * Never contains `principal` for anyone (the seat is SQL-only). Empty for
+ * roles that never assign a role at all, so a screen can drive both the chip
+ * row and the invite-form role picker off one call.
+ */
+export function assignableRoles(actorRole: UserRoleType): UserRoleType[] {
+  const ordered: UserRoleType[] = [
+    UserRole.SUPERVISOR,
+    UserRole.ESTIMATOR,
+    UserRole.ADMIN,
+    UserRole.PRINCIPAL,
+  ];
+  return ordered.filter((r) => canAssignRole(actorRole, r).allowed);
+}

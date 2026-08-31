@@ -35,8 +35,26 @@ One row per work area. Header spans two rows (row 1 group labels, row 2 diameter
 | F | Besi ø16 | lonjor |
 | G | Besi ø19 | lonjor |
 | H | Besi ø22 | lonjor |
+| I+ | **Mutu Beton — OPTIONAL** (added 2026-08-25). Concrete grade for THIS row. | — |
+
+A–H is a **fixed positional contract**; the parser reads those by column letter and nothing may move them.
 
 Rebar counts are **already in whole lonjor/batang** — the team pre-converted; there is no kg anywhere in this sheet.
+
+#### 3.1.1 The optional `Mutu Beton` column (added 2026-08-25)
+
+**Why.** Without it the parser could only emit the bare name `Beton Readymix`, which matches nothing in the curated catalogue (whose concrete rows are grade-specific: `Ready mix fc' 25 MPa`, `Ready mix fc' 30 MPa`, aliased from `Readymix K-250` / `Ready Mix K-250` / `Beton Ready Mix K250` / `Ready mix kelas 25`). Every Tier-1 work area therefore published its concrete with `material_id = NULL`, which silently excluded the project's single biggest line item from all quantity gating. The fix is an **input** fix: the estimator states the grade, so the parser can emit a name that resolves. The grade is **never inferred** from element type, zone, or a project default (CLAUDE.md §1.1).
+
+- **Where.** Any column from **I rightwards**, labelled in header row 1 *or* row 2. Detected by header text, `others.ts`-style (exact match on the normalized label, trailing `(…)` annotation tolerated). Accepted labels, case- and space-insensitive: **`Mutu Beton`**, `Mutu`, `Grade Beton`, `Kelas Beton`. A matching label inside A–H is ignored — the fixed contract wins.
+- **Accepted values.**
+  - K-grades, 3 digits: `K350` · `K-350` · `k 350` · `K 350` → canonical `K-350`.
+  - fc′ grades, 2 digits: `fc25` · `fc' 25` · `FC 25` · `fc'25 MPa` · `f'c 25` → canonical `fc' 25`.
+- **Emitted material name.** K-grade → `Readymix K-<nnn>` (the catalogue's alias spelling). fc′ grade → `Ready mix fc' <nn> MPa` (the catalogue's row name). Both still go through publish's exact→alias→fuzzy matcher, so a grade the catalogue does not stock fails loudly as unresolved rather than binding to the wrong concrete.
+- **Blank cell / no column at all.** Unchanged legacy behaviour: name `Beton Readymix`, no flag. It publishes unresolved and is reported by the publish warning. Old sheets keep parsing byte-for-byte as before.
+- **A bare number is REFUSED.** `30` could be K-300 or fc′ 30 — two different materials at two different prices. It takes the unrecognized path below.
+- **Unrecognized non-empty value.** Name falls back to `Beton Readymix` *and* the row is flagged: `needs_review = true` with `raw_data.flag_reason = 'unrecognized_beton_grade'`, `raw_data.beton_grade_raw` = the raw text, `raw_data.beton_grade_cell` = the source cell. That is the app's standard row-level warning channel — `tools/flagGroups.ts` gives it its own (deliberately **non-batchable**) review group and `tools/flagExplanation.ts` the "Kenapa dicek / Saran" copy.
+- **Rebar-only rows are unaffected.** A row with blank beton emits no concrete component, so the grade cell changes nothing about its output — no name change and no flag, whatever it contains.
+- **Recognized grades leave provenance:** `raw_data.beton_grade` = the canonical grade.
 
 ### 3.2 `SANO Input Others`
 
@@ -106,7 +124,7 @@ Each data row → one `boq` staging row. `parsed_data`:
 - **chapter**: the substring before `;` (zone, e.g. `Lt. Basement`). **sub_chapter**: the substring after `;` (element, e.g. `Kolom`). When there is no `;`, the whole label is the chapter and sub_chapter is null. This feeds the work-group classifier (`tools/boqWorkGroups.ts`) for free — no extra work.
 - **unit**: `m³`. **planned**: col B (beton volume). This is the progress denominator (m³ installed ÷ m³ planned). `planned > 0` is required by the `boq_items` CHECK; a Tier-1 row with zero beton is quarantined to review (§6), never force-published.
 - **recipe** (`BoqRowRecipe`): `components` =
-  - **Beton Readymix**: `quantityPerUnit = 1.0`, `unit = 'm³'`, `materialName = 'Beton Readymix'`, `lineType = 'material'`, `unitPrice = 0` (no price in the sheet; Tier-1 material cost is not tracked). `master_planned = betonM³ × 1.0 = betonM³`.
+  - **Beton Readymix**: `quantityPerUnit = 1.0`, `unit = 'm³'`, `lineType = 'material'`, `unitPrice = 0` (no price in the sheet; Tier-1 material cost is not tracked). `master_planned = betonM³ × 1.0 = betonM³`. `materialName` comes from the row's optional `Mutu Beton` cell (§3.1.1): `Readymix K-<nnn>` or `Ready mix fc' <nn> MPa` when a grade is stated, otherwise the bare `Beton Readymix` — which resolves to nothing and publishes unresolved, so the grade column is what actually gets Tier-1 concrete into the quantity gates. Quantity, unit and price are identical either way; **only the name changes**.
   - **Rebar per diameter** (cols C–H, one component per **nonzero** cell): `materialName` = a natural rebar name for the diameter (`Besi beton ulir 10 mm`, etc.), `unit = 'batang'`, `quantityPerUnit = lonjor / betonM³`, `lineType = 'material'`, `unitPrice = 0`. Resolved via the exact→alias→fuzzy matcher to the curated kg rebar rows and converted batang→kg at publish (§5.4); an unresolved diameter goes to review, never guessed.
 
 **Chosen defaults (locked in brainstorm):**
@@ -169,7 +187,10 @@ Nothing is auto-corrected; every uncertainty is a visible review item.
 | `tools/simplifiedInput/tier1.ts` | New. Tier-1 rows → `boq` staging rows + recipes. |
 | `tools/simplifiedInput/others.ts` | New. Others rows → `MATERIAL-UMUM` anchor row. |
 | `tools/simplifiedInput/rebar.ts` | New. Diameter→natural rebar name + batang component builder. |
+| `tools/simplifiedInput/betonGrade.ts` | Added 2026-08-25. Optional `Mutu Beton` column: header location, grade normalization, grade→catalogue material name (§3.1.1). |
+| `tools/simplifiedInput/headers.ts` | Added 2026-08-25. Shared header-label normalization (`normalizeHeader`, `headerCandidates`), lifted out of `others.ts` so every sheet reader agrees on what counts as the same header. |
 | `tools/simplifiedInput/__tests__/` | New. Unit + integration tests. |
+| `tools/flagGroups.ts` / `tools/flagExplanation.ts` | Amended 2026-08-25. Register the `unrecognized_beton_grade` review group + copy. |
 | `tools/baseline.ts` | Add detection branch at ~line 435. |
 
 No migration, and no change to `publishBaselineV2.ts`, the envelope views, the Tier gates, or the work-group classifier. The feature links to the existing curated catalogue via fuzzy matching.
@@ -177,7 +198,7 @@ No migration, and no change to `publishBaselineV2.ts`, the envelope views, the T
 ## 9. Rollout & risks
 
 - **No migration / no catalogue changes:** rebar and beton resolve to existing curated rows (`Besi beton …`, `Ready mix fc' … MPa`) via fuzzy matching. Nothing to paste before publishing.
-- **Beton grade is ambiguous:** the sheet says only "Beton Readymix"; the catalogue has `Ready mix fc' 25 MPa` and `fc' 30 MPa`. The match may resolve to one or flag for review — the estimator confirms the grade. Not guessed.
+- **~~Beton grade is ambiguous~~ — RESOLVED 2026-08-25 by the optional `Mutu Beton` column (§3.1.1).** The original text read: *"the sheet says only 'Beton Readymix'; the catalogue has `Ready mix fc' 25 MPa` and `fc' 30 MPa`. The match may resolve to one or flag for review — the estimator confirms the grade. Not guessed."* In practice it resolved to **neither**: the bare name matched nothing, so Tier-1 concrete published with `material_id = NULL` and dropped out of every quantity gate quietly. The estimator now states the grade per row and the parser emits a resolvable name; a stated-but-unrecognized grade is flagged, and a blank one still publishes unresolved (reported, never guessed).
 - **Anchor visibility:** `Material Umum` appears as a BoQ line; documented so reviewers expect it.
 - **Risk — misclassified `;` split:** a label without `;` yields a null sub_chapter (classifier degrades gracefully, as it already does for pre-064 imports). Acceptable.
 - **Risk — file basis quirks** (Semen sak size, kayu usuk unit): caught as review items (§6), not silently ingested.

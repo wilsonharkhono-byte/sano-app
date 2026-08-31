@@ -15,6 +15,8 @@ import {
   inviteUser, updateUserRole,
   type TeamMember, type ProfileOption, ROLE_LABELS,
 } from '../../tools/projectManagement';
+import { assignableRoles, canManageTeamMember } from '../../tools/rolePermissions';
+import { UserRole, type UserRoleType } from '../../tools/constants';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE, BREAKPOINTS, MAX_CONTENT_WIDTH } from '../../workflows/theme';
 import { computeOverallProgress } from '../../tools/progressMath';
 import { getKasbonAging, kasbonStatusLabel } from '../../tools/kasbon';
@@ -146,7 +148,12 @@ export default function PrincipalHomeScreen() {
   const [invEmail,    setInvEmail]    = useState('');
   const [invPassword, setInvPassword] = useState('');
   const [invName,     setInvName]     = useState('');
-  const [invRole,     setInvRole]     = useState('supervisor');
+  const [invRole,     setInvRole]     = useState<UserRoleType>(UserRole.SUPERVISOR);
+  // Read the actual signed-in role rather than assuming "principal dashboard
+  // ⇒ principal actor". The principal seat is SQL-only (migration 090): even
+  // here, no chip grants or revokes `principal` — only the roster (add/remove
+  // a principal member) stays available, and only to a principal.
+  const actorRole = (profile?.role ?? '') as UserRoleType;
   const [inviting,    setInviting]    = useState(false);
 
   const { width } = useWindowDimensions();
@@ -434,25 +441,29 @@ export default function PrincipalHomeScreen() {
     }
   };
 
-  const handleAddUser = async (userId: string) => {
+  const handleAddUser = async (candidate: ProfileOption) => {
     if (!project) return;
-    const { error } = await addUserToProject(project.id, userId);
+    const { error } = await addUserToProject(project.id, candidate.id, {
+      actorRole, memberRole: candidate.role as UserRoleType,
+    });
     if (error) { toast(error, 'critical'); return; }
     toast('Anggota ditambahkan', 'ok');
     await loadTeam();
   };
 
-  const handleRemoveUser = async (assignmentId: string, name: string) => {
+  const handleRemoveUser = async (member: TeamMember) => {
+    const actorCtx = { actorRole, memberRole: member.role as UserRoleType };
+    const name = member.full_name;
     if (Platform.OS === 'web') {
       if (!window.confirm(`Hapus ${name} dari proyek?`)) return;
-      const { error } = await removeUserFromProject(assignmentId);
+      const { error } = await removeUserFromProject(member.assignment_id, actorCtx);
       if (error) toast(error, 'critical');
       else { toast('Anggota dihapus', 'ok'); await loadTeam(); }
     } else {
       Alert.alert('Hapus Anggota', `Hapus ${name} dari proyek ini?`, [
         { text: 'Batal', style: 'cancel' },
         { text: 'Hapus', style: 'destructive', onPress: async () => {
-          const { error } = await removeUserFromProject(assignmentId);
+          const { error } = await removeUserFromProject(member.assignment_id, actorCtx);
           if (error) toast(error, 'critical');
           else { toast('Anggota dihapus', 'ok'); await loadTeam(); }
         }},
@@ -474,18 +485,20 @@ export default function PrincipalHomeScreen() {
       full_name: invName.trim(),
       role: invRole,
       project_id: project?.id,
-    });
+    }, { actorRole });
     setInviting(false);
     if (error) { toast(error, 'critical'); return; }
     toast(`${invName.trim()} berhasil didaftarkan sebagai ${ROLE_LABELS[invRole]}`, 'ok');
-    setInvEmail(''); setInvPassword(''); setInvName(''); setInvRole('supervisor');
+    setInvEmail(''); setInvPassword(''); setInvName(''); setInvRole(UserRole.SUPERVISOR);
     await loadTeam();
   };
 
-  const handleChangeRole = async (userId: string, name: string, newRole: string) => {
-    const { error } = await updateUserRole(userId, newRole);
+  const handleChangeRole = async (member: TeamMember, newRole: UserRoleType) => {
+    const { error } = await updateUserRole(member.user_id, newRole, {
+      actorRole, memberCurrentRole: member.role as UserRoleType,
+    });
     if (error) { toast(error, 'critical'); return; }
-    toast(`Role ${name} diubah ke ${ROLE_LABELS[newRole]}`, 'ok');
+    toast(`Role ${member.full_name} diubah ke ${ROLE_LABELS[newRole]}`, 'ok');
     await loadTeam();
   };
 
@@ -1223,7 +1236,11 @@ export default function PrincipalHomeScreen() {
   if (homeView === 'manage_team') {
     const assignedIds = new Set(team.map(m => m.user_id));
     const available   = allProfiles.filter(p => !assignedIds.has(p.id));
-    const roleOptions = ['supervisor', 'estimator', 'admin', 'principal'];
+    const roleOptions = assignableRoles(actorRole);
+    // Registered principals are only offered to a principal.
+    const addable = available.filter(
+      p => canManageTeamMember(actorRole, p.role as UserRoleType).allowed,
+    );
 
     return (
       <View style={styles.flex}>
@@ -1239,7 +1256,15 @@ export default function PrincipalHomeScreen() {
               ) : team.length === 0 ? (
                 <Text style={styles.hint}>Belum ada anggota tercatat.</Text>
               ) : (
-                team.map(member => (
+                team.map(member => {
+                  // Remove (roster) follows canManageTeamMember. Role chips
+                  // additionally require the member's CURRENT role to be one
+                  // this actor may hand out — a principal's role is never
+                  // editable from the UI, even for a principal (SQL only).
+                  const rosterEditable = canManageTeamMember(actorRole, member.role as UserRoleType).allowed;
+                  const roleEditable = rosterEditable
+                    && roleOptions.includes(member.role as UserRoleType);
+                  return (
                   <View key={member.assignment_id} style={styles.memberRow}>
                     <View style={styles.memberAvatar}>
                       <Text style={styles.memberAvatarText}>
@@ -1248,43 +1273,50 @@ export default function PrincipalHomeScreen() {
                     </View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.memberName}>{member.full_name}</Text>
-                      {/* Role chips — tap to change */}
-                      <View style={styles.roleChipRow}>
-                        {roleOptions.map(r => (
-                          <TouchableOpacity
-                            key={r}
-                            style={[styles.roleChip, r === member.role && styles.roleChipActive]}
-                            onPress={() => {
-                              if (r !== member.role) handleChangeRole(member.user_id, member.full_name, r);
-                            }}
-                          >
-                            <Text style={[styles.roleChipText, r === member.role && styles.roleChipTextActive]}>
-                              {ROLE_LABELS[r]}
-                            </Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
+                      {roleEditable ? (
+                        /* Role chips — tap to change */
+                        <View style={styles.roleChipRow}>
+                          {roleOptions.map(r => (
+                            <TouchableOpacity
+                              key={r}
+                              style={[styles.roleChip, r === member.role && styles.roleChipActive]}
+                              onPress={() => {
+                                if (r !== member.role) handleChangeRole(member, r);
+                              }}
+                            >
+                              <Text style={[styles.roleChipText, r === member.role && styles.roleChipTextActive]}>
+                                {ROLE_LABELS[r]}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      ) : (
+                        <Text style={styles.memberRole}>{ROLE_LABELS[member.role] ?? member.role}</Text>
+                      )}
                     </View>
-                    <TouchableOpacity
-                      style={styles.removeBtn}
-                      onPress={() => handleRemoveUser(member.assignment_id, member.full_name)}
-                    >
-                      <Ionicons name="person-remove-outline" size={18} color={COLORS.critical} />
-                    </TouchableOpacity>
+                    {rosterEditable && (
+                      <TouchableOpacity
+                        style={styles.removeBtn}
+                        onPress={() => handleRemoveUser(member)}
+                      >
+                        <Ionicons name="person-remove-outline" size={18} color={COLORS.critical} />
+                      </TouchableOpacity>
+                    )}
                   </View>
-                ))
+                  );
+                })
               )}
             </Card>
 
             {/* ── Add existing user to project ── */}
-            {available.length > 0 && (
+            {addable.length > 0 && (
               <Card title="Tambah Anggota yang Sudah Terdaftar">
                 <Text style={styles.hint}>Pengguna ini sudah punya akun, tinggal tambahkan ke proyek.</Text>
-                {available.map(p => (
+                {addable.map(p => (
                   <TouchableOpacity
                     key={p.id}
                     style={styles.addMemberRow}
-                    onPress={() => handleAddUser(p.id)}
+                    onPress={() => handleAddUser(p)}
                   >
                     <View style={{ flex: 1 }}>
                       <Text style={styles.memberName}>{p.full_name || '(Tanpa Nama)'}</Text>
