@@ -61,12 +61,26 @@
 jest.mock('../supabase', () => {
   const { createClient } = require('@supabase/supabase-js');
   const fs = require('node:fs');
-  for (const line of fs.readFileSync('.env', 'utf8').split('\n')) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+  // .env is absent in CI — this mock factory runs at import time, BEFORE the
+  // ALLOW_PROD_DB_TESTS skip guard, so a hard readFileSync would fail the
+  // whole suite there instead of letting it skip.
+  if (fs.existsSync('.env')) {
+    for (const line of fs.readFileSync('.env', 'utf8').split('\n')) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+      if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
   }
   const url = process.env.EXPO_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_KEY;
+  if (!url || !key) {
+    // No credentials (CI): the suite is about to skip on the ALLOW_PROD_DB_TESTS
+    // guard anyway — hand back a stub that only throws if something touches it.
+    return {
+      supabase: new Proxy({}, {
+        get() { throw new Error('republishK350: no Supabase credentials — suite should have skipped'); },
+      }),
+    };
+  }
   return { supabase: createClient(url, key, { auth: { persistSession: false } }) };
 });
 
