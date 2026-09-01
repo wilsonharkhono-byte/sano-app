@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1250" role="img" aria-labelledby="heroaperturesvg-t">
+<title id="heroaperturesvg-t">hero detail — placeholder artwork, awaiting WHA Studio photography</title>
+<desc>Abstract architectural placeholder. Replace with real project photography.</desc>
+
+<defs>
+  <linearGradient id="heroaperturesvg-g" x1="0" y1="0" x2="0.85" y2="1">
+    <stop offset="0" stop-color="#26251F"/>
+    <stop offset="1" stop-color="#383731"/>
+  </linearGradient>
+  <linearGradient id="shaftGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F4F1EA" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#F4F1EA" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+<rect width="1000" height="1250" fill="url(#heroaperturesvg-g)"/>
+
+<rect x="420" y="0" width="160" height="1250" fill="#A8875A" opacity="0.8"/>
+<rect x="420" y="0" width="160" height="1250" fill="url(#shaftGrad)" opacity="0.9"/>
+<rect x="120" y="187.5" width="300" height="175.00000000000003" fill="#A9AC96" opacity="0.7"/>
+<rect x="580" y="475" width="300" height="175.00000000000003" fill="#A9AC96" opacity="0.7"/>
+<rect x="120" y="762.5" width="300" height="175.00000000000003" fill="#A9AC96" opacity="0.7"/>
+<g stroke="#A9AC96" stroke-width="1" opacity="0.35"><line x1="0" y1="250" x2="1000" y2="250"/><line x1="0" y1="500" x2="1000" y2="500"/><line x1="0" y1="750" x2="1000" y2="750"/><line x1="0" y1="1000" x2="1000" y2="1000"/></g>
+<filter id="heroaperturesvg-n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<rect width="1000" height="1250" filter="url(#heroaperturesvg-n)" opacity="0.05"/>
+<text x="30" y="1228" font-family="Helvetica, Arial, sans-serif" font-size="14" letter-spacing="2.0" fill="rgba(244,241,234,0.5)">PLACEHOLDER · DETAIL CROP</text>
+</svg>

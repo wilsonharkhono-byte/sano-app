@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1200" role="img" aria-labelledby="processrealizesvg-t">
+<title id="processrealizesvg-t">process/realize.svg — placeholder artwork, awaiting WHA Studio photography</title>
+<desc>Abstract architectural placeholder. Replace with real project photography.</desc>
+
+<defs>
+  <linearGradient id="processrealizesvg-g" x1="0" y1="0" x2="0.85" y2="1">
+    <stop offset="0" stop-color="#28211A"/>
+    <stop offset="1" stop-color="#3a332c"/>
+  </linearGradient>
+  <linearGradient id="shaftGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F4F1EA" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#F4F1EA" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+<rect width="1600" height="1200" fill="url(#processrealizesvg-g)"/>
+
+<rect x="672" y="0" width="256" height="1200" fill="#D8C4A0" opacity="0.8"/>
+<rect x="672" y="0" width="256" height="1200" fill="url(#shaftGrad)" opacity="0.9"/>
+<rect x="192" y="180" width="480" height="168.00000000000003" fill="#B98F5A" opacity="0.7"/>
+<rect x="927.9999999999999" y="456" width="480" height="168.00000000000003" fill="#B98F5A" opacity="0.7"/>
+<rect x="192" y="732" width="480" height="168.00000000000003" fill="#B98F5A" opacity="0.7"/>
+<g stroke="#B98F5A" stroke-width="1" opacity="0.35"><line x1="0" y1="240" x2="1600" y2="240"/><line x1="0" y1="480" x2="1600" y2="480"/><line x1="0" y1="720" x2="1600" y2="720"/><line x1="0" y1="960" x2="1600" y2="960"/></g>
+<filter id="processrealizesvg-n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<rect width="1600" height="1200" filter="url(#processrealizesvg-n)" opacity="0.05"/>
+<text x="48" y="1165" font-family="Helvetica, Arial, sans-serif" font-size="14" letter-spacing="2.0" fill="rgba(244,241,234,0.5)">PLACEHOLDER · SITE PHOTOGRAPH</text>
+</svg>

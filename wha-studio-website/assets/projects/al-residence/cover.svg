@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1500" role="img" aria-labelledby="projectsalresidencecoversvg-t">
+<title id="projectsalresidencecoversvg-t">al-residence — placeholder artwork, awaiting WHA Studio photography</title>
+<desc>Abstract architectural placeholder. Replace with real project photography.</desc>
+
+<defs>
+  <linearGradient id="projectsalresidencecoversvg-g" x1="0" y1="0" x2="0.85" y2="1">
+    <stop offset="0" stop-color="#282623"/>
+    <stop offset="1" stop-color="#3a3835"/>
+  </linearGradient>
+  <linearGradient id="shaftGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F4F1EA" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#F4F1EA" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+<rect width="1200" height="1500" fill="url(#projectsalresidencecoversvg-g)"/>
+<rect x="180" y="1080" width="120" height="120" fill="#8B877E" opacity="0.9"/><rect x="300" y="960" width="120" height="240" fill="#BDB6A8" opacity="0.8400000000000001"/><rect x="420" y="839.9999999999999" width="120" height="360" fill="#8B877E" opacity="0.78"/><rect x="540.0000000000001" y="720" width="120" height="480" fill="#BDB6A8" opacity="0.72"/><rect x="660" y="600" width="120" height="600" fill="#8B877E" opacity="0.66"/><rect x="780" y="479.99999999999994" width="120" height="720" fill="#BDB6A8" opacity="0.6000000000000001"/><rect x="900.0000000000001" y="360" width="120" height="839.9999999999999" fill="#8B877E" opacity="0.54"/><g stroke="#BDB6A8" stroke-width="1" opacity="0.12"><line x1="0" y1="75" x2="1200" y2="75"/><line x1="0" y1="150" x2="1200" y2="150"/><line x1="0" y1="225" x2="1200" y2="225"/><line x1="0" y1="300" x2="1200" y2="300"/><line x1="0" y1="375" x2="1200" y2="375"/><line x1="0" y1="450" x2="1200" y2="450"/><line x1="0" y1="525" x2="1200" y2="525"/><line x1="0" y1="600" x2="1200" y2="600"/><line x1="0" y1="675" x2="1200" y2="675"/><line x1="0" y1="750" x2="1200" y2="750"/><line x1="0" y1="825" x2="1200" y2="825"/><line x1="0" y1="900" x2="1200" y2="900"/><line x1="0" y1="975" x2="1200" y2="975"/><line x1="0" y1="1050" x2="1200" y2="1050"/><line x1="0" y1="1125" x2="1200" y2="1125"/><line x1="0" y1="1200" x2="1200" y2="1200"/><line x1="0" y1="1275" x2="1200" y2="1275"/><line x1="0" y1="1350" x2="1200" y2="1350"/><line x1="0" y1="1425" x2="1200" y2="1425"/></g>
+<filter id="projectsalresidencecoversvg-n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<rect width="1200" height="1500" filter="url(#projectsalresidencecoversvg-n)" opacity="0.05"/>
+<text x="36" y="1474" font-family="Helvetica, Arial, sans-serif" font-size="14" letter-spacing="2.0" fill="rgba(244,241,234,0.5)">PLACEHOLDER · AL RESIDENCE PHOTOGRAPHY</text>
+</svg>
