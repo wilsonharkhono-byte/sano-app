@@ -53,11 +53,28 @@ import { isSimplifiedInputWorkbook, parseSimplifiedInput } from '../../tools/sim
 import type { StagingRowV2 } from '../../tools/boqParserV2/types';
 import { applyAIBoqGrouping } from '../../tools/ai-assist';
 import { supabase } from '../../tools/supabase';
+import {
+  addProjectMaterialLine,
+  mapAddLineError,
+  validateAddLineInput,
+  type AddProjectMaterialLineResult,
+} from '../../tools/addProjectMaterialLine';
 import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools/types';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import { sourceLocation, sourceContext } from '../../tools/sourceProvenance';
 import { flagExplanation, ACTION_CAPTIONS } from '../../tools/flagExplanation';
 import { groupReviewRows, subGroupByParentBlock, pendingRowIds, FLAG_GROUP_HINTS } from '../../tools/flagGroups';
+
+/** Catalogue row as picked in the "Tambah material proyek" form. */
+type CatalogPickRow = {
+  id: string;
+  code: string;
+  name: string;
+  tier: number;
+  unit: string;
+  is_asset: boolean;
+  aliases: string[];
+};
 
 type ScreenView = 'sessions' | 'review' | 'anomalies' | 'detail';
 
@@ -338,6 +355,126 @@ export default function BaselineScreen({
   const [normalizing, setNormalizing] = useState(false);
   const [normalized, setNormalized] = useState<import('../api/normalize').NormalizeResult | null>(null);
   const [currentStoragePath, setCurrentStoragePath] = useState<string | null>(null);
+
+  // Tambah material proyek (spec 2026-09-02-add-project-material-line-design.md §6).
+  // The card renders only when a current master exists. fetchCurrentMaster is a
+  // publish-time diff helper without an id, so the card keeps its own state.
+  const [currentMasterId, setCurrentMasterId] = useState<string | null>(null);
+  const [addLineOpen, setAddLineOpen] = useState(false);
+  const [addLineCatalog, setAddLineCatalog] = useState<CatalogPickRow[]>([]);
+  const [addLineCatalogLoading, setAddLineCatalogLoading] = useState(false);
+  const [addLineSearch, setAddLineSearch] = useState('');
+  const [addLineMaterial, setAddLineMaterial] = useState<CatalogPickRow | null>(null);
+  const [addLineQty, setAddLineQty] = useState('');
+  const [addLinePrice, setAddLinePrice] = useState('');
+  const [addLineNote, setAddLineNote] = useState('');
+  const [addLineSaving, setAddLineSaving] = useState(false);
+  const [addLineDone, setAddLineDone] = useState<AddProjectMaterialLineResult | null>(null);
+
+  const loadCurrentMasterId = useCallback(async () => {
+    if (!project) { setCurrentMasterId(null); return; }
+    const { data } = await supabase
+      .from('project_material_master')
+      .select('id')
+      .eq('project_id', project.id)
+      // Same tiebreak as the envelope views (created_at DESC, id DESC).
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    setCurrentMasterId(data?.id ?? null);
+  }, [project?.id]);
+
+  // Re-read after every publish so the card appears on a fresh first publish.
+  useEffect(() => { loadCurrentMasterId(); }, [loadCurrentMasterId, publishedJustNow]);
+
+  const openAddLine = async () => {
+    setAddLineOpen(true);
+    setAddLineDone(null);
+    if (addLineCatalog.length > 0 || addLineCatalogLoading) return;
+    setAddLineCatalogLoading(true);
+    try {
+      const [{ data: mats, error: matErr }, { data: aliases, error: aliasErr }] = await Promise.all([
+        supabase.from('material_catalog').select('id, code, name, tier, unit, is_asset').eq('is_asset', false).order('name'),
+        supabase.from('material_aliases').select('material_id, alias'),
+      ]);
+      if (matErr) throw matErr;
+      if (aliasErr) throw aliasErr;
+      const aliasMap = new Map<string, string[]>();
+      for (const a of aliases ?? []) {
+        const list = aliasMap.get(a.material_id) ?? [];
+        list.push(a.alias);
+        aliasMap.set(a.material_id, list);
+      }
+      setAddLineCatalog((mats ?? []).map(m => ({
+        id: m.id,
+        code: m.code ?? '',
+        name: m.name ?? '',
+        tier: Number(m.tier) || 0,
+        unit: m.unit ?? '',
+        is_asset: !!m.is_asset,
+        aliases: aliasMap.get(m.id) ?? [],
+      })));
+    } catch (err: any) {
+      toast(`Gagal memuat katalog: ${err?.message ?? String(err)}`, 'critical');
+    } finally {
+      setAddLineCatalogLoading(false);
+    }
+  };
+
+  const addLineMatches = useMemo(() => {
+    const q = addLineSearch.trim().toLowerCase();
+    if (q.length < 2) return [] as CatalogPickRow[];
+    return addLineCatalog
+      .filter(m =>
+        m.name.toLowerCase().includes(q) ||
+        m.code.toLowerCase().includes(q) ||
+        m.aliases.some(a => a.toLowerCase().includes(q)))
+      .slice(0, 8);
+  }, [addLineCatalog, addLineSearch]);
+
+  const parseDecimal = (raw: string): number | null => {
+    const t = raw.trim();
+    if (!t) return null;
+    const n = parseFloat(t.replace(/[^0-9.,-]/g, '').replace(',', '.'));
+    return Number.isFinite(n) ? n : Number.NaN;
+  };
+
+  const handleAddLine = async () => {
+    if (!project || !addLineMaterial || addLineSaving) return;
+    const qty = parseDecimal(addLineQty);
+    const price = parseDecimal(addLinePrice);
+    const check = validateAddLineInput({
+      materialId: addLineMaterial.id,
+      tier: addLineMaterial.tier,
+      isAsset: addLineMaterial.is_asset,
+      unit: addLineMaterial.unit,
+      plannedQty: qty,
+      unitPrice: price,
+    });
+    if (!check.ok) { toast(check.message, 'critical'); return; }
+    setAddLineSaving(true);
+    try {
+      const result = await addProjectMaterialLine(supabase, {
+        projectId: project.id,
+        materialId: addLineMaterial.id,
+        plannedQty: qty as number,
+        unitPrice: price,
+        note: addLineNote.trim() || null,
+      });
+      setAddLineDone(result);
+      setAddLineMaterial(null);
+      setAddLineSearch('');
+      setAddLineQty('');
+      setAddLinePrice('');
+      setAddLineNote('');
+      toast('Material ditambahkan ke rencana. Supervisor diberi tahu.', 'ok');
+    } catch (err) {
+      toast(mapAddLineError(err), 'critical');
+    } finally {
+      setAddLineSaving(false);
+    }
+  };
 
   const loadSessions = useCallback(async () => {
     if (!project) return;
@@ -1682,12 +1819,134 @@ export default function BaselineScreen({
             <Card borderColor={COLORS.border}>
               <Text style={styles.previewTitle}>Panduan Penggunaan</Text>
               <Text style={styles.hint}>
-                Upload baseline dipakai untuk RAB awal atau revisi penuh sebelum baseline live dipakai operasional.
+                Upload baseline dipakai untuk RAB awal atau revisi penuh dari file master SANO Input proyek.
               </Text>
               <Text style={styles.hint}>
-                Jika ada tambahan scope setelah baseline sudah berjalan, lebih aman masuk lewat Catatan Perubahan agar audit trail perubahan tetap jelas.
+                Satu material baru Tier 2/3/4 setelah baseline berjalan: pakai kartu Tambah material proyek di bawah, lalu tambahkan baris yang sama ke file master. Perubahan jumlah, penghapusan, material Tier 1, atau mutu beton: re-publish dari file master.
               </Text>
             </Card>
+
+            {currentMasterId && (
+              <Card borderColor={COLORS.info}>
+                <Text style={styles.previewTitle}>Tambah material proyek</Text>
+                <Text style={styles.hint}>
+                  Untuk satu material baru Tier 2/3/4 tanpa area kerja. Perubahan jumlah, penghapusan, atau material Tier 1 tetap lewat re-publish file SANO Input.
+                </Text>
+
+                {!addLineOpen && (
+                  <TouchableOpacity style={styles.ghostBtn} onPress={openAddLine}>
+                    <Text style={styles.ghostBtnText}>Tambah material</Text>
+                  </TouchableOpacity>
+                )}
+
+                {addLineOpen && (
+                  <View style={{ marginTop: SPACE.sm }}>
+                    <Text style={styles.addLineLabel}>Cari material (nama, kode, atau alias)</Text>
+                    <TextInput
+                      style={styles.addLineInput}
+                      value={addLineSearch}
+                      onChangeText={t => { setAddLineSearch(t); setAddLineMaterial(null); }}
+                      placeholder={addLineCatalogLoading ? 'Memuat katalog...' : 'mis. cat tembok, PIP-PVC, knee'}
+                      placeholderTextColor={COLORS.textMuted}
+                      editable={!addLineCatalogLoading}
+                      autoCapitalize="none"
+                    />
+                    {!addLineMaterial && addLineMatches.map(m => {
+                      const tier1 = m.tier === 1;
+                      return (
+                        <TouchableOpacity
+                          key={m.id}
+                          style={[styles.addLineOption, tier1 && styles.disabledBtn]}
+                          disabled={tier1}
+                          onPress={() => { setAddLineMaterial(m); setAddLineSearch(m.name); }}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.addLineOptionName}>{m.name}</Text>
+                            <Text style={styles.hint}>
+                              {m.code} · satuan {m.unit}{tier1 ? ' · lewat file SANO Input' : ''}
+                            </Text>
+                          </View>
+                          <Badge flag={tier1 ? 'WARNING' : 'INFO'} label={`Tier ${m.tier}`} />
+                        </TouchableOpacity>
+                      );
+                    })}
+                    {!addLineMaterial && addLineSearch.trim().length >= 2 && addLineMatches.length === 0 && !addLineCatalogLoading && (
+                      <Text style={styles.hint}>Tidak ada material yang cocok. Buat dulu di Office → Materials, atau tambah alias di Laporan → Katalog.</Text>
+                    )}
+
+                    {addLineMaterial && (
+                      <>
+                        <View style={styles.addLineChosen}>
+                          <Text style={styles.addLineOptionName}>{addLineMaterial.name}</Text>
+                          <Badge flag="INFO" label={`Tier ${addLineMaterial.tier}`} />
+                        </View>
+                        <Text style={styles.addLineLabel}>Jumlah rencana ({addLineMaterial.unit}, satuan dasar katalog)</Text>
+                        <TextInput
+                          style={styles.addLineInput}
+                          value={addLineQty}
+                          onChangeText={setAddLineQty}
+                          keyboardType="decimal-pad"
+                          placeholder="0"
+                          placeholderTextColor={COLORS.textMuted}
+                        />
+                        <Text style={styles.addLineLabel}>
+                          Harga satuan (Rp){addLineMaterial.tier === 3 ? ' — wajib untuk Tier 3' : ' — opsional'}
+                        </Text>
+                        <TextInput
+                          style={styles.addLineInput}
+                          value={addLinePrice}
+                          onChangeText={setAddLinePrice}
+                          keyboardType="number-pad"
+                          placeholder="0"
+                          placeholderTextColor={COLORS.textMuted}
+                        />
+                        <Text style={styles.addLineLabel}>Catatan (opsional)</Text>
+                        <TextInput
+                          style={styles.addLineInput}
+                          value={addLineNote}
+                          onChangeText={setAddLineNote}
+                          placeholder="mis. tambahan lantai 2"
+                          placeholderTextColor={COLORS.textMuted}
+                        />
+                      </>
+                    )}
+
+                    <View style={styles.revisionBtnRow}>
+                      <TouchableOpacity
+                        style={styles.ghostBtn}
+                        onPress={() => { setAddLineOpen(false); setAddLineMaterial(null); setAddLineSearch(''); }}
+                        disabled={addLineSaving}
+                      >
+                        <Text style={styles.ghostBtnText}>Batal</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.primaryBtn, { flex: 1, marginTop: SPACE.sm + 2 }, (!addLineMaterial || addLineSaving) && styles.disabledBtn]}
+                        onPress={handleAddLine}
+                        disabled={!addLineMaterial || addLineSaving}
+                      >
+                        <Text style={styles.primaryBtnText}>{addLineSaving ? 'Menyimpan...' : 'Simpan ke rencana'}</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+
+                {addLineDone && (
+                  <View style={styles.addLineDoneBox}>
+                    <Text style={styles.msLabel}>
+                      {addLineDone.material_name} — {addLineDone.planned_after} {addLineDone.unit} (Tier {addLineDone.tier}) masuk rencana.
+                    </Text>
+                    <Text style={[styles.hint, { color: COLORS.text }]}>
+                      Tambahkan juga baris ini ke file master SANO Input proyek. Re-publish hanya membaca file.
+                    </Text>
+                    {!addLineDone.snapshot_written && (
+                      <Text style={styles.hint}>
+                        Baseline awal material ini sudah pernah dicatat; angka drift mengikuti baseline lama.
+                      </Text>
+                    )}
+                  </View>
+                )}
+              </Card>
+            )}
 
             {loading && <Text style={styles.hint}>Memuat sesi import...</Text>}
 
@@ -1782,7 +2041,7 @@ export default function BaselineScreen({
                 </View>
                 {s.status === 'PUBLISHED' && (
                   <Text style={styles.hint}>
-                    Sudah menjadi baseline live. Tambahan scope sesudah ini sebaiknya masuk lewat Catatan Perubahan, bukan menghapus baseline ini.
+                    Sudah menjadi baseline live. Material baru: kartu Tambah material proyek. Perubahan lain: re-publish dari file master, bukan menghapus baseline ini.
                   </Text>
                 )}
                 {s.error_message && <Text style={[styles.hint, { color: COLORS.critical }]}>{s.error_message}</Text>}
@@ -2082,6 +2341,12 @@ const styles = StyleSheet.create({
   backText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.primary },
   sectionHead: { fontSize: TYPE.xs, fontFamily: FONTS.bold, letterSpacing: 1, textTransform: 'uppercase', color: COLORS.textSec, marginBottom: SPACE.sm + 2, marginTop: SPACE.md },
   hint: { fontSize: TYPE.xs, color: COLORS.textSec, marginTop: SPACE.xs },
+  addLineLabel: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.text, marginTop: SPACE.sm },
+  addLineInput: { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, paddingHorizontal: 10, paddingVertical: 8, marginTop: SPACE.xs, fontSize: TYPE.sm, color: COLORS.text, minHeight: 40 },
+  addLineOption: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: 10, marginTop: SPACE.xs },
+  addLineOptionName: { fontSize: TYPE.sm, fontFamily: FONTS.medium, color: COLORS.text },
+  addLineChosen: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: SPACE.sm, marginTop: SPACE.sm },
+  addLineDoneBox: { marginTop: SPACE.sm, padding: 10, borderRadius: RADIUS, borderWidth: 1, borderColor: COLORS.ok },
   uploadBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.sm, backgroundColor: COLORS.primary, borderRadius: RADIUS, padding: SPACE.base, marginBottom: SPACE.base },
   uploadText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
   msLabel: { fontSize: TYPE.sm, fontFamily: FONTS.bold },
