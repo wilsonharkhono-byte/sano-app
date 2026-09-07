@@ -10,7 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-02-add-project-material-line-design.md`
 
-**Worktree:** `.claude/worktrees/add-project-material-line` (branch `feat/add-project-material-line`). Run jest FROM INSIDE the worktree: the main checkout's jest config ignores `.claude/worktrees/`.
+**Worktree:** `.claude/worktrees/add-project-material-line` (branch `feat/add-project-material-line`). The repo jest config ignores every path containing `/.claude/worktrees/` — that matches the worktree itself, so plain `npx jest` finds NO tests here. Always override the ignore list:
+
+- Single file: `npx jest <path> --testPathIgnorePatterns='/node_modules/'`
+- Full suite: `npx jest --testPathIgnorePatterns='/node_modules/' --testPathIgnorePatterns='__tests__/fixtures\\.ts$' --testPathIgnorePatterns='__tests__/_serverGateHarness\\.ts$' --testPathIgnorePatterns='supabase/functions/' --testPathIgnorePatterns='tmp/'`
+
+Use the `=` form; a bare `--testPathIgnorePatterns a b <file>` swallows the file path as another pattern and runs everything. The worktree needs a copy of the main checkout's `.env` (gitignored): two suites read it at import and otherwise fail with ENOENT while being skipped in the main checkout.
 
 **Commit identity:** use `git -c user.name="Test User" -c user.email="test@example.com" commit ...` (matches the repo's existing commits). End every commit message with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
@@ -179,7 +184,7 @@ describe('migration 095 §2 — add_project_material_line', () => {
 
 - [ ] **Step 3: Run the test to verify it fails**
 
-Run: `npx jest tools/__tests__/migration095.test.ts 2>&1 | tail -15`
+Run: `npx jest tools/__tests__/migration095.test.ts --testPathIgnorePatterns='/node_modules/' 2>&1 | tail -15`
 Expected: FAIL with `ENOENT: no such file or directory ... 095_add_project_material_line.sql`.
 
 - [ ] **Step 4: Write the migration**
@@ -509,8 +514,8 @@ GRANT EXECUTE ON FUNCTION add_project_material_line(UUID, UUID, NUMERIC, NUMERIC
 
 - [ ] **Step 5: Run the test to verify it passes**
 
-Run: `npx jest tools/__tests__/migration095.test.ts 2>&1 | tail -20`
-Expected: PASS, 13 tests.
+Run: `npx jest tools/__tests__/migration095.test.ts --testPathIgnorePatterns='/node_modules/' 2>&1 | tail -20`
+Expected: PASS, 14 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -687,7 +692,7 @@ describe('findIncrementalAddsMissingFromStaging', () => {
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `npx jest tools/__tests__/addProjectMaterialLine.test.ts 2>&1 | tail -10`
+Run: `npx jest tools/__tests__/addProjectMaterialLine.test.ts --testPathIgnorePatterns='/node_modules/' 2>&1 | tail -10`
 Expected: FAIL with `Cannot find module '../addProjectMaterialLine'`.
 
 - [ ] **Step 3: Write the module**
@@ -878,7 +883,7 @@ export function findIncrementalAddsMissingFromStaging(
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `npx jest tools/__tests__/addProjectMaterialLine.test.ts 2>&1 | tail -15`
+Run: `npx jest tools/__tests__/addProjectMaterialLine.test.ts --testPathIgnorePatterns='/node_modules/' 2>&1 | tail -15`
 Expected: PASS, 22 tests.
 
 - [ ] **Step 5: Commit**
@@ -1247,7 +1252,7 @@ Inside the `StyleSheet.create({ ... })` block, directly after the line `hint: { 
 Run: `npx tsc --noEmit 2>&1 | tail -5`
 Expected: no output (clean). If a pre-existing error unrelated to this task appears, note it in the commit body and do not fix it here.
 
-Run: `npx jest 2>&1 | tail -6`
+Run: `npx jest --testPathIgnorePatterns='/node_modules/' --testPathIgnorePatterns='__tests__/fixtures\\.ts$' --testPathIgnorePatterns='__tests__/_serverGateHarness\\.ts$' --testPathIgnorePatterns='supabase/functions/' --testPathIgnorePatterns='tmp/' 2>&1 | tail -6`
 Expected: all suites pass.
 
 Manual checklist (after 095 is pasted and the app runs): the card appears only for a project with a published master; typing two letters of an alias finds the item; a Tier 1 row is disabled with the reason; Tier 3 without a price is refused with the Indonesian copy before any network call; success shows the "tambahkan ke file master" notice; the same material a second time is refused with the EXISTS copy.
@@ -1402,7 +1407,7 @@ insert:
 Run: `npx tsc --noEmit 2>&1 | tail -5`
 Expected: clean.
 
-Run: `npx jest 2>&1 | tail -6`
+Run: `npx jest --testPathIgnorePatterns='/node_modules/' --testPathIgnorePatterns='__tests__/fixtures\\.ts$' --testPathIgnorePatterns='__tests__/_serverGateHarness\\.ts$' --testPathIgnorePatterns='supabase/functions/' --testPathIgnorePatterns='tmp/' 2>&1 | tail -6`
 Expected: all suites pass.
 
 - [ ] **Step 6: Commit**
@@ -1429,7 +1434,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - [ ] **Step 1: Full suite and type-check from the worktree root**
 
 ```bash
-npx jest 2>&1 | tail -8
+npx jest --testPathIgnorePatterns='/node_modules/' --testPathIgnorePatterns='__tests__/fixtures\\.ts$' --testPathIgnorePatterns='__tests__/_serverGateHarness\\.ts$' --testPathIgnorePatterns='supabase/functions/' --testPathIgnorePatterns='tmp/' 2>&1 | tail -8
 npx tsc --noEmit 2>&1 | tail -5
 ```
 
