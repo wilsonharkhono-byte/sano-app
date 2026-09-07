@@ -473,6 +473,8 @@ export default function BaselineScreen({
         note: addLineNote.trim() || null,
       });
       setAddLineDone(result);
+      // Spec §6.2: the form closes; the persistent notice below carries the result.
+      setAddLineOpen(false);
       setAddLineMaterial(null);
       setAddLineSearch('');
       setAddLineQty('');
@@ -2011,7 +2013,7 @@ export default function BaselineScreen({
                 {addLineDone && (
                   <View style={styles.addLineDoneBox}>
                     <Text style={styles.msLabel}>
-                      {addLineDone.material_name} — {addLineDone.planned_after} {addLineDone.unit} (Tier {addLineDone.tier}) masuk rencana.
+                      {addLineDone.material_name} — {formatIdNumber(Number(addLineDone.planned_after))} {addLineDone.unit} (Tier {addLineDone.tier}) masuk rencana.
                     </Text>
                     <Text style={[styles.hint, { color: COLORS.text }]}>
                       Tambahkan juga baris ini ke file master SANO Input proyek. Re-publish hanya membaca file.
