@@ -884,7 +884,7 @@ export function findIncrementalAddsMissingFromStaging(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest tools/__tests__/addProjectMaterialLine.test.ts --testPathIgnorePatterns='/node_modules/' 2>&1 | tail -15`
-Expected: PASS, 22 tests.
+Expected: PASS, 24 tests.
 
 - [ ] **Step 5: Commit**
 
