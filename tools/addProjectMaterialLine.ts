@@ -181,3 +181,53 @@ export function findIncrementalAddsMissingFromStaging(
   }
   return missing;
 }
+
+/** Copy shown when a numeric field cannot be read unambiguously. */
+export const ID_NUMBER_HINT =
+  'Angka tidak terbaca. Pakai koma untuk desimal (12,5) dan titik untuk ribuan (2.500.000).';
+
+/**
+ * Parse a number typed by an Indonesian user: "." groups thousands, "," is the
+ * decimal separator. A leading "Rp" and whitespace are ignored.
+ *
+ *   "2.500.000"    → 2500000      "2.500.000,50" → 2500000.5
+ *   "12,5"         → 12.5         "1.000"        → 1000
+ *
+ * Returns null for blank input and NaN for anything ambiguous or malformed —
+ * notably "12.5", a decimal typed with the wrong key, which under the
+ * convention would silently read as 125-ish garbage or 12.5 depending on the
+ * parser. The app refuses rather than guesses (CLAUDE.md §1.1).
+ */
+export function parseIdNumber(raw: string): number | null {
+  const t = raw.trim();
+  if (!t) return null;
+  let s = t.replace(/^rp\s*/i, '').replace(/\s+/g, '');
+  let negative = false;
+  if (s.startsWith('-')) { negative = true; s = s.slice(1); }
+  if (!/^[0-9.,]+$/.test(s)) return Number.NaN;
+  const commaParts = s.split(',');
+  if (commaParts.length > 2) return Number.NaN;
+  const [intPart, decPart] = commaParts;
+  const intOk = /^\d+$/.test(intPart) || /^\d{1,3}(\.\d{3})+$/.test(intPart);
+  if (!intOk) return Number.NaN;
+  if (decPart !== undefined && !/^\d+$/.test(decPart)) return Number.NaN;
+  const digits = intPart.replace(/\./g, '') + (decPart !== undefined ? '.' + decPart : '');
+  const n = Number(digits);
+  if (!Number.isFinite(n)) return Number.NaN;
+  return negative ? -n : n;
+}
+
+/**
+ * Format for Indonesian eyes: "." thousands, "," decimal, up to maxFraction
+ * decimals with trailing zeros dropped. Pure string work — no Intl dependency,
+ * so it behaves identically on Hermes and web.
+ */
+export function formatIdNumber(n: number, maxFraction = 3): string {
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  const fixed = abs.toFixed(maxFraction);
+  const [intRaw, decRaw = ''] = fixed.split('.');
+  const intGrouped = intRaw.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  const dec = decRaw.replace(/0+$/, '');
+  return sign + intGrouped + (dec ? ',' + dec : '');
+}

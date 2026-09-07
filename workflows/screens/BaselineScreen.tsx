@@ -54,10 +54,15 @@ import type { StagingRowV2 } from '../../tools/boqParserV2/types';
 import { applyAIBoqGrouping } from '../../tools/ai-assist';
 import { supabase } from '../../tools/supabase';
 import {
+  ID_NUMBER_HINT,
   addProjectMaterialLine,
+  findIncrementalAddsMissingFromStaging,
+  formatIdNumber,
   mapAddLineError,
+  parseIdNumber,
   validateAddLineInput,
   type AddProjectMaterialLineResult,
+  type IncrementalAddMissing,
 } from '../../tools/addProjectMaterialLine';
 import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools/types';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
@@ -373,7 +378,7 @@ export default function BaselineScreen({
 
   const loadCurrentMasterId = useCallback(async () => {
     if (!project) { setCurrentMasterId(null); return; }
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('project_material_master')
       .select('id')
       .eq('project_id', project.id)
@@ -382,6 +387,12 @@ export default function BaselineScreen({
       .order('id', { ascending: false })
       .limit(1)
       .maybeSingle();
+    if (error) {
+      // Surface, never hide: a failed read would otherwise just make the card vanish.
+      toast(`Tidak bisa memuat status baseline: ${error.message}`, 'warning');
+      setCurrentMasterId(null);
+      return;
+    }
     setCurrentMasterId(data?.id ?? null);
   }, [project?.id]);
 
@@ -391,7 +402,8 @@ export default function BaselineScreen({
   const openAddLine = async () => {
     setAddLineOpen(true);
     setAddLineDone(null);
-    if (addLineCatalog.length > 0 || addLineCatalogLoading) return;
+    // Refetch on every open: an item just created in Office → Materials must be findable.
+    if (addLineCatalogLoading) return;
     setAddLineCatalogLoading(true);
     try {
       const [{ data: mats, error: matErr }, { data: aliases, error: aliasErr }] = await Promise.all([
@@ -433,17 +445,15 @@ export default function BaselineScreen({
       .slice(0, 8);
   }, [addLineCatalog, addLineSearch]);
 
-  const parseDecimal = (raw: string): number | null => {
-    const t = raw.trim();
-    if (!t) return null;
-    const n = parseFloat(t.replace(/[^0-9.,-]/g, '').replace(',', '.'));
-    return Number.isFinite(n) ? n : Number.NaN;
-  };
-
   const handleAddLine = async () => {
     if (!project || !addLineMaterial || addLineSaving) return;
-    const qty = parseDecimal(addLineQty);
-    const price = parseDecimal(addLinePrice);
+    const qty = parseIdNumber(addLineQty);
+    const price = parseIdNumber(addLinePrice);
+    // Indonesian number convention; ambiguous input is refused, never guessed.
+    if ((qty != null && Number.isNaN(qty)) || (price != null && Number.isNaN(price))) {
+      toast(ID_NUMBER_HINT, 'critical');
+      return;
+    }
     const check = validateAddLineInput({
       materialId: addLineMaterial.id,
       tier: addLineMaterial.tier,
@@ -474,6 +484,18 @@ export default function BaselineScreen({
     } finally {
       setAddLineSaving(false);
     }
+  };
+
+  // Echo what the app READ from a numeric field, so a thousands/decimal
+  // mix-up is visible before submit (truth over a confident-looking wrong number).
+  const renderParsedEcho = (raw: string, unit: string, prefix = false) => {
+    if (!raw.trim()) return null;
+    const n = parseIdNumber(raw);
+    if (n == null || Number.isNaN(n)) {
+      return <Text style={[styles.hint, { color: COLORS.warning }]}>{ID_NUMBER_HINT}</Text>;
+    }
+    const shown = formatIdNumber(n);
+    return <Text style={styles.hint}>Terbaca: {prefix ? `${unit} ${shown}` : `${shown} ${unit}`}</Text>;
   };
 
   const loadSessions = useCallback(async () => {
@@ -917,10 +939,10 @@ export default function BaselineScreen({
   // of a master row is the re-publish signal (a plan exists to diff against).
   const fetchCurrentMaster = async (
     projectId: string,
-  ): Promise<{ isRepublish: boolean; lines: Array<{ material_id: string; planned_quantity: number }> }> => {
+  ): Promise<{ isRepublish: boolean; ahsVersionId: string | null; lines: Array<{ material_id: string; planned_quantity: number }> }> => {
     const { data: master } = await supabase
       .from('project_material_master')
-      .select('id')
+      .select('id, ahs_version_id')
       .eq('project_id', projectId)
       // id DESC is the tiebreak (054 convention): a re-publish batch can create
       // more than one master within the same wall-clock second, so created_at
@@ -931,7 +953,7 @@ export default function BaselineScreen({
       .order('id', { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (!master) return { isRepublish: false, lines: [] };
+    if (!master) return { isRepublish: false, ahsVersionId: null, lines: [] };
     const { data: lines } = await supabase
       .from('project_material_master_lines')
       .select('material_id, planned_quantity')
@@ -939,7 +961,53 @@ export default function BaselineScreen({
     const rows = (lines ?? [])
       .filter((l): l is { material_id: string; planned_quantity: number } => !!l.material_id)
       .map(l => ({ material_id: l.material_id as string, planned_quantity: Number(l.planned_quantity) || 0 }));
-    return { isRepublish: true, lines: rows };
+    return { isRepublish: true, ahsVersionId: (master.ahs_version_id as string | null) ?? null, lines: rows };
+  };
+
+  // Materials added via "Tambah material proyek" exist only in the DB; publish
+  // rebuilds the plan from the file. Before a re-publish, list the ones the
+  // staged file omits so the estimator can stop and append them to the file.
+  // Scoped to revisions recorded within the CURRENT version — an add that was
+  // later carried into the file belongs to an older version and is not flagged.
+  // Returns null when the lookup itself failed (caller warns, does not block).
+  const fetchIncrementalAddsMissing = async (
+    projectId: string,
+    ahsVersionId: string | null,
+    stagedMaterialIds: Iterable<string>,
+  ): Promise<IncrementalAddMissing[] | null> => {
+    let query = supabase
+      .from('plan_revisions')
+      .select('summary')
+      .eq('project_id', projectId)
+      .filter('summary->>kind', 'eq', 'INCREMENTAL_ADD');
+    if (ahsVersionId) query = query.eq('new_ahs_version_id', ahsVersionId);
+    const { data, error } = await query;
+    if (error) {
+      console.warn('fetchIncrementalAddsMissing failed:', error.message);
+      return null;
+    }
+    return findIncrementalAddsMissingFromStaging((data ?? []) as Array<{ summary: unknown }>, stagedMaterialIds);
+  };
+
+  const confirmDropIncremental = (missing: IncrementalAddMissing[]): Promise<boolean> => {
+    const list = missing.map(m => `• ${m.material_name}`).join('\n');
+    const message =
+      `Material berikut ditambahkan lewat Tambah material proyek tetapi tidak ada di file yang diunggah:\n\n${list}\n\n` +
+      'Lanjut publish berarti material ini dihapus dari rencana.';
+    if (Platform.OS === 'web') {
+      return Promise.resolve(typeof window !== 'undefined' && window.confirm(message));
+    }
+    return new Promise(resolve => {
+      Alert.alert(
+        'Material tambahan tidak ada di file',
+        message,
+        [
+          { text: 'Batal', style: 'cancel', onPress: () => resolve(false) },
+          { text: 'Lanjut, hapus dari rencana', style: 'destructive', onPress: () => resolve(true) },
+        ],
+        { cancelable: true, onDismiss: () => resolve(false) },
+      );
+    });
   };
 
   // Per-material activity + names from the project envelope view. "Activity" =
@@ -1069,6 +1137,14 @@ export default function BaselineScreen({
       if (preview.error) {
         toast(`Gagal menghitung perubahan rencana: ${preview.error}`, 'critical');
         return;
+      }
+      // Guard: incrementally added materials absent from the staged file.
+      const missingIncremental = await fetchIncrementalAddsMissing(project.id, current.ahsVersionId, preview.totals.keys());
+      if (missingIncremental === null) {
+        toast('Tidak bisa memeriksa material yang ditambahkan lewat Tambah material proyek. Periksa file master secara manual.', 'warning');
+      } else if (missingIncremental.length > 0) {
+        const proceed = await confirmDropIncremental(missingIncremental);
+        if (!proceed) return;
       }
       // Stash the would-be new master's per-material totals — the exact p_proposed
       // the 2.12 ceiling gate (server) and its pre-check compute_ceiling_breaches
@@ -1889,6 +1965,7 @@ export default function BaselineScreen({
                           placeholder="0"
                           placeholderTextColor={COLORS.textMuted}
                         />
+                        {renderParsedEcho(addLineQty, addLineMaterial.unit)}
                         <Text style={styles.addLineLabel}>
                           Harga satuan (Rp){addLineMaterial.tier === 3 ? ' — wajib untuk Tier 3' : ' — opsional'}
                         </Text>
@@ -1900,6 +1977,7 @@ export default function BaselineScreen({
                           placeholder="0"
                           placeholderTextColor={COLORS.textMuted}
                         />
+                        {renderParsedEcho(addLinePrice, 'Rp', true)}
                         <Text style={styles.addLineLabel}>Catatan (opsional)</Text>
                         <TextInput
                           style={styles.addLineInput}
@@ -1914,7 +1992,7 @@ export default function BaselineScreen({
                     <View style={styles.revisionBtnRow}>
                       <TouchableOpacity
                         style={styles.ghostBtn}
-                        onPress={() => { setAddLineOpen(false); setAddLineMaterial(null); setAddLineSearch(''); }}
+                        onPress={() => { setAddLineOpen(false); setAddLineMaterial(null); setAddLineSearch(''); setAddLineQty(''); setAddLinePrice(''); setAddLineNote(''); }}
                         disabled={addLineSaving}
                       >
                         <Text style={styles.ghostBtnText}>Batal</Text>
@@ -1938,6 +2016,11 @@ export default function BaselineScreen({
                     <Text style={[styles.hint, { color: COLORS.text }]}>
                       Tambahkan juga baris ini ke file master SANO Input proyek. Re-publish hanya membaca file.
                     </Text>
+                    {addLineDone.notified === false && (
+                      <Text style={[styles.hint, { color: COLORS.warning }]}>
+                        Notifikasi ke supervisor tidak terkirim. Beri tahu supervisor secara langsung.
+                      </Text>
+                    )}
                     {!addLineDone.snapshot_written && (
                       <Text style={styles.hint}>
                         Baseline awal material ini sudah pernah dicatat; angka drift mengikuti baseline lama.

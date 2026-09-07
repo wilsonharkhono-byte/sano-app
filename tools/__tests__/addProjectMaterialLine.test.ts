@@ -4,6 +4,8 @@ import {
   findIncrementalAddsMissingFromStaging,
   mapAddLineError,
   validateAddLineInput,
+  parseIdNumber,
+  formatIdNumber,
   type AddLineInput,
 } from '../addProjectMaterialLine';
 
@@ -138,5 +140,53 @@ describe('findIncrementalAddsMissingFromStaging', () => {
     expect(findIncrementalAddsMissingFromStaging(
       [{ summary: { kind: 'INCREMENTAL_ADD', material_id: 'c' } }], [],
     )).toEqual([{ material_id: 'c', material_name: 'c' }]);
+  });
+});
+
+describe('parseIdNumber (Indonesian convention: "." thousands, "," decimal)', () => {
+  it('returns null for blank input', () => {
+    expect(parseIdNumber('')).toBeNull();
+    expect(parseIdNumber('   ')).toBeNull();
+  });
+
+  it.each<[string, number]>([
+    ['2500000', 2500000],
+    ['2.500.000', 2500000],
+    ['2.500.000,50', 2500000.5],
+    ['Rp 2.500.000', 2500000],
+    ['Rp2.500.000', 2500000],
+    ['12,5', 12.5],
+    ['0,5', 0.5],
+    ['1.000', 1000],
+    ['1.000,5', 1000.5],
+    ['7', 7],
+    ['-5', -5],
+  ])('parses %s as %d', (raw, expected) => {
+    expect(parseIdNumber(raw)).toBe(expected);
+  });
+
+  it.each<string>([
+    '12.5',      // single dot with a non-3-digit group: decimal typed with the wrong key — ambiguous
+    '1.0000',    // malformed grouping
+    '1,2,3',     // two decimal separators
+    '1.000,',    // dangling decimal separator
+    'abc',
+    '1..000',
+  ])('refuses ambiguous or malformed input %s with NaN', raw => {
+    expect(Number.isNaN(parseIdNumber(raw) as number)).toBe(true);
+  });
+});
+
+describe('formatIdNumber', () => {
+  it.each<[number, string]>([
+    [2500000, '2.500.000'],
+    [12.5, '12,5'],
+    [0.5, '0,5'],
+    [1000.25, '1.000,25'],
+    [2, '2'],
+    [1000, '1.000'],
+    [1234567.891, '1.234.567,891'],
+  ])('formats %d as %s', (n, expected) => {
+    expect(formatIdNumber(n)).toBe(expected);
   });
 });
