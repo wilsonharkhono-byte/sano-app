@@ -31,7 +31,13 @@
 --       master AFTER the line lands and RAISE ADD_LINE_RACE if it moved — the
 --       line would otherwise be invisible to every reader, all of which scope to
 --       latest-master (084:224-229, 094:277-283, 094:310-315). Losing loudly
---       beats a silently ignored plan line (CLAUDE.md §1.1).
+--       beats a silently ignored plan line (CLAUDE.md §1.1). BEST-EFFORT: this
+--       closes the window where the publish COMMITTED between our master pick
+--       and the re-read; a publish that commits after the re-read but before
+--       this transaction commits is invisible under READ COMMITTED. That
+--       residual is milliseconds wide, and the outcome (a line on a superseded
+--       master) is still surfaced by the plan_revisions audit row and by the
+--       publish-time guard in BaselineScreen.
 --
 -- NOT DURABLE ACROSS RE-PUBLISH. Publish rebuilds master lines from the file
 -- alone and deletes the project's ahs_price_book when the file carries Others
@@ -274,7 +280,17 @@ REVOKE EXECUTE ON FUNCTION add_project_material_line(UUID, UUID, NUMERIC, NUMERI
 GRANT EXECUTE ON FUNCTION add_project_material_line(UUID, UUID, NUMERIC, NUMERIC, TEXT) TO authenticated, service_role;
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- SELF-CHECK (run in the Dashboard after pasting; replace placeholders).
+-- SELF-CHECK (replace placeholders).
+--
+-- 0. BEFORE PASTING — the §1 unique index must build on existing data. Probe:
+--      SELECT master_id, material_id, count(*)
+--      FROM project_material_master_lines
+--      WHERE boq_item_id IS NULL AND material_id IS NOT NULL
+--      GROUP BY 1, 2 HAVING count(*) > 1;
+--    EXPECTED: no rows. If any appear, they are publish-era duplicates; merge
+--    them (sum planned_quantity into one row, delete the rest) before pasting.
+--
+-- Run the rest AFTER pasting.
 --
 -- 1. Index exists:
 --      SELECT indexname FROM pg_indexes

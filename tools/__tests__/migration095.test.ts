@@ -99,6 +99,19 @@ describe('migration 095 §2 — add_project_material_line', () => {
     expect(body).toMatch(/notify_plan_revised\(p_project_id, v_revision_id, v_body, 0\)/);
   });
 
+  it('summary carries every PlanRevisionSummary numeric key (added = 1) plus the incremental tags', () => {
+    for (const key of [
+      'raisedAbsolvingOverage', 'raised', 'loweredBelowOrdered', 'removedWithActivity',
+      'lowered', 'noActivityChanged', 'warningCount',
+    ]) {
+      expect(body).toContain(`'${key}', 0`);
+    }
+    expect(body).toContain("'added', 1");
+    for (const tag of ['material_id', 'material_name', 'unit', 'tier', 'planned_after', 'unit_price', 'note']) {
+      expect(body).toContain(`'${tag}', `);
+    }
+  });
+
   it('re-reads the latest master after the writes and raises ADD_LINE_RACE if it moved', () => {
     const insertPos = body.indexOf('INSERT INTO project_material_master_lines');
     const racePos = body.indexOf('ADD_LINE_RACE');
