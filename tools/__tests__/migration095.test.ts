@@ -71,9 +71,36 @@ describe('migration 095 §2 — add_project_material_line', () => {
       'ADD_LINE_AUTH', 'ADD_LINE_NO_MASTER', 'ADD_LINE_MATERIAL', 'ADD_LINE_ASSET',
       'ADD_LINE_TIER1', 'ADD_LINE_UNIT', 'ADD_LINE_EXISTS', 'ADD_LINE_QTY',
       'ADD_LINE_PRICE_REQUIRED', 'ADD_LINE_PRICE', 'ADD_LINE_RACE',
+      'ADD_LINE_PUBLISH_IN_PROGRESS',
     ]) {
       expect(body).toContain(`'${code}:`);
     }
+  });
+
+  it('pins the guard CONDITIONS, not just their messages', () => {
+    expect(body).toMatch(/COALESCE\(is_asset, FALSE\) AS is_asset/);
+    expect(body).toMatch(/IF v_mat\.tier = 1 THEN/);
+    expect(body).toMatch(/btrim\(v_mat\.unit\) = ''/);
+    expect(body).toMatch(/IF p_planned_qty IS NULL OR p_planned_qty <= 0 THEN/);
+    expect(body).toMatch(/IF v_mat\.tier = 3 AND p_unit_price IS NULL THEN/);
+    expect(body).toMatch(/IF p_unit_price IS NOT NULL AND p_unit_price <= 0 THEN/);
+  });
+
+  it('refuses to add while a publish is between its version flip and its master insert', () => {
+    const guard = body.indexOf('IF v_current_version IS NOT NULL AND v_current_version IS DISTINCT FROM v_master_version THEN');
+    const insert = body.indexOf('INSERT INTO project_material_master_lines');
+    expect(guard).toBeGreaterThan(-1);
+    expect(insert).toBeGreaterThan(guard);
+    expect(body).toContain("'ADD_LINE_PUBLISH_IN_PROGRESS:");
+  });
+
+  it('keeps the notification non-fatal and reports whether it went out', () => {
+    expect(body).toMatch(/BEGIN\s+PERFORM notify_plan_revised\(p_project_id, v_revision_id, v_body, 0\);\s+v_notified := TRUE;\s+EXCEPTION WHEN OTHERS THEN/);
+    expect(body).toMatch(/'notified', v_notified/);
+  });
+
+  it('bumps effective_from on the price-book UPDATE so the row wins the lateral tie-break', () => {
+    expect(body).toMatch(/UPDATE ahs_price_book[\s\S]*?effective_from = now\(\)/);
   });
 
   it('inserts a project-level line with the catalogue base unit, never a client unit', () => {

@@ -21,7 +21,8 @@ export type AddLineErrorCode =
   | 'ADD_LINE_QTY'
   | 'ADD_LINE_PRICE_REQUIRED'
   | 'ADD_LINE_PRICE'
-  | 'ADD_LINE_RACE';
+  | 'ADD_LINE_RACE'
+  | 'ADD_LINE_PUBLISH_IN_PROGRESS';
 
 /** Indonesian copy per server prefix (spec §4.2). */
 export const ADD_LINE_MESSAGES: Record<AddLineErrorCode, string> = {
@@ -36,6 +37,7 @@ export const ADD_LINE_MESSAGES: Record<AddLineErrorCode, string> = {
   ADD_LINE_PRICE_REQUIRED: 'Tier 3 adalah anggaran Rupiah: harga satuan wajib diisi.',
   ADD_LINE_PRICE: 'Harga satuan harus lebih dari 0.',
   ADD_LINE_RACE: 'Rencana proyek berubah saat menyimpan (ada publish lain). Coba lagi.',
+  ADD_LINE_PUBLISH_IN_PROGRESS: 'Ada publish yang sedang berjalan atau terputus untuk proyek ini. Selesaikan atau ulangi publish dari file master, lalu coba lagi.',
 };
 
 const ERROR_CODES = Object.keys(ADD_LINE_MESSAGES) as AddLineErrorCode[];
@@ -113,6 +115,8 @@ export interface AddProjectMaterialLineResult {
   planned_after: number;
   price_book_written: 'inserted' | 'updated' | 'skipped';
   snapshot_written: boolean;
+  /** false when notify_plan_revised failed server-side (non-fatal); tell supervisors directly. */
+  notified: boolean;
 }
 
 export interface AddProjectMaterialLineParams {

@@ -1460,3 +1460,14 @@ Report the commit list, test counts, and the deploy order: paste 095 in the Dash
 - **Spec coverage.** §4.1 index → Task 1. §4.2 guards and prefixes → Task 1 SQL + Task 2 messages. §4.3 concurrency → Task 1 (lock, index, race re-read). §4.4 writes 1–6 → Task 1. §4.5 non-durability → Task 1 header, Task 3 success notice, Task 4 guard. §5 client module (four functions) → Task 2. §6.1–6.2 card/form → Task 3. §6.3 guard → Task 4. §6.4 Panduan → Task 3 Steps 4–5. §8 tests → Tasks 1, 2. §9 deploy order → Task 5 report.
 - **Placeholders.** None; every code step is complete.
 - **Type consistency.** `AddProjectMaterialLineResult`, `IncrementalAddMissing`, `validateAddLineInput`, `mapAddLineError`, `addProjectMaterialLine`, `findIncrementalAddsMissingFromStaging` are defined in Task 2 and used with the same names in Tasks 3–4. `fetchCurrentMaster` gains `ahsVersionId` in Task 4 and its only caller is updated there. RPC parameter names `p_project_id, p_material_id, p_planned_qty, p_unit_price, p_note` match between Task 1 SQL and Task 2 wrapper/tests.
+
+---
+
+## Post-review amendments (2026-09-07)
+
+Applied after the Task 1 quality review and the Task 3 spec review, before Task 4:
+
+- 095 gains `ADD_LINE_PUBLISH_IN_PROGRESS`: refuses to add while `ahs_versions.is_current` ≠ the latest master's `ahs_version_id` (publish mid-flight or interrupted). The static test pins the guard, its position before any write, the value-guard conditions, the non-fatal notify block, and `effective_from = now()`.
+- 095 returns `notified: boolean`; `AddProjectMaterialLineResult.notified` added; `ADD_LINE_MESSAGES` gains the new prefix (the mapping test iterates the keys, so coverage is automatic).
+- SELF-CHECK gains step 0b (pre-paste probe for version/master mismatch) and 3b (PLAN_REVISED row landed).
+- Task 4 additionally: (a) render a hint when `addLineDone.notified === false`; (b) replace the screen-local `parseDecimal` with `parseIdNumber` from the module — Indonesian convention, "." thousands and "," decimal, ambiguous input refused — and echo the parsed value under each numeric field; (c) `openAddLine` refetches the catalogue every time the form opens; (d) surface the current-master query error via toast; (e) Batal clears quantity, price and note too.

@@ -46,7 +46,7 @@ add_project_material_line(
   p_note         text    default null
 ) returns jsonb
 -- { line_id, revision_id, master_id, material_name, unit, tier,
---   planned_after, price_book_written, snapshot_written }
+--   planned_after, price_book_written, snapshot_written, notified }
 ```
 
 Guards, in order, each `RAISE EXCEPTION` with a stable prefix the client maps:
@@ -65,6 +65,7 @@ Guards, in order, each `RAISE EXCEPTION` with a stable prefix the client maps:
 | `ADD_LINE_PRICE_REQUIRED` | tier = 3 and price null | Tier 3 adalah anggaran Rupiah: harga satuan wajib diisi. |
 | `ADD_LINE_PRICE` | price provided and `<= 0` | Harga satuan harus lebih dari 0. |
 | `ADD_LINE_RACE` | latest master changed during the call | Rencana proyek berubah saat menyimpan (ada publish lain). Coba lagi. |
+| `ADD_LINE_PUBLISH_IN_PROGRESS` | current `ahs_versions.is_current` id ≠ latest master's `ahs_version_id` (publish mid-flight or interrupted; checked before any write) | Ada publish yang sedang berjalan atau terputus untuk proyek ini. Selesaikan atau ulangi publish dari file master, lalu coba lagi. |
 
 Access rule (deliberate): office roles for ANY project, because `is_office_role()` (036:33-45) is global, so `assert_project_access` cannot fail for a caller who passed `ADD_LINE_AUTH`; it stays as belt-and-suspenders. Service role / Dashboard (`auth.uid() IS NULL`) is allowed, matching 061:99-102, 079:159-162, 088:421; `published_by` is then NULL, which `plan_revisions` permits.
 
@@ -74,7 +75,9 @@ Current master = `ORDER BY created_at DESC, id DESC LIMIT 1` (the 084/094 tiebre
 
 (a) Two adds of the same material: the `ADD_LINE_EXISTS` probe is a read and the lines table had no unique key, so under READ COMMITTED both would insert and `v_material_envelopes` would `SUM` a doubled ceiling. The function takes `pg_advisory_xact_lock(hashtextextended(p_project_id::text, 0))` before the probe, and the partial unique index (4.1) backs it.
 
-(b) An add racing a re-publish: publish inserts its new master from the client (`publishBaselineV2.ts:1481-1484`), so it takes no lock this function could share, and `FOR UPDATE` on the current master cannot block the INSERT of a newer one. After the line is inserted the function re-reads the latest master id and raises `ADD_LINE_RACE` if it moved. Losing loudly beats a plan line no reader can see (every reader scopes to latest master: 084:224-229, 094:277-283, 094:310-315).
+(b) An add racing a re-publish: publish inserts its new master from the client (`publishBaselineV2.ts:1481-1484`), so it takes no lock this function could share, and `FOR UPDATE` on the current master cannot block the INSERT of a newer one. After the line is inserted the function re-reads the latest master id and raises `ADD_LINE_RACE` if it moved. Best-effort: a publish committing after the re-read is invisible under READ COMMITTED; the residual window is milliseconds and the audit row plus the publish-time guard still surface the outcome. Losing loudly beats a plan line no reader can see (every reader scopes to latest master: 084:224-229, 094:277-283, 094:310-315).
+
+(c) The wider publish window: publish flips `is_current` and inserts the new `ahs_versions` row several round-trips before it inserts the new master. While the current version and the latest master disagree, or forever if publish crashed between them, the function raises `ADD_LINE_PUBLISH_IN_PROGRESS` before writing anything. Projects published before migration 032 have no `is_current` row and skip this check.
 
 ### 4.4 Writes (single transaction)
 
@@ -83,7 +86,7 @@ Current master = `ORDER BY created_at DESC, id DESC LIMIT 1` (the 084/094 tiebre
 3. `material_baseline_snapshots` — INSERT `ON CONFLICT (project_id, material_id) DO NOTHING`. First-publish-wins: if the material existed in a PRIOR master and was removed since, the old baseline stands and Signal-2 drift may show at once. `snapshot_written` reports it so the UI can say so.
 4. `plan_revisions` — `{project_id, old_ahs_version_id: v, new_ahs_version_id: v, published_by: auth.uid(), acknowledged_at: now(), summary}` where summary carries the full `PlanRevisionSummary` numeric keys (`added: 1`, all others 0, `warningCount: 0`) plus `kind: 'INCREMENTAL_ADD', material_id, material_name, unit, tier, planned_after, unit_price, note`. Same version id on both sides records "revision within the current version"; no new `ahs_versions` row is minted.
 5. `plan_revision_lines` — `{revision_id, material_id, planned_before: 0, planned_after, ordered_at_time: 0, requested_at_time: 0, classification: 'ADDED'}`.
-6. `notify_plan_revised(p_project_id, revision_id, 'Material baru ditambahkan ke rencana: <name> <qty> <unit>', 0)`.
+6. `notify_plan_revised(p_project_id, revision_id, 'Material baru ditambahkan ke rencana: <name> <qty> <unit>', 0)` — supervisors get PLAN_REVISED; principal not pinged (raise count 0). Wrapped non-fatally: a notification failure never rolls back the line; the result reports `notified: false` and the UI tells the estimator to inform supervisors directly.
 
 No triggers exist on any of these tables (all 30 `CREATE TRIGGER` sites checked), so no double-notify.
 

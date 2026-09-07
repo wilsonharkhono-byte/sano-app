@@ -14,7 +14,8 @@
 -- CURRENT master, atomically, with audit + notification.
 --
 -- SCOPE. Tier 2/3/4 only, boq_item_id NULL. Tier 1 is refused (needs a work
--- area → workbook). Materials already in the current master are refused (change
+-- area → workbook). p_planned_qty is in the catalogue BASE unit (kg for rebar,
+-- never batang/supplier units) — the same unit the line is stored with. Materials already in the current master are refused (change
 -- quantities via re-publish so the diff + ceiling gate apply). Assets refused.
 --
 -- CONCURRENCY. Two writers can collide here in two different ways.
@@ -38,6 +39,14 @@
 --       residual is milliseconds wide, and the outcome (a line on a superseded
 --       master) is still surfaced by the plan_revisions audit row and by the
 --       publish-time guard in BaselineScreen.
+--   (c) An add during the WIDER publish window: publish flips is_current and
+--       inserts the new ahs_versions row (publishBaselineV2.ts:1256-1267) several
+--       round-trips BEFORE it inserts the new master (:1481). In that window —
+--       or forever, if publish crashed between the two — the current version and
+--       the latest master disagree. A line added then would land on a master
+--       about to be superseded and (b) would not notice, because the master id
+--       has not moved yet. We compare the versions and RAISE
+--       ADD_LINE_PUBLISH_IN_PROGRESS before writing anything.
 --
 -- NOT DURABLE ACROSS RE-PUBLISH. Publish rebuilds master lines from the file
 -- alone and deletes the project's ahs_price_book when the file carries Others
@@ -73,6 +82,9 @@
 -- Idempotent: CREATE UNIQUE INDEX IF NOT EXISTS; CREATE OR REPLACE FUNCTION.
 -- Depends on 036 (is_office_role), 061 (assert_project_access), 077, 078
 -- (notify_plan_revised), 082 (boq_item_id nullable), 084 (is_asset).
+-- PASTE ORDER: creates only new objects and re-creates no existing function, so
+-- its position relative to 088–094 is irrelevant and re-pasting any of those
+-- cannot revert it.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 -- §1 Durable backstop for concurrent adds. Publish already merges same-material
@@ -107,6 +119,7 @@ DECLARE
   v_pb_id           UUID;
   v_pb_result       TEXT := 'skipped';
   v_snap_written    BOOLEAN := FALSE;
+  v_notified        BOOLEAN := FALSE;
   v_summary         JSONB;
   v_qty_text        TEXT;
   v_body            TEXT;
@@ -118,7 +131,9 @@ BEGIN
   END IF;
   PERFORM assert_project_access(p_project_id);
 
-  -- Serialize adds per project (header: CONCURRENCY (a)).
+  -- Serialize adds per project (header: CONCURRENCY (a)). hashtextextended and
+  -- 084's hashtext share the bigint lock space; a collision only serializes an
+  -- unrelated equipment-ledger write against this add — benign.
   PERFORM pg_advisory_xact_lock(hashtextextended(p_project_id::text, 0));
 
   -- Current master: latest, with the 084/094 tiebreak.
@@ -137,6 +152,14 @@ BEGIN
   WHERE project_id = p_project_id AND is_current = TRUE
   LIMIT 1;
   v_version_id := COALESCE(v_current_version, v_master_version);
+
+  -- Header: CONCURRENCY (c). Refuse while a publish is between its version flip
+  -- and its master insert (or was interrupted there). Projects published before
+  -- 032 have no is_current row and skip this check via the COALESCE above.
+  IF v_current_version IS NOT NULL AND v_current_version IS DISTINCT FROM v_master_version THEN
+    RAISE EXCEPTION 'ADD_LINE_PUBLISH_IN_PROGRESS: current ahs_version % does not match the latest master version % — a publish is in progress or was interrupted; retry after it completes',
+      v_current_version, v_master_version;
+  END IF;
 
   -- Material guards.
   SELECT id, name, unit, tier, COALESCE(is_asset, FALSE) AS is_asset
@@ -228,6 +251,8 @@ BEGIN
     'unit_price', p_unit_price,
     'note', p_note
   );
+  -- acknowledged_at = now(): nothing to acknowledge (warningCount 0); the row
+  -- records WHO added WHAT and WHEN, not a checklist sign-off.
   INSERT INTO plan_revisions
     (project_id, old_ahs_version_id, new_ahs_version_id, published_by, acknowledged_at, summary)
   VALUES (p_project_id, v_version_id, v_version_id, v_uid, now(), v_summary)
@@ -258,6 +283,7 @@ BEGIN
   v_body := format('Material baru ditambahkan ke rencana: %s %s %s', v_mat.name, v_qty_text, v_mat.unit);
   BEGIN
     PERFORM notify_plan_revised(p_project_id, v_revision_id, v_body, 0);
+    v_notified := TRUE;
   EXCEPTION WHEN OTHERS THEN
     RAISE WARNING 'add_project_material_line: notify_plan_revised failed: %', SQLERRM;
   END;
@@ -271,7 +297,8 @@ BEGIN
     'tier', v_mat.tier,
     'planned_after', p_planned_qty,
     'price_book_written', v_pb_result,
-    'snapshot_written', v_snap_written
+    'snapshot_written', v_snap_written,
+    'notified', v_notified
   );
 END;
 $$;
@@ -290,6 +317,19 @@ GRANT EXECUTE ON FUNCTION add_project_material_line(UUID, UUID, NUMERIC, NUMERIC
 --    EXPECTED: no rows. If any appear, they are publish-era duplicates; merge
 --    them (sum planned_quantity into one row, delete the rest) before pasting.
 --
+-- 0b. BEFORE PASTING — no live project may already sit in the state this RPC
+--     refuses as ADD_LINE_PUBLISH_IN_PROGRESS (current version ≠ latest master):
+--      SELECT lm.project_id, lm.ahs_version_id AS master_version, v.id AS current_version
+--      FROM (
+--        SELECT DISTINCT ON (project_id) project_id, id, ahs_version_id
+--        FROM project_material_master
+--        ORDER BY project_id, created_at DESC, id DESC
+--      ) lm
+--      JOIN ahs_versions v ON v.project_id = lm.project_id AND v.is_current
+--      WHERE v.id <> lm.ahs_version_id;
+--    EXPECTED: no rows. A row is an interrupted publish — re-publish that
+--    project from its master file before estimators use this button on it.
+--
 -- Run the rest AFTER pasting.
 --
 -- 1. Index exists:
@@ -307,7 +347,12 @@ GRANT EXECUTE ON FUNCTION add_project_material_line(UUID, UUID, NUMERIC, NUMERIC
 --      SELECT add_project_material_line(
 --        '<PROJECT_UUID>'::uuid, '<TIER3_MATERIAL_UUID>'::uuid, 1, 2500000, 'self-check');
 --    EXPECTED: jsonb with price_book_written = 'inserted' (or 'updated'),
---    snapshot_written true unless the material had a prior baseline.
+--    snapshot_written true unless the material had a prior baseline, notified true.
+--
+-- 3b. The supervisor notification landed:
+--      SELECT type, title FROM notifications
+--      WHERE related_entity_id = '<REVISION_ID_FROM_STEP_3>'::uuid;
+--    EXPECTED: one PLAN_REVISED row per supervisor member of the project.
 --
 -- 4. The line is visible to the envelope view immediately:
 --      SELECT total_planned FROM v_material_envelopes
