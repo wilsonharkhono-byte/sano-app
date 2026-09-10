@@ -3390,16 +3390,20 @@ Expected: `assetlinks.json`. If the directory is missing, the `public/` conventi
 // a supervisor lands on the room itself, office and principal land on a
 // read-only detail. Spec §8.
 //
-// Only the routes that need a path are declared. React Navigation leaves the
-// rest path-less, which is exactly right: this app had no linking config at all
-// before, and declaring every tab would start rewriting the web address bar for
-// screens nobody links to.
+// Only the routes that need a path are declared. React Navigation 6 does NOT
+// leave the others path-less: its getPathFromState falls back to the route
+// name, so switching tabs on web would rewrite the address bar to /Permintaan,
+// /Home and so on (verified 2026-09-10 against @react-navigation/core 6.4.17).
+// This app had no linking config before, so its address bar never changed. The
+// getPathFromState override below keeps it that way for every route that is not
+// a declared, non-root link.
 //
 // Cold start before login: App.tsx renders LoginScreen and mounts no
 // NavigationContainer, so the URL is not consumed. On web it stays in the
 // address bar and resolves when the container mounts after sign-in; on native
 // Linking.getInitialURL() still returns it at that point. No extra machinery.
 
+import { getPathFromState as defaultGetPathFromState } from '@react-navigation/native';
 import type { LinkingOptions } from '@react-navigation/native';
 import { ROOM_LINK_HTTPS_PREFIX, ROOM_LINK_SCHEME_PREFIX } from '../tools/roomLinks';
 
@@ -3408,12 +3412,32 @@ export const LINKING_PREFIXES = [ROOM_LINK_HTTPS_PREFIX, ROOM_LINK_SCHEME_PREFIX
 /** The path pattern every container maps to its own room screen. */
 export const ROOM_PATH = 'r/:projectCode/:roomCode';
 
+type NavState = Parameters<typeof defaultGetPathFromState>[0];
+type PathOptions = Parameters<typeof defaultGetPathFromState>[1];
+
+/** Name of the deepest focused route, walking nested navigator state. */
+export function focusedRouteName(state: NavState | undefined): string | undefined {
+  let current: any = state;
+  let name: string | undefined;
+  while (current && Array.isArray(current.routes) && current.routes.length > 0) {
+    const route = current.routes[current.index ?? current.routes.length - 1];
+    name = route.name;
+    current = route.state;
+  }
+  return name;
+}
+
 export function buildLinking<T extends object>(
   screens: Record<string, string>,
 ): LinkingOptions<T> {
+  const linked = new Set(Object.keys(screens).filter((name) => screens[name] !== ''));
   return {
     prefixes: [...LINKING_PREFIXES],
     config: { screens },
+    getPathFromState(state: NavState, options?: PathOptions) {
+      const leaf = focusedRouteName(state);
+      return leaf !== undefined && linked.has(leaf) ? defaultGetPathFromState(state, options) : '/';
+    },
   } as LinkingOptions<T>;
 }
 ```
@@ -4196,6 +4220,18 @@ describe('getStateFromPath - the printed URL resolves per role', () => {
     expect(getStateFromPath('/r/GA17', buildLinking(SUPERVISOR).config)).toBeUndefined();
   });
 });
+
+describe('getPathFromState - the web address bar only carries declared links', () => {
+  // Without the override React Navigation writes /Permintaan, /Home ... into
+  // the address bar on every tab switch. Before this plan the bar never changed.
+  it('keeps the room path and sends every undeclared tab to the root', () => {
+    const linking = buildLinking(SUPERVISOR);
+    const room = { index: 0, routes: [{ name: 'Room', params: { projectCode: 'GA17', roomCode: 'L2-KM' } }] };
+    const tab  = { index: 0, routes: [{ name: 'Permintaan' }] };
+    expect(linking.getPathFromState!(room as any, linking.config as any)).toBe('/r/GA17/L2-KM');
+    expect(linking.getPathFromState!(tab as any, linking.config as any)).toBe('/');
+  });
+});
 ```
 
 - [ ] **Step 2: Note the ordering, honestly**
@@ -4215,7 +4251,7 @@ disagree; fix the config, not the test.
 npx jest workflows/__tests__/linking.test.ts
 ```
 
-Expected: `Tests: 8 passed, 8 total`. If `getStateFromPath` is undefined on your installed version, drop the second describe block to config-shape assertions only and note the version in the commit body - do not silently weaken the first block too.
+Expected: `Tests: 9 passed, 9 total`. If `getStateFromPath` is undefined on your installed version, drop the second describe block to config-shape assertions only and note the version in the commit body - do not silently weaken the first block too.
 
 - [ ] **Step 4: Commit**
 
