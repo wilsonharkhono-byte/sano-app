@@ -2906,7 +2906,7 @@ export default function RoomsAdminScreen() {
               ) : (
                 <Text style={styles.hint}>
                   Fase saat ini: {PROJECT_PHASES.find((p) => p.value === project.phase)?.label ?? project.phase}.
-                  {'\n'}Hanya admin atau prinsipal yang dapat mengubahnya.
+                  {'\n'}Hanya admin, prinsipal, atau estimator yang ditugaskan ke proyek ini yang dapat mengubahnya.
                 </Text>
               )}
             </Card>
@@ -3288,8 +3288,8 @@ feat(office): Kelola ruangan + Kelola gerbang
 
 Rooms grouped by floor with a live code preview, a paste importer that names
 every line it drops, per-room active toggle, A4 label printing, DATUM JSON
-export, and the project phase picker - shown read-only to estimators, because
-projects UPDATE is admin/principal only (036:73-76).
+export, and the project phase picker for office roles. setProjectPhase reads the
+row back, because RLS silently filters an update by an unassigned estimator.
 
 Gate codes are displayed read-only; only labels, descriptions, order and the
 active flag are editable, matching the 096 trigger.
@@ -4438,10 +4438,10 @@ Read this plan once more against the spec before starting, and check these speci
 **Deviations from the spec, all deliberate and recorded in-plan:**
 
 1. **`qrcode` instead of `react-native-qrcode-svg`** (task 8). The label sheet is an HTML string handed to `window.print()`, not a React tree. Spec §8's dependency list should be amended.
-2. **Project phase is admin/principal only, read-only for estimators** (tasks 7 and 9). Spec §9 says "Project phase is set from the same office area" without naming a role; `projects` UPDATE is gated on `is_office_manager()` (`036:73-76`), which excludes estimators. Rather than widen a policy that guards project metadata generally, the picker is shown read-only and `setProjectPhase` reads the row back so an estimator cannot be told a change happened that did not.
+2. **Project phase is set by office roles, enforced by the database** (tasks 7 and 9). `projects` UPDATE passes for admin and principal on any project (`036:73-76`) and for an admin, principal or estimator assigned to the project (`023:58-60`, widened by `037`). The picker is offered to all three office roles, and `setProjectPhase` reads the row back so a user whose update RLS filtered is told the truth. Corrected by the orchestrator on 2026-09-10; the first draft said admin and principal only.
 3. **No "Ruangan" tab for principal** (task 9 step 5). Spec §9 wants one for principal too, but that tab is the Papan Ruangan board, which is plan 4. Principal gets the hidden `RoomDetail` route now so a scanned label resolves in that role.
 4. **`useProject` needed no query change** (task 7 step 4). The spec implies wiring; the hook already does `select('*')`. Only the comment changes, so the next reader does not narrow it.
-5. **Linking config declares only the routes that need paths.** Declaring every tab would start rewriting web URLs for screens nobody deep-links to. Root and the new routes are enough.
+5. **Linking config declares only the routes that need paths, and overrides `getPathFromState`.** React Navigation 6 falls back to route names for undeclared routes, so without the override every tab switch would rewrite the web address bar. The override keeps the bar at `/` except for declared links (task 10 step 6, tested in task 12). Corrected by the orchestrator on 2026-09-10.
 
 **Things to check while executing:**
 
