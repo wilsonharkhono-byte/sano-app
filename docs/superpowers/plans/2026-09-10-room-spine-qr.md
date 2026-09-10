@@ -10,9 +10,9 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-10-room-site-events-design.md` (sections 2, 4.1, 8, 9, 13, 14, 16, 18).
 
-**Branch and working tree:** `feat/room-site-events`, already checked out in the MAIN working tree at `/Users/carissatjondro/Dropbox/AI/Claude Code`. This is **not** a git worktree, so the `/.claude/worktrees/` entry in the repo's `testPathIgnorePatterns` does not bite: plain `npx jest <path>` finds tests normally. Do not create a worktree for this plan.
+**Branch and working tree:** `feat/room-site-events`, checked out in the git worktree `/Users/carissatjondro/Dropbox/AI/Claude Code/.claude/worktrees/room-site-events`. The main tree stays on `main`. Because that path contains `/.claude/worktrees/`, the repo's `testPathIgnorePatterns` would hide every test, so every `npx jest <path>` in this plan must be run as `npx jest <path> --testPathIgnorePatterns='/node_modules/' '__tests__/fixtures\.ts$' '__tests__/_serverGateHarness\.ts$' 'supabase/functions/' 'tmp/'`. Never set `ALLOW_PROD_DB_TESTS`. Never apply a migration to the live database; migrations are pasted by the user.
 
-**Commit identity:** the repo's commits are authored by `Test User <test@example.com>`, which is already the configured git user here - a plain `git commit` is correct. End every commit message with the trailer line `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+**Commit identity:** the repo's commits are authored by `Test User <test@example.com>`, which is already the configured git user here - a plain `git commit` is correct. End every commit message with the trailer line `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
 
 ---
 
@@ -262,7 +262,7 @@ test fixtures copied so a drift on either side fails here. isValidRoomCode
 mirrors the CHECK migration 096 will add, including the case where the
 40-character slice leaves a trailing dash.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -525,7 +525,7 @@ suffix check would accept sano-app.vercel.app.evil.com), both accepted
 prefixes, and null for everything else so callers can give the spec §8 refusal
 instead of a silent no-op.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1203,7 +1203,7 @@ Static guards in tools/__tests__/migration096.test.ts, in the 092 style - the
 SQL text is the artifact, since the remote history is divergent and this file
 is pasted into the Dashboard by hand.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -1369,7 +1369,7 @@ feat(types): Room, GateRef, GateStepRef, ProjectPhase, AreaType
 Project gains the two 096 columns. AreaType is DATUM's nine values verbatim:
 the release-2 link upserts on it, so a tenth value has to exist in DATUM first.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -1814,7 +1814,7 @@ the fix is deactivate-and-recreate, after printing the database refuses (096).
 parseRoomPaste warns by line number for every line it drops - a room missing
 from an import is a room with no label and no events.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -1979,7 +1979,7 @@ feat(gates): read and edit gate_refs / gate_step_refs, chip labels
 The client refuses a `code` in a patch before the 096 trigger has to, so the
 user reads an Indonesian sentence instead of a Postgres exception.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -2137,7 +2137,7 @@ projects UPDATE is admin/principal only (036:73-76). RLS filters rather than
 raises, so an estimator's update returns zero rows with error null. Read the
 row back and report the refusal instead of a success that did not happen.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -2411,7 +2411,7 @@ qrcode + @types/qrcode.
 Printing stamps qr_printed_at, which freezes room_code (096) - a printed label
 is a physical object.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -3201,7 +3201,7 @@ projects UPDATE is admin/principal only (036:73-76).
 Gate codes are displayed read-only; only labels, descriptions, order and the
 active flag are editable, matching the 096 trigger.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -4104,7 +4104,7 @@ Release 1 stops at the room header and an empty state; capture is plan 2.
 The scanner falls back to a searchable picker on web and whenever camera
 permission is refused, so a missing or damaged label never blocks anyone.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -4217,7 +4217,7 @@ Asserts against getStateFromPath with the real config, not just the object
 shape: a drift in one container's screen map would otherwise only surface as a
 label that silently does nothing for that role.
 
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -4320,4 +4320,4 @@ Read this plan once more against the spec before starting, and check these speci
 - `tools/constants.ts` gains an `import type` from `tools/types.ts`, which type-imports from `constants.ts`. The cycle is type-only and erased at compile time, so there is no runtime cycle; if the TS version in use complains, invert it by declaring `ProjectPhase` and `AreaType` in `constants.ts` and re-exporting from `types.ts`, the way `UserRole` is already handled at `tools/types.ts:21`.
 - `ROOM_CODE_MAX` appears in four places by design: `tools/roomCodes.ts`, the CHECK in 096, the form hint, and the paste-import warning. If DATUM ever changes the slice, all four move together.
 - The `Room` route's `projectCode` is compared case-insensitively against `projects.code`; `parseRoomUrl` trims it but does not uppercase it, because project codes are the estimator's own strings.
-- Every commit message ends with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+- Every commit message ends with `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
