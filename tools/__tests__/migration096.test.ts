@@ -8,6 +8,13 @@
  *  • The room_code CHECK and the freeze trigger: a printed QR is a physical
  *    object. If the code behind it can move, the label lies, and the release-2
  *    DATUM join on (project_code, room_code) breaks with it.
+ *  • rooms is created in 035's exact shape when absent, BEFORE the first
+ *    ALTER TABLE rooms: 035 may never have landed on the divergent remote, and
+ *    an ALTER against a missing table aborts the paste.
+ *  • Members read rooms; only office roles write them. 035's member INSERT and
+ *    UPDATE policies are dropped and never re-created, because the freeze
+ *    trigger alone does not stop a supervisor renaming, retiring or stamping a
+ *    room.
  *  • The NOT VALID + conditional VALIDATE dance: 035-era rooms may hold codes
  *    that violate the new shape. A re-paste must REPORT them, not abort the
  *    whole script half-applied.
@@ -61,6 +68,17 @@ describe('migration 096 §1 - projects.phase', () => {
 });
 
 describe('migration 096 §2 - rooms', () => {
+  it("creates rooms in 035's shape when absent, before the first ALTER", () => {
+    expect(SQL).toContain('CREATE TABLE IF NOT EXISTS rooms (');
+    expect(SQL).toContain('CREATE UNIQUE INDEX IF NOT EXISTS idx_rooms_project_code');
+    // An ALTER against a missing table would abort the paste on a remote that
+    // never received 035, so the CREATE has to come first.
+    const create = SQL.search(/^CREATE TABLE IF NOT EXISTS rooms \(/m);
+    const firstAlter = SQL.search(/^ALTER TABLE rooms\b/m);
+    expect(create).toBeGreaterThan(-1);
+    expect(create).toBeLessThan(firstAlter);
+  });
+
   it('adds every DATUM-shaped column idempotently', () => {
     for (const col of ['area_type', 'sort_order', 'datum_area_id', 'qr_printed_at', 'active', 'created_by']) {
       expect(SQL).toMatch(new RegExp(`ALTER TABLE rooms\\s+ADD COLUMN IF NOT EXISTS ${col}\\b`));
@@ -96,10 +114,16 @@ describe('migration 096 §2 - rooms', () => {
     expect(SQL).toMatch(/OLD\.qr_printed_at IS NOT NULL AND NEW\.qr_printed_at IS NULL/);
   });
 
-  it('re-asserts the member and office policies with a DROP first', () => {
+  it('lets members read rooms and only office roles write them', () => {
     expect(SQL).toMatch(/DROP POLICY IF EXISTS rooms_member_read\s+ON rooms;/);
+    expect(SQL).toMatch(/CREATE POLICY rooms_member_read\s+ON rooms FOR SELECT USING \(is_project_member\(project_id\)\)/);
     expect(SQL).toMatch(/DROP POLICY IF EXISTS rooms_office_all\s+ON rooms;/);
     expect(SQL).toMatch(/CREATE POLICY rooms_office_all\s+ON rooms\s+FOR ALL/);
+    // 035's member write policies are dropped and never re-created.
+    expect(SQL).toContain('DROP POLICY IF EXISTS rooms_member_insert');
+    expect(SQL).toContain('DROP POLICY IF EXISTS rooms_member_update');
+    expect(SQL).not.toMatch(/CREATE\s+POLICY\s+"?rooms_member_insert\b/i);
+    expect(SQL).not.toMatch(/CREATE\s+POLICY\s+"?rooms_member_update\b/i);
   });
 });
 

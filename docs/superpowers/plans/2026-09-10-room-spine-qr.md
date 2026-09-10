@@ -551,7 +551,7 @@ grep -n "'rooms'" supabase/migrations/036_office_global_project_access.sql
 sed -n '84,99p' supabase/migrations/050_client_progress_report.sql
 ```
 
-Expected: `rooms` exists from 035 with `id, project_id, room_code, room_name, floor, area_sqm, created_at` and a unique index on `(project_id, room_code) WHERE room_code IS NOT NULL`; `rooms` RLS at 035:266-274 is member-scoped; `projects.code TEXT NOT NULL UNIQUE` at 001:49; `is_office_role()` is defined at 036:33-45; `rooms` is in 036's office-widening table list (so an `rooms_office_all` FOR ALL policy already exists); 050:85-98 is the "inline the helper defensively with CREATE OR REPLACE" pattern this migration copies. If `rooms` is missing on your checkout, stop - 035 is a prerequisite and this migration assumes it.
+Expected: `rooms` exists from 035 with `id, project_id, room_code, room_name, floor, area_sqm, created_at` and a unique index on `(project_id, room_code) WHERE room_code IS NOT NULL`; `rooms` RLS at 035:266-274 lets any project member read, insert and update - 096 keeps the member read policy and drops the two member write policies, because office roles author rooms (spec decision 2, §9 "Kelola ruangan"); `projects.code TEXT NOT NULL UNIQUE` at 001:49; `is_office_role()` is defined at 036:33-45; `rooms` is in 036's office-widening table list (so a `rooms_office_all` FOR ALL policy already exists wherever 035 landed); 050:85-98 is the "inline the helper defensively with CREATE OR REPLACE" pattern this migration copies. 035 is not a hard prerequisite: it may never have landed on the divergent remote (the reason 050 and 051 inline its helpers), so 096 creates `rooms` in 035's exact shape when absent, a no-op where 035 landed.
 
 - [ ] **Step 2: Write the failing static guard test**
 
@@ -568,6 +568,13 @@ Create `tools/__tests__/migration096.test.ts`:
  *  • The room_code CHECK and the freeze trigger: a printed QR is a physical
  *    object. If the code behind it can move, the label lies, and the release-2
  *    DATUM join on (project_code, room_code) breaks with it.
+ *  • rooms is created in 035's exact shape when absent, BEFORE the first
+ *    ALTER TABLE rooms: 035 may never have landed on the divergent remote, and
+ *    an ALTER against a missing table aborts the paste.
+ *  • Members read rooms; only office roles write them. 035's member INSERT and
+ *    UPDATE policies are dropped and never re-created, because the freeze
+ *    trigger alone does not stop a supervisor renaming, retiring or stamping a
+ *    room.
  *  • The NOT VALID + conditional VALIDATE dance: 035-era rooms may hold codes
  *    that violate the new shape. A re-paste must REPORT them, not abort the
  *    whole script half-applied.
@@ -621,6 +628,17 @@ describe('migration 096 §1 - projects.phase', () => {
 });
 
 describe('migration 096 §2 - rooms', () => {
+  it("creates rooms in 035's shape when absent, before the first ALTER", () => {
+    expect(SQL).toContain('CREATE TABLE IF NOT EXISTS rooms (');
+    expect(SQL).toContain('CREATE UNIQUE INDEX IF NOT EXISTS idx_rooms_project_code');
+    // An ALTER against a missing table would abort the paste on a remote that
+    // never received 035, so the CREATE has to come first.
+    const create = SQL.search(/^CREATE TABLE IF NOT EXISTS rooms \(/m);
+    const firstAlter = SQL.search(/^ALTER TABLE rooms\b/m);
+    expect(create).toBeGreaterThan(-1);
+    expect(create).toBeLessThan(firstAlter);
+  });
+
   it('adds every DATUM-shaped column idempotently', () => {
     for (const col of ['area_type', 'sort_order', 'datum_area_id', 'qr_printed_at', 'active', 'created_by']) {
       expect(SQL).toMatch(new RegExp(`ALTER TABLE rooms\\s+ADD COLUMN IF NOT EXISTS ${col}\\b`));
@@ -656,10 +674,16 @@ describe('migration 096 §2 - rooms', () => {
     expect(SQL).toMatch(/OLD\.qr_printed_at IS NOT NULL AND NEW\.qr_printed_at IS NULL/);
   });
 
-  it('re-asserts the member and office policies with a DROP first', () => {
+  it('lets members read rooms and only office roles write them', () => {
     expect(SQL).toMatch(/DROP POLICY IF EXISTS rooms_member_read\s+ON rooms;/);
+    expect(SQL).toMatch(/CREATE POLICY rooms_member_read\s+ON rooms FOR SELECT USING \(is_project_member\(project_id\)\)/);
     expect(SQL).toMatch(/DROP POLICY IF EXISTS rooms_office_all\s+ON rooms;/);
     expect(SQL).toMatch(/CREATE POLICY rooms_office_all\s+ON rooms\s+FOR ALL/);
+    // 035's member write policies are dropped and never re-created.
+    expect(SQL).toContain('DROP POLICY IF EXISTS rooms_member_insert');
+    expect(SQL).toContain('DROP POLICY IF EXISTS rooms_member_update');
+    expect(SQL).not.toMatch(/CREATE\s+POLICY\s+"?rooms_member_insert\b/i);
+    expect(SQL).not.toMatch(/CREATE\s+POLICY\s+"?rooms_member_update\b/i);
   });
 });
 
@@ -802,13 +826,25 @@ Create `supabase/migrations/096_rooms_gates_phase.sql`:
 --   1. room_code shape. Codes are produced client-side by normalizeRoomCode
 --      (tools/roomCodes.ts), a verbatim port of DATUM's normalizeAreaCode, and
 --      the CHECK here is the same rule in SQL. It is added NOT VALID and then
---      VALIDATEd only when no existing row violates it: rooms has existed since
---      035 and may hold free-text codes. A re-paste against dirty data must
+--      VALIDATEd only when no existing row violates it: where 035 landed, rooms
+--      may already hold free-text codes. A re-paste against dirty data must
 --      REPORT the offending rows, not abort the script half-applied.
 --   2. Code freeze. Once qr_printed_at is stamped, the code is behind a printed
 --      physical label; a trigger refuses to move it. Names, floor and type stay
 --      editable. To fix a mistyped code before printing, deactivate the room and
 --      create it again - the app offers no rename path either.
+--
+-- ROOMS DO NOT REQUIRE 035. 035 created rooms, but it may never have been
+-- applied on the divergent remote (the reason 050 and 051 inline its helpers),
+-- and no app code reads or writes rooms, so nothing proves the table exists
+-- live. §2 therefore creates it in 035's exact shape when absent; where 035
+-- landed that is a no-op.
+--
+-- WHO WRITES ROOMS. Office roles author rooms; supervisors scan and read (spec
+-- decision 2, §9 "Kelola ruangan"). 035 also let every project member insert
+-- and update rooms. This file drops those two policies without re-creating
+-- them, so a member keeps SELECT only and office roles write through
+-- rooms_office_all.
 --
 -- WHY THE GATES CANNOT BE DELETED. site_events.gate_code (migration 097) is a
 -- foreign key to gate_refs(code). A deleted-and-reused letter would silently
@@ -819,15 +855,18 @@ Create `supabase/migrations/096_rooms_gates_phase.sql`:
 -- WHAT THIS FILE DOES NOT DO. It creates no "Area Umum" room. A database
 -- trigger would fire for every historical project and every test fixture; the
 -- app creates it on first room setup, where a human can see it happen
--- (spec §4.1). It also does not widen projects UPDATE: setting the phase stays
--- with is_office_manager() (036:73-76), i.e. admin and principal only.
+-- (spec §4.1). It also does not widen projects UPDATE: the phase is writable by
+-- whoever can already update a project - is_office_manager() on any project
+-- (036:73-76), plus an admin, principal or estimator ASSIGNED to it through
+-- projects_update_assigned (023:58-60, widened to estimators by 037). No
+-- column-level guard restricts phase to managers.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- 0. Helpers, inlined defensively (the 050:85-98 / 051:12-31 pattern)
---    Both already exist (035, 036). CREATE OR REPLACE with the identical body
---    is a no-op where they do, and makes this file order-independent where a
---    divergent remote never received 035.
+--    Both already exist where 035 and 036 landed, and CREATE OR REPLACE with
+--    the identical body is a no-op there. Together with the rooms table that
+--    §2 creates when absent, this keeps the file independent of 035.
 -- ───────────────────────────────────────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION is_office_role()
@@ -880,8 +919,26 @@ BEGIN
 END $$;
 
 -- ───────────────────────────────────────────────────────────────────────────
--- 2. rooms - extend the 035 table into DATUM's area shape
+-- 2. rooms - the 035 table, created here if absent, extended into DATUM's
+--    area shape
 -- ───────────────────────────────────────────────────────────────────────────
+
+-- 035's definition verbatim (035:40-52). Where 035 landed, all three statements
+-- are no-ops; on a remote that never received 035 they create the table the
+-- ALTERs below extend, instead of letting the first ALTER abort the paste.
+CREATE TABLE IF NOT EXISTS rooms (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  room_code   TEXT,
+  room_name   TEXT NOT NULL,
+  floor       TEXT,
+  area_sqm    NUMERIC,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_rooms_project ON rooms(project_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rooms_project_code
+  ON rooms(project_id, room_code) WHERE room_code IS NOT NULL;
 
 ALTER TABLE rooms
   ADD COLUMN IF NOT EXISTS area_type     TEXT NOT NULL DEFAULT 'general';
@@ -991,18 +1048,20 @@ CREATE TRIGGER rooms_freeze_code_trg
   BEFORE UPDATE ON rooms
   FOR EACH ROW EXECUTE FUNCTION rooms_freeze_code();
 
--- RLS. 035:266-274 gave rooms member-scoped policies and 036 added the office
--- FOR ALL policy through its table loop. Both are re-asserted here so this file
--- is self-contained; the definitions are identical, so this is a no-op where
--- they already exist.
+-- RLS. Members read, office roles write (header, WHO WRITES ROOMS). The member
+-- read policy (035:267-268) and the office FOR ALL policy (036's table loop)
+-- are re-asserted with identical definitions, a no-op where they exist. 035's
+-- rooms_office_delete is left as it is; rooms_office_all already covers DELETE.
 ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS rooms_member_read   ON rooms;
 CREATE POLICY rooms_member_read   ON rooms FOR SELECT USING (is_project_member(project_id));
+
+-- No member writes. Office roles author rooms, and the freeze trigger alone does
+-- not stop a member from renaming, retiring or stamping a room.
 DROP POLICY IF EXISTS rooms_member_insert ON rooms;
-CREATE POLICY rooms_member_insert ON rooms FOR INSERT WITH CHECK (is_project_member(project_id));
 DROP POLICY IF EXISTS rooms_member_update ON rooms;
-CREATE POLICY rooms_member_update ON rooms FOR UPDATE USING (is_project_member(project_id)) WITH CHECK (is_project_member(project_id));
+
 DROP POLICY IF EXISTS rooms_office_all   ON rooms;
 CREATE POLICY rooms_office_all   ON rooms FOR ALL USING (is_office_role()) WITH CHECK (is_office_role());
 
@@ -1123,7 +1182,8 @@ DROP POLICY IF EXISTS gate_step_refs_office_update ON gate_step_refs;
 CREATE POLICY gate_step_refs_office_update ON gate_step_refs FOR UPDATE USING (is_office_role()) WITH CHECK (is_office_role());
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- SELF-CHECK (run after pasting; none of these writes anything)
+-- SELF-CHECK (run after pasting). Steps 1-8 change nothing (7 and 8 are meant
+-- to abort); steps 9-11 edit a gate label and a TEST room, then re-paste.
 --
 -- 1. Columns landed:
 --      SELECT column_name, data_type, is_nullable, column_default
@@ -1132,37 +1192,44 @@ CREATE POLICY gate_step_refs_office_update ON gate_step_refs FOR UPDATE USING (i
 --        ('area_type','sort_order','datum_area_id','qr_printed_at','active','created_by');
 --    EXPECTED: six rows.
 --
--- 2. Phase defaulted for every existing project:
+-- 2. Rooms policies - members read, office roles write:
+--      SELECT policyname, cmd FROM pg_policies WHERE tablename = 'rooms' ORDER BY 1;
+--    EXPECTED: rooms_member_read (SELECT) and rooms_office_all (ALL), plus
+--    rooms_office_delete (DELETE) where 035 landed. No member insert or update
+--    policy.
+--
+-- 3. Phase defaulted for every existing project:
 --      SELECT phase, count(*) FROM projects GROUP BY 1;
 --    EXPECTED: one row, STRUKTUR, = the project count.
 --
--- 3. The room_code CHECK is VALID (not merely present):
+-- 4. The room_code CHECK is VALID (not merely present):
 --      SELECT conname, convalidated FROM pg_constraint
 --      WHERE conname IN ('rooms_room_code_shape','rooms_area_type_check','projects_phase_check');
 --    EXPECTED: three rows, convalidated = true. A false on rooms_room_code_shape
 --    means the RAISE WARNING above fired - fix those codes and VALIDATE by hand.
 --
--- 4. Gates seeded:
+-- 5. Gates seeded:
 --      SELECT code, short_label, active FROM gate_refs ORDER BY sort_order;
 --    EXPECTED: eight rows, A..H, all active.
 --
--- 5. Step table exists and is empty:
+-- 6. Step table exists and is empty:
 --      SELECT count(*) FROM gate_step_refs;
 --    EXPECTED: 0.
 --
--- 6. A code cannot be deleted:
+-- 7. A code cannot be deleted:
 --      DELETE FROM gate_refs WHERE code = 'H';
 --    EXPECTED: ERROR  GATE_REF_IMMUTABLE: ...  (run it; it is safe, it aborts.)
 --
--- 7. A code cannot be moved:
+-- 8. A code cannot be moved:
 --      UPDATE gate_refs SET code = 'Z' WHERE code = 'H';
 --    EXPECTED: ERROR  GATE_REF_IMMUTABLE: ...
 --
--- 8. A label CAN be edited:
---      UPDATE gate_refs SET short_label = 'Serah Terima' WHERE code = 'H';
+-- 9. A label CAN be edited (use a value that differs from the seed, so step 11
+--    can tell an edit that survived from a seed that overwrote it):
+--      UPDATE gate_refs SET short_label = 'Serah Terima (uji)' WHERE code = 'H';
 --    EXPECTED: UPDATE 1.
 --
--- 9. The freeze trigger bites only after printing (on a TEST room):
+-- 10. The freeze trigger bites only after printing (on a TEST room):
 --      UPDATE rooms SET qr_printed_at = now() WHERE id = '<TEST_ROOM_UUID>';
 --      UPDATE rooms SET room_code = 'LAIN' WHERE id = '<TEST_ROOM_UUID>';
 --    EXPECTED: ERROR  ROOM_CODE_FROZEN: ...
@@ -1171,8 +1238,11 @@ CREATE POLICY gate_step_refs_office_update ON gate_step_refs FOR UPDATE USING (i
 --      UPDATE rooms SET room_name = 'Nama Baru' WHERE id = '<TEST_ROOM_UUID>';
 --    EXPECTED: UPDATE 1.
 --
--- 10. Re-paste this whole file.
---    EXPECTED: no error; the gate labels edited in step 8 are unchanged.
+-- 11. Re-paste this whole file.
+--    EXPECTED: no error, and the step-9 edit survived:
+--      SELECT short_label FROM gate_refs WHERE code = 'H';
+--    EXPECTED: 'Serah Terima (uji)'. Then restore the seed label:
+--      UPDATE gate_refs SET short_label = 'Serah Terima' WHERE code = 'H';
 -- ═══════════════════════════════════════════════════════════════════════════
 ```
 
@@ -1182,7 +1252,7 @@ CREATE POLICY gate_step_refs_office_update ON gate_step_refs FOR UPDATE USING (i
 npx jest tools/__tests__/migration096.test.ts
 ```
 
-Expected: all describe blocks green. If `§7 pins search_path` fails, one of the four functions is missing `SET search_path = public` - add it rather than relaxing the assertion; an unpinned `SECURITY DEFINER` function is a search-path hijack.
+Expected: all describe blocks green, `Tests: 25 passed, 25 total`. If `§7 pins search_path` fails, one of the four functions is missing `SET search_path = public` - add it rather than relaxing the assertion; an unpinned `SECURITY DEFINER` function is a search-path hijack.
 
 - [ ] **Step 6: Paste the migration in the Supabase Dashboard**
 
@@ -1191,7 +1261,7 @@ This is a **user-run step**, not an agent step. Hand the user the file and the s
 1. Open the Supabase Dashboard SQL editor for project `ufntlqvacjhmddwltcxf`.
 2. Paste the whole of `supabase/migrations/096_rooms_gates_phase.sql` and run it.
 3. Read the NOTICE / WARNING output. A `rooms_room_code_shape left NOT VALID` warning means legacy rooms hold codes the new shape refuses - run the listed SELECT, fix or clear those codes, then run the `VALIDATE CONSTRAINT` line by hand.
-4. Run self-checks 1 to 10 from the file footer.
+4. Run self-checks 1 to 11 from the file footer. Self-check 2 must show no member insert or update policy on `rooms`.
 
 Nothing later in this plan reads `gate_refs` successfully until this paste lands, so do it before task 6.
 
@@ -1205,6 +1275,9 @@ feat(db): 096 - rooms in DATUM shape, gate reference data, project phase
 rooms gains area_type/sort_order/qr_printed_at/active/datum_area_id, a
 room_code shape CHECK added NOT VALID and validated only when the table is
 clean, and a trigger that freezes the code once a QR label has been printed.
+rooms is created in 035's exact shape when absent, since 035 may never have
+landed on the divergent remote. Members keep SELECT only: 035's member INSERT
+and UPDATE policies are dropped, because office roles author rooms.
 gate_refs seeds A..H with Indonesian descriptions the release-2 prompt will
 read; gate_step_refs ships empty. Both reference tables refuse DELETE and
 refuse to move `code`, because site_events.gate_code will be a foreign key and
