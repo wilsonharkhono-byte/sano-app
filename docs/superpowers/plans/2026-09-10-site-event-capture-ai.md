@@ -122,7 +122,8 @@ Create `tools/__tests__/siteEventDraftValidate.test.ts`:
  *
  *  • a "quote" that is really a paraphrase (dropped, with the reason kept);
  *  • a VO suggestion with nothing to point at (downgraded to none);
- *  • a gate, step or related-event id the model invented (dropped);
+ *  • a gate, step or related-event id the model invented, or a real step
+ *    under another gate (dropped);
  *  • a cost estimate smuggled in as an extra key (dropped);
  *  • a confident answer built on a failed transcription (capped at medium).
  *
@@ -328,17 +329,30 @@ describe('codes come from the supplied lists only', () => {
     expect(r.dropped).toContainEqual({ field: 'step_code', reason: 'kode langkah tidak ada di daftar aktif', value: 'A9' });
   });
 
-  it('drops a real step that belongs to a different gate', () => {
+  // Migration 097 keys (gate_code, step_code) to gate_step_refs (gate_code, code),
+  // so every pair the validator lets through must be a pair the database accepts.
+  it('keeps a step that belongs to the chosen gate', () => {
+    const r = validateSiteEventDraft(raw({ gate_code: 'C', step_code: 'C1' }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.gate_code).toBe('C');
+    expect(r.draft.step_code).toBe('C1');
+    expect(r.dropped.map((d) => d.field)).not.toContain('step_code');
+  });
+
+  it('drops a real step that belongs to a different gate, and keeps the gate', () => {
     const r = validateSiteEventDraft(raw({ gate_code: 'A', step_code: 'C1' }), ctx());
     if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.gate_code).toBe('A');
     expect(r.draft.step_code).toBeNull();
     expect(r.dropped).toContainEqual({ field: 'step_code', reason: 'langkah bukan milik gerbang yang dipilih', value: 'C1' });
   });
 
-  it('drops a step when the gate itself was dropped', () => {
+  it('drops a step when the gate itself was dropped, and says why', () => {
     const r = validateSiteEventDraft(raw({ gate_code: 'Z', step_code: 'A2' }), ctx());
     if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.gate_code).toBeNull();
     expect(r.draft.step_code).toBeNull();
+    expect(r.dropped).toContainEqual({ field: 'step_code', reason: 'langkah dibuang: tidak ada gerbang yang valid', value: 'A2' });
   });
 
   it('keeps a related id only when it was in the supplied open-event list', () => {
@@ -484,6 +498,8 @@ Create `tools/siteEventDraftValidate.ts`:
 //     default with the reason recorded (vo.flag, due_suggestion, mismatch);
 //   - gate_code, step_code and related_open_event_id come from the lists the
 //     edge function supplied, never from the model's imagination;
+//   - step_code survives only under the gate_code that survived with it, the
+//     pair migration 097 keys to gate_step_refs (gate_code, code);
 //   - every evidence quote is a literal substring of the transcript or the
 //     typed note (case-insensitive, whitespace collapsed) and at least
 //     DRAFT_QUOTE_MIN_CHARS long, or it is dropped with a reason;
@@ -689,13 +705,17 @@ export function validateSiteEventDraft(
     else dropped.push({ field: 'gate_code', reason: 'kode gerbang tidak ada di daftar aktif', value: preview(gateCandidate) });
   }
 
-  // Step: in the active list AND under the gate that survived.
+  // Step: in the active list AND under the gate that survived. Migration 097
+  // keys (gate_code, step_code) to gate_step_refs (gate_code, code) and refuses
+  // a step without a gate, so a pair that passes here is one the database takes.
   let stepCode: string | null = null;
   const stepCandidate = codeField('step_code', raw.step_code, dropped);
   if (stepCandidate) {
     const step = ctx.steps.find((s) => s.code === stepCandidate);
     if (!step) {
       dropped.push({ field: 'step_code', reason: 'kode langkah tidak ada di daftar aktif', value: preview(stepCandidate) });
+    } else if (gateCode === null) {
+      dropped.push({ field: 'step_code', reason: 'langkah dibuang: tidak ada gerbang yang valid', value: preview(stepCandidate) });
     } else if (step.gate_code !== gateCode) {
       dropped.push({ field: 'step_code', reason: 'langkah bukan milik gerbang yang dipilih', value: preview(stepCandidate) });
     } else {
@@ -810,7 +830,7 @@ export function validateSiteEventDraft(
 npx jest tools/__tests__/siteEventDraftValidate.test.ts --testPathIgnorePatterns='/node_modules/' '__tests__/fixtures\.ts$' '__tests__/_serverGateHarness\.ts$' 'supabase/functions/' 'tmp/'
 ```
 
-Expected: `Tests: 34 passed, 34 total`. If the "keeps at most 5 quotes" case fails on the duplicate, check that de-duplication runs before the cap: `'Pipa AC'` must be silently skipped as a duplicate of `'pipa ac'`, not counted.
+Expected: `Tests: 35 passed, 35 total`. If the "keeps at most 5 quotes" case fails on the duplicate, check that de-duplication runs before the cap: `'Pipa AC'` must be silently skipped as a duplicate of `'pipa ac'`, not counted.
 
 - [ ] **Step 5: Commit**
 
@@ -822,10 +842,10 @@ feat(site-events): pure AI draft validator, the source of truth
 Every quote must be a literal substring of the transcript or the typed note
 (case-insensitive, whitespace collapsed, at least 4 characters); a VO
 suggestion whose quotes all drop is downgraded to none; gate, step and
-related-event ids must come from the supplied lists; unknown keys, a cost
-estimate among them, are dropped; a draft built on a failed transcription
-cannot claim high confidence. Every change is recorded in `dropped`, which
-is stored inside ai_draft.
+related-event ids must come from the supplied lists, and a step survives only
+under the gate that survived; unknown keys, a cost estimate among them, are
+dropped; a draft built on a failed transcription cannot claim high confidence.
+Every change is recorded in `dropped`, which is stored inside ai_draft.
 
 No imports on purpose: task 6 copies this file byte-for-byte into the Deno
 edge function and adds a jest guard against drift.
@@ -1169,6 +1189,7 @@ const input = (over: Partial<ConfirmInput> = {}): ConfirmInput => ({
   eventType: 'progres',
   gateCode: 'D',
   stepCode: null,
+  activeSteps: [{ code: 'B4', gate_code: 'B' }, { code: 'D2', gate_code: 'D' }],
   title: 'Keramik lantai selesai 60%',
   summary: '',
   ownerId: null,
@@ -1254,6 +1275,13 @@ describe('validateConfirmInput', () => {
 
   it('refuses a step without a gate', () => {
     expect(errorsOf(input({ gateCode: null, stepCode: 'B4' }))).toContain('Pilih gerbang sebelum memilih langkah.');
+  });
+
+  it('refuses a step that sits under another gate, and leaves a step it cannot see to the server', () => {
+    const msg = 'Langkah yang dipilih bukan bagian dari gerbang ini. Pilih ulang langkahnya.';
+    expect(errorsOf(input({ gateCode: 'D', stepCode: 'B4' }))).toContain(msg);
+    expect(errorsOf(input({ gateCode: 'B', stepCode: 'B4' }))).toEqual([]);
+    expect(errorsOf(input({ gateCode: 'D', stepCode: 'X9' }))).toEqual([]);
   });
 
   it('requires owner and due date for every actionable type', () => {
@@ -1465,6 +1493,12 @@ export interface ConfirmInput {
   eventType: SiteEventType | null;
   gateCode: string | null;
   stepCode: string | null;
+  /**
+   * The active steps the screen loaded (listGateStepRefs). Used only to refuse
+   * a step that sits under another gate; whether a step exists and is still
+   * active is confirm_site_event's call, because this list can be stale.
+   */
+  activeSteps: ReadonlyArray<{ code: string; gate_code: string }>;
   title: string;
   summary: string;
   ownerId: string | null;
@@ -1492,6 +1526,7 @@ export const CONFIRM_ERRORS = {
   summaryMax: `Ringkasan maksimal ${DRAFT_SUMMARY_MAX} karakter.`,
   impactMax: `Dampak lanjutan maksimal ${DRAFT_IMPACT_MAX} karakter.`,
   stepWithoutGate: 'Pilih gerbang sebelum memilih langkah.',
+  stepNotInGate: 'Langkah yang dipilih bukan bagian dari gerbang ini. Pilih ulang langkahnya.',
   ownerRequired: 'Pemilik wajib dipilih untuk isu, hambatan, cacat dan butuh keputusan.',
   dueRequired: 'Tenggat wajib diisi untuk isu, hambatan, cacat dan butuh keputusan.',
   dueFormat: 'Format tenggat harus YYYY-MM-DD.',
@@ -1518,6 +1553,11 @@ export function validateConfirmInput(input: ConfirmInput): ConfirmValidation {
   if (input.downstreamImpact.trim().length > DRAFT_IMPACT_MAX) errors.push(CONFIRM_ERRORS.impactMax);
 
   if (input.stepCode && !input.gateCode) errors.push(CONFIRM_ERRORS.stepWithoutGate);
+  else if (input.stepCode) {
+    // Migration 097's composite key refuses this pair anyway; say it in words first.
+    const step = input.activeSteps.find((s) => s.code === input.stepCode);
+    if (step && step.gate_code !== input.gateCode) errors.push(CONFIRM_ERRORS.stepNotInGate);
+  }
 
   if (isActionableType(input.eventType)) {
     if (!input.ownerId) errors.push(CONFIRM_ERRORS.ownerRequired);
@@ -1632,7 +1672,7 @@ export function canOfferManualAuthoring(ev: {
 npx jest tools/__tests__/siteEventRules.test.ts --testPathIgnorePatterns='/node_modules/' '__tests__/fixtures\.ts$' '__tests__/_serverGateHarness\.ts$' 'supabase/functions/' 'tmp/'
 ```
 
-Expected: `Tests: 30 passed, 30 total`. The "reports every problem at once" case expects exactly four errors for `cacat` with an empty title and an unacknowledged mismatch: owner, due date, title and mismatch.
+Expected: `Tests: 31 passed, 31 total`. The "reports every problem at once" case expects exactly four errors for `cacat` with an empty title and an unacknowledged mismatch: owner, due date, title and mismatch.
 
 - [ ] **Step 5: Commit**
 
@@ -1643,11 +1683,11 @@ feat(site-events): confirm rules, confidence-to-UI table, VO change-type mapping
 
 validateConfirmInput reports every problem at once in Indonesian: owner and due
 date for actionable types, 80/300 character limits, due date not in the past,
-a VO confirm only when a quote survived validation, and an explicit mismatch
-acknowledgement. confidenceUi is the spec §1.1 table; the VO checkbox is hidden
-whenever there is nothing to confirm. mapVoChangeType uses the human-confirmed
-type and exports its keyword lists so migration 097's static test can hold the
-SQL to the same words.
+a step under another gate, a VO confirm only when a quote survived validation,
+and an explicit mismatch acknowledgement. confidenceUi is the spec §1.1 table;
+the VO checkbox is hidden whenever there is nothing to confirm. mapVoChangeType
+uses the human-confirmed type and exports its keyword lists so migration 097's
+static test can hold the SQL to the same words.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
@@ -1672,9 +1712,10 @@ grep -n "CREATE OR REPLACE FUNCTION enqueue_notification_user" -A 12 supabase/mi
 grep -n "profiles_any_read" -A 2 supabase/migrations/023_project_management_rls.sql
 grep -rn "storage.buckets" supabase/migrations/
 grep -n "CREATE TABLE IF NOT EXISTS gate_step_refs\|CREATE TABLE IF NOT EXISTS gate_refs" supabase/migrations/096_rooms_gates_phase.sql
+grep -n "gate_step_refs_gate_code_code_key" supabase/migrations/096_rooms_gates_phase.sql
 ```
 
-Expected: `site_changes` has `location`, `description`, `photo_urls TEXT[]`, `change_type` (5 values incl. `permintaan_owner`, `kondisi_lapangan`, `revisi_desain`), `impact`, `reported_by NOT NULL`, `needs_owner_approval`, `decision DEFAULT 'pending'` (022:13-48); `enqueue_notification_user(p_project_id, p_user_id, p_type, p_title, p_body, p_deeplink_screen, p_deeplink_params, p_related_entity_id, p_exclude_user_ids, p_skip_roles)` joins `project_assignments` (092:100); `profiles_any_read` lets every authenticated user read profiles (023:13-15), which `v_room_board`'s owner initials rely on under `security_invoker`; the only bucket any migration creates is `project-files` (006:6); both 096 reference tables exist. If 096 is missing on your checkout, stop: plan 1 task 3 is a prerequisite.
+Expected: `site_changes` has `location`, `description`, `photo_urls TEXT[]`, `change_type` (5 values incl. `permintaan_owner`, `kondisi_lapangan`, `revisi_desain`), `impact`, `reported_by NOT NULL`, `needs_owner_approval`, `decision DEFAULT 'pending'` (022:13-48); `enqueue_notification_user(p_project_id, p_user_id, p_type, p_title, p_body, p_deeplink_screen, p_deeplink_params, p_related_entity_id, p_exclude_user_ids, p_skip_roles)` joins `project_assignments` (092:100); `profiles_any_read` lets every authenticated user read profiles (023:13-15), which `v_room_board`'s owner initials rely on under `security_invoker`; the only bucket any migration creates is `project-files` (006:6); both 096 reference tables exist, and 096 adds `gate_step_refs_gate_code_code_key` (`UNIQUE (gate_code, code)`), the target of 097's composite step key. If 096 or that constraint is missing on your checkout (a 096 from before commit `8171f3e`), stop: plan 1 task 3 is a prerequisite.
 
 - [ ] **Step 2: Write the failing static guard test**
 
@@ -1695,6 +1736,8 @@ Create `tools/__tests__/migration097.test.ts`:
  *  • Human fields change only inside confirm_site_event / close_site_event:
  *    a direct PostgREST write may only correct the transcript or discard.
  *  • An open actionable event always has an owner and a due date.
+ *  • A step is keyed through its gate (composite foreign key plus a CHECK),
+ *    so an event can never carry a step from another gate.
  *  • A confirmed VO always has a Catatan Perubahan row behind it.
  *  • Nothing is deletable: no DELETE policy anywhere, discard is a status.
  *  • The VO change_type regex uses the SAME keywords as siteEventRules.ts.
@@ -1763,11 +1806,24 @@ describe('migration 097 §1 - site_events', () => {
     expect(ddl()).toContain(`CHECK (vo_flag IN ('none', 'suggested', 'confirmed', 'rejected'))`);
   });
 
-  it('keys gates, steps, the VO change row and related events by foreign key', () => {
-    expect(ddl()).toMatch(/gate_code\s+TEXT REFERENCES gate_refs\(code\)/);
-    expect(ddl()).toMatch(/step_code\s+TEXT REFERENCES gate_step_refs\(code\)/);
+  it('keys the gate, the VO change row and related events by foreign key', () => {
+    expect(ddl()).toMatch(/gate_code\s+TEXT REFERENCES gate_refs\(code\),/);
     expect(ddl()).toMatch(/site_change_id\s+UUID REFERENCES site_changes\(id\)/);
     expect(ddl()).toMatch(/related_event_id\s+UUID REFERENCES site_events\(id\)/);
+  });
+
+  it('keys a step through its gate, so an event can never carry a step from another gate', () => {
+    // A single-column step_code key would accept ('B', 'D1'). 096 makes
+    // (gate_code, code) UNIQUE on gate_step_refs and a step's gate immutable.
+    expect(ddl()).toMatch(/\n\s+step_code\s+TEXT,\n/);
+    expect(SQL).not.toMatch(/step_code\s+TEXT\s+REFERENCES/);
+    expect(SQL).not.toMatch(/REFERENCES gate_step_refs\s*\(\s*code\s*\)/);
+    expect(ddl()).toContain('CONSTRAINT site_events_step_needs_gate CHECK (step_code IS NULL OR gate_code IS NOT NULL)');
+    expect(ddl()).toMatch(
+      /CONSTRAINT site_events_step_in_gate FOREIGN KEY \(gate_code, step_code\)\s+REFERENCES gate_step_refs \(gate_code, code\)\n/,
+    );
+    // The default MATCH SIMPLE is what lets a gate-only event through; MATCH FULL would refuse it.
+    expect(ddl()).not.toMatch(/MATCH FULL/);
   });
 
   it('limits title and summary to the validator constants', () => {
@@ -1975,6 +2031,16 @@ describe('migration 097 §7 - confirm_site_event', () => {
     expect(body()).toMatch(/Asia\/Jakarta/);
   });
 
+  it('names a step outside the chosen gate before the composite key refuses it', () => {
+    const b = body();
+    expect(b).toMatch(/IF p_step_code IS NOT NULL AND p_gate_code IS NULL THEN\s+RAISE EXCEPTION 'SITE_EVENT_STEP_NOT_IN_GATE:/);
+    expect(b).toMatch(
+      /SELECT gate_code INTO v_step_gate FROM gate_step_refs WHERE code = p_step_code AND active;\s+IF NOT FOUND THEN\s+RAISE EXCEPTION 'SITE_EVENT_STEP:/,
+    );
+    expect(b).toMatch(/IF v_step_gate <> p_gate_code THEN\s+RAISE EXCEPTION 'SITE_EVENT_STEP_NOT_IN_GATE: langkah "%" bukan bagian dari gerbang %\./);
+    expect(b.lastIndexOf('SITE_EVENT_STEP_NOT_IN_GATE:')).toBeLessThan(b.indexOf('UPDATE site_events SET'));
+  });
+
   it('refuses a VO confirm when no quote survived validation', () => {
     expect(body()).toMatch(/jsonb_array_length\(COALESCE\(v_ev\.ai_draft -> 'vo' -> 'evidence_quotes', '\[\]'::jsonb\)\) = 0/);
     expect(body()).toMatch(/SITE_EVENT_VO_NO_EVIDENCE:/);
@@ -2022,8 +2088,9 @@ describe('migration 097 §7 - confirm_site_event', () => {
   it('raises every documented prefix', () => {
     for (const code of [
       'SITE_EVENT_NOT_FOUND', 'SITE_EVENT_AUTH', 'SITE_EVENT_STATE', 'SITE_EVENT_TYPE', 'SITE_EVENT_TITLE',
-      'SITE_EVENT_SUMMARY', 'SITE_EVENT_IMPACT', 'SITE_EVENT_GATE', 'SITE_EVENT_STEP', 'SITE_EVENT_OWNER_REQUIRED',
-      'SITE_EVENT_OWNER_NOT_MEMBER', 'SITE_EVENT_DUE', 'SITE_EVENT_RELATED', 'SITE_EVENT_VO_NO_EVIDENCE',
+      'SITE_EVENT_SUMMARY', 'SITE_EVENT_IMPACT', 'SITE_EVENT_GATE', 'SITE_EVENT_STEP', 'SITE_EVENT_STEP_NOT_IN_GATE',
+      'SITE_EVENT_OWNER_REQUIRED', 'SITE_EVENT_OWNER_NOT_MEMBER', 'SITE_EVENT_DUE', 'SITE_EVENT_RELATED',
+      'SITE_EVENT_VO_NO_EVIDENCE',
     ]) {
       expect(body()).toContain(`'${code}:`);
     }
@@ -2110,6 +2177,10 @@ Create `supabase/migrations/097_site_events.sql`:
 --
 -- PASTE ORDER. 096 → 097 (this file) → 098. 096 (rooms, gate_refs,
 -- gate_step_refs) must already be pasted: site_events references all three.
+-- site_events_step_in_gate references gate_step_refs (gate_code, code), which
+-- needs 096's gate_step_refs_gate_code_code_key. A 096 pasted before that
+-- constraint existed stops this file with "there is no unique constraint
+-- matching given keys for referenced table"; re-paste the current 096 first.
 -- 098 adds the SITE_EVENT_ASSIGNED notification type; until 098 lands, confirm
 -- still works but its notification is refused by the type CHECK, caught, and
 -- reported as notified = false.
@@ -2118,9 +2189,9 @@ Create `supabase/migrations/097_site_events.sql`:
 -- is divergent, `supabase db push` is broken), so it must survive a second paste:
 -- CREATE TABLE / INDEX IF NOT EXISTS, CREATE OR REPLACE for functions and the
 -- view, DROP TRIGGER IF EXISTS and DROP POLICY IF EXISTS before each create, and
--- ON CONFLICT DO UPDATE for the bucket row. Table CHECKs are inline, so a later
--- change to one needs its own guarded ALTER; a re-paste of this file does not
--- rewrite them.
+-- ON CONFLICT DO UPDATE for the bucket row. Table CHECKs and the composite step
+-- key are inline, so a later change to one needs its own guarded ALTER; a
+-- re-paste of this file does not rewrite them.
 --
 -- THE TRUTH CONTRACT, AS DATABASE RULES (spec §1.1).
 --   1. AI columns (transcript, ai_draft, ai_confidence, ai_model, ai_mismatch)
@@ -2198,7 +2269,7 @@ CREATE TABLE IF NOT EXISTS site_events (
   event_type         TEXT
                      CHECK (event_type IS NULL OR event_type IN ('progres', 'isu', 'hambatan', 'cacat', 'butuh_keputusan', 'info')),
   gate_code          TEXT REFERENCES gate_refs(code),
-  step_code          TEXT REFERENCES gate_step_refs(code),
+  step_code          TEXT,
   title              TEXT CHECK (title IS NULL OR char_length(title) <= 80),
   summary            TEXT CHECK (summary IS NULL OR char_length(summary) <= 300),
   raw_text           TEXT,
@@ -2224,7 +2295,15 @@ CREATE TABLE IF NOT EXISTS site_events (
   closed_by          UUID REFERENCES profiles(id),
   closure_note       TEXT,
   last_error         TEXT,
-  analysis_attempts  INT NOT NULL DEFAULT 0
+  analysis_attempts  INT NOT NULL DEFAULT 0,
+  -- A step is only ever named through its gate. The default MATCH SIMPLE skips
+  -- the composite key when step_code is NULL, so an event with a gate and no
+  -- step (or with neither) passes; the CHECK closes the one hole that leaves, a
+  -- step with no gate. 096 provides the UNIQUE (gate_code, code) target and
+  -- locks a step's gate_code, so a pair accepted here stays true.
+  CONSTRAINT site_events_step_needs_gate CHECK (step_code IS NULL OR gate_code IS NOT NULL),
+  CONSTRAINT site_events_step_in_gate FOREIGN KEY (gate_code, step_code)
+    REFERENCES gate_step_refs (gate_code, code)
 );
 
 COMMENT ON COLUMN site_events.transcript IS
@@ -2696,10 +2775,20 @@ BEGIN
      AND NOT EXISTS (SELECT 1 FROM gate_refs WHERE code = p_gate_code AND active) THEN
     RAISE EXCEPTION 'SITE_EVENT_GATE: gerbang % tidak aktif atau tidak ada', p_gate_code;
   END IF;
+  -- The step must sit under the chosen gate. site_events_step_needs_gate and
+  -- site_events_step_in_gate would refuse a bad pair at the UPDATE below, but
+  -- with a raw constraint error; these say it in words first. A step's
+  -- gate_code never changes (096), so this answer cannot go stale.
+  IF p_step_code IS NOT NULL AND p_gate_code IS NULL THEN
+    RAISE EXCEPTION 'SITE_EVENT_STEP_NOT_IN_GATE: langkah "%" dipilih tanpa gerbang. Pilih gerbangnya dulu.', p_step_code;
+  END IF;
   IF p_step_code IS NOT NULL THEN
     SELECT gate_code INTO v_step_gate FROM gate_step_refs WHERE code = p_step_code AND active;
-    IF v_step_gate IS NULL OR v_step_gate IS DISTINCT FROM p_gate_code THEN
-      RAISE EXCEPTION 'SITE_EVENT_STEP: langkah % tidak aktif atau bukan milik gerbang %', p_step_code, p_gate_code;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'SITE_EVENT_STEP: langkah "%" tidak aktif atau tidak ada', p_step_code;
+    END IF;
+    IF v_step_gate <> p_gate_code THEN
+      RAISE EXCEPTION 'SITE_EVENT_STEP_NOT_IN_GATE: langkah "%" bukan bagian dari gerbang %.', p_step_code, p_gate_code;
     END IF;
   END IF;
 
@@ -2980,7 +3069,7 @@ LEFT JOIN owner_marks w    ON w.room_id = r.id;
 GRANT SELECT ON v_room_board TO authenticated;
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- SELF-CHECK (run after pasting; checks 1-6 write nothing)
+-- SELF-CHECK (run after pasting; checks 1-7 write nothing)
 --
 -- 1. Tables and view exist:
 --      SELECT to_regclass('public.site_events'), to_regclass('public.site_event_media'),
@@ -3014,7 +3103,15 @@ GRANT SELECT ON v_room_board TO authenticated;
 --         OR policyname LIKE 'site_media_%';
 --    EXPECTED: eight rows, none with cmd = 'DELETE'.
 --
--- 7. A direct client write to a human field is refused (on a TEST event you
+-- 7. An event's step is keyed through its gate:
+--      SELECT conname, pg_get_constraintdef(oid) FROM pg_constraint
+--      WHERE conrelid = 'public.site_events'::regclass
+--        AND conname IN ('site_events_step_needs_gate', 'site_events_step_in_gate')
+--      ORDER BY conname;
+--    EXPECTED: two rows, the CHECK (step_code IS NULL OR gate_code IS NOT NULL)
+--    and FOREIGN KEY (gate_code, step_code) REFERENCES gate_step_refs(gate_code, code).
+--
+-- 8. A direct client write to a human field is refused (on a TEST event you
 --    inserted through the app; everything is rolled back):
 --      BEGIN;
 --        SET LOCAL ROLE authenticated;
@@ -3023,7 +3120,7 @@ GRANT SELECT ON v_room_board TO authenticated;
 --      ROLLBACK;
 --    EXPECTED: ERROR  SITE_EVENT_HUMAN_FIELDS: ...
 --
--- 8. Re-paste this whole file.
+-- 9. Re-paste this whole file.
 --    EXPECTED: no error.
 -- ═══════════════════════════════════════════════════════════════════════════
 ```
@@ -3034,15 +3131,15 @@ GRANT SELECT ON v_room_board TO authenticated;
 npx jest tools/__tests__/migration097.test.ts --testPathIgnorePatterns='/node_modules/' '__tests__/fixtures\.ts$' '__tests__/_serverGateHarness\.ts$' 'supabase/functions/' 'tmp/'
 ```
 
-Expected: `Tests: 46 passed, 46 total`. If `pins search_path` reports a count other than 9, a comment somewhere now contains the words that start a function definition; reword the comment rather than loosening the count. If `maps change_type with the same keywords` fails, the SQL regex and `tools/siteEventRules.ts` disagree: fix whichever side is wrong, never the test.
+Expected: `Tests: 48 passed, 48 total`. If `pins search_path` reports a count other than 9, a comment somewhere now contains the words that start a function definition; reword the comment rather than loosening the count. If `maps change_type with the same keywords` fails, the SQL regex and `tools/siteEventRules.ts` disagree: fix whichever side is wrong, never the test.
 
 - [ ] **Step 6: Paste the migration in the Supabase Dashboard**
 
 This is a **user-run step**, not an agent step. Hand the user the file and the self-check list:
 
-1. Confirm 096 is pasted (`SELECT count(*) FROM gate_refs;` returns 8).
+1. Confirm 096 is pasted (`SELECT count(*) FROM gate_refs;` returns 8) with the step pair key (`SELECT 1 FROM pg_constraint WHERE conname = 'gate_step_refs_gate_code_code_key';` returns one row; if not, re-paste the current 096 first).
 2. Open the Supabase Dashboard SQL editor for project `ufntlqvacjhmddwltcxf`, paste the whole of `supabase/migrations/097_site_events.sql` and run it.
-3. Run self-checks 1 to 6 from the footer. Check 2 decides whether the bucket needs creating by hand.
+3. Run self-checks 1 to 7 from the footer. Check 2 decides whether the bucket needs creating by hand.
 4. Paste 098 (task 5) before anyone confirms an event, or the owner notification is silently refused.
 
 - [ ] **Step 7: Commit**
@@ -3059,6 +3156,11 @@ structural: AI and bookkeeping columns are service-role only on INSERT and
 UPDATE; human fields change only inside the SECURITY DEFINER RPCs; an open
 actionable event has an owner and a due date; a confirmed VO has a Catatan
 Perubahan row. No delete policy anywhere.
+
+A step is keyed through its gate: a composite foreign key to gate_step_refs
+(gate_code, code) plus CHECK (step_code IS NULL OR gate_code IS NOT NULL), so an
+event can never carry a step from another gate; confirm_site_event names a
+mismatched pair (SITE_EVENT_STEP_NOT_IN_GATE) before the key refuses it.
 
 Media goes to a new private site-media bucket: no migration creates the photos
 bucket, so its privacy and audio support cannot be proven.
@@ -3508,6 +3610,19 @@ Deno.test('drops an invented gate code', () => {
   const r = validateSiteEventDraft(raw({ gate_code: 'Q', step_code: null }), ctx());
   assert(r.ok);
   if (r.ok) assertEquals(r.draft.gate_code, null);
+});
+
+Deno.test('drops a step that sits under another gate, or under no valid gate', () => {
+  const other = validateSiteEventDraft(raw({ gate_code: 'B', step_code: 'A2' }), ctx());
+  assert(other.ok);
+  if (other.ok) {
+    assertEquals(other.draft.gate_code, 'B');
+    assertEquals(other.draft.step_code, null);
+    assertEquals(other.dropped.some((d) => d.field === 'step_code' && d.reason === 'langkah bukan milik gerbang yang dipilih'), true);
+  }
+  const noGate = validateSiteEventDraft(raw({ gate_code: 'Q', step_code: 'A2' }), ctx());
+  assert(noGate.ok);
+  if (noGate.ok) assertEquals(noGate.draft.step_code, null);
 });
 
 Deno.test('drops a cost estimate key', () => {
@@ -4259,7 +4374,7 @@ npx jest tools/__tests__/siteEventDraftValidateTwin.test.ts --testPathIgnorePatt
 cd supabase/functions/site-event-analyze && deno test; cd -
 ```
 
-Expected: jest `Tests: 6 passed, 6 total`; Deno `ok | 30 passed | 0 failed` (validate 6, util 9, cost 5, prompt 10).
+Expected: jest `Tests: 6 passed, 6 total`; Deno `ok | 31 passed | 0 failed` (validate 7, util 9, cost 5, prompt 10).
 
 - [ ] **Step 7: Commit**
 
@@ -5082,7 +5197,7 @@ npx jest tools/__tests__/siteEventAnalyzeIndex.test.ts --testPathIgnorePatterns=
 cd supabase/functions/site-event-analyze && deno test && deno check index.ts; cd -
 ```
 
-Expected: jest `Tests: 8 passed, 8 total`; Deno `ok | 41 passed | 0 failed` (task 6's 30 plus these 11); `deno check` prints `Check .../index.ts` and no error. `deno check` downloads `jsr:@supabase/supabase-js@2` once; it does not contact any Supabase project.
+Expected: jest `Tests: 8 passed, 8 total`; Deno `ok | 42 passed | 0 failed` (task 6's 31 plus these 11); `deno check` prints `Check .../index.ts` and no error. `deno check` downloads `jsr:@supabase/supabase-js@2` once; it does not contact any Supabase project.
 
 - [ ] **Step 6: Commit**
 
@@ -5469,7 +5584,7 @@ const capture = (over: Partial<NewSiteEvent> = {}): NewSiteEvent => ({
 });
 
 const confirmInput = (over: Partial<ConfirmInput> = {}): ConfirmInput => ({
-  eventType: 'isu', gateCode: null, stepCode: 'B4', title: '  Retak   acian ', summary: '   ', ownerId: 'user-2',
+  eventType: 'isu', gateCode: null, stepCode: 'B4', activeSteps: [], title: '  Retak   acian ', summary: '   ', ownerId: 'user-2',
   dueDate: '2026-09-12', downstreamImpact: '', isBlocking: false, voConfirm: false, relatedEventId: null,
   transcriptEdited: '  ', draft: null, aiMismatch: false, mismatchAcknowledged: false, today: '2026-09-10', ...over,
 });
@@ -5559,6 +5674,8 @@ describe('pure helpers', () => {
   it('maps every RPC and guard prefix to Indonesian, without confusing similar codes', () => {
     expect(mapSiteEventRpcError('SITE_EVENT_OWNER_NOT_MEMBER: pemilik harus anggota')).toBe('Pemilik harus anggota tim proyek.');
     expect(mapSiteEventRpcError('SITE_EVENT_OWNER_REQUIRED: jenis isu')).toBe('Pemilik dan tenggat wajib diisi untuk jenis ini.');
+    expect(mapSiteEventRpcError('SITE_EVENT_STEP_NOT_IN_GATE: langkah "D1" bukan bagian dari gerbang B.')).toBe('Langkah yang dipilih bukan bagian dari gerbang ini. Pilih ulang langkahnya.');
+    expect(mapSiteEventRpcError('SITE_EVENT_STEP: langkah "D1" tidak aktif atau tidak ada')).toBe('Langkah yang dipilih sudah tidak aktif. Pilih langkah lain.');
     expect(mapSiteEventRpcError('SITE_EVENT_STATE: kejadian berstatus open')).toMatch(/sudah dikonfirmasi/);
     expect(mapSiteEventRpcError('SITE_EVENT_HUMAN_FIELDS: isi kejadian')).toMatch(/Konfirmasi atau Selesai/);
     expect(mapSiteEventRpcError('network down')).toBe('Gagal menyimpan: network down');
@@ -5832,7 +5949,8 @@ const RPC_ERROR_COPY: ReadonlyArray<[string, string]> = [
   ['SITE_EVENT_SUMMARY', 'Ringkasan maksimal 300 karakter.'],
   ['SITE_EVENT_IMPACT', 'Dampak lanjutan maksimal 300 karakter.'],
   ['SITE_EVENT_GATE', 'Gerbang yang dipilih sudah tidak aktif. Pilih gerbang lain.'],
-  ['SITE_EVENT_STEP', 'Langkah yang dipilih tidak aktif atau bukan milik gerbang ini.'],
+  ['SITE_EVENT_STEP', 'Langkah yang dipilih sudah tidak aktif. Pilih langkah lain.'],
+  ['SITE_EVENT_STEP_NOT_IN_GATE', 'Langkah yang dipilih bukan bagian dari gerbang ini. Pilih ulang langkahnya.'],
   ['SITE_EVENT_OWNER_REQUIRED', 'Pemilik dan tenggat wajib diisi untuk jenis ini.'],
   ['SITE_EVENT_OWNER_NOT_MEMBER', 'Pemilik harus anggota tim proyek.'],
   ['SITE_EVENT_DUE', 'Tenggat tidak boleh sebelum hari ini.'],
@@ -7733,7 +7851,7 @@ Spec §5.4 row by row, and where each is implemented:
 | Field | Where |
 |---|---|
 | Jenis, pre-filled per §1.1 | `EventTypeChipRow` + `initialConfirmForm` via `confidenceUi` |
-| Gerbang, langkah | `GateChipRow`, `StepChipRow` (task 12) |
+| Gerbang, langkah | `GateChipRow`, `StepChipRow` (task 12); the pair is re-checked by `validateConfirmInput` (`activeSteps`), `confirm_site_event` and 097's composite key |
 | Judul, ringkasan (80 / 300) | `TextInput maxLength` + `validateConfirmInput` + `confirm_site_event` |
 | Dampak lanjutan, menghambat | `TextInput` + `Switch` |
 | Pemilik, default reporter for actionable types | `OwnerField` over `getProjectTeam` (`tools/projectManagement.ts:142`); `withEventType` |
@@ -7774,6 +7892,7 @@ import {
 import type { SiteEventDraft } from '../../tools/types';
 
 const TODAY = '2026-09-10';
+const STEPS = [{ code: 'A2', gate_code: 'A' }];
 
 const draft = (over: Partial<SiteEventDraft> = {}): SiteEventDraft => ({
   event_type: 'hambatan',
@@ -7858,17 +7977,18 @@ describe('toConfirmInput', () => {
   it('sends the transcript only when edited, a blank due date as null, and the stored draft', () => {
     const src = source();
     const { form } = initialConfirmForm(src, TODAY, false);
-    const clean = toConfirmInput({ ...form, dueDate: '  ' }, src, TODAY, false);
+    const clean = toConfirmInput({ ...form, dueDate: '  ' }, src, TODAY, false, STEPS);
     expect(clean).toMatchObject({ transcriptEdited: null, dueDate: null, aiMismatch: false, today: TODAY });
     expect(clean.draft).toBe(src.ai_draft);
-    const edited = toConfirmInput(withTranscript(form, 'owner minta dipindahkan ke atas plafon'), src, TODAY, false);
+    expect(clean.activeSteps).toBe(STEPS);
+    const edited = toConfirmInput(withTranscript(form, 'owner minta dipindahkan ke atas plafon'), src, TODAY, false, STEPS);
     expect(edited.transcriptEdited).toBe('owner minta dipindahkan ke atas plafon');
   });
 
   it('manual authoring sends no draft and no mismatch flag', () => {
     const src = source({ ai_mismatch: true });
     const { form } = initialConfirmForm(src, TODAY, true);
-    expect(toConfirmInput(form, src, TODAY, true)).toMatchObject({ draft: null, aiMismatch: false });
+    expect(toConfirmInput(form, src, TODAY, true, STEPS)).toMatchObject({ draft: null, aiMismatch: false });
   });
 });
 
@@ -7987,12 +8107,20 @@ export function withTranscript(form: ConfirmForm, text: string): ConfirmForm {
   return { ...form, transcript: text, transcriptDirty: true };
 }
 
-export function toConfirmInput(form: ConfirmForm, ev: ConfirmSource, today: string, manual: boolean): ConfirmInput {
+/** `activeSteps` is the step list the screen loaded, so validateConfirmInput can refuse a step under another gate. */
+export function toConfirmInput(
+  form: ConfirmForm,
+  ev: ConfirmSource,
+  today: string,
+  manual: boolean,
+  activeSteps: ConfirmInput['activeSteps'],
+): ConfirmInput {
   const due = form.dueDate.trim();
   return {
     eventType: form.eventType,
     gateCode: form.gateCode,
     stepCode: form.stepCode,
+    activeSteps,
     title: form.title,
     summary: form.summary,
     ownerId: form.ownerId,
@@ -8619,7 +8747,7 @@ export default function SiteEventConfirmScreen() {
   const onConfirm = async () => {
     if (!event || !form) return;
     setBusy(true);
-    const r = await confirmSiteEvent(event.id, toConfirmInput(form, event, today, manual));
+    const r = await confirmSiteEvent(event.id, toConfirmInput(form, event, today, manual, steps));
     setBusy(false);
     if (r.errors || r.error) {
       setErrors(r.errors ?? [r.error as string]);
@@ -9657,7 +9785,7 @@ Expected: the export completes (it bundles `expo-audio`'s web implementation and
 which deno && (cd supabase/functions/site-event-analyze && deno test && deno check index.ts)
 ```
 
-Expected: `ok | 41 passed | 0 failed` and a clean `deno check`. If `which deno` prints nothing, say so in the report; CI does not run these, and the jest twin and static suites still guard the validator and the handler's shape.
+Expected: `ok | 42 passed | 0 failed` and a clean `deno check`. If `which deno` prints nothing, say so in the report; CI does not run these, and the jest twin and static suites still guard the validator and the handler's shape.
 
 - [ ] **Step 5: Static audits**
 
@@ -9733,11 +9861,14 @@ Deviations from the spec, each forced by the repo or by the spec's own rules. Ev
 
 Smaller additions consistent with the spec: `site_events.status` defaults to `pending_analysis`; title and summary lengths are also CHECKs in 097; due dates cannot be in the past (form and RPC, Asia/Jakarta); closure notes are capped at 500 characters; the capture-time gate chip is stored in `gate_code` as a hint the human-fields guard allows on insert and confirm overwrites; `v_room_board` keeps inactive rooms and exposes `active`; `tools/notificationRouting.ts` exports `KNOWN_DEEPLINK_SCREENS`. Two signatures differ from the task scope's shorthand: `mapVoChangeType(eventType, draft)` takes the human-confirmed type first, because `confirm_site_event` maps `change_type` with `p_event_type` rather than the draft's guess; and `confirmSiteEvent(eventId, input)` takes the id separately, because `ConfirmInput` is the form's shape and carries no id.
 
+**Step and gate pairing follows the updated spec §4.2 (not a deviation).** Migration 096 (commit `8171f3e`) added `gate_step_refs_gate_code_code_key UNIQUE (gate_code, code)` and made a step's `gate_code` immutable, and spec §4.2 now keys `site_events` to a step through that pair. 097 therefore declares `step_code TEXT` with no single-column key, plus `site_events_step_needs_gate CHECK (step_code IS NULL OR gate_code IS NOT NULL)` and `site_events_step_in_gate FOREIGN KEY (gate_code, step_code) REFERENCES gate_step_refs (gate_code, code)`. Both sit inline in `CREATE TABLE` like 097's other table constraints: 097 has no add-if-missing pattern, and no 097 exists in `supabase/migrations/` yet. The same rule is stated in words three times before the key can fire: the validator drops a step whose gate did not survive, `validateConfirmInput` refuses a loaded step under another gate, and `confirm_site_event` raises `SITE_EVENT_STEP_NOT_IN_GATE`. Signature changes: `ConfirmInput` gains a required `activeSteps: ReadonlyArray<{ code: string; gate_code: string }>`; `toConfirmInput(form, ev, today, manual, activeSteps)` takes the steps `SiteEventConfirmScreen` already loads; `confirm_site_event` keeps its 13 arguments, but its old combined `SITE_EVENT_STEP` refusal is now `SITE_EVENT_STEP` (missing or inactive) plus `SITE_EVENT_STEP_NOT_IN_GATE` (no gate, or another gate), both in `RPC_ERROR_COPY`; the validator records `langkah dibuang: tidak ada gerbang yang valid` when a known step arrives without a surviving gate. `DraftValidationContext.steps` already carried `gate_code`, and task 7 already selects it, so the prompt and index inputs are unchanged.
+
 **Observed and deliberately not changed:** `office/screens/PrincipalHomeScreen.tsx:1710-1714` renders `site_changes.photo_urls` straight into `<Image>` without resolving them, so the principal's Catatan Perubahan detail shows no photos for any stored path, old or new. Pre-existing; worth its own fix.
 
 **Things to check while executing:**
 
 - Plan 1 must be merged into this branch first; tasks 12 to 14 edit plan 1's `RoomScreen`, navigators and Beranda card, and import its `tools/rooms.ts` and `tools/gateRefs.ts`.
+- 096 must be the version from commit `8171f3e` or later: 097's `site_events_step_in_gate` references its `gate_step_refs_gate_code_code_key`, and the paste fails without it.
 - Edit `tools/siteEventDraftValidate.ts` only, then `cp` it; `tools/__tests__/siteEventDraftValidateTwin.test.ts` fails on any drift.
 - The three `update(...)` calls in `index.ts` spell out `.in('status', ['pending_analysis', 'draft'])` literally because the static test matches that text; keep them literal.
 - If the installed `expo-audio` is not 1.1.x, check `recorder.uri` and `recorderState.metering` against its own type declarations before changing the reducer.
