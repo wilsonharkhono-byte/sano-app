@@ -653,6 +653,7 @@ describe('migration 096 §2 - rooms', () => {
     expect(body).toMatch(/ROOM_CODE_FROZEN:/);
     expect(SQL).toMatch(/DROP TRIGGER IF EXISTS rooms_freeze_code_trg ON rooms;/);
     expect(SQL).toMatch(/CREATE TRIGGER rooms_freeze_code_trg\s+BEFORE UPDATE ON rooms/);
+    expect(SQL).toMatch(/OLD\.qr_printed_at IS NOT NULL AND NEW\.qr_printed_at IS NULL/);
   });
 
   it('re-asserts the member and office policies with a DROP first', () => {
@@ -973,6 +974,14 @@ BEGIN
       'dan buat ruangan baru bila kodenya salah.',
       OLD.room_code, OLD.qr_printed_at;
   END IF;
+  -- Clearing the stamp would reopen the code to a second UPDATE. A reprint may
+  -- move the stamp forward (markRoomsPrinted sets now()); nothing may remove it.
+  IF OLD.qr_printed_at IS NOT NULL AND NEW.qr_printed_at IS NULL THEN
+    RAISE EXCEPTION
+      'ROOM_CODE_FROZEN: tanda cetak label QR ruangan "%" tidak boleh dihapus. '
+      'Kode ruangan tetap terkunci setelah labelnya dicetak.',
+      OLD.room_code;
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -1157,6 +1166,8 @@ CREATE POLICY gate_step_refs_office_update ON gate_step_refs FOR UPDATE USING (i
 --      UPDATE rooms SET qr_printed_at = now() WHERE id = '<TEST_ROOM_UUID>';
 --      UPDATE rooms SET room_code = 'LAIN' WHERE id = '<TEST_ROOM_UUID>';
 --    EXPECTED: ERROR  ROOM_CODE_FROZEN: ...
+--      UPDATE rooms SET qr_printed_at = NULL WHERE id = '<TEST_ROOM_UUID>';
+--    EXPECTED: ERROR  ROOM_CODE_FROZEN: ... (the stamp cannot be cleared)
 --      UPDATE rooms SET room_name = 'Nama Baru' WHERE id = '<TEST_ROOM_UUID>';
 --    EXPECTED: UPDATE 1.
 --
