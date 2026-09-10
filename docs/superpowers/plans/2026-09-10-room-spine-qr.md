@@ -2074,7 +2074,7 @@ MSG
 
 **Files:** create `tools/projectPhase.ts`, `tools/__tests__/projectPhase.test.ts`; modify `workflows/hooks/useProject.tsx`.
 
-The important finding here: `projects` UPDATE is gated on `is_office_manager()` (`036:73-76`), which is **admin and principal only** - an estimator is not covered. Under RLS a filtered UPDATE is not an error; PostgREST returns zero rows and Supabase reports `error: null`. Setting the phase as an estimator would therefore look like it worked and change nothing. That is exactly the silent-wrong-answer failure CLAUDE.md §12 forbids, so `setProjectPhase` selects the row back and reports the truth.
+The important finding here: `projects` UPDATE passes when **either** policy allows it. `projects_manager_update` (`036:73-76`) uses `is_office_manager()`, which covers admin and principal on every project. `projects_update_assigned` (`023:58-60`) uses `is_project_assignment_manager()`, which `037` widened to admin, principal **and estimator** when that user is assigned to the project. So an assigned estimator may set the phase, while an unassigned estimator or any supervisor may not. Under RLS a filtered UPDATE is not an error; PostgREST returns zero rows and Supabase reports `error: null`. A refused update would therefore look like it worked and change nothing. That is exactly the silent-wrong-answer failure CLAUDE.md §12 forbids, so `setProjectPhase` selects the row back and reports the truth.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2082,10 +2082,11 @@ Create `tools/__tests__/projectPhase.test.ts`:
 
 ```ts
 /**
- * projects UPDATE is is_office_manager() only (036:73-76) - admin and
- * principal, NOT estimator. RLS does not raise on a filtered UPDATE; it
- * returns zero rows with error null. Without the read-back below, an estimator
- * would see "Fase diperbarui" and the phase would be unchanged.
+ * projects UPDATE passes for admin/principal on any project (036:73-76) and for
+ * an admin, principal or estimator ASSIGNED to the project (023:58-60, widened
+ * by 037). RLS does not raise on a filtered UPDATE; it returns zero rows with
+ * error null. Without the read-back below, an unassigned estimator would see
+ * "Fase diperbarui" and the phase would be unchanged.
  */
 import { canSetProjectPhase, setProjectPhase } from '../projectPhase';
 import { supabase } from '../supabase';
@@ -2103,10 +2104,10 @@ function chain(result: { data: unknown; error: { message: string } | null }) {
 }
 
 describe('canSetProjectPhase', () => {
-  it('allows admin and principal only', () => {
+  it('offers the control to office roles only', () => {
     expect(canSetProjectPhase('admin')).toBe(true);
     expect(canSetProjectPhase('principal')).toBe(true);
-    expect(canSetProjectPhase('estimator')).toBe(false);
+    expect(canSetProjectPhase('estimator')).toBe(true);
     expect(canSetProjectPhase('supervisor')).toBe(false);
     expect(canSetProjectPhase(undefined)).toBe(false);
   });
@@ -2125,7 +2126,7 @@ describe('setProjectPhase', () => {
   it('reports the RLS refusal instead of a silent success', async () => {
     (mockSupabase.from as jest.Mock).mockReturnValue(chain({ data: null, error: null }));
     const res = await setProjectPhase('p1', 'FINISHING');
-    expect(res.error).toMatch(/admin atau prinsipal/i);
+    expect(res.error).toMatch(/ditugaskan/i);
   });
 
   it('passes a real database error through', async () => {
@@ -2149,16 +2150,20 @@ Create `tools/projectPhase.ts`:
 // STRUKTUR | FINISHING | SERAH_TERIMA. Release 1 only stores it; the client
 // report renderer switches on it in plan 4.
 //
-// ACCESS. projects UPDATE is is_office_manager() (036:73-76) = admin and
-// principal. An estimator's UPDATE is FILTERED by RLS, not rejected: zero rows
-// change and Supabase reports error null. We therefore select the row back and
-// treat "no row" as the refusal it is, rather than reporting a success that
-// did not happen (CLAUDE.md §12).
+// ACCESS. projects UPDATE passes for admin/principal on any project
+// (is_office_manager, 036:73-76) and for an admin, principal or estimator
+// assigned to the project (is_project_assignment_manager, 023:58-60 widened by
+// 037). canSetProjectPhase only decides whether to SHOW the control, so it
+// offers it to all three office roles; the database decides the rest. A
+// refused UPDATE is FILTERED by RLS, not rejected: zero rows change and
+// Supabase reports error null. We therefore select the row back and treat "no
+// row" as the refusal it is, rather than reporting a success that did not
+// happen (CLAUDE.md §12).
 
 import { supabase } from './supabase';
 import type { ProjectPhase } from './types';
 
-export const PHASE_UPDATE_ROLES = ['admin', 'principal'] as const;
+export const PHASE_UPDATE_ROLES = ['admin', 'principal', 'estimator'] as const;
 
 export function canSetProjectPhase(role: string | null | undefined): boolean {
   return !!role && (PHASE_UPDATE_ROLES as readonly string[]).includes(role);
@@ -2177,7 +2182,10 @@ export async function setProjectPhase(
 
   if (error) return { error: error.message };
   if (!data) {
-    return { error: 'Fase proyek hanya dapat diubah oleh admin atau prinsipal.' };
+    return {
+      error:
+        'Fase proyek tidak berubah. Hanya admin, prinsipal, atau estimator yang ditugaskan ke proyek ini yang dapat mengubahnya.',
+    };
   }
   return {};
 }
@@ -2217,9 +2225,10 @@ git add tools/projectPhase.ts tools/__tests__/projectPhase.test.ts workflows/hoo
 git commit -m "$(cat <<'MSG'
 feat(projects): setProjectPhase, and say so when RLS refuses
 
-projects UPDATE is admin/principal only (036:73-76). RLS filters rather than
-raises, so an estimator's update returns zero rows with error null. Read the
-row back and report the refusal instead of a success that did not happen.
+projects UPDATE passes for admin/principal on any project and for an assigned
+estimator (036, 023, 037). RLS filters rather than raises, so a refused update
+returns zero rows with error null. Read the row back and report the refusal
+instead of a success that did not happen.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
