@@ -1886,9 +1886,12 @@ import { normalizeRoomCode, isValidRoomCode, ROOM_CODE_MAX } from './roomCodes';
 import { AREA_TYPES, AREA_UMUM_CODE, AREA_UMUM_NAME } from './constants';
 import type { AreaType, Room } from './types';
 
+// One string literal on purpose. supabase-js 2.100 parses a literal select list
+// into row types, but a concatenated string types every row as
+// GenericStringError, and each `as Room` cast below then fails tsc with TS2352
+// (verified 2026-09-11 against the installed version). Do not split it.
 const ROOM_COLUMNS =
-  'id, project_id, room_code, room_name, floor, area_sqm, area_type, sort_order, ' +
-  'datum_area_id, qr_printed_at, active, created_by, created_at';
+  'id, project_id, room_code, room_name, floor, area_sqm, area_type, sort_order, datum_area_id, qr_printed_at, active, created_by, created_at';
 
 // ─── Reads ───────────────────────────────────────────────────────────────────
 
@@ -2016,6 +2019,9 @@ export async function ensureAreaUmum(
 }
 
 /** Stamped after a label sheet is printed. Reprints do not clear it (spec §8). */
+// Any non-null value stamps the rooms. Migration 096's rooms_freeze_code trigger
+// replaces it with the database clock (now()), so a phone with a wrong clock
+// can never become the printed date shown on the label history.
 export async function markRoomsPrinted(ids: string[]): Promise<{ error?: string }> {
   if (ids.length === 0) return {};
   const { error } = await supabase
