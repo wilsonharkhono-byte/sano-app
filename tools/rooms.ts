@@ -15,7 +15,7 @@
 // pre-096 data and cannot be labelled or linked.
 
 import { supabase } from './supabase';
-import { normalizeRoomCode, isValidRoomCode, ROOM_CODE_MAX } from './roomCodes';
+import { normalizeRoomCode, normalizeRoomCodeUnsliced, isValidRoomCode, ROOM_CODE_MAX } from './roomCodes';
 import { AREA_TYPES, AREA_UMUM_CODE, AREA_UMUM_NAME } from './constants';
 import type { AreaType, Room } from './types';
 
@@ -231,6 +231,8 @@ const AREA_TYPE_LOOKUP: Record<string, AreaType> = (() => {
 /** Column titles a pasted sheet might carry along - never room data. */
 const FLOOR_HEADER_WORDS = new Set(['lantai', 'floor', 'lt']);
 const NAME_HEADER_WORDS = new Set(['nama', 'nama ruangan', 'ruangan', 'name', 'room']);
+/** A leading row-numbering column some sheets carry ("No", "No.", "Nomor", "#", "Urut"). */
+const NUMBER_HEADER_WORDS = new Set(['no', 'no.', 'nomor', '#', 'urut']);
 
 /** Lower-cases and drops one trailing dot, so a "Lt." header cell matches "lt". */
 function headerWord(cell: string): string {
@@ -238,39 +240,67 @@ function headerWord(cell: string): string {
 }
 
 /**
- * True only when BOTH the floor and name columns read as titles, so a real
- * room that happens to be named "Ruangan" in a single-column line, or whose
- * floor is blank, is never mistaken for one.
+ * True when the header row leads with a numbering column ("No | Lantai |
+ * Nama | Tipe") ahead of the floor and name columns. When this is true every
+ * data line in the same paste also carries that same leading number, and
+ * parseRoomPaste shifts its column reads by one for the rest of the paste -
+ * this fix does not change how an ordinary (unnumbered) data line is parsed.
  */
-function looksLikeHeaderRow(cols: string[]): boolean {
-  if (cols.length < 2) return false;
-  return FLOOR_HEADER_WORDS.has(headerWord(cols[0])) && NAME_HEADER_WORDS.has(headerWord(cols[1]));
+function hasNumberingColumn(cols: string[]): boolean {
+  return (
+    cols.length >= 3 &&
+    NUMBER_HEADER_WORDS.has(headerWord(cols[0])) &&
+    FLOOR_HEADER_WORDS.has(headerWord(cols[1])) &&
+    NAME_HEADER_WORDS.has(headerWord(cols[2]))
+  );
 }
 
 /**
- * normalizeRoomCode's pipeline minus the final 40-character slice, so
- * parseRoomPaste can tell whether the slice actually cut the code (and warn)
- * or the code was already short enough. Keep in sync with roomCodes.ts.
+ * True only when BOTH the floor and name columns read as titles, so a real
+ * room that happens to be named "Ruangan" in a single-column line, or whose
+ * floor is blank, is never mistaken for one. Also true for a numbered header
+ * that leads with "No"/"Nomor"/"#"/"Urut" ahead of the floor and name columns
+ * - see hasNumberingColumn, which the caller uses to decide whether to shift
+ * the rest of the paste.
  */
-function preSliceRoomCode(raw: string): string {
-  return raw
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, '-')
-    .replace(/[^A-Z0-9-]/g, '')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
+function looksLikeHeaderRow(cols: string[]): boolean {
+  if (cols.length < 2) return false;
+  if (FLOOR_HEADER_WORDS.has(headerWord(cols[0])) && NAME_HEADER_WORDS.has(headerWord(cols[1]))) {
+    return true;
+  }
+  return hasNumberingColumn(cols);
+}
+
+/**
+ * Strips one surrounding pair of double quotes from a pasted cell - Excel's
+ * own convention when a cell's text contains the separator, a newline, or a
+ * literal quote - and then un-escapes a doubled quote ("") back to one,
+ * exactly like the CSV escaping rule. Only fires when the cell is actually
+ * wrapped in quotes; a bare cell is returned trimmed and otherwise untouched.
+ *
+ * This does NOT re-honour separators inside the quotes: a cell that still
+ * contains "|" after unwrapping is split on it like any other, because the
+ * line is already split on separators before any cell reaches this function.
+ */
+function unquoteCell(cell: string): string {
+  const trimmed = cell.trim();
+  const stripped = trimmed.replace(/^"(.*)"$/, '$1');
+  return stripped === trimmed ? stripped : stripped.replace(/""/g, '"').trim();
 }
 
 /**
  * One room per line: `floor <sep> name <sep> area type?`, where <sep> is `|`,
  * a tab or `;`. A single-column line is treated as a bare name. A cell may be
- * quoted (Excel/Sheets paste convention); one surrounding pair of double
- * quotes is stripped before anything else runs.
+ * quoted (Excel/Sheets paste convention); see unquoteCell for exactly what
+ * that strips and un-escapes before anything else runs.
  *
  * Only the first non-blank line is ever checked for a column-title row (e.g.
  * "Lantai | Nama | Tipe" copied along with the sheet) - a later line that
- * happens to read the same way is real data and is kept.
+ * happens to read the same way is real data and is kept. When that header
+ * line leads with a numbering column ("No | Lantai | Nama | Tipe"), every
+ * data line in the paste also carries that same leading number, so the rest
+ * of the paste is read shifted one column to the right - see
+ * hasNumberingColumn.
  *
  * Nothing is silently dropped: every skipped line produces a warning naming its
  * line number and the reason, because a room missing from the import is a room
@@ -281,6 +311,9 @@ export function parseRoomPaste(text: string): RoomPasteResult {
   const warnings: string[] = [];
   const seen = new Map<string, number>(); // code → line that claimed it
   let headerChecked = false;
+  // Set only when the header row itself leads with a numbering column; every
+  // subsequent line then also carries that leading number and is shifted.
+  let numberedColumns = false;
 
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
@@ -288,19 +321,22 @@ export function parseRoomPaste(text: string): RoomPasteResult {
     const raw = lines[i].trim();
     if (!raw) continue;
 
-    const cols = raw
+    let cols = raw
       .split(/\s*[|;\t]\s*/)
-      .map((c) => c.trim().replace(/^"(.*)"$/, '$1').trim());
+      .map(unquoteCell);
 
     if (!headerChecked) {
       headerChecked = true;
       if (looksLikeHeaderRow(cols)) {
+        numberedColumns = hasNumberingColumn(cols);
         warnings.push(
           `Baris ${line} dilewati: baris ini terlihat seperti judul kolom ("${cols.join(' | ')}"), bukan data ruangan.`,
         );
         continue;
       }
     }
+
+    if (numberedColumns) cols = cols.slice(1);
 
     const floor = cols.length >= 2 ? cols[0] : '';
     const name = cols.length >= 2 ? cols[1] : cols[0];
@@ -327,7 +363,7 @@ export function parseRoomPaste(text: string): RoomPasteResult {
       continue;
     }
 
-    if (preSliceRoomCode(candidate).length > ROOM_CODE_MAX) {
+    if (normalizeRoomCodeUnsliced(candidate).length > ROOM_CODE_MAX) {
       warnings.push(
         `Baris ${line}: kode dipotong ke ${ROOM_CODE_MAX} karakter menjadi "${room_code}". Pertimbangkan nama yang lebih pendek.`,
       );

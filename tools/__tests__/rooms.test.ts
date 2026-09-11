@@ -105,6 +105,11 @@ describe('parseRoomPaste', () => {
     expect(rows[0]).toMatchObject({ floor: 'Lt. 2', room_name: 'Kamar Mandi Utama' });
   });
 
+  it('un-escapes a doubled quote inside a quoted cell, the CSV escaping rule', () => {
+    const { rows } = parseRoomPaste('"Lt. ""2"" Barat" | "Kamar"');
+    expect(rows[0]).toMatchObject({ floor: 'Lt. "2" Barat', room_name: 'Kamar' });
+  });
+
   it('keeps a row but warns when the 40-character slice truncates a still-valid code', () => {
     const { rows, warnings } = parseRoomPaste('Lt. 1 | Kamar Tidur Utama Dengan Kamar Mandi Dalam');
     expect(rows).toHaveLength(1);
@@ -134,6 +139,17 @@ describe('parseRoomPaste - header row detection', () => {
     );
     expect(rows).toHaveLength(3);
     expect(warnings.join(' ')).not.toMatch(/judul kolom/i);
+  });
+
+  // A leading "No" column is common in pasted sheets. The data line below it
+  // ALSO starts with a number ("1"), so an unmodified parse would read
+  // floor: '1', room_name: 'Lt. 1' - wrong. Detecting the numbered header
+  // shifts every data line in the paste by one column so it reads correctly.
+  it('detects a numbered header row (No | Lantai | Nama | Tipe) and shifts data columns to match', () => {
+    const { rows, warnings } = parseRoomPaste('No | Lantai | Nama | Tipe\n1 | Lt. 1 | Dapur | Dapur');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ floor: 'Lt. 1', room_name: 'Dapur' });
+    expect(warnings.join(' ')).toMatch(/Baris 1.*judul kolom/i);
   });
 });
 

@@ -10,7 +10,7 @@
  * actually types, and the 40-character slice, which is the one place where
  * normalize can hand back a string isValidRoomCode rejects.
  */
-import { normalizeRoomCode, isValidRoomCode, ROOM_CODE_MAX } from '../roomCodes';
+import { normalizeRoomCode, normalizeRoomCodeUnsliced, isValidRoomCode, ROOM_CODE_MAX } from '../roomCodes';
 
 describe('normalizeRoomCode - DATUM parity fixtures', () => {
   it('uppercases, trims, slugifies', () => {
@@ -49,6 +49,12 @@ describe('normalizeRoomCode - SANO room names', () => {
     const code = normalizeRoomCode(long);
     expect(code).toBe('RUANG-TAMU-UTAMA-LANTAI-DUA-SAYAP-BARAT-');
     expect(code).toHaveLength(ROOM_CODE_MAX);
+  });
+
+  it('is normalizeRoomCodeUnsliced sliced to 40, and the unsliced chain can run past 40', () => {
+    const long = 'RUANG TAMU UTAMA LANTAI DUA SAYAP BARAT DEPAN'; // 45 chars
+    expect(normalizeRoomCode(long)).toBe(normalizeRoomCodeUnsliced(long).slice(0, 40));
+    expect(normalizeRoomCodeUnsliced(long).length).toBeGreaterThan(40);
   });
 });
 

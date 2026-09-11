@@ -10,20 +10,27 @@
 //
 // The chain, in order: trim, uppercase, whitespace runs to a single dash, drop
 // everything outside [A-Z0-9-], collapse repeated dashes, trim leading and
-// trailing dashes, slice to 40 characters.
+// trailing dashes. It lives in one place, normalizeRoomCodeUnsliced;
+// normalizeRoomCode is defined on top of it as `.slice(0, ROOM_CODE_MAX)`.
+// tools/rooms.ts needs the unsliced chain too, to tell whether the slice
+// actually cut a pasted code, so the six steps are not duplicated there.
 
 /** Maximum stored length. Mirrors DATUM's slice and the CHECK in migration 096. */
 export const ROOM_CODE_MAX = 40;
 
-export function normalizeRoomCode(raw: string): string {
+/** The six-step chain, without the final 40-character slice. */
+export function normalizeRoomCodeUnsliced(raw: string): string {
   return raw
     .trim()
     .toUpperCase()
     .replace(/\s+/g, '-')
     .replace(/[^A-Z0-9-]/g, '')
     .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, ROOM_CODE_MAX);
+    .replace(/^-|-$/g, '');
+}
+
+export function normalizeRoomCode(raw: string): string {
+  return normalizeRoomCodeUnsliced(raw).slice(0, ROOM_CODE_MAX);
 }
 
 /**
