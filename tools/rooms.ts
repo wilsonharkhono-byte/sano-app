@@ -37,7 +37,10 @@ export async function listRooms(
     .select(ROOM_COLUMNS)
     .eq('project_id', projectId)
     .not('room_code', 'is', null) // app invariant: Room.room_code is a string (tools/types.ts)
-    .order('floor', { ascending: true, nullsFirst: true })
+    // Area Umum has a NULL floor and sort_order 9999, and must sort last,
+    // consistent with the report grouping in spec §10.2; rooms without a
+    // floor therefore also group at the end.
+    .order('floor', { ascending: true, nullsFirst: false })
     .order('sort_order', { ascending: true })
     .order('room_name', { ascending: true });
 
@@ -65,14 +68,27 @@ export interface NewRoomInput {
   room_code?: string;
 }
 
-export async function createRoom(input: NewRoomInput): Promise<{ room?: Room; error?: string }> {
+/**
+ * `INVALID_ROOM_CODE` covers both a missing name and a code that fails
+ * normalizeRoomCode/isValidRoomCode - either way, no request was sent.
+ * `DUPLICATE_ROOM_CODE` is the 23505 branch; `DB_ERROR` is everything else
+ * the database returns. Additive to `error`, which keeps its Indonesian
+ * message unchanged - this just lets a caller (e.g. ensureAreaUmum) branch
+ * on structure instead of matching message substrings.
+ */
+export type RoomErrorCode = 'INVALID_ROOM_CODE' | 'DUPLICATE_ROOM_CODE' | 'DB_ERROR';
+
+export async function createRoom(
+  input: NewRoomInput,
+): Promise<{ room?: Room; error?: string; code?: RoomErrorCode }> {
   const name = input.room_name.trim();
-  if (!name) return { error: 'Nama ruangan wajib diisi.' };
+  if (!name) return { error: 'Nama ruangan wajib diisi.', code: 'INVALID_ROOM_CODE' };
 
   const code = normalizeRoomCode(input.room_code ?? `${input.floor} ${name}`);
   if (!isValidRoomCode(code)) {
     return {
       error: `Kode ruangan "${code}" tidak valid (maksimal ${ROOM_CODE_MAX} karakter, huruf besar, angka dan tanda hubung). Persingkat nama atau lantainya.`,
+      code: 'INVALID_ROOM_CODE',
     };
   }
 
@@ -92,9 +108,12 @@ export async function createRoom(input: NewRoomInput): Promise<{ room?: Room; er
     .single();
 
   if (error?.code === '23505') {
-    return { error: `Kode "${code}" sudah dipakai ruangan lain di proyek ini.` };
+    return {
+      error: `Kode "${code}" sudah dipakai ruangan lain di proyek ini.`,
+      code: 'DUPLICATE_ROOM_CODE',
+    };
   }
-  if (error) return { error: error.message };
+  if (error) return { error: error.message, code: 'DB_ERROR' };
   return { room: data as Room };
 }
 
@@ -103,6 +122,11 @@ export type RoomPatch = Partial<
   Pick<Room, 'room_name' | 'floor' | 'area_type' | 'sort_order' | 'area_sqm' | 'active'>
 >;
 
+/**
+ * Throws synchronously, before any request, if `patch` contains `room_code` -
+ * that is an invariant violation in the caller's code (see the header), not a
+ * runtime error to catch and display.
+ */
 export async function updateRoom(id: string, patch: RoomPatch): Promise<{ error?: string }> {
   if (Object.prototype.hasOwnProperty.call(patch, 'room_code')) {
     throw new Error('updateRoom tidak boleh mengubah room_code - kode ruangan bersifat tetap.');
@@ -124,12 +148,13 @@ export async function ensureAreaUmum(
   projectId: string,
   createdBy?: string | null,
 ): Promise<{ room?: Room; error?: string }> {
-  const { data: found } = await supabase
+  const { data: found, error: findError } = await supabase
     .from('rooms')
     .select(ROOM_COLUMNS)
     .eq('project_id', projectId)
     .eq('room_code', AREA_UMUM_CODE)
     .maybeSingle();
+  if (findError) console.warn('ensureAreaUmum select failed:', findError.message);
 
   if (found) return { room: found as Room };
 
@@ -138,15 +163,18 @@ export async function ensureAreaUmum(
     room_name:  AREA_UMUM_NAME,
     floor:      '',
     area_type:  'general',
-    sort_order: 9999, // sorts last, per spec §10.2
+    // Sorts last on both keys: floor is NULL (nullsFirst: false in listRooms)
+    // and sort_order is 9999, per spec §10.2.
+    sort_order: 9999,
     room_code:  AREA_UMUM_CODE,
     created_by: createdBy ?? null,
   });
 
-  if (created.error?.includes('sudah dipakai')) {
-    const { data } = await supabase
+  if (created.code === 'DUPLICATE_ROOM_CODE') {
+    const { data, error: raceError } = await supabase
       .from('rooms').select(ROOM_COLUMNS)
       .eq('project_id', projectId).eq('room_code', AREA_UMUM_CODE).maybeSingle();
+    if (raceError) console.warn('ensureAreaUmum select failed:', raceError.message);
     return data ? { room: data as Room } : { error: created.error };
   }
   return created;
@@ -200,9 +228,49 @@ const AREA_TYPE_LOOKUP: Record<string, AreaType> = (() => {
   return m;
 })();
 
+/** Column titles a pasted sheet might carry along - never room data. */
+const FLOOR_HEADER_WORDS = new Set(['lantai', 'floor', 'lt']);
+const NAME_HEADER_WORDS = new Set(['nama', 'nama ruangan', 'ruangan', 'name', 'room']);
+
+/** Lower-cases and drops one trailing dot, so a "Lt." header cell matches "lt". */
+function headerWord(cell: string): string {
+  return cell.trim().toLowerCase().replace(/\.$/, '');
+}
+
+/**
+ * True only when BOTH the floor and name columns read as titles, so a real
+ * room that happens to be named "Ruangan" in a single-column line, or whose
+ * floor is blank, is never mistaken for one.
+ */
+function looksLikeHeaderRow(cols: string[]): boolean {
+  if (cols.length < 2) return false;
+  return FLOOR_HEADER_WORDS.has(headerWord(cols[0])) && NAME_HEADER_WORDS.has(headerWord(cols[1]));
+}
+
+/**
+ * normalizeRoomCode's pipeline minus the final 40-character slice, so
+ * parseRoomPaste can tell whether the slice actually cut the code (and warn)
+ * or the code was already short enough. Keep in sync with roomCodes.ts.
+ */
+function preSliceRoomCode(raw: string): string {
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^A-Z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 /**
  * One room per line: `floor <sep> name <sep> area type?`, where <sep> is `|`,
- * a tab or `;`. A single-column line is treated as a bare name.
+ * a tab or `;`. A single-column line is treated as a bare name. A cell may be
+ * quoted (Excel/Sheets paste convention); one surrounding pair of double
+ * quotes is stripped before anything else runs.
+ *
+ * Only the first non-blank line is ever checked for a column-title row (e.g.
+ * "Lantai | Nama | Tipe" copied along with the sheet) - a later line that
+ * happens to read the same way is real data and is kept.
  *
  * Nothing is silently dropped: every skipped line produces a warning naming its
  * line number and the reason, because a room missing from the import is a room
@@ -212,6 +280,7 @@ export function parseRoomPaste(text: string): RoomPasteResult {
   const rows: ParsedRoomRow[] = [];
   const warnings: string[] = [];
   const seen = new Map<string, number>(); // code → line that claimed it
+  let headerChecked = false;
 
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
@@ -219,7 +288,20 @@ export function parseRoomPaste(text: string): RoomPasteResult {
     const raw = lines[i].trim();
     if (!raw) continue;
 
-    const cols = raw.split(/\s*[|;\t]\s*/).map((c) => c.trim());
+    const cols = raw
+      .split(/\s*[|;\t]\s*/)
+      .map((c) => c.trim().replace(/^"(.*)"$/, '$1').trim());
+
+    if (!headerChecked) {
+      headerChecked = true;
+      if (looksLikeHeaderRow(cols)) {
+        warnings.push(
+          `Baris ${line} dilewati: baris ini terlihat seperti judul kolom ("${cols.join(' | ')}"), bukan data ruangan.`,
+        );
+        continue;
+      }
+    }
+
     const floor = cols.length >= 2 ? cols[0] : '';
     const name = cols.length >= 2 ? cols[1] : cols[0];
     const typeRaw = cols.length >= 3 ? cols[2] : '';
@@ -236,12 +318,19 @@ export function parseRoomPaste(text: string): RoomPasteResult {
       else warnings.push(`Baris ${line}: tipe area "${typeRaw}" tidak dikenal, dipakai "Umum".`);
     }
 
-    const room_code = normalizeRoomCode(`${floor} ${name}`);
+    const candidate = `${floor} ${name}`;
+    const room_code = normalizeRoomCode(candidate);
     if (!isValidRoomCode(room_code)) {
       warnings.push(
         `Baris ${line} dilewati: kode "${room_code}" tidak valid (maksimal ${ROOM_CODE_MAX} karakter, huruf besar, angka dan tanda hubung).`,
       );
       continue;
+    }
+
+    if (preSliceRoomCode(candidate).length > ROOM_CODE_MAX) {
+      warnings.push(
+        `Baris ${line}: kode dipotong ke ${ROOM_CODE_MAX} karakter menjadi "${room_code}". Pertimbangkan nama yang lebih pendek.`,
+      );
     }
 
     const claimed = seen.get(room_code);

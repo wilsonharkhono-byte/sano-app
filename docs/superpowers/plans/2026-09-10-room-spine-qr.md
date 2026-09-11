@@ -1837,10 +1837,13 @@ Create `tools/__tests__/rooms.test.ts`:
 
 ```ts
 /**
- * Only the pure halves are covered here. The Supabase halves are thin
- * single-statement wrappers whose real failure modes are RLS and constraint
- * violations - neither reproducible under jest, both covered by the migration
- * self-checks in 096 and by the manual pilot pass in spec §14.
+ * The pure halves (parseRoomPaste, roomsToDatumAreas) are fully covered here.
+ * For the Supabase halves, only the branching logic is testable under jest -
+ * mapping a 23505 conflict to DUPLICATE_ROOM_CODE, short-circuiting before any
+ * request on an invalid code, and ensureAreaUmum's select-then-insert-then-
+ * recover race, including its discarded-read warnings. Real RLS and
+ * constraint failures are not reproducible here; those stay covered by the
+ * migration self-checks in 096 and the manual pilot pass in spec §14.
  *
  * parseRoomPaste is the one place a human hands the system a list, so its
  * refusals matter: a room silently dropped from an import is a room with no
@@ -1852,8 +1855,11 @@ Create `tools/__tests__/rooms.test.ts`:
 // module-level import still has to be stubbed.
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
 
-import { parseRoomPaste, roomsToDatumAreas } from '../rooms';
+import { supabase } from '../supabase';
+import { parseRoomPaste, roomsToDatumAreas, createRoom, ensureAreaUmum } from '../rooms';
 import type { Room } from '../types';
+
+const mockSupabase = supabase as jest.Mocked<typeof supabase>;
 
 const room = (over: Partial<Room>): Room => ({
   id: 'r1', project_id: 'p1', room_code: 'UMUM', room_name: 'Area Umum',
@@ -1931,6 +1937,42 @@ describe('parseRoomPaste', () => {
     expect(parseRoomPaste('').rows).toHaveLength(0);
     expect(parseRoomPaste('   \n  ').rows).toHaveLength(0);
   });
+
+  it('strips one pair of surrounding double quotes from each cell', () => {
+    const { rows } = parseRoomPaste('"Lt. 2" | "Kamar Mandi Utama"');
+    expect(rows[0]).toMatchObject({ floor: 'Lt. 2', room_name: 'Kamar Mandi Utama' });
+  });
+
+  it('keeps a row but warns when the 40-character slice truncates a still-valid code', () => {
+    const { rows, warnings } = parseRoomPaste('Lt. 1 | Kamar Tidur Utama Dengan Kamar Mandi Dalam');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].room_code).toBe('LT-1-KAMAR-TIDUR-UTAMA-DENGAN-KAMAR-MAND');
+    expect(rows[0].room_code.length).toBe(40);
+    expect(warnings.join(' ')).toMatch(/Baris 1.*dipotong ke 40.*KAMAR-MAND/);
+  });
+});
+
+describe('parseRoomPaste - header row detection', () => {
+  it('skips a column-title first line and names it in the warning', () => {
+    const { rows, warnings } = parseRoomPaste('Lantai | Nama | Tipe\nLt. 1 | Dapur | Dapur');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ floor: 'Lt. 1', room_name: 'Dapur' });
+    expect(warnings.join(' ')).toMatch(/Baris 1.*judul kolom/i);
+  });
+
+  it('does not false-positive on an ordinary first data line', () => {
+    const { rows, warnings } = parseRoomPaste('Lt. 1 | Dapur');
+    expect(rows).toHaveLength(1);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('only checks the first non-blank line - a header-like line later is data', () => {
+    const { rows, warnings } = parseRoomPaste(
+      'Lt. 1 | Dapur\nLt. 2 | Kamar Tidur\nLantai | Nama | Tipe',
+    );
+    expect(rows).toHaveLength(3);
+    expect(warnings.join(' ')).not.toMatch(/judul kolom/i);
+  });
 });
 
 describe('roomsToDatumAreas', () => {
@@ -1949,6 +1991,145 @@ describe('roomsToDatumAreas', () => {
 
   it('exports inactive rooms too - DATUM decides, not SANO', () => {
     expect(roomsToDatumAreas([room({ active: false })])).toHaveLength(1);
+  });
+});
+
+describe('createRoom (Supabase mocked)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('maps a 23505 insert conflict to the duplicate message and code', async () => {
+    const insertChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({
+        data: null,
+        error: { code: '23505', message: 'duplicate key value violates unique constraint' },
+      }),
+    };
+    (mockSupabase.from as jest.Mock).mockReturnValue(insertChain);
+
+    const result = await createRoom({
+      project_id: 'p1', room_name: 'Dapur', floor: 'Lt. 1', area_type: 'kitchen',
+    });
+
+    expect(result.code).toBe('DUPLICATE_ROOM_CODE');
+    expect(result.error).toMatch(/sudah dipakai/);
+  });
+
+  it('refuses an invalid room code before touching the database', async () => {
+    const result = await createRoom({
+      project_id: 'p1', room_name: '!!!', floor: '###', area_type: 'general',
+    });
+
+    expect(result.code).toBe('INVALID_ROOM_CODE');
+    expect(result.error).toMatch(/tidak valid/);
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+  });
+});
+
+describe('ensureAreaUmum (Supabase mocked)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('returns the existing Area Umum room when the first select finds it', async () => {
+    const existing = room({ room_code: 'UMUM' });
+    const selectChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: existing, error: null }),
+    };
+    (mockSupabase.from as jest.Mock).mockReturnValue(selectChain);
+
+    const result = await ensureAreaUmum('p1');
+
+    expect(result.room).toEqual(existing);
+    expect(mockSupabase.from).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers after a simulated race: select misses, insert 23505s, re-select finds it', async () => {
+    const existing = room({ room_code: 'UMUM' });
+    const firstSelectChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+    };
+    const insertChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({
+        data: null,
+        error: { code: '23505', message: 'duplicate key value violates unique constraint' },
+      }),
+    };
+    const raceSelectChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: existing, error: null }),
+    };
+    (mockSupabase.from as jest.Mock)
+      .mockReturnValueOnce(firstSelectChain) // ensureAreaUmum's own select
+      .mockReturnValueOnce(insertChain)      // createRoom's insert
+      .mockReturnValueOnce(raceSelectChain); // re-select after the 23505
+
+    const result = await ensureAreaUmum('p1', 'user-1');
+
+    expect(result.room).toEqual(existing);
+    expect(mockSupabase.from).toHaveBeenCalledTimes(3);
+  });
+
+  it('warns but continues past an errored initial select, falling through to create', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const created = room({ room_code: 'UMUM' });
+    const failingSelectChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: { message: 'network blip' } }),
+    };
+    const insertChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: created, error: null }),
+    };
+    (mockSupabase.from as jest.Mock)
+      .mockReturnValueOnce(failingSelectChain)
+      .mockReturnValueOnce(insertChain);
+
+    const result = await ensureAreaUmum('p1');
+
+    expect(warnSpy).toHaveBeenCalledWith('ensureAreaUmum select failed:', 'network blip');
+    expect(result.room).toEqual(created);
+    warnSpy.mockRestore();
+  });
+
+  it('warns but continues past an errored re-select after a race, surfacing the conflict error', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const firstSelectChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+    };
+    const insertChain = {
+      insert: jest.fn().mockReturnThis(),
+      select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({
+        data: null,
+        error: { code: '23505', message: 'duplicate key value violates unique constraint' },
+      }),
+    };
+    const raceSelectChain = {
+      select: jest.fn().mockReturnThis(),
+      eq: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: { message: 'still down' } }),
+    };
+    (mockSupabase.from as jest.Mock)
+      .mockReturnValueOnce(firstSelectChain)
+      .mockReturnValueOnce(insertChain)
+      .mockReturnValueOnce(raceSelectChain);
+
+    const result = await ensureAreaUmum('p1');
+
+    expect(warnSpy).toHaveBeenCalledWith('ensureAreaUmum select failed:', 'still down');
+    expect(result.error).toMatch(/sudah dipakai/);
+    warnSpy.mockRestore();
   });
 });
 ```
@@ -2005,7 +2186,10 @@ export async function listRooms(
     .select(ROOM_COLUMNS)
     .eq('project_id', projectId)
     .not('room_code', 'is', null) // app invariant: Room.room_code is a string (tools/types.ts)
-    .order('floor', { ascending: true, nullsFirst: true })
+    // Area Umum has a NULL floor and sort_order 9999, and must sort last,
+    // consistent with the report grouping in spec §10.2; rooms without a
+    // floor therefore also group at the end.
+    .order('floor', { ascending: true, nullsFirst: false })
     .order('sort_order', { ascending: true })
     .order('room_name', { ascending: true });
 
@@ -2033,14 +2217,27 @@ export interface NewRoomInput {
   room_code?: string;
 }
 
-export async function createRoom(input: NewRoomInput): Promise<{ room?: Room; error?: string }> {
+/**
+ * `INVALID_ROOM_CODE` covers both a missing name and a code that fails
+ * normalizeRoomCode/isValidRoomCode - either way, no request was sent.
+ * `DUPLICATE_ROOM_CODE` is the 23505 branch; `DB_ERROR` is everything else
+ * the database returns. Additive to `error`, which keeps its Indonesian
+ * message unchanged - this just lets a caller (e.g. ensureAreaUmum) branch
+ * on structure instead of matching message substrings.
+ */
+export type RoomErrorCode = 'INVALID_ROOM_CODE' | 'DUPLICATE_ROOM_CODE' | 'DB_ERROR';
+
+export async function createRoom(
+  input: NewRoomInput,
+): Promise<{ room?: Room; error?: string; code?: RoomErrorCode }> {
   const name = input.room_name.trim();
-  if (!name) return { error: 'Nama ruangan wajib diisi.' };
+  if (!name) return { error: 'Nama ruangan wajib diisi.', code: 'INVALID_ROOM_CODE' };
 
   const code = normalizeRoomCode(input.room_code ?? `${input.floor} ${name}`);
   if (!isValidRoomCode(code)) {
     return {
       error: `Kode ruangan "${code}" tidak valid (maksimal ${ROOM_CODE_MAX} karakter, huruf besar, angka dan tanda hubung). Persingkat nama atau lantainya.`,
+      code: 'INVALID_ROOM_CODE',
     };
   }
 
@@ -2060,9 +2257,12 @@ export async function createRoom(input: NewRoomInput): Promise<{ room?: Room; er
     .single();
 
   if (error?.code === '23505') {
-    return { error: `Kode "${code}" sudah dipakai ruangan lain di proyek ini.` };
+    return {
+      error: `Kode "${code}" sudah dipakai ruangan lain di proyek ini.`,
+      code: 'DUPLICATE_ROOM_CODE',
+    };
   }
-  if (error) return { error: error.message };
+  if (error) return { error: error.message, code: 'DB_ERROR' };
   return { room: data as Room };
 }
 
@@ -2071,6 +2271,11 @@ export type RoomPatch = Partial<
   Pick<Room, 'room_name' | 'floor' | 'area_type' | 'sort_order' | 'area_sqm' | 'active'>
 >;
 
+/**
+ * Throws synchronously, before any request, if `patch` contains `room_code` -
+ * that is an invariant violation in the caller's code (see the header), not a
+ * runtime error to catch and display.
+ */
 export async function updateRoom(id: string, patch: RoomPatch): Promise<{ error?: string }> {
   if (Object.prototype.hasOwnProperty.call(patch, 'room_code')) {
     throw new Error('updateRoom tidak boleh mengubah room_code - kode ruangan bersifat tetap.');
@@ -2092,12 +2297,13 @@ export async function ensureAreaUmum(
   projectId: string,
   createdBy?: string | null,
 ): Promise<{ room?: Room; error?: string }> {
-  const { data: found } = await supabase
+  const { data: found, error: findError } = await supabase
     .from('rooms')
     .select(ROOM_COLUMNS)
     .eq('project_id', projectId)
     .eq('room_code', AREA_UMUM_CODE)
     .maybeSingle();
+  if (findError) console.warn('ensureAreaUmum select failed:', findError.message);
 
   if (found) return { room: found as Room };
 
@@ -2106,15 +2312,18 @@ export async function ensureAreaUmum(
     room_name:  AREA_UMUM_NAME,
     floor:      '',
     area_type:  'general',
-    sort_order: 9999, // sorts last, per spec §10.2
+    // Sorts last on both keys: floor is NULL (nullsFirst: false in listRooms)
+    // and sort_order is 9999, per spec §10.2.
+    sort_order: 9999,
     room_code:  AREA_UMUM_CODE,
     created_by: createdBy ?? null,
   });
 
-  if (created.error?.includes('sudah dipakai')) {
-    const { data } = await supabase
+  if (created.code === 'DUPLICATE_ROOM_CODE') {
+    const { data, error: raceError } = await supabase
       .from('rooms').select(ROOM_COLUMNS)
       .eq('project_id', projectId).eq('room_code', AREA_UMUM_CODE).maybeSingle();
+    if (raceError) console.warn('ensureAreaUmum select failed:', raceError.message);
     return data ? { room: data as Room } : { error: created.error };
   }
   return created;
@@ -2168,9 +2377,49 @@ const AREA_TYPE_LOOKUP: Record<string, AreaType> = (() => {
   return m;
 })();
 
+/** Column titles a pasted sheet might carry along - never room data. */
+const FLOOR_HEADER_WORDS = new Set(['lantai', 'floor', 'lt']);
+const NAME_HEADER_WORDS = new Set(['nama', 'nama ruangan', 'ruangan', 'name', 'room']);
+
+/** Lower-cases and drops one trailing dot, so a "Lt." header cell matches "lt". */
+function headerWord(cell: string): string {
+  return cell.trim().toLowerCase().replace(/\.$/, '');
+}
+
+/**
+ * True only when BOTH the floor and name columns read as titles, so a real
+ * room that happens to be named "Ruangan" in a single-column line, or whose
+ * floor is blank, is never mistaken for one.
+ */
+function looksLikeHeaderRow(cols: string[]): boolean {
+  if (cols.length < 2) return false;
+  return FLOOR_HEADER_WORDS.has(headerWord(cols[0])) && NAME_HEADER_WORDS.has(headerWord(cols[1]));
+}
+
+/**
+ * normalizeRoomCode's pipeline minus the final 40-character slice, so
+ * parseRoomPaste can tell whether the slice actually cut the code (and warn)
+ * or the code was already short enough. Keep in sync with roomCodes.ts.
+ */
+function preSliceRoomCode(raw: string): string {
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^A-Z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
 /**
  * One room per line: `floor <sep> name <sep> area type?`, where <sep> is `|`,
- * a tab or `;`. A single-column line is treated as a bare name.
+ * a tab or `;`. A single-column line is treated as a bare name. A cell may be
+ * quoted (Excel/Sheets paste convention); one surrounding pair of double
+ * quotes is stripped before anything else runs.
+ *
+ * Only the first non-blank line is ever checked for a column-title row (e.g.
+ * "Lantai | Nama | Tipe" copied along with the sheet) - a later line that
+ * happens to read the same way is real data and is kept.
  *
  * Nothing is silently dropped: every skipped line produces a warning naming its
  * line number and the reason, because a room missing from the import is a room
@@ -2180,6 +2429,7 @@ export function parseRoomPaste(text: string): RoomPasteResult {
   const rows: ParsedRoomRow[] = [];
   const warnings: string[] = [];
   const seen = new Map<string, number>(); // code → line that claimed it
+  let headerChecked = false;
 
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
@@ -2187,7 +2437,20 @@ export function parseRoomPaste(text: string): RoomPasteResult {
     const raw = lines[i].trim();
     if (!raw) continue;
 
-    const cols = raw.split(/\s*[|;\t]\s*/).map((c) => c.trim());
+    const cols = raw
+      .split(/\s*[|;\t]\s*/)
+      .map((c) => c.trim().replace(/^"(.*)"$/, '$1').trim());
+
+    if (!headerChecked) {
+      headerChecked = true;
+      if (looksLikeHeaderRow(cols)) {
+        warnings.push(
+          `Baris ${line} dilewati: baris ini terlihat seperti judul kolom ("${cols.join(' | ')}"), bukan data ruangan.`,
+        );
+        continue;
+      }
+    }
+
     const floor = cols.length >= 2 ? cols[0] : '';
     const name = cols.length >= 2 ? cols[1] : cols[0];
     const typeRaw = cols.length >= 3 ? cols[2] : '';
@@ -2204,12 +2467,19 @@ export function parseRoomPaste(text: string): RoomPasteResult {
       else warnings.push(`Baris ${line}: tipe area "${typeRaw}" tidak dikenal, dipakai "Umum".`);
     }
 
-    const room_code = normalizeRoomCode(`${floor} ${name}`);
+    const candidate = `${floor} ${name}`;
+    const room_code = normalizeRoomCode(candidate);
     if (!isValidRoomCode(room_code)) {
       warnings.push(
         `Baris ${line} dilewati: kode "${room_code}" tidak valid (maksimal ${ROOM_CODE_MAX} karakter, huruf besar, angka dan tanda hubung).`,
       );
       continue;
+    }
+
+    if (preSliceRoomCode(candidate).length > ROOM_CODE_MAX) {
+      warnings.push(
+        `Baris ${line}: kode dipotong ke ${ROOM_CODE_MAX} karakter menjadi "${room_code}". Pertimbangkan nama yang lebih pendek.`,
+      );
     }
 
     const claimed = seen.get(room_code);
@@ -2257,7 +2527,7 @@ export function roomsToDatumAreas(rooms: Room[]): DatumAreaExport[] {
 npx jest tools/__tests__/rooms.test.ts
 ```
 
-Expected: `Tests: 14 passed, 14 total`.
+Expected: `Tests: 25 passed, 25 total`.
 
 - [ ] **Step 5: Commit**
 
