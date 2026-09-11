@@ -1,4 +1,4 @@
-import { resolveNotificationRoute } from '../notificationRouting';
+import { KNOWN_DEEPLINK_SCREENS, resolveNotificationRoute } from '../notificationRouting';
 
 describe('resolveNotificationRoute', () => {
   // ── Base deeplink → route mapping (role-independent) ────────────────────
@@ -65,5 +65,21 @@ describe('resolveNotificationRoute', () => {
     // defensive fallback already relied on for REQUEST_PENDING above, should
     // that targeting ever change.
     expect(resolveNotificationRoute('ApprovalsScreen', 'supervisor')).toBe('Permintaan');
+  });
+});
+
+// ── SITE_EVENT_ASSIGNED (2026-09-10 room site events, migration 097) ────────
+// confirm_site_event enqueues it with deeplink_screen = 'SiteEventDetail'. The
+// detail screen is registered under that exact name in the supervisor, office
+// and principal navigators, so every role must resolve it unchanged.
+describe('resolveNotificationRoute - SiteEventDetail', () => {
+  it('is a declared deeplink, not an accident of the pass-through', () => {
+    expect(KNOWN_DEEPLINK_SCREENS).toContain('SiteEventDetail');
+  });
+
+  it('resolves to the same-named route for every role', () => {
+    for (const role of ['supervisor', 'estimator', 'admin', 'principal', undefined, null]) {
+      expect(resolveNotificationRoute('SiteEventDetail', role)).toBe('SiteEventDetail');
+    }
   });
 });

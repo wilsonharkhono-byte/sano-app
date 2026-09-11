@@ -9,6 +9,7 @@
 //   ApprovalsScreen → Permintaan      Approvals    Approvals
 //   POScreen        → Procurement*    Procurement  Procurement (Gate2/PO)
 //   ReceiptScreen   → Terima          Terima*      Terima
+//   SiteEventDetail → SiteEventDetail SiteEventDetail SiteEventDetail
 //
 //   (* route absent from that role's nav — caller's try/catch falls back to
 //    the Notifikasi tab; out of scope here.)
@@ -36,7 +37,14 @@ const BASE_ROUTE_MAP: Record<string, string> = {
   ApprovalsScreen: 'Approvals',
   POScreen: 'Procurement',
   ReceiptScreen: 'Terima',
+  // SITE_EVENT_ASSIGNED (migration 097 confirm_site_event). The detail screen is
+  // registered under this exact name in all three navigators, so it maps to
+  // itself; listed so the deeplink is declared rather than implied.
+  SiteEventDetail: 'SiteEventDetail',
 };
+
+/** Every deeplink_screen a server-side notification is known to use. */
+export const KNOWN_DEEPLINK_SCREENS: ReadonlyArray<string> = Object.keys(BASE_ROUTE_MAP);
 
 export function resolveNotificationRoute(
   deeplinkScreen: string,
