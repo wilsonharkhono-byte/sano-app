@@ -3327,8 +3327,18 @@ Create `tools/__tests__/roomLabelsHtml.test.ts`:
 // ./supabase - see the note in task 5.
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
 
-import { renderRoomLabelSheetHtml, LABELS_PER_PAGE } from '../roomLabelsHtml';
-import type { Room } from '../types';
+// exportRoomLabelSheet's own tests below replace ./rooms outright (no real
+// Supabase round-trip) and stub qrcode and react-native's Platform, since
+// exportRoomLabelSheet is the impure, browser-facing half of this module.
+jest.mock('../rooms', () => ({ __esModule: true, markRoomsPrinted: jest.fn() }));
+jest.mock('qrcode', () => ({ __esModule: true, default: { toString: jest.fn().mockResolvedValue('<svg/>') } }));
+jest.mock('react-native', () => ({ Platform: { OS: 'web' } }));
+
+import { renderRoomLabelSheetHtml, LABELS_PER_PAGE, exportRoomLabelSheet } from '../roomLabelsHtml';
+import { markRoomsPrinted } from '../rooms';
+import QRCode from 'qrcode';
+import { Platform } from 'react-native';
+import type { Project, Room } from '../types';
 
 const room = (i: number, over: Partial<Room> = {}): Room => ({
   id: `r${i}`, project_id: 'p1', room_code: `LT1-R${i}`, room_name: `Ruang ${i}`,
@@ -3379,6 +3389,10 @@ describe('renderRoomLabelSheetHtml', () => {
     expect(html).toMatch(/page-break-after:\s*always/);
   });
 
+  it('gives the QR a bottom quiet-gap matching the top, in the print CSS', () => {
+    expect(render([room(1)])).toMatch(/\.label \.qr\s*\{[^}]*margin-bottom:\s*2mm/);
+  });
+
   it('escapes HTML in room and project names', () => {
     const html = renderRoomLabelSheetHtml({
       projectName: 'Nusa & <b>Golf</b>',
@@ -3401,6 +3415,105 @@ describe('renderRoomLabelSheetHtml', () => {
 
   it('handles an empty room list without emitting a page', () => {
     expect(render([])).not.toContain('class="page"');
+  });
+
+  it('throws, naming the room, rather than render a blank tile for a missing QR', () => {
+    expect(() => renderRoomLabelSheetHtml({
+      projectName: 'Nusa Golf I4',
+      projectCode: 'GA17',
+      rooms: [room(1), room(2)],
+      qrSvgByRoomId: svgMap([room(1)]), // room 2's QR is missing
+    })).toThrow(/r2/);
+  });
+});
+
+describe('exportRoomLabelSheet', () => {
+  const project: Pick<Project, 'id' | 'code' | 'name'> = { id: 'p1', code: 'GA17', name: 'Nusa Golf I4' };
+  const rooms = [room(1), room(2)];
+
+  let fakePopup: {
+    document: { open: jest.Mock; write: jest.Mock; close: jest.Mock; fonts: { ready: Promise<void> } };
+    focus: jest.Mock;
+    print: jest.Mock;
+  };
+  // testEnvironment: node has no global.window, so it must be faked in and
+  // torn back out per test rather than merely reset.
+  const hadWindow = Object.prototype.hasOwnProperty.call(global, 'window');
+  let originalWindow: unknown;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (Platform as any).OS = 'web';
+    fakePopup = {
+      document: {
+        open: jest.fn(),
+        write: jest.fn(),
+        close: jest.fn(),
+        fonts: { ready: Promise.resolve() },
+      },
+      focus: jest.fn(),
+      print: jest.fn(),
+    };
+    originalWindow = (global as any).window;
+    (global as any).window = {
+      open: jest.fn(() => fakePopup),
+      confirm: jest.fn(() => true),
+    };
+    (markRoomsPrinted as jest.Mock).mockResolvedValue({});
+    (QRCode.toString as jest.Mock).mockResolvedValue('<svg/>');
+  });
+
+  afterEach(() => {
+    if (hadWindow) {
+      (global as any).window = originalWindow;
+    } else {
+      delete (global as any).window;
+    }
+  });
+
+  it('rejects on native before touching window', async () => {
+    (Platform as any).OS = 'android';
+    await expect(exportRoomLabelSheet(project, rooms)).rejects.toThrow(
+      'Cetak label QR hanya tersedia di versi web. Buka SANO di browser kantor.',
+    );
+    expect(global.window.open).not.toHaveBeenCalled();
+    expect(markRoomsPrinted).not.toHaveBeenCalled();
+  });
+
+  it('rejects when there are no rooms selected', async () => {
+    await expect(exportRoomLabelSheet(project, [])).rejects.toThrow(
+      'Tidak ada ruangan yang dipilih untuk dicetak.',
+    );
+    expect(markRoomsPrinted).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the popup is blocked, and never marks rooms printed', async () => {
+    (global.window.open as jest.Mock).mockReturnValue(null);
+    await expect(exportRoomLabelSheet(project, rooms)).rejects.toThrow(
+      'Popup diblokir. Izinkan popup untuk mencetak label.',
+    );
+    expect(markRoomsPrinted).not.toHaveBeenCalled();
+  });
+
+  it('does not mark rooms printed, and does not throw, when the user says the labels are not printed yet', async () => {
+    (global.window.confirm as jest.Mock).mockReturnValue(false);
+    await expect(exportRoomLabelSheet(project, rooms)).resolves.toBeUndefined();
+    expect(fakePopup.print).toHaveBeenCalled();
+    expect(markRoomsPrinted).not.toHaveBeenCalled();
+  });
+
+  it('marks the printed rooms once the user confirms', async () => {
+    (global.window.confirm as jest.Mock).mockReturnValue(true);
+    await exportRoomLabelSheet(project, rooms);
+    expect(markRoomsPrinted).toHaveBeenCalledWith(['r1', 'r2']);
+  });
+
+  it('throws a truthful error when printing succeeded but the stamp failed', async () => {
+    (global.window.confirm as jest.Mock).mockReturnValue(true);
+    (markRoomsPrinted as jest.Mock).mockResolvedValue({ error: 'RLS refused' });
+    await expect(exportRoomLabelSheet(project, rooms)).rejects.toThrow(
+      'Label tercetak, tetapi penandaan "sudah dicetak" gagal: RLS refused. Kode ruangan belum terkunci - coba cetak ulang.',
+    );
   });
 });
 ```
@@ -3426,6 +3539,19 @@ Create `tools/roomLabelsHtml.ts`:
 // react-native-svg component, which cannot be serialized into an HTML string
 // without a renderer round-trip. `qrcode` returns the <svg> markup directly,
 // which is what this sheet needs. Amend spec §8's dependency list accordingly.
+//
+// IMPORT SHAPE. `qrcode` is imported statically at module top even though it
+// is only ever called from the web-only exportRoomLabelSheet below. This repo's
+// metro.config.js uses expo/metro-config's default resolver.resolverMainFields
+// = ['react-native', 'browser', 'main'] (verified 2026-09-11), applied to every
+// platform - not just 'web'. qrcode's package.json has no "react-native" field
+// but does have a "browser" field mapping "./lib/index.js" to "./lib/browser.js",
+// so Metro resolves the Android/iOS bundle to browser.js too, never to the
+// Node-only index.js that touches `fs`. browser.js has no top-level DOM or Node
+// access - `document.createElement('canvas')` lives inside getCanvasElement(),
+// which only toCanvas/toDataURL call; this file only ever calls
+// QRCode.toString(...). So the static import is safe to bundle into the Android
+// APK: it adds bytes, not behavior, on native.
 
 import { Platform } from 'react-native';
 import QRCode from 'qrcode';
@@ -3462,7 +3588,7 @@ body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-se
 .label { border: 1px dashed #B5AFA8; border-radius: 3mm; padding: 4mm;
          display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
          text-align: center; overflow: hidden; }
-.label .qr { width: 32mm; height: 32mm; }
+.label .qr { width: 32mm; height: 32mm; margin-bottom: 2mm; }
 .label .qr svg { width: 100%; height: 100%; }
 .label .name { font-size: 11pt; font-weight: 700; line-height: 1.15; margin-top: 2mm; }
 .label .floor { font-size: 9pt; color: #524E49; margin-top: 1mm; }
@@ -3478,10 +3604,16 @@ export function renderRoomLabelSheetHtml(input: RoomLabelSheetInput): string {
   const pages: string[] = [];
   for (let i = 0; i < rooms.length; i += LABELS_PER_PAGE) {
     const labels = rooms.slice(i, i + LABELS_PER_PAGE).map((r) => {
+      const svg = qrSvgByRoomId[r.id];
+      if (svg === undefined) {
+        // A blank tile ships a label with no QR and no signal that anything is
+        // wrong (CLAUDE.md §12: refuse a number/output rather than fake one).
+        throw new Error(`renderRoomLabelSheetHtml: missing QR svg for room ${r.id}`);
+      }
       const url = buildRoomUrl(projectCode, r.room_code);
       return `
       <div class="label">
-        <div class="qr">${qrSvgByRoomId[r.id] ?? ''}</div>
+        <div class="qr">${svg}</div>
         <div class="name">${esc(r.room_name)}</div>
         <div class="floor">${esc(r.floor || '—')}</div>
         <div class="code">${esc(r.room_code)}</div>
@@ -3499,9 +3631,11 @@ export function renderRoomLabelSheetHtml(input: RoomLabelSheetInput): string {
 }
 
 /**
- * Generate the QR codes, open the print popup, then stamp qr_printed_at. The
- * stamp happens AFTER the popup opens, because that is the point at which the
- * codes have physically left the system - and 096 freezes room_code from then on.
+ * Generate the QR codes, open the print popup, call print(), then ASK before
+ * stamping qr_printed_at. print() returning is not proof the labels physically
+ * left the system - it returns just as promptly if the user hits Cancel in the
+ * print dialog - so the stamp (which freezes room_code per 096) waits on an
+ * explicit confirmation in the main window instead of trusting print()'s return.
  */
 export async function exportRoomLabelSheet(
   project: Pick<Project, 'id' | 'code' | 'name'>,
@@ -3517,7 +3651,7 @@ export async function exportRoomLabelSheet(
     qrSvgByRoomId[r.id] = await QRCode.toString(buildRoomUrl(project.code, r.room_code), {
       type: 'svg',
       errorCorrectionLevel: 'M', // survives a smudge on a site wall
-      margin: 0,
+      margin: 1, // one module of built-in quiet zone, so a scanner isn't confused by the label border
     });
   }
 
@@ -3533,8 +3667,18 @@ export async function exportRoomLabelSheet(
   win.document.open();
   win.document.write(html);
   win.document.close();
+  // Fidelity safeguard: wait for fonts before printing, same as the client
+  // report (tools/clientReportHtml.ts:472-476).
+  try {
+    // @ts-ignore - document.fonts exists in browsers
+    if (win.document.fonts?.ready) await win.document.fonts.ready;
+  } catch { /* ignore font API gaps */ }
   win.focus();
   win.print();
+
+  // print() returning is NOT proof the labels came out - it returns just as
+  // promptly on Cancel. Ask in the main window before freezing room_code.
+  if (!window.confirm('Label sudah selesai dicetak? Tekan OK bila sudah, Batal bila belum.')) return;
 
   const { error } = await markRoomsPrinted(rooms.map((r) => r.id));
   if (error) {
@@ -3543,7 +3687,7 @@ export async function exportRoomLabelSheet(
 }
 ```
 
-- [ ] **Step 5: Run it, expect PASS** - `npx jest tools/__tests__/roomLabelsHtml.test.ts` → `Tests: 8 passed`.
+- [ ] **Step 5: Run it, expect PASS** - `npx jest tools/__tests__/roomLabelsHtml.test.ts` → `Tests: 16 passed`.
 
 - [ ] **Step 6: Commit**
 
@@ -3909,7 +4053,7 @@ export default function RoomsAdminScreen() {
       toast(`${target.length} label dikirim ke printer.`, 'ok');
       await load(); // pick up qr_printed_at
     } catch (err: any) {
-      Alert.alert('Cetak label gagal', err?.message ?? String(err));
+      Alert.alert('Cetak label', err?.message ?? String(err));
     }
   };
 

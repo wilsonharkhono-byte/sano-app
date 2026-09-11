@@ -61,7 +61,7 @@ body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-se
 .label { border: 1px dashed #B5AFA8; border-radius: 3mm; padding: 4mm;
          display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
          text-align: center; overflow: hidden; }
-.label .qr { width: 32mm; height: 32mm; }
+.label .qr { width: 32mm; height: 32mm; margin-bottom: 2mm; }
 .label .qr svg { width: 100%; height: 100%; }
 .label .name { font-size: 11pt; font-weight: 700; line-height: 1.15; margin-top: 2mm; }
 .label .floor { font-size: 9pt; color: #524E49; margin-top: 1mm; }
@@ -77,10 +77,16 @@ export function renderRoomLabelSheetHtml(input: RoomLabelSheetInput): string {
   const pages: string[] = [];
   for (let i = 0; i < rooms.length; i += LABELS_PER_PAGE) {
     const labels = rooms.slice(i, i + LABELS_PER_PAGE).map((r) => {
+      const svg = qrSvgByRoomId[r.id];
+      if (svg === undefined) {
+        // A blank tile ships a label with no QR and no signal that anything is
+        // wrong (CLAUDE.md §12: refuse a number/output rather than fake one).
+        throw new Error(`renderRoomLabelSheetHtml: missing QR svg for room ${r.id}`);
+      }
       const url = buildRoomUrl(projectCode, r.room_code);
       return `
       <div class="label">
-        <div class="qr">${qrSvgByRoomId[r.id] ?? ''}</div>
+        <div class="qr">${svg}</div>
         <div class="name">${esc(r.room_name)}</div>
         <div class="floor">${esc(r.floor || '—')}</div>
         <div class="code">${esc(r.room_code)}</div>
@@ -98,9 +104,11 @@ export function renderRoomLabelSheetHtml(input: RoomLabelSheetInput): string {
 }
 
 /**
- * Generate the QR codes, open the print popup, then stamp qr_printed_at. The
- * stamp happens AFTER the popup opens, because that is the point at which the
- * codes have physically left the system - and 096 freezes room_code from then on.
+ * Generate the QR codes, open the print popup, call print(), then ASK before
+ * stamping qr_printed_at. print() returning is not proof the labels physically
+ * left the system - it returns just as promptly if the user hits Cancel in the
+ * print dialog - so the stamp (which freezes room_code per 096) waits on an
+ * explicit confirmation in the main window instead of trusting print()'s return.
  */
 export async function exportRoomLabelSheet(
   project: Pick<Project, 'id' | 'code' | 'name'>,
@@ -116,7 +124,7 @@ export async function exportRoomLabelSheet(
     qrSvgByRoomId[r.id] = await QRCode.toString(buildRoomUrl(project.code, r.room_code), {
       type: 'svg',
       errorCorrectionLevel: 'M', // survives a smudge on a site wall
-      margin: 0,
+      margin: 1, // one module of built-in quiet zone, so a scanner isn't confused by the label border
     });
   }
 
@@ -140,6 +148,10 @@ export async function exportRoomLabelSheet(
   } catch { /* ignore font API gaps */ }
   win.focus();
   win.print();
+
+  // print() returning is NOT proof the labels came out - it returns just as
+  // promptly on Cancel. Ask in the main window before freezing room_code.
+  if (!window.confirm('Label sudah selesai dicetak? Tekan OK bila sudah, Batal bila belum.')) return;
 
   const { error } = await markRoomsPrinted(rooms.map((r) => r.id));
   if (error) {
