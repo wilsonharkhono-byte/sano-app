@@ -1,0 +1,84 @@
+// SANO - Gate reference data (spec §2 decision 3, §4.1).
+//
+// gate_refs mirrors DATUM's gate_code enum A..H and gate_step_refs mirrors its
+// trade_steps. Labels, descriptions, order and the active flag are editable
+// from "Kelola gerbang"; codes are not, and cannot be deleted - migration 096
+// enforces both with a trigger, and these wrappers refuse earlier so the user
+// gets an Indonesian sentence instead of a Postgres exception.
+
+import { supabase } from './supabase';
+import type { GateRef, GateStepRef } from './types';
+
+const GATE_COLUMNS = 'code, name_id, short_label, description, sort_order, active, datum_gate_code';
+const STEP_COLUMNS = 'code, gate_code, name_id, description, sort_order, active, datum_step_code';
+
+export async function listGateRefs(opts: { activeOnly?: boolean } = {}): Promise<GateRef[]> {
+  let q = supabase.from('gate_refs').select(GATE_COLUMNS).order('sort_order', { ascending: true });
+  if (opts.activeOnly) q = q.eq('active', true);
+  const { data, error } = await q;
+  if (error) { console.warn('listGateRefs failed:', error.message); return []; }
+  return (data ?? []) as GateRef[];
+}
+
+export async function listGateStepRefs(opts: { activeOnly?: boolean } = {}): Promise<GateStepRef[]> {
+  let q = supabase.from('gate_step_refs').select(STEP_COLUMNS)
+    .order('gate_code', { ascending: true }).order('sort_order', { ascending: true });
+  if (opts.activeOnly) q = q.eq('active', true);
+  const { data, error } = await q;
+  if (error) { console.warn('listGateStepRefs failed:', error.message); return []; }
+  return (data ?? []) as GateStepRef[];
+}
+
+export type GateRefPatch = Partial<Pick<GateRef, 'name_id' | 'short_label' | 'description' | 'sort_order' | 'active'>>;
+export type GateStepRefPatch = Partial<Pick<GateStepRef, 'name_id' | 'description' | 'sort_order' | 'active'>>;
+
+function refuseCodeChange(patch: object): void {
+  if (Object.prototype.hasOwnProperty.call(patch, 'code')) {
+    throw new Error('Kode gerbang tidak boleh diubah - kode adalah kunci referensi kejadian lapangan.');
+  }
+}
+
+export async function updateGateRef(code: string, patch: GateRefPatch): Promise<{ error?: string }> {
+  refuseCodeChange(patch);
+  const { error } = await supabase.from('gate_refs').update(patch).eq('code', code);
+  return { error: error?.message };
+}
+
+export async function createGateStepRef(input: {
+  code: string; gate_code: string; name_id: string;
+  description?: string | null; sort_order?: number;
+}): Promise<{ step?: GateStepRef; error?: string }> {
+  const code = input.code.trim().toUpperCase();
+  if (!code) return { error: 'Kode langkah wajib diisi.' };
+  if (!input.name_id.trim()) return { error: 'Nama langkah wajib diisi.' };
+
+  const { data, error } = await supabase.from('gate_step_refs').insert({
+    code,
+    gate_code: input.gate_code,
+    name_id: input.name_id.trim(),
+    description: input.description ?? null,
+    sort_order: input.sort_order ?? 0,
+  }).select(STEP_COLUMNS).single();
+
+  if (error?.code === '23505') return { error: `Kode langkah "${code}" sudah dipakai.` };
+  if (error) return { error: error.message };
+  return { step: data as GateStepRef };
+}
+
+export async function updateGateStepRef(code: string, patch: GateStepRefPatch): Promise<{ error?: string }> {
+  refuseCodeChange(patch);
+  const { error } = await supabase.from('gate_step_refs').update(patch).eq('code', code);
+  return { error: error?.message };
+}
+
+// ─── Pure: chip labels ───────────────────────────────────────────────────────
+
+/** "B · Basah" - the chip a supervisor taps and the report prints. */
+export function gateChipLabel(gate: GateRef): string {
+  return `${gate.code} · ${gate.short_label}`;
+}
+
+/** "B · B4 Waterproofing". */
+export function stepChipLabel(step: GateStepRef, gate?: GateRef): string {
+  return `${gate?.code ?? step.gate_code} · ${step.code} ${step.name_id}`;
+}
