@@ -2,8 +2,9 @@
   "tasks": {
     "test": "deno test"
   },
+  "_comment": "Pinned exactly, not as a range: this function holds the service-role key and spends money, so the deployed dependency must be the reviewed one. Bump deliberately.",
   "imports": {
-    "@supabase/supabase-js": "jsr:@supabase/supabase-js@2",
-    "std/assert": "jsr:@std/assert@1"
+    "@supabase/supabase-js": "jsr:@supabase/supabase-js@2.105.1",
+    "std/assert": "jsr:@std/assert@1.0.19"
   }
 }

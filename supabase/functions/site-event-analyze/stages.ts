@@ -89,9 +89,20 @@ export function failureUpdate(message: string, sttError: string | null): Record<
   };
 }
 
-/** Not a failure of the model, so it does not count as an attempt. */
+/**
+ * Not a failure of the model, so it does not count as an attempt: index.ts
+ * reads the daily count BEFORE the claim and, when nothing else on the call
+ * would reach a provider, answers with this without claiming at all.
+ *
+ * The message is written verbatim and never concatenated with a transcription
+ * error, because `canOfferManualAuthoring` (tools/siteEventRules.ts) compares
+ * `last_error === AI_QUOTA_MESSAGE` exactly. An STT failure on the same call
+ * is recorded on its own site_event_ai_runs row.
+ */
 export function quotaUpdate(): Record<string, unknown> {
-  return { last_error: AI_QUOTA_MESSAGE };
+  return {
+    last_error: AI_QUOTA_MESSAGE,
+  };
 }
 
 /**
@@ -102,7 +113,26 @@ export function quotaUpdate(): Record<string, unknown> {
  * for the same event can never both spend an OpenAI/Claude call.
  */
 export function claimUpdate(ev: { analysis_attempts: number }): Record<string, unknown> {
-  return { analysis_attempts: ev.analysis_attempts + 1 };
+  return {
+    analysis_attempts: ev.analysis_attempts + 1,
+  };
+}
+
+/**
+ * Hands the claim back when the call aborted before either provider was
+ * reached (context load failed, no photo could be read, the deadline was gone).
+ *
+ * `analysis_attempts` is what `PendingAnalysisCard` shows as "Percobaan gagal"
+ * and what `canOfferManualAuthoring` counts against
+ * SITE_EVENT_MANUAL_AFTER_ATTEMPTS, so an attempt the model never saw must not
+ * be left on the row. index.ts guards this with the mirror of the claim's
+ * compare-and-swap — `.eq('analysis_attempts', ev.analysis_attempts + 1)` —
+ * so a release can never clobber a newer claim.
+ */
+export function releaseClaimUpdate(ev: { analysis_attempts: number }): Record<string, unknown> {
+  return {
+    analysis_attempts: ev.analysis_attempts,
+  };
 }
 
 export interface RunRow {
