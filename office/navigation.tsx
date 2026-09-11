@@ -16,6 +16,7 @@ const ApprovalsScreen = lazyScreen(() => import('./screens/ApprovalsScreen'));
 const OfficeProcurementScreen = lazyScreen(() => import('./screens/OfficeProcurementScreen'));
 const MaterialCatalogScreen = lazyScreen(() => import('./screens/MaterialCatalogScreen'));
 const EquipmentScreen = lazyScreen(() => import('./screens/EquipmentScreen'));
+const RoomsAdminScreen = lazyScreen(() => import('./screens/RoomsAdminScreen'));
 const OfficeReportsScreen = lazyScreen(() => import('./screens/OfficeReportsScreen'));
 const OfficeBaselineScreen = lazyScreen(() => import('./screens/OfficeBaselineScreen'));
 const MandorSetupScreen = lazyScreen(() => import('../workflows/screens/MandorSetupScreen'));
@@ -28,6 +29,7 @@ export type OfficeTabParamList = {
   Procurement: undefined;
   Materials: undefined;
   Equipment: undefined;
+  Rooms: undefined;
   Mandor: undefined;
   Opname: undefined;
   Reports: undefined;
@@ -43,6 +45,7 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Procurement: 'pricetag-outline',
   Materials: 'layers-outline',
   Equipment: 'construct-outline',
+  Rooms: 'business-outline',
   Mandor: 'people-outline',
   Opname: 'receipt-outline',
   Reports: 'bar-chart-outline',
@@ -56,6 +59,7 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Procurement: 'pricetag',
   Materials: 'layers',
   Equipment: 'construct',
+  Rooms: 'business',
   Mandor: 'people',
   Opname: 'receipt',
   Reports: 'bar-chart',
@@ -69,6 +73,7 @@ const LABEL_MAP: Record<string, string> = {
   Procurement: 'Harga',
   Materials: 'Katalog',
   Equipment: 'Alat',
+  Rooms: 'Ruangan',
   Mandor: 'Mandor',
   Opname: 'Opname',
   Reports: 'Laporan',
@@ -128,6 +133,7 @@ export default function OfficeNavigation() {
         <Tab.Screen name="Procurement" component={OfficeProcurementScreen} />
         <Tab.Screen name="Materials" component={MaterialCatalogScreen} />
         <Tab.Screen name="Equipment" component={EquipmentScreen} />
+        <Tab.Screen name="Rooms" component={RoomsAdminScreen} />
         {/* Mandor setup and Opname are accessed from the workflow Progres tab, not as standalone tabs */}
         <Tab.Screen
           name="Mandor"
