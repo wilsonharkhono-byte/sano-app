@@ -11,6 +11,12 @@
  * refusals matter: a room silently dropped from an import is a room with no
  * label, and a duplicate code is a second physical sticker pointing at the
  * first room's history.
+ *
+ * updateRoom, setRoomActive and markRoomsPrinted UPDATE rooms, which RLS
+ * restricts to office roles. A filtered UPDATE is not an error under RLS:
+ * PostgREST matches zero rows and Supabase reports error null. Without the
+ * read-back added here, a refused edit would show a success toast for a
+ * change that never happened (CLAUDE.md §12).
  */
 // tools/supabase.ts pulls in untransformed ESM (react-native-url-polyfill),
 // which jest cannot load. The pure helpers never touch the client, but the
@@ -18,10 +24,32 @@
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
 
 import { supabase } from '../supabase';
-import { parseRoomPaste, roomsToDatumAreas, createRoom, ensureAreaUmum } from '../rooms';
+import {
+  parseRoomPaste, roomsToDatumAreas, createRoom, ensureAreaUmum,
+  updateRoom, setRoomActive, markRoomsPrinted,
+} from '../rooms';
 import type { Room } from '../types';
 
 const mockSupabase = supabase as jest.Mocked<typeof supabase>;
+
+/** update().eq().select().maybeSingle() - the single-row read-back chain. */
+function updateChain(result: { data: unknown; error: { message: string } | null }) {
+  return {
+    update: jest.fn().mockReturnThis(),
+    eq: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    maybeSingle: jest.fn().mockResolvedValue(result),
+  };
+}
+
+/** update().in().select() - markRoomsPrinted's multi-row read-back chain. */
+function bulkUpdateChain(result: { data: unknown; error: { message: string } | null }) {
+  return {
+    update: jest.fn().mockReturnThis(),
+    in: jest.fn().mockReturnThis(),
+    select: jest.fn().mockResolvedValue(result),
+  };
+}
 
 const room = (over: Partial<Room>): Room => ({
   id: 'r1', project_id: 'p1', room_code: 'UMUM', room_name: 'Area Umum',
@@ -308,5 +336,84 @@ describe('ensureAreaUmum (Supabase mocked)', () => {
     expect(warnSpy).toHaveBeenCalledWith('ensureAreaUmum select failed:', 'still down');
     expect(result.error).toMatch(/sudah dipakai/);
     warnSpy.mockRestore();
+  });
+});
+
+describe('updateRoom (Supabase mocked)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('reports the RLS refusal instead of a silent success when the update is filtered', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(updateChain({ data: null, error: null }));
+    const result = await updateRoom('r1', { room_name: 'Dapur Baru' });
+    expect(result.error).toMatch(/peran kantor/i);
+  });
+
+  it('reports success when the row comes back', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: { id: 'r1' }, error: null }),
+    );
+    await expect(updateRoom('r1', { room_name: 'Dapur Baru' })).resolves.toEqual({});
+  });
+
+  it('passes a database error through', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: null, error: { message: 'boom' } }),
+    );
+    await expect(updateRoom('r1', { room_name: 'Dapur Baru' })).resolves.toEqual({ error: 'boom' });
+  });
+});
+
+describe('setRoomActive (Supabase mocked)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('reports the RLS refusal instead of a silent success when the update is filtered', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(updateChain({ data: null, error: null }));
+    const result = await setRoomActive('r1', false);
+    expect(result.error).toMatch(/peran kantor/i);
+  });
+
+  it('reports success when the row comes back', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: { id: 'r1' }, error: null }),
+    );
+    await expect(setRoomActive('r1', false)).resolves.toEqual({});
+  });
+
+  it('passes a database error through', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: null, error: { message: 'boom' } }),
+    );
+    await expect(setRoomActive('r1', false)).resolves.toEqual({ error: 'boom' });
+  });
+});
+
+describe('markRoomsPrinted (Supabase mocked)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('returns immediately for an empty id list, without touching the database', async () => {
+    await expect(markRoomsPrinted([])).resolves.toEqual({});
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+  });
+
+  it('reports the RLS refusal when fewer rows come back than were requested', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      bulkUpdateChain({ data: [{ id: 'r1' }], error: null }),
+    );
+    const result = await markRoomsPrinted(['r1', 'r2']);
+    expect(result.error).toMatch(/hak akses/i);
+  });
+
+  it('reports success when every row comes back', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      bulkUpdateChain({ data: [{ id: 'r1' }, { id: 'r2' }], error: null }),
+    );
+    await expect(markRoomsPrinted(['r1', 'r2'])).resolves.toEqual({});
+  });
+
+  it('passes a database error through', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      bulkUpdateChain({ data: null, error: { message: 'boom' } }),
+    );
+    await expect(markRoomsPrinted(['r1', 'r2'])).resolves.toEqual({ error: 'boom' });
   });
 });

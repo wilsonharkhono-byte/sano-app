@@ -5,6 +5,12 @@
 // from "Kelola gerbang"; codes are not, and cannot be deleted - migration 096
 // enforces both with a trigger, and these wrappers refuse earlier so the user
 // gets an Indonesian sentence instead of a Postgres exception.
+//
+// Under RLS a filtered UPDATE is not an error: PostgREST matches zero rows and
+// Supabase reports error null. updateGateRef and updateGateStepRef therefore
+// select the row back and treat a null row as the refusal it is, rather than
+// reporting a success that did not happen (CLAUDE.md §12; same idiom as
+// setProjectPhase, Task 7 of this plan).
 
 import { supabase } from './supabase';
 import type { GateRef, GateStepRef } from './types';
@@ -38,10 +44,14 @@ function refuseCodeChange(patch: object): void {
   }
 }
 
+const GATE_UPDATE_REFUSED = 'Perubahan gerbang tidak tersimpan. Hanya peran kantor yang dapat mengubah data gerbang.';
+
 export async function updateGateRef(code: string, patch: GateRefPatch): Promise<{ error?: string }> {
   refuseCodeChange(patch);
-  const { error } = await supabase.from('gate_refs').update(patch).eq('code', code);
-  return { error: error?.message };
+  const { data, error } = await supabase.from('gate_refs').update(patch).eq('code', code).select('code').maybeSingle();
+  if (error) return { error: error.message };
+  if (!data) return { error: GATE_UPDATE_REFUSED };
+  return {};
 }
 
 export async function createGateStepRef(input: {
@@ -67,8 +77,10 @@ export async function createGateStepRef(input: {
 
 export async function updateGateStepRef(code: string, patch: GateStepRefPatch): Promise<{ error?: string }> {
   refuseCodeChange(patch);
-  const { error } = await supabase.from('gate_step_refs').update(patch).eq('code', code);
-  return { error: error?.message };
+  const { data, error } = await supabase.from('gate_step_refs').update(patch).eq('code', code).select('code').maybeSingle();
+  if (error) return { error: error.message };
+  if (!data) return { error: GATE_UPDATE_REFUSED };
+  return {};
 }
 
 // ─── Pure: chip labels ───────────────────────────────────────────────────────

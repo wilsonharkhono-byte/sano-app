@@ -1862,6 +1862,12 @@ Create `tools/__tests__/rooms.test.ts`:
  * refusals matter: a room silently dropped from an import is a room with no
  * label, and a duplicate code is a second physical sticker pointing at the
  * first room's history.
+ *
+ * updateRoom, setRoomActive and markRoomsPrinted UPDATE rooms, which RLS
+ * restricts to office roles. A filtered UPDATE is not an error under RLS:
+ * PostgREST matches zero rows and Supabase reports error null. Without the
+ * read-back added here, a refused edit would show a success toast for a
+ * change that never happened (CLAUDE.md §12).
  */
 // tools/supabase.ts pulls in untransformed ESM (react-native-url-polyfill),
 // which jest cannot load. The pure helpers never touch the client, but the
@@ -1869,10 +1875,32 @@ Create `tools/__tests__/rooms.test.ts`:
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
 
 import { supabase } from '../supabase';
-import { parseRoomPaste, roomsToDatumAreas, createRoom, ensureAreaUmum } from '../rooms';
+import {
+  parseRoomPaste, roomsToDatumAreas, createRoom, ensureAreaUmum,
+  updateRoom, setRoomActive, markRoomsPrinted,
+} from '../rooms';
 import type { Room } from '../types';
 
 const mockSupabase = supabase as jest.Mocked<typeof supabase>;
+
+/** update().eq().select().maybeSingle() - the single-row read-back chain. */
+function updateChain(result: { data: unknown; error: { message: string } | null }) {
+  return {
+    update: jest.fn().mockReturnThis(),
+    eq: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    maybeSingle: jest.fn().mockResolvedValue(result),
+  };
+}
+
+/** update().in().select() - markRoomsPrinted's multi-row read-back chain. */
+function bulkUpdateChain(result: { data: unknown; error: { message: string } | null }) {
+  return {
+    update: jest.fn().mockReturnThis(),
+    in: jest.fn().mockReturnThis(),
+    select: jest.fn().mockResolvedValue(result),
+  };
+}
 
 const room = (over: Partial<Room>): Room => ({
   id: 'r1', project_id: 'p1', room_code: 'UMUM', room_name: 'Area Umum',
@@ -2161,6 +2189,85 @@ describe('ensureAreaUmum (Supabase mocked)', () => {
     warnSpy.mockRestore();
   });
 });
+
+describe('updateRoom (Supabase mocked)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('reports the RLS refusal instead of a silent success when the update is filtered', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(updateChain({ data: null, error: null }));
+    const result = await updateRoom('r1', { room_name: 'Dapur Baru' });
+    expect(result.error).toMatch(/peran kantor/i);
+  });
+
+  it('reports success when the row comes back', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: { id: 'r1' }, error: null }),
+    );
+    await expect(updateRoom('r1', { room_name: 'Dapur Baru' })).resolves.toEqual({});
+  });
+
+  it('passes a database error through', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: null, error: { message: 'boom' } }),
+    );
+    await expect(updateRoom('r1', { room_name: 'Dapur Baru' })).resolves.toEqual({ error: 'boom' });
+  });
+});
+
+describe('setRoomActive (Supabase mocked)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('reports the RLS refusal instead of a silent success when the update is filtered', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(updateChain({ data: null, error: null }));
+    const result = await setRoomActive('r1', false);
+    expect(result.error).toMatch(/peran kantor/i);
+  });
+
+  it('reports success when the row comes back', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: { id: 'r1' }, error: null }),
+    );
+    await expect(setRoomActive('r1', false)).resolves.toEqual({});
+  });
+
+  it('passes a database error through', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: null, error: { message: 'boom' } }),
+    );
+    await expect(setRoomActive('r1', false)).resolves.toEqual({ error: 'boom' });
+  });
+});
+
+describe('markRoomsPrinted (Supabase mocked)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('returns immediately for an empty id list, without touching the database', async () => {
+    await expect(markRoomsPrinted([])).resolves.toEqual({});
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+  });
+
+  it('reports the RLS refusal when fewer rows come back than were requested', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      bulkUpdateChain({ data: [{ id: 'r1' }], error: null }),
+    );
+    const result = await markRoomsPrinted(['r1', 'r2']);
+    expect(result.error).toMatch(/hak akses/i);
+  });
+
+  it('reports success when every row comes back', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      bulkUpdateChain({ data: [{ id: 'r1' }, { id: 'r2' }], error: null }),
+    );
+    await expect(markRoomsPrinted(['r1', 'r2'])).resolves.toEqual({});
+  });
+
+  it('passes a database error through', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      bulkUpdateChain({ data: null, error: { message: 'boom' } }),
+    );
+    await expect(markRoomsPrinted(['r1', 'r2'])).resolves.toEqual({ error: 'boom' });
+  });
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -2191,6 +2298,13 @@ Create `tools/rooms.ts`:
 //
 // listRooms excludes rows with a NULL room_code; such rows can only come from
 // pre-096 data and cannot be labelled or linked.
+//
+// Under RLS a filtered UPDATE is not an error: PostgREST matches zero rows and
+// Supabase reports error null. updateRoom (and markRoomsPrinted, which shares
+// the same shape) therefore select the row(s) back and treat a missing row as
+// the refusal it is, rather than reporting a success that did not happen
+// (CLAUDE.md §12; same idiom as setProjectPhase, Task 7 of this plan).
+// setRoomActive inherits this for free - it calls updateRoom.
 
 import { supabase } from './supabase';
 import { normalizeRoomCode, normalizeRoomCodeUnsliced, isValidRoomCode, ROOM_CODE_MAX } from './roomCodes';
@@ -2300,6 +2414,8 @@ export type RoomPatch = Partial<
   Pick<Room, 'room_name' | 'floor' | 'area_type' | 'sort_order' | 'area_sqm' | 'active'>
 >;
 
+const ROOM_UPDATE_REFUSED = 'Perubahan ruangan tidak tersimpan. Hanya peran kantor yang dapat mengubah ruangan.';
+
 /**
  * Throws synchronously, before any request, if `patch` contains `room_code` -
  * that is an invariant violation in the caller's code (see the header), not a
@@ -2309,8 +2425,10 @@ export async function updateRoom(id: string, patch: RoomPatch): Promise<{ error?
   if (Object.prototype.hasOwnProperty.call(patch, 'room_code')) {
     throw new Error('updateRoom tidak boleh mengubah room_code - kode ruangan bersifat tetap.');
   }
-  const { error } = await supabase.from('rooms').update(patch).eq('id', id);
-  return { error: error?.message };
+  const { data, error } = await supabase.from('rooms').update(patch).eq('id', id).select('id').maybeSingle();
+  if (error) return { error: error.message };
+  if (!data) return { error: ROOM_UPDATE_REFUSED };
+  return {};
 }
 
 export async function setRoomActive(id: string, active: boolean): Promise<{ error?: string }> {
@@ -2364,11 +2482,16 @@ export async function ensureAreaUmum(
 // can never become the printed date shown on the label history.
 export async function markRoomsPrinted(ids: string[]): Promise<{ error?: string }> {
   if (ids.length === 0) return {};
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('rooms')
     .update({ qr_printed_at: new Date().toISOString() })
-    .in('id', ids);
-  return { error: error?.message };
+    .in('id', ids)
+    .select('id');
+  if (error) return { error: error.message };
+  if ((data ?? []).length !== ids.length) {
+    return { error: 'Sebagian ruangan tidak bisa ditandai tercetak (hak akses atau ruangan tidak ditemukan).' };
+  }
+  return {};
 }
 
 // ─── Pure: paste import ──────────────────────────────────────────────────────
@@ -2592,7 +2715,7 @@ export function roomsToDatumAreas(rooms: Room[]): DatumAreaExport[] {
 npx jest tools/__tests__/rooms.test.ts
 ```
 
-Expected: `Tests: 27 passed, 27 total`.
+Expected: `Tests: 37 passed, 37 total` (27 from the original module, plus 10 covering the RLS read-back later added to `updateRoom`, `setRoomActive` and `markRoomsPrinted` - see the module and its header comment above).
 
 - [ ] **Step 5: Commit**
 
@@ -2627,20 +2750,41 @@ Create `tools/__tests__/gateRefs.test.ts`:
  * CODE is a foreign key that release 2's site_events will reference. The client
  * refuses a `code` in a patch before the database ever sees it, so the message
  * is Indonesian and the failure is at the call site, not a 500 from a trigger.
+ *
+ * updateGateRef and updateGateStepRef UPDATE gate_refs/gate_step_refs, which
+ * RLS restricts to office roles. A filtered UPDATE is not an error under RLS:
+ * PostgREST matches zero rows and Supabase reports error null. Without the
+ * read-back added here, a supervisor's refused edit would show a success
+ * toast for a change that never happened (CLAUDE.md §12).
  */
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
 
-import { gateChipLabel, stepChipLabel, updateGateRef } from '../gateRefs';
+import { supabase } from '../supabase';
+import { gateChipLabel, stepChipLabel, updateGateRef, updateGateStepRef } from '../gateRefs';
 import type { GateRef, GateStepRef } from '../types';
+
+const mockSupabase = supabase as jest.Mocked<typeof supabase>;
+
+/** update().eq().select().maybeSingle() - the read-back chain both functions share. */
+function updateChain(result: { data: unknown; error: { message: string } | null }) {
+  return {
+    update: jest.fn().mockReturnThis(),
+    eq: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    maybeSingle: jest.fn().mockResolvedValue(result),
+  };
+}
 
 const gate = (over: Partial<GateRef> = {}): GateRef => ({
   code: 'B', name_id: 'Pekerjaan Basah / Waterproofing', short_label: 'Basah',
-  description: null, sort_order: 20, active: true, datum_gate_code: null, ...over,
+  description: null, sort_order: 20, active: true, datum_gate_code: null,
+  created_at: '2026-09-10T00:00:00Z', ...over,
 });
 
 const step = (over: Partial<GateStepRef> = {}): GateStepRef => ({
   code: 'B4', gate_code: 'B', name_id: 'Waterproofing', description: null,
-  sort_order: 40, active: true, datum_step_code: null, ...over,
+  sort_order: 40, active: true, datum_step_code: null,
+  created_at: '2026-09-10T00:00:00Z', ...over,
 });
 
 describe('chip labels', () => {
@@ -2658,10 +2802,58 @@ describe('chip labels', () => {
 });
 
 describe('updateGateRef', () => {
+  beforeEach(() => jest.clearAllMocks());
+
   it('refuses a patch carrying code, before touching the database', async () => {
     await expect(
       updateGateRef('B', { code: 'Z' } as never),
     ).rejects.toThrow(/kode/i);
+  });
+
+  it('reports the RLS refusal instead of a silent success when the update is filtered', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(updateChain({ data: null, error: null }));
+    const result = await updateGateRef('B', { short_label: 'Basah 2' });
+    expect(result.error).toMatch(/peran kantor/i);
+  });
+
+  it('reports success when the row comes back', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: { code: 'B' }, error: null }),
+    );
+    await expect(updateGateRef('B', { short_label: 'Basah 2' })).resolves.toEqual({});
+  });
+
+  it('passes a database error through', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: null, error: { message: 'boom' } }),
+    );
+    await expect(updateGateRef('B', { short_label: 'Basah 2' })).resolves.toEqual({ error: 'boom' });
+  });
+});
+
+describe('updateGateStepRef', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('reports the RLS refusal instead of a silent success when the update is filtered', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(updateChain({ data: null, error: null }));
+    const result = await updateGateStepRef('B4', { name_id: 'Waterproofing 2' });
+    expect(result.error).toMatch(/peran kantor/i);
+  });
+
+  it('reports success when the row comes back', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: { code: 'B4' }, error: null }),
+    );
+    await expect(updateGateStepRef('B4', { name_id: 'Waterproofing 2' })).resolves.toEqual({});
+  });
+
+  it('passes a database error through', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      updateChain({ data: null, error: { message: 'boom' } }),
+    );
+    await expect(updateGateStepRef('B4', { name_id: 'Waterproofing 2' })).resolves.toEqual({
+      error: 'boom',
+    });
   });
 });
 ```
@@ -2680,6 +2872,12 @@ Create `tools/gateRefs.ts`:
 // from "Kelola gerbang"; codes are not, and cannot be deleted - migration 096
 // enforces both with a trigger, and these wrappers refuse earlier so the user
 // gets an Indonesian sentence instead of a Postgres exception.
+//
+// Under RLS a filtered UPDATE is not an error: PostgREST matches zero rows and
+// Supabase reports error null. updateGateRef and updateGateStepRef therefore
+// select the row back and treat a null row as the refusal it is, rather than
+// reporting a success that did not happen (CLAUDE.md §12; same idiom as
+// setProjectPhase, Task 7 of this plan).
 
 import { supabase } from './supabase';
 import type { GateRef, GateStepRef } from './types';
@@ -2713,10 +2911,14 @@ function refuseCodeChange(patch: object): void {
   }
 }
 
+const GATE_UPDATE_REFUSED = 'Perubahan gerbang tidak tersimpan. Hanya peran kantor yang dapat mengubah data gerbang.';
+
 export async function updateGateRef(code: string, patch: GateRefPatch): Promise<{ error?: string }> {
   refuseCodeChange(patch);
-  const { error } = await supabase.from('gate_refs').update(patch).eq('code', code);
-  return { error: error?.message };
+  const { data, error } = await supabase.from('gate_refs').update(patch).eq('code', code).select('code').maybeSingle();
+  if (error) return { error: error.message };
+  if (!data) return { error: GATE_UPDATE_REFUSED };
+  return {};
 }
 
 export async function createGateStepRef(input: {
@@ -2742,8 +2944,10 @@ export async function createGateStepRef(input: {
 
 export async function updateGateStepRef(code: string, patch: GateStepRefPatch): Promise<{ error?: string }> {
   refuseCodeChange(patch);
-  const { error } = await supabase.from('gate_step_refs').update(patch).eq('code', code);
-  return { error: error?.message };
+  const { data, error } = await supabase.from('gate_step_refs').update(patch).eq('code', code).select('code').maybeSingle();
+  if (error) return { error: error.message };
+  if (!data) return { error: GATE_UPDATE_REFUSED };
+  return {};
 }
 
 // ─── Pure: chip labels ───────────────────────────────────────────────────────
@@ -2759,7 +2963,7 @@ export function stepChipLabel(step: GateStepRef, gate?: GateRef): string {
 }
 ```
 
-- [ ] **Step 4: Run it, expect PASS** - `npx jest tools/__tests__/gateRefs.test.ts` → `Tests: 4 passed`.
+- [ ] **Step 4: Run it, expect PASS** - `npx jest tools/__tests__/gateRefs.test.ts` → `Tests: 10 passed, 10 total` (4 from the original module, plus 6 covering the RLS read-back added to `updateGateRef` and `updateGateStepRef` - see the module and its header comment above).
 
 - [ ] **Step 5: Commit**
 

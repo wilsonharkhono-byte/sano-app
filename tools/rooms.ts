@@ -13,6 +13,13 @@
 //
 // listRooms excludes rows with a NULL room_code; such rows can only come from
 // pre-096 data and cannot be labelled or linked.
+//
+// Under RLS a filtered UPDATE is not an error: PostgREST matches zero rows and
+// Supabase reports error null. updateRoom (and markRoomsPrinted, which shares
+// the same shape) therefore select the row(s) back and treat a missing row as
+// the refusal it is, rather than reporting a success that did not happen
+// (CLAUDE.md §12; same idiom as setProjectPhase, Task 7 of this plan).
+// setRoomActive inherits this for free - it calls updateRoom.
 
 import { supabase } from './supabase';
 import { normalizeRoomCode, normalizeRoomCodeUnsliced, isValidRoomCode, ROOM_CODE_MAX } from './roomCodes';
@@ -122,6 +129,8 @@ export type RoomPatch = Partial<
   Pick<Room, 'room_name' | 'floor' | 'area_type' | 'sort_order' | 'area_sqm' | 'active'>
 >;
 
+const ROOM_UPDATE_REFUSED = 'Perubahan ruangan tidak tersimpan. Hanya peran kantor yang dapat mengubah ruangan.';
+
 /**
  * Throws synchronously, before any request, if `patch` contains `room_code` -
  * that is an invariant violation in the caller's code (see the header), not a
@@ -131,8 +140,10 @@ export async function updateRoom(id: string, patch: RoomPatch): Promise<{ error?
   if (Object.prototype.hasOwnProperty.call(patch, 'room_code')) {
     throw new Error('updateRoom tidak boleh mengubah room_code - kode ruangan bersifat tetap.');
   }
-  const { error } = await supabase.from('rooms').update(patch).eq('id', id);
-  return { error: error?.message };
+  const { data, error } = await supabase.from('rooms').update(patch).eq('id', id).select('id').maybeSingle();
+  if (error) return { error: error.message };
+  if (!data) return { error: ROOM_UPDATE_REFUSED };
+  return {};
 }
 
 export async function setRoomActive(id: string, active: boolean): Promise<{ error?: string }> {
@@ -186,11 +197,16 @@ export async function ensureAreaUmum(
 // can never become the printed date shown on the label history.
 export async function markRoomsPrinted(ids: string[]): Promise<{ error?: string }> {
   if (ids.length === 0) return {};
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from('rooms')
     .update({ qr_printed_at: new Date().toISOString() })
-    .in('id', ids);
-  return { error: error?.message };
+    .in('id', ids)
+    .select('id');
+  if (error) return { error: error.message };
+  if ((data ?? []).length !== ids.length) {
+    return { error: 'Sebagian ruangan tidak bisa ditandai tercetak (hak akses atau ruangan tidak ditemukan).' };
+  }
+  return {};
 }
 
 // ─── Pure: paste import ──────────────────────────────────────────────────────
