@@ -21,7 +21,9 @@
 --
 -- RE-PASTE SAFETY. Pasted by hand into the Dashboard SQL editor (remote history
 -- is divergent, `supabase db push` is broken), so it must survive a second paste:
--- CREATE TABLE / INDEX IF NOT EXISTS, CREATE OR REPLACE for functions, DROP
+-- CREATE TABLE / INDEX IF NOT EXISTS, CREATE OR REPLACE for functions (plus
+-- DROP FUNCTION IF EXISTS on the two RPCs, 092's pattern, so the day a
+-- signature changes the old overload cannot survive carrying its GRANT), DROP
 -- VIEW IF EXISTS before the view (CREATE OR REPLACE VIEW alone would refuse a
 -- future column-list change), DROP TRIGGER IF EXISTS and DROP POLICY IF EXISTS
 -- before each create, and ON CONFLICT DO UPDATE for the bucket row (this
@@ -339,7 +341,11 @@ BEGIN
     RETURN NEW;
   END IF;
 
-  IF NEW.project_id IS DISTINCT FROM OLD.project_id
+  -- id leads the list: an event carries its own primary key into media paths,
+  -- notifications and Catatan Perubahan text, so renumbering a row would
+  -- orphan all three while leaving the row itself looking untouched.
+  IF NEW.id IS DISTINCT FROM OLD.id
+     OR NEW.project_id IS DISTINCT FROM OLD.project_id
      OR NEW.room_id IS DISTINCT FROM OLD.room_id
      OR NEW.reporter_id IS DISTINCT FROM OLD.reporter_id
      OR NEW.raw_text IS DISTINCT FROM OLD.raw_text
@@ -543,6 +549,15 @@ CREATE POLICY "site_media_insert" ON storage.objects
 --    builds its expected regex from those constants.
 -- ───────────────────────────────────────────────────────────────────────────
 
+-- Drop the exact signature first (092's pattern). CREATE OR REPLACE cannot
+-- change a parameter list, so the day this signature moves, the old function
+-- would survive as an overload still carrying the GRANT below - callable, and
+-- one argument short of the rules added since. The REVOKE/GRANT stay AFTER the
+-- CREATE: a DROP takes the function's privileges with it.
+DROP FUNCTION IF EXISTS confirm_site_event(
+  UUID, TEXT, TEXT, TEXT, TEXT, TEXT, UUID, DATE, TEXT, BOOLEAN, BOOLEAN, UUID, TEXT
+);
+
 CREATE OR REPLACE FUNCTION confirm_site_event(
   p_event_id          UUID,
   p_event_type        TEXT,
@@ -576,6 +591,7 @@ DECLARE
   v_vo_flag     TEXT;
   v_change_id   UUID;
   v_change_type TEXT;
+  v_quotes      JSONB;
   v_evidence    TEXT;
   v_excerpt     TEXT;
   v_location    TEXT;
@@ -664,14 +680,25 @@ BEGIN
 
   IF p_vo_confirm THEN
     -- The model does not get to assert a commercial claim it cannot point at.
+    v_quotes := v_ev.ai_draft -> 'vo' -> 'evidence_quotes';
+    -- Type first, in its own IF. jsonb_array_length raises a raw Postgres error
+    -- on anything but an array - a draft carrying "evidence_quotes": null, a
+    -- string, or an object - and that error reaches the client with no
+    -- SITE_EVENT_ prefix for tools/siteEvents.ts to translate. SQL does not
+    -- promise to evaluate the arms of an OR left to right, so the length test
+    -- cannot ride along in the same condition.
     IF COALESCE(v_ev.ai_draft -> 'vo' ->> 'flag', 'none') <> 'suggested'
-       OR jsonb_array_length(COALESCE(v_ev.ai_draft -> 'vo' -> 'evidence_quotes', '[]'::jsonb)) = 0 THEN
+       OR v_quotes IS NULL
+       OR jsonb_typeof(v_quotes) <> 'array' THEN
+      RAISE EXCEPTION 'SITE_EVENT_VO_NO_EVIDENCE: VO hanya bisa dikonfirmasi bila ada kutipan dasar';
+    END IF;
+    IF jsonb_array_length(v_quotes) = 0 THEN
       RAISE EXCEPTION 'SITE_EVENT_VO_NO_EVIDENCE: VO hanya bisa dikonfirmasi bila ada kutipan dasar';
     END IF;
 
     SELECT btrim(regexp_replace(lower(COALESCE(string_agg(q, ' '), '')), '\s+', ' ', 'g'))
       INTO v_evidence
-    FROM jsonb_array_elements_text(v_ev.ai_draft -> 'vo' -> 'evidence_quotes') AS q;
+    FROM jsonb_array_elements_text(v_quotes) AS q;
 
     v_change_type := CASE
       WHEN p_event_type = 'butuh_keputusan' AND v_evidence ~ '(owner|klien|pemilik rumah|minta|permintaan)' THEN 'permintaan_owner'
@@ -762,11 +789,17 @@ BEGIN
       );
       -- enqueue_notification_user swallows nothing itself but inserts zero rows
       -- for a non-member; report what actually landed, not what was attempted.
+      -- created_at >= now() bounds the read-back to THIS transaction: now() is
+      -- transaction start and notifications.created_at defaults to now() (034),
+      -- so a row this call enqueued passes and a row from an earlier confirm of
+      -- the same event to the same owner - a re-confirm after a reopen, say -
+      -- cannot be reported as this call's notification.
       v_notified := EXISTS (
         SELECT 1 FROM notifications n
         WHERE n.related_entity_id = p_event_id
           AND n.recipient_user_id = p_owner_id
           AND n.type = 'SITE_EVENT_ASSIGNED'
+          AND n.created_at >= now()
       );
     EXCEPTION WHEN OTHERS THEN
       RAISE WARNING 'confirm_site_event: notification failed: %', SQLERRM;
@@ -793,6 +826,8 @@ GRANT EXECUTE ON FUNCTION confirm_site_event(UUID, TEXT, TEXT, TEXT, TEXT, TEXT,
 --    required, in release 1: a closure photo is a site_event_media row with
 --    role 'closure', inserted by the client before this call.
 -- ───────────────────────────────────────────────────────────────────────────
+
+DROP FUNCTION IF EXISTS close_site_event(UUID, TEXT);
 
 CREATE OR REPLACE FUNCTION close_site_event(
   p_event_id     UUID,
@@ -862,7 +897,11 @@ WITH open_counts AS (
     count(*) FILTER (WHERE e.event_type = 'cacat')           AS n_cacat,
     count(*) FILTER (WHERE e.event_type = 'butuh_keputusan') AS n_butuh_keputusan,
     count(*) FILTER (WHERE e.event_type = 'info')            AS n_info,
-    count(*) FILTER (WHERE e.due_date < current_date)        AS n_overdue
+    -- Jakarta, not UTC. confirm_site_event floors a due date at the Jakarta
+    -- date (v_today), so a UTC current_date here would disagree with the RPC
+    -- between 00:00 and 07:00 WIB: an item due yesterday WIB would not be
+    -- counted overdue on the board that accepted it.
+    count(*) FILTER (WHERE e.due_date < (now() AT TIME ZONE 'Asia/Jakarta')::date) AS n_overdue
   FROM site_events e
   WHERE e.status = 'open'
   GROUP BY e.room_id
@@ -935,8 +974,10 @@ RESET lock_timeout;
 -- 2. The bucket is private and accepts audio:
 --      SELECT id, public, file_size_limit, allowed_mime_types FROM storage.buckets WHERE id = 'site-media';
 --    EXPECTED: one row, public = false, audio/mp4 and audio/webm in the list.
---    If there is no row, the insert was refused: create the bucket in
---    Dashboard → Storage (private, 25 MB, the same MIME list) and re-run this file.
+--    If there is no row, the bucket INSERT was refused - and the Dashboard runs
+--    this paste as ONE transaction, so nothing in this file landed; create the
+--    bucket in Dashboard → Storage (private, 25 MB, the listed MIME types),
+--    then paste the file again.
 --
 -- 3. The four event guards and the media guard are attached:
 --      SELECT tgrelid::regclass, tgname FROM pg_trigger

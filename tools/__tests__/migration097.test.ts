@@ -338,7 +338,12 @@ describe('migration 097 §7 - confirm_site_event', () => {
   });
 
   it('refuses a VO confirm when no quote survived validation', () => {
-    expect(body()).toMatch(/jsonb_array_length\(COALESCE\(v_ev\.ai_draft -> 'vo' -> 'evidence_quotes', '\[\]'::jsonb\)\) = 0/);
+    // The type test sits in its own IF, before the length test: SQL may
+    // evaluate the arms of an OR in any order, and jsonb_array_length on a
+    // JSON scalar raises a raw Postgres error with no SITE_EVENT_ prefix.
+    expect(body()).toMatch(/v_quotes := v_ev\.ai_draft -> 'vo' -> 'evidence_quotes';/);
+    expect(body()).toMatch(/v_quotes IS NULL\s+OR jsonb_typeof\(v_quotes\) <> 'array' THEN/);
+    expect(body()).toMatch(/IF jsonb_array_length\(v_quotes\) = 0 THEN/);
     expect(body()).toMatch(/SITE_EVENT_VO_NO_EVIDENCE:/);
   });
 
@@ -435,7 +440,9 @@ describe('migration 097 §9 - v_room_board', () => {
     ]) {
       expect(view).toMatch(new RegExp(`AS ${col}\\b`));
     }
-    expect(view).toMatch(/due_date < current_date/);
+    // Jakarta, so the board agrees with confirm_site_event's due-date floor.
+    expect(view).toMatch(/due_date < \(now\(\) AT TIME ZONE 'Asia\/Jakarta'\)::date/);
+    expect(view).not.toMatch(/due_date < current_date/);
     expect(view).toMatch(/interval '3 days'/);
   });
 });

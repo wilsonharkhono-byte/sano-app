@@ -73,7 +73,7 @@ describe('migration 098 §2 - notifications.type', () => {
     expect(SQL).toMatch(/DO \$\$/);
     expect(SQL).toMatch(/con\.conrelid = 'public\.notifications'::regclass/);
     expect(SQL).toMatch(/pg_get_constraintdef\(con\.oid\) ILIKE '%type%'/);
-    expect(SQL).toMatch(/EXECUTE format\('ALTER TABLE public\.notifications DROP CONSTRAINT %I', c\)/);
+    expect(SQL).toMatch(/EXECUTE format\('ALTER TABLE public\.notifications DROP CONSTRAINT %I', c\.conname\)/);
   });
 
   it('allows the exact type confirm_site_event enqueues in 097', () => {

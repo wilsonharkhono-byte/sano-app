@@ -57,16 +57,22 @@ CREATE INDEX IF NOT EXISTS idx_daily_log_photos_source_media
 -- name it carries today.
 
 DO $$
-DECLARE c TEXT;
+DECLARE c record;
 BEGIN
-  SELECT con.conname INTO c
-  FROM pg_constraint con
-  WHERE con.conrelid = 'public.notifications'::regclass
-    AND con.contype = 'c'
-    AND pg_get_constraintdef(con.oid) ILIKE '%type%';
-  IF c IS NOT NULL THEN
-    EXECUTE format('ALTER TABLE public.notifications DROP CONSTRAINT %I', c);
-  END IF;
+  -- A loop, not SELECT ... INTO: contype = 'c' means only a CHECK is ever
+  -- dropped (never the primary key or a foreign key, whatever its definition
+  -- happens to spell), and every match goes rather than an arbitrary first row,
+  -- so the ADD below cannot collide with a second CHECK left behind. An empty
+  -- result is simply zero iterations, which is what a second paste sees.
+  FOR c IN
+    SELECT con.conname
+    FROM pg_constraint con
+    WHERE con.conrelid = 'public.notifications'::regclass
+      AND con.contype = 'c'
+      AND pg_get_constraintdef(con.oid) ILIKE '%type%'
+  LOOP
+    EXECUTE format('ALTER TABLE public.notifications DROP CONSTRAINT %I', c.conname);
+  END LOOP;
   ALTER TABLE public.notifications
     ADD CONSTRAINT notifications_type_check
     CHECK (type IN (

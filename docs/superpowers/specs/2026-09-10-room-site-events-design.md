@@ -351,10 +351,14 @@ inserts are service role only.
 `security_invoker` so the caller's RLS applies. One row per room, carrying: open
 counts per `event_type` (`open_progres`, `open_isu`, `open_hambatan`,
 `open_cacat`, `open_butuh_keputusan`, `open_info`); `overdue_count`
-(`due_date < current_date AND status = 'open'`); `last_event_at` (most recent
+(`due_date < (now() AT TIME ZONE 'Asia/Jakarta')::date AND status = 'open'`);
+`last_event_at` (most recent
 `confirmed_at`); `last_gate_code` and `last_step_code` from that same event;
 `is_quiet` (no confirmed event in 3 days); and `owner_initials`, the distinct
-initials of owners on open events.
+initials of owners on open events. `overdue_count` compares against the
+Asia/Jakarta date, not UTC, so the board agrees with `confirm_site_event`, which
+floors a due date at the same Jakarta date: a UTC comparison would leave an item
+due yesterday WIB uncounted between 00:00 and 07:00 WIB.
 
 ### 4.3 Migration 098 `098_daily_log_room_link.sql`
 
