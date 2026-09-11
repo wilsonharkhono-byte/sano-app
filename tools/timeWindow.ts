@@ -29,6 +29,7 @@
 // 00:00:00 WIB has no such gap.
 
 const WIB_OFFSET = '+07:00';
+const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
@@ -58,6 +59,29 @@ export function isRealCalendarDate(iso: string): boolean {
   const [y, m, d] = iso.split('-').map(Number);
   const dt = new Date(Date.UTC(y, m - 1, d));
   return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/**
+ * The calendar date it is RIGHT NOW in WIB (Asia/Jakarta), `YYYY-MM-DD`.
+ *
+ * Deliberately NOT the device's own calendar day. A phone on WITA (UTC+8) or
+ * WIT (UTC+9) rolls into a new local date one or two hours before Jakarta
+ * does, so "today" read off the device disagrees with every server-side rule
+ * that compares against `(now() AT TIME ZONE 'Asia/Jakarta')::date` — most
+ * visibly confirm_site_event's due-date check, which would then accept a date
+ * the screen had already called "past" (or the reverse, one date later).
+ *
+ * Same fixed-offset arithmetic as the rest of this module: shift the instant
+ * by +7 h and read the UTC Y/M/D fields off the result. WIB has no DST, so
+ * this is exact for every date. Do not re-implement it with
+ * `Intl.DateTimeFormat` (see the module header).
+ */
+export function todayIsoWIB(now: Date = new Date()): string {
+  const shifted = new Date(now.getTime() + WIB_OFFSET_MS);
+  const yyyy = shifted.getUTCFullYear();
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 /**

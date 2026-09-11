@@ -8,6 +8,7 @@ import {
   isActionableType,
   isIsoDate,
   addDaysIso,
+  todayIsoLocal,
   dueDateFromSuggestion,
   validateConfirmInput,
   confidenceUi,
@@ -112,6 +113,27 @@ describe('dates', () => {
 
   it('caps the suggestion at 60 days', () => {
     expect(dueDateFromSuggestion('2026-09-10', { kind: 'relative', days: 90 })).toBe('2026-11-09');
+  });
+
+  /**
+   * todayIsoLocal is what the capture, confirm and detail screens call "today",
+   * and confirm_site_event re-checks the due date against
+   * `(now() AT TIME ZONE 'Asia/Jakarta')::date`. It must therefore be the
+   * JAKARTA day, not the device's — a WIT (UTC+9) phone at 23:30 local is
+   * still on the previous WIB date, and the two disagreeing is how a
+   * supervisor gets refused a tenggat the server would have taken.
+   */
+  it('todayIsoLocal is the WIB day, independent of the device timezone', () => {
+    // 17:00 UTC is 00:00 the next day in Jakarta.
+    expect(todayIsoLocal(new Date('2026-09-11T16:59:59.999Z'))).toBe('2026-09-11');
+    expect(todayIsoLocal(new Date('2026-09-11T17:00:00.000Z'))).toBe('2026-09-12');
+    expect(todayIsoLocal(new Date('2026-09-11T22:30:00.000Z'))).toBe('2026-09-12');
+  });
+
+  it('todayIsoLocal produces a date validateConfirmInput can compare against', () => {
+    const today = todayIsoLocal(new Date('2026-12-31T18:00:00.000Z'));
+    expect(today).toBe('2027-01-01');
+    expect(isIsoDate(today)).toBe(true);
   });
 });
 

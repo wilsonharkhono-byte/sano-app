@@ -20,9 +20,16 @@ export function isOverdue(ev: Pick<SiteEvent, 'status' | 'due_date'>, today: str
   return ev.status === 'open' && !!ev.due_date && ev.due_date < today;
 }
 
+/**
+ * `rejected` is written by confirm_site_event (097:747-751) for EVERY confirm
+ * where the stored draft said `vo.flag = 'suggested'` and `p_vo_confirm` was
+ * false — including the low-confidence case, where the checkbox was never
+ * shown and the supervisor was never asked. The column cannot tell "declined"
+ * from "never offered", so the copy must not claim a decision was made.
+ */
 export function voStatusText(ev: Pick<SiteEvent, 'vo_flag'>): string | null {
   if (ev.vo_flag === 'confirmed') return 'VO dikonfirmasi. Catatan Perubahan menunggu review estimator.';
-  if (ev.vo_flag === 'rejected') return 'Usulan VO dari AI tidak dilanjutkan.';
+  if (ev.vo_flag === 'rejected') return 'Usulan VO dari AI tidak dikonfirmasi.';
   if (ev.vo_flag === 'suggested') return 'AI mengusulkan VO; belum dikonfirmasi.';
   return null;
 }

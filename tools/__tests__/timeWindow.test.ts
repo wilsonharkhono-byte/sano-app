@@ -4,6 +4,7 @@ import {
   wibEndOfDayExclusiveIso,
   isRealCalendarDate,
   addCalendarDays,
+  todayIsoWIB,
 } from '../timeWindow';
 
 describe('wibStartOfDayIso', () => {
@@ -124,5 +125,39 @@ describe('addCalendarDays', () => {
 
   it('is a no-op for zero days', () => {
     expect(addCalendarDays('2026-06-15', 0)).toBe('2026-06-15');
+  });
+});
+
+/**
+ * The WIB "today" every site-event surface asks for. The instants below are the
+ * ones that catch a device-clock implementation: between 17:00 UTC and 24:00
+ * UTC, Jakarta is already on the NEXT calendar date, so a function that read
+ * the machine's own day would be a full date behind for a third of every day.
+ */
+describe('todayIsoWIB', () => {
+  it('is already tomorrow in Jakarta once UTC passes 17:00 (WIB = UTC+7)', () => {
+    expect(todayIsoWIB(new Date('2026-09-11T16:59:59.999Z'))).toBe('2026-09-11');
+    expect(todayIsoWIB(new Date('2026-09-11T17:00:00.000Z'))).toBe('2026-09-12');
+    expect(todayIsoWIB(new Date('2026-09-11T23:59:59.999Z'))).toBe('2026-09-12');
+  });
+
+  it('agrees with wibStartOfDayIso on both sides of the WIB midnight it names', () => {
+    const justBefore = new Date('2026-09-11T16:59:59.999Z');
+    const atMidnight = new Date(wibStartOfDayIso('2026-09-12'));
+    expect(atMidnight.toISOString()).toBe('2026-09-11T17:00:00.000Z');
+    expect(todayIsoWIB(justBefore)).toBe('2026-09-11');
+    expect(todayIsoWIB(atMidnight)).toBe('2026-09-12');
+  });
+
+  it('rolls the month and the year over at WIB midnight, not UTC midnight', () => {
+    expect(todayIsoWIB(new Date('2026-01-31T17:00:00.000Z'))).toBe('2026-02-01');
+    expect(todayIsoWIB(new Date('2026-12-31T16:00:00.000Z'))).toBe('2026-12-31');
+    expect(todayIsoWIB(new Date('2026-12-31T17:00:00.000Z'))).toBe('2027-01-01');
+  });
+
+  it('returns a real, shape-valid calendar date', () => {
+    const today = todayIsoWIB(new Date('2026-02-28T20:00:00.000Z'));
+    expect(today).toBe('2026-03-01');
+    expect(isRealCalendarDate(today)).toBe(true);
   });
 });

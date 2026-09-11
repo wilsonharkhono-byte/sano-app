@@ -27,7 +27,7 @@ import {
   DRAFT_TITLE_MAX,
   normalizeForQuoteMatch,
 } from './siteEventDraftValidate';
-import { addCalendarDays, isRealCalendarDate } from './timeWindow';
+import { addCalendarDays, isRealCalendarDate, todayIsoWIB } from './timeWindow';
 import type { AiConfidence, SiteEventDraft, SiteEventStatus, SiteEventType } from './types';
 
 /**
@@ -66,10 +66,21 @@ export function addDaysIso(isoDate: string, days: number): string {
   return addCalendarDays(isoDate, days);
 }
 
-/** Today on the phone's own calendar, YYYY-MM-DD (the DailyLogScreen convention). */
+/**
+ * Today in WIB (Asia/Jakarta), YYYY-MM-DD.
+ *
+ * The name is historical — it used to read the DEVICE's calendar day, which
+ * disagreed with confirm_site_event for the one or two hours after local
+ * midnight on WITA (UTC+8) and WIT (UTC+9) phones, where the device had
+ * already rolled into a date Jakarta had not reached. The RPC compares every
+ * date against `(now() AT TIME ZONE 'Asia/Jakarta')::date`, so the client now
+ * asks the same question and gets the same answer; thin wrapper over
+ * tools/timeWindow.ts's `todayIsoWIB`, the single source of truth for WIB day
+ * boundaries. The export name is kept so the capture, confirm and detail
+ * screens pick the fix up with no call-site change.
+ */
 export function todayIsoLocal(now: Date = new Date()): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return todayIsoWIB(now);
 }
 
 /** The model's "besok" / "minggu ini" as a concrete date the supervisor can see and change. */
@@ -109,7 +120,7 @@ export interface ConfirmInput {
   draft: SiteEventDraft | null;
   aiMismatch: boolean;
   mismatchAcknowledged: boolean;
-  /** YYYY-MM-DD on the phone's calendar. */
+  /** YYYY-MM-DD in WIB (Asia/Jakarta) — what `todayIsoLocal` returns. */
   today: string;
 }
 
@@ -164,13 +175,14 @@ export function validateConfirmInput(input: ConfirmInput): ConfirmValidation {
 
   if (input.dueDate) {
     if (!isIsoDate(input.dueDate)) errors.push(CONFIRM_ERRORS.dueFormat);
-    // `input.today` is the phone's LOCAL calendar day (todayIsoLocal), but
-    // confirm_site_event re-checks this same rule against Asia/Jakarta (WIB,
-    // UTC+7). A supervisor on WITA (UTC+8) or WIT (UTC+9) rolls over to a
-    // new local calendar day before Jakarta does, so for up to two hours
-    // after local midnight the client can consider a due date "past" that
-    // the RPC would still accept as "today" — the client is only ever
-    // stricter than the server here, never looser, so this fails closed.
+    // `input.today` is the WIB (Asia/Jakarta) calendar day, because
+    // todayIsoLocal now delegates to timeWindow's todayIsoWIB. That is the
+    // same day confirm_site_event computes with
+    // `(now() AT TIME ZONE 'Asia/Jakarta')::date`, so client and server agree
+    // on this boundary for every device timezone. (Before that change the
+    // client read the DEVICE day and could call a due date "past" that the
+    // RPC still accepted — stricter, so it failed closed, but it showed the
+    // supervisor a refusal the server did not share.)
     else if (isIsoDate(input.today) && input.dueDate < input.today) errors.push(CONFIRM_ERRORS.duePast);
   }
 

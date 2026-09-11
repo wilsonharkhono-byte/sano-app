@@ -35,7 +35,9 @@ describe('isOverdue', () => {
 describe('voStatusText and draftCardLine', () => {
   it('describes each VO state without overstating it', () => {
     expect(voStatusText({ vo_flag: 'confirmed' })).toBe('VO dikonfirmasi. Catatan Perubahan menunggu review estimator.');
-    expect(voStatusText({ vo_flag: 'rejected' })).toBe('Usulan VO dari AI tidak dilanjutkan.');
+    // 'rejected' also covers the low-confidence case, where the checkbox was
+    // hidden and nobody was asked, so the line states the fact and not a decision.
+    expect(voStatusText({ vo_flag: 'rejected' })).toBe('Usulan VO dari AI tidak dikonfirmasi.');
     expect(voStatusText({ vo_flag: 'suggested' })).toBe('AI mengusulkan VO; belum dikonfirmasi.');
     expect(voStatusText({ vo_flag: 'none' })).toBeNull();
   });

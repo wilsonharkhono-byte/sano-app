@@ -9,14 +9,17 @@
  *  • the transcript is only sent back when the supervisor actually edited it.
  */
 import {
+  clearFieldErrors,
   initialConfirmForm,
   relatedSuggestion,
+  staleVoQuotes,
   toConfirmInput,
   withEventType,
   withGate,
   withTranscript,
   type ConfirmSource,
 } from '../screens/siteEvent/confirmModel';
+import { CONFIRM_ERRORS } from '../../tools/siteEventRules';
 import type { SiteEventDraft } from '../../tools/types';
 
 const TODAY = '2026-09-10';
@@ -125,5 +128,67 @@ describe('relatedSuggestion', () => {
     expect(relatedSuggestion(source(), [{ id: 'open-1', title: 'Floor drain miring' }])).toEqual({ id: 'open-1', title: 'Floor drain miring' });
     expect(relatedSuggestion(source(), [{ id: 'other', title: 'x' }])).toBeNull();
     expect(relatedSuggestion(source({ ai_draft: null }), [{ id: 'open-1', title: 'x' }])).toBeNull();
+  });
+});
+
+/**
+ * The blocker this screen exists to prevent: the supervisor edits the
+ * transcript, the AI's VO quotes stop being in it, and confirm_site_event
+ * still accepts them, because the RPC reads the STORED draft and never re-runs
+ * the literal-substring test. The client is the only place this can be caught,
+ * so it has to be caught exactly — matching folds case, whitespace and
+ * typographic punctuation, and nothing else.
+ */
+describe('staleVoQuotes', () => {
+  const withQuotes = (...quotes: string[]) =>
+    draft({ vo: { flag: 'suggested', reason: 'Owner minta pindah', evidence_quotes: quotes } });
+
+  it('is empty while every quote is still literally in the edited text', () => {
+    const d = withQuotes('owner minta dipindah');
+    expect(staleVoQuotes(d, ['Pak OWNER   minta dipindah ke atas plafon', null])).toEqual([]);
+  });
+
+  it('names the quotes an edit removed, and leaves the surviving ones alone', () => {
+    const d = withQuotes('owner minta dipindah', 'plafon belum ditutup');
+    // The supervisor corrected "dipindah" to "digeser".
+    expect(staleVoQuotes(d, ['owner minta digeser ke atas plafon; plafon belum ditutup', null]))
+      .toEqual(['owner minta dipindah']);
+  });
+
+  it('still matches after a typographic-apostrophe edit (normalizeForQuoteMatch folds it)', () => {
+    const d = withQuotes("owner bilang 'pindah'");
+    expect(staleVoQuotes(d, ['Pak owner bilang \u2018pindah\u2019 sekarang', null])).toEqual([]);
+  });
+
+  it('treats an emptied transcript as stale evidence, not as no evidence', () => {
+    const d = withQuotes('owner minta dipindah');
+    expect(staleVoQuotes(d, ['', null])).toEqual(['owner minta dipindah']);
+    expect(staleVoQuotes(d, ['', 'owner minta dipindah'])).toEqual([]);
+  });
+
+  it('has nothing to say when there is no draft or the model suggested no VO', () => {
+    expect(staleVoQuotes(null, [''])).toEqual([]);
+    expect(staleVoQuotes(undefined, [''])).toEqual([]);
+    expect(staleVoQuotes(draft({ vo: { flag: 'none', reason: '', evidence_quotes: ['owner minta dipindah'] } }), ['']))
+      .toEqual([]);
+  });
+});
+
+describe('clearFieldErrors', () => {
+  it('drops only the messages the edited field owns', () => {
+    const errors = [CONFIRM_ERRORS.titleRequired, CONFIRM_ERRORS.dueRequired];
+    expect(clearFieldErrors(errors, ['title'])).toEqual([CONFIRM_ERRORS.dueRequired]);
+    expect(clearFieldErrors(errors, ['dueDate'])).toEqual([CONFIRM_ERRORS.titleRequired]);
+  });
+
+  it('keeps an RPC refusal, which no field edit can be known to fix', () => {
+    const rpc = ['Kejadian ini sudah dikonfirmasi.'];
+    expect(clearFieldErrors(rpc, ['title', 'dueDate', 'ownerId'])).toEqual(rpc);
+  });
+
+  it('returns the same array when nothing changed, so React does not re-render for free', () => {
+    const errors = [CONFIRM_ERRORS.titleRequired];
+    expect(clearFieldErrors(errors, ['summary'])).toBe(errors);
+    expect(clearFieldErrors([], ['title'])).toEqual([]);
   });
 });
