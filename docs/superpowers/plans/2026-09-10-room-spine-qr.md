@@ -1978,6 +1978,9 @@ Create `tools/rooms.ts`:
 // fixed by deactivating the room and creating it again; after printing, the
 // database refuses outright (096 rooms_freeze_code) because the code is behind
 // a physical sticker.
+//
+// listRooms excludes rows with a NULL room_code; such rows can only come from
+// pre-096 data and cannot be labelled or linked.
 
 import { supabase } from './supabase';
 import { normalizeRoomCode, isValidRoomCode, ROOM_CODE_MAX } from './roomCodes';
@@ -2001,6 +2004,7 @@ export async function listRooms(
     .from('rooms')
     .select(ROOM_COLUMNS)
     .eq('project_id', projectId)
+    .not('room_code', 'is', null) // app invariant: Room.room_code is a string (tools/types.ts)
     .order('floor', { ascending: true, nullsFirst: true })
     .order('sort_order', { ascending: true })
     .order('room_name', { ascending: true });

@@ -66,8 +66,13 @@ export type AreaType =
 export interface Room {
   id: string;
   project_id: string;
-  /** 096: `TEXT` with no NOT NULL - a room may exist before a code is assigned. */
-  room_code: string | null;
+  /**
+   * Always present for rooms the app lists. The column itself is nullable
+   * (035 declared it TEXT; 096 cannot add NOT NULL without knowing legacy
+   * data), so listRooms filters `room_code IS NOT NULL` at the read boundary.
+   * A code-less legacy row cannot be labelled or linked and is never shown.
+   */
+  room_code: string;
   room_name: string;
   floor: string | null;
   area_sqm: number | null;
