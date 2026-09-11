@@ -1,11 +1,13 @@
 import { assertEquals } from 'std/assert';
 import {
   AI_QUOTA_MESSAGE,
+  DAILY_CAP_DEFAULT,
   audioFilename,
   bytesToBase64,
   clampWorkGroupNames,
   isUuid,
   jakartaTodayLabel,
+  parseDailyCap,
   sanitizeJsonForPostgres,
   selectAnalysisPhotos,
   sha256Hex,
@@ -152,4 +154,34 @@ Deno.test('sanitizeJsonForPostgres leaves non-string primitives untouched', () =
   assertEquals(sanitizeJsonForPostgres(42), 42);
   assertEquals(sanitizeJsonForPostgres(null), null);
   assertEquals(sanitizeJsonForPostgres(true), true);
+});
+
+Deno.test('sanitizeJsonForPostgres replaces U+0000 with U+FFFD — jsonb and text both refuse it', () => {
+  assertEquals(sanitizeJsonForPostgres('a\u0000b'), 'a\uFFFDb');
+  assertEquals(sanitizeJsonForPostgres({ error: 'gagal\u0000total', quotes: ['x\u0000'] }), {
+    error: 'gagal\uFFFDtotal',
+    quotes: ['x\uFFFD'],
+  });
+});
+
+Deno.test('parseDailyCap uses the default when the secret is unset, and does not call that invalid', () => {
+  assertEquals(parseDailyCap(undefined), { cap: DAILY_CAP_DEFAULT, invalid: false });
+  assertEquals(parseDailyCap(null), { cap: DAILY_CAP_DEFAULT, invalid: false });
+  assertEquals(DAILY_CAP_DEFAULT, 200);
+});
+
+Deno.test('parseDailyCap accepts a positive integer, trimmed', () => {
+  assertEquals(parseDailyCap('50'), { cap: 50, invalid: false });
+  assertEquals(parseDailyCap('  50  '), { cap: 50, invalid: false });
+  assertEquals(parseDailyCap('1'), { cap: 1, invalid: false });
+});
+
+Deno.test('parseDailyCap fails closed on every value Number() would turn into NaN or 0', () => {
+  // Number('20O') is NaN and every comparison against NaN is false, so the cap
+  // would disappear; Number('') is 0, so every analysis would be refused.
+  for (const raw of ['20O', '', '   ', '2e3', '1.5', '-5', '0', 'null', '200 kali', '+200', '0x10', '9'.repeat(20)]) {
+    const parsed = parseDailyCap(raw);
+    assertEquals(parsed, { cap: DAILY_CAP_DEFAULT, invalid: true }, raw);
+    assertEquals(Number.isSafeInteger(parsed.cap) && parsed.cap >= 1, true, raw);
+  }
 });

@@ -7,6 +7,7 @@ import {
   effectiveTranscript,
   failureUpdate,
   quotaUpdate,
+  releaseClaimUpdate,
   successUpdate,
   transcriptSource,
 } from './stages.ts';
@@ -77,6 +78,15 @@ Deno.test('claimUpdate reserves exactly the next attempt and nothing else', () =
   const u = claimUpdate({ analysis_attempts: 4 });
   assertEquals(u, { analysis_attempts: 5 });
   for (const key of Object.keys(u)) assertEquals(ANALYSIS_WRITABLE_COLUMNS.includes(key), true);
+});
+
+Deno.test('releaseClaimUpdate hands back exactly the attempt the claim took', () => {
+  const ev = { analysis_attempts: 4 };
+  assertEquals(claimUpdate(ev), { analysis_attempts: 5 });
+  assertEquals(releaseClaimUpdate(ev), { analysis_attempts: 4 });
+  for (const key of Object.keys(releaseClaimUpdate(ev))) {
+    assertEquals(ANALYSIS_WRITABLE_COLUMNS.includes(key), true);
+  }
 });
 
 Deno.test('sanitizeJsonForPostgres strips a lone surrogate the model left in vo.reason before it reaches ai_draft', () => {
