@@ -582,7 +582,10 @@ phone layout reached from Progres. **Summary strip:** open hambatan, overdue,
 butuh keputusan, and rooms quiet for more than 3 days.
 
 **Room cards, grouped by floor:** room name, last gate and step chip, open counts
-by type, owner initials, age of last update, overdue badge. Quiet cards render
+by type, owner initials, age of last update, overdue badge. Floors sort in
+ascending order and rooms without a floor, Area Umum included, group last, the
+same order the report uses in §10.2, so the board and the client report never
+disagree about where a room sits. Quiet cards render
 grey, which is the visual answer to "which rooms have had no update recently".
 **Filters:** floor, event type, owner, overdue only.
 
