@@ -169,6 +169,21 @@ describe('literal quote matching (rule 4)', () => {
     expect(isLiteralQuote('pipa ac menonjol', [transcriptWithInvisibles, null])).toBe(true);
   });
 
+  // A phone keyboard writes Jum’at; the model echoes Jum'at (or the other way
+  // round) and the words are the same words. Folding runs on BOTH sides, so it
+  // only ever widens the spelling a literal quote may carry - never what the
+  // quote has to say.
+  it('folds typographic apostrophes, quotation marks and dashes to ASCII on both sides', () => {
+    expect(isLiteralQuote("rapat Jum'at pagi", ['Catatan: rapat Jum\u2019at pagi', null])).toBe(true);
+    expect(isLiteralQuote('rapat Jum\u2019at pagi', ["Catatan: rapat Jum'at pagi", null])).toBe(true);
+    expect(isLiteralQuote('cor lantai 2 - 3', ['jadwal cor lantai 2 \u2014 3 minggu ini', null])).toBe(true);
+    expect(isLiteralQuote('"bobok" dinding', ['tukang \u201Cbobok\u201D dinding', null])).toBe(true);
+  });
+
+  it('keeps refusing a paraphrase once the folding is done', () => {
+    expect(isLiteralQuote('owner ingin pipa \u2019dipindahkan\u2019', [TRANSCRIPT, NOTE])).toBe(false);
+  });
+
   it('drops every quote when both transcript and note are empty, and downgrades VO', () => {
     const r = validateSiteEventDraft(raw(), ctx({ transcript: '', rawText: '' }));
     if (!r.ok) throw new Error('expected ok');
@@ -269,6 +284,17 @@ describe('codes come from the supplied lists only', () => {
     if (!bad.ok) throw new Error('expected ok');
     expect(bad.draft.related_open_event_id).toBeNull();
     expect(bad.dropped.map((d) => d.field)).toContain('related_open_event_id');
+  });
+
+  it('resolves a related id case-insensitively and stores the list\'s own spelling', () => {
+    const stored = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const r = validateSiteEventDraft(
+      raw({ related_open_event_id: stored.toUpperCase() }),
+      ctx({ openEventIds: [stored] }),
+    );
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.related_open_event_id).toBe(stored);
+    expect(r.dropped.map((d) => d.field)).not.toContain('related_open_event_id');
   });
 });
 

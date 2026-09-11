@@ -16,15 +16,18 @@
 //   - every enumerated field holds an allowed value, or the draft is rejected
 //     outright (event_type, confidence, an empty title) or reset to a safe
 //     default with the reason recorded (vo.flag, due_suggestion, mismatch);
-//   - event_type and confidence are matched case-insensitively; gate_code and
-//     step_code resolve case-insensitively to the supplied list's own casing;
+//   - event_type and confidence are matched case-insensitively; gate_code,
+//     step_code and related_open_event_id resolve case-insensitively to the
+//     supplied list's own casing;
 //   - gate_code, step_code and related_open_event_id come from the lists the
 //     edge function supplied, never from the model's imagination;
 //   - step_code survives only under the gate_code that survived with it, the
 //     pair migration 097 keys to gate_step_refs (gate_code, code);
 //   - every evidence quote is a literal substring of the transcript or the
-//     typed note (case-insensitive, whitespace collapsed) and at least
-//     DRAFT_QUOTE_MIN_CHARS long, or it is dropped with a reason;
+//     typed note (case-insensitive, whitespace collapsed, typographic quotes
+//     and dashes folded to ASCII on BOTH sides) and at least
+//     DRAFT_QUOTE_MIN_CHARS long, or it is dropped with a reason. Folding only
+//     ever widens what is accepted; it never loosens what must be literal;
 //   - a VO suggestion whose quotes all dropped is downgraded to 'none';
 //   - unknown keys, a cost estimate among them, never survive;
 //   - a draft built without speech (stage 1 failed) cannot claim 'high'.
@@ -108,6 +111,9 @@ export function normalizeForQuoteMatch(value: string): string {
   return value
     .normalize('NFC')
     .replace(/[\u200B-\u200D\u00AD\u2060\u200E\u200F]/g, '')
+    .replace(/[‘’ʼ]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[‐-―]/g, '-')
     .toLowerCase()
     .replace(/\s+/g, ' ')
     .trim();
@@ -338,7 +344,8 @@ export function validateSiteEventDraft(
   let relatedOpenEventId: string | null = null;
   const relatedCandidate = optionalString('related_open_event_id', raw.related_open_event_id, dropped);
   if (relatedCandidate) {
-    if (ctx.openEventIds.includes(relatedCandidate)) relatedOpenEventId = relatedCandidate;
+    const resolvedRelated = resolveCodeCaseInsensitive(relatedCandidate, ctx.openEventIds);
+    if (resolvedRelated) relatedOpenEventId = resolvedRelated;
     else {
       dropped.push({
         field: 'related_open_event_id',

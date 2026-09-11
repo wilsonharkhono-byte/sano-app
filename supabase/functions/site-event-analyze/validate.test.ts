@@ -84,3 +84,30 @@ Deno.test('caps confidence at medium when transcription failed', () => {
   assert(r.ok);
   if (r.ok) assertEquals(r.draft.confidence, 'medium');
 });
+
+Deno.test('folds typographic apostrophes and dashes on both sides of a quote', () => {
+  const note = "Rapat Jum'at, cor lantai 2 - 3.";
+  const typographic = validateSiteEventDraft(
+    raw({ evidence_quotes: ['rapat Jum\u2019at', 'cor lantai 2 \u2014 3'] }),
+    ctx({ transcript: null, rawText: note }),
+  );
+  assert(typographic.ok);
+  if (typographic.ok) assertEquals(typographic.draft.evidence_quotes.length, 2);
+
+  const ascii = validateSiteEventDraft(
+    raw({ evidence_quotes: ["rapat Jum'at"] }),
+    ctx({ transcript: null, rawText: 'Rapat Jum\u2019at pagi.' }),
+  );
+  assert(ascii.ok);
+  if (ascii.ok) assertEquals(ascii.draft.evidence_quotes.length, 1);
+});
+
+Deno.test('resolves a related open-event id case-insensitively to the list spelling', () => {
+  const stored = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const r = validateSiteEventDraft(
+    raw({ related_open_event_id: stored.toUpperCase() }),
+    ctx({ openEventIds: [stored] }),
+  );
+  assert(r.ok);
+  if (r.ok) assertEquals(r.draft.related_open_event_id, stored);
+});
