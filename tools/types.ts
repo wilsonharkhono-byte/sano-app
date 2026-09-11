@@ -37,12 +37,75 @@ export interface Project {
   start_date: string | null;
   end_date: string | null;
   status: ProjectStatusType;
+  /** 096. Defaults to STRUKTUR for every pre-existing project. */
+  phase: ProjectPhase;
+  /** 096. Reserved for the release-2 DATUM link; NULL in release 1. */
+  datum_project_code: string | null;
 }
 
 export interface ProjectAssignment {
   id: string;
   user_id: string;
   project_id: string;
+}
+
+// ─── Spatial spine: rooms, gates, phase ───────────────────────────────
+
+/** Drives the client-report renderer switch (spec §10.2). */
+export type ProjectPhase = 'STRUKTUR' | 'FINISHING' | 'SERAH_TERIMA';
+
+/**
+ * DATUM's nine area types, verbatim
+ * (DATUM packages/core/src/areas/mutations.ts:7-16). Do not add a tenth
+ * without adding it in DATUM first - the release-2 link upserts on this value.
+ */
+export type AreaType =
+  | 'bathroom' | 'kitchen' | 'bedroom' | 'living' | 'dining'
+  | 'garden' | 'circulation' | 'utility' | 'general';
+
+export interface Room {
+  id: string;
+  project_id: string;
+  /**
+   * Always present for rooms the app lists. The column itself is nullable
+   * (035 declared it TEXT; 096 cannot add NOT NULL without knowing legacy
+   * data), so listRooms filters `room_code IS NOT NULL` at the read boundary.
+   * A code-less legacy row cannot be labelled or linked and is never shown.
+   */
+  room_code: string;
+  room_name: string;
+  floor: string | null;
+  area_sqm: number | null;
+  area_type: AreaType;
+  sort_order: number;
+  datum_area_id: string | null;
+  /** Stamped by markRoomsPrinted. Non-null means room_code is frozen (096). */
+  qr_printed_at: string | null;
+  active: boolean;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface GateRef {
+  code: string;
+  name_id: string;
+  short_label: string;
+  description: string | null;
+  sort_order: number;
+  active: boolean;
+  datum_gate_code: string | null;
+  created_at: string;
+}
+
+export interface GateStepRef {
+  code: string;
+  gate_code: string;
+  name_id: string;
+  description: string | null;
+  sort_order: number;
+  active: boolean;
+  datum_step_code: string | null;
+  created_at: string;
 }
 
 // ─── Baseline & Planning ──────────────────────────────────────────────

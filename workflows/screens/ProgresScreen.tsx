@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Platform } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import Card from '../components/Card';
@@ -25,6 +26,7 @@ import { buildWorkGroups } from '../../tools/boqWorkGroups';
 type SubModule = 'home' | 'progress' | 'perubahan' | 'daily-log';
 
 export default function ProgresScreen() {
+  const navigation = useNavigation<any>();
   const { boqItems, project, profile, refresh } = useProject();
   const { show: toast } = useToast();
   const [activeModule, setActiveModule] = useState<SubModule>('home');
@@ -338,11 +340,15 @@ export default function ProgresScreen() {
               {([
                 { key: 'progress' as SubModule, icon: 'trending-up', label: 'Tambah Progres', color: COLORS.accent },
                 { key: 'perubahan' as SubModule, icon: 'create', label: 'Catatan Perubahan', color: COLORS.warning },
+                { key: 'ruangan' as const, icon: 'qr-code', label: 'Ruangan', color: COLORS.info },
               ]).map(btn => (
                 <TouchableOpacity
                   key={btn.key}
                   style={styles.hubBtn}
-                  onPress={() => setActiveModule(btn.key)}
+                  onPress={() => {
+                    if (btn.key === 'ruangan') navigation.navigate('RoomScan');
+                    else setActiveModule(btn.key as SubModule);
+                  }}
                   accessibilityRole="button"
                   accessibilityLabel={btn.label}
                 >

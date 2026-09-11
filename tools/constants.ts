@@ -204,3 +204,53 @@ export const ToastType = {
   CRITICAL: 'critical',
 } as const;
 export type ToastTypeValue = '' | (typeof ToastType)[keyof typeof ToastType];
+
+// ── Project phase (096) ─────────────────────────────────────────────────────
+// Type-only import: erased at compile time, so this does not create a runtime
+// cycle with tools/types.ts (which type-imports from here).
+import type { AreaType, ProjectPhase } from './types';
+
+export const PROJECT_PHASES: ReadonlyArray<{ value: ProjectPhase; label: string }> = [
+  { value: 'STRUKTUR',     label: 'Struktur' },
+  { value: 'FINISHING',    label: 'Finishing' },
+  { value: 'SERAH_TERIMA', label: 'Serah Terima' },
+];
+
+export const PROJECT_PHASE_LABELS: Record<ProjectPhase, string> = {
+  STRUKTUR:     'Struktur',
+  FINISHING:    'Finishing',
+  SERAH_TERIMA: 'Serah Terima',
+};
+
+// ── Area types (096) - DATUM's nine values, Indonesian labels ────────────────
+export const AREA_TYPES: ReadonlyArray<{ value: AreaType; label: string }> = [
+  { value: 'bathroom',    label: 'Kamar mandi' },
+  { value: 'kitchen',     label: 'Dapur' },
+  { value: 'bedroom',     label: 'Kamar tidur' },
+  { value: 'living',      label: 'Ruang keluarga' },
+  { value: 'dining',      label: 'Ruang makan' },
+  { value: 'garden',      label: 'Taman' },
+  { value: 'circulation', label: 'Sirkulasi' },
+  { value: 'utility',     label: 'Utilitas' },
+  { value: 'general',     label: 'Umum' },
+];
+
+export const AREA_TYPE_LABELS: Record<AreaType, string> = {
+  bathroom:    'Kamar mandi',
+  kitchen:     'Dapur',
+  bedroom:     'Kamar tidur',
+  living:      'Ruang keluarga',
+  dining:      'Ruang makan',
+  garden:      'Taman',
+  circulation: 'Sirkulasi',
+  utility:     'Utilitas',
+  general:     'Umum',
+};
+
+/**
+ * Every project gets one catch-all room with this code, created by the app on
+ * first room setup (spec §4.1 - deliberately not a database trigger). The
+ * Finishing-phase report buckets room-less highlights into it, and it sorts last.
+ */
+export const AREA_UMUM_CODE = 'UMUM';
+export const AREA_UMUM_NAME = 'Area Umum';

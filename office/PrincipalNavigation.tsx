@@ -10,17 +10,25 @@ import { useProject } from '../workflows/hooks/useProject';
 import { useUnreadCount } from '../workflows/screens/hooks/useUnreadCount';
 import { navigationRef } from '../workflows/App';
 import NotificationsScreen from './screens/NotificationsScreen';
+import { buildLinking, ROOM_PATH } from '../workflows/linking';
 
 const PrincipalHomeScreen = lazyScreen(() => import('./screens/PrincipalHomeScreen'));
 const ApprovalsScreen = lazyScreen(() => import('./screens/ApprovalsScreen'));
 const OfficeReportsScreen = lazyScreen(() => import('./screens/OfficeReportsScreen'));
+const RoomDetailScreen = lazyScreen(() => import('./screens/RoomDetailScreen'));
 
 export type PrincipalTabParamList = {
   Home: undefined;
   Approvals: undefined;
   Reports: undefined;
   Notifikasi: undefined;
+  RoomDetail: { projectCode: string; roomCode: string };
 };
+
+const linking = buildLinking<PrincipalTabParamList>({
+  Home:       '',
+  RoomDetail: ROOM_PATH,
+});
 
 const Tab = createBottomTabNavigator<PrincipalTabParamList>();
 
@@ -29,6 +37,7 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Approvals: 'checkmark-done-outline',
   Reports: 'bar-chart-outline',
   Notifikasi: 'notifications-outline',
+  RoomDetail: 'business-outline',
 };
 
 const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -36,6 +45,7 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Approvals: 'checkmark-done',
   Reports: 'bar-chart',
   Notifikasi: 'notifications',
+  RoomDetail: 'business',
 };
 
 const LABEL_MAP: Record<string, string> = {
@@ -43,6 +53,7 @@ const LABEL_MAP: Record<string, string> = {
   Approvals: 'Approval',
   Reports: 'Laporan',
   Notifikasi: 'Notifikasi',
+  RoomDetail: 'Ruangan',
 };
 
 export default function PrincipalNavigation() {
@@ -59,7 +70,7 @@ export default function PrincipalNavigation() {
   const labelStyle = isWide ? styles.labelWide : styles.label;
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer ref={navigationRef} linking={linking}>
       <Tab.Navigator
         screenOptions={({ route }) => ({
           tabBarIcon: ({ color, focused }) => (
@@ -91,6 +102,7 @@ export default function PrincipalNavigation() {
         <Tab.Screen name="Home" component={PrincipalHomeScreen} />
         <Tab.Screen name="Approvals" component={ApprovalsScreen} />
         <Tab.Screen name="Reports" component={OfficeReportsScreen} />
+        <Tab.Screen name="RoomDetail" component={RoomDetailScreen} options={{ tabBarButton: () => null }} />
         <Tab.Screen
           name="Notifikasi"
           options={{

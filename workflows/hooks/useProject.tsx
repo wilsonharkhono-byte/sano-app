@@ -76,6 +76,10 @@ export function ProjectProvider({ userId, children }: { userId: string; children
       //   • site supervisors see only the projects they are assigned to
       // (see 036_office_global_project_access.sql). No client-side assignment
       // pre-filter — that was what siloed estimators from each other's work.
+      //
+      // select('*') is load-bearing: Project carries phase + datum_project_code
+      // (096), and RoomScreen reads project.phase straight off this context.
+      // Narrowing this to a column list silently drops them.
       const { data: projectList, error: projErr } = await supabase
         .from('projects')
         .select('*')

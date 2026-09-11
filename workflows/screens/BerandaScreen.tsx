@@ -141,6 +141,23 @@ export default function BerandaScreen() {
           </View>
         </Card>
 
+        {/* ── Scan ruangan ──────────────────────────────────────────────── */}
+        <Card title="Ruangan" borderColor={COLORS.info}>
+          <Text style={styles.alertBody}>
+            Pindai label QR di pintu ruangan untuk membukanya langsung.
+          </Text>
+          <TouchableOpacity
+            style={styles.alertBtn}
+            onPress={() => navigation.navigate('RoomScan')}
+            accessibilityLabel="Scan ruangan"
+            accessibilityRole="button"
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="qr-code-outline" size={16} color={COLORS.text} />
+            <Text style={styles.alertBtnText}>Scan Ruangan</Text>
+          </TouchableOpacity>
+        </Card>
+
         {/* ── Control alerts ───────────────────────────────────────────── */}
         {hasAlerts && (
           <Text style={styles.sectionHead}>Perlu Tindakan</Text>
