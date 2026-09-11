@@ -67,6 +67,37 @@ describe('site-event-analyze/validate.ts is the validator, byte for byte', () =>
   });
 });
 
+/** Every quoted string inside one array literal, in source order. */
+function quotedStrings(block: string): string[] {
+  return [...block.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+}
+
+function knownKeys(src: string): string[] {
+  const match = src.match(/const KNOWN_KEYS: ReadonlyArray<string> = \[([\s\S]*?)\];/);
+  if (!match) throw new Error('KNOWN_KEYS not found in the validator');
+  return quotedStrings(match[1]);
+}
+
+/** The draft tool's top-level `required` list, read as text like the rest of this suite. */
+function draftToolRequired(promptSrc: string): string[] {
+  const lists = [...promptSrc.matchAll(/required:\s*\[([\s\S]*?)\]/g)].map((m) => quotedStrings(m[1]));
+  const top = lists.find((keys) => keys.includes('event_type'));
+  if (!top) throw new Error('draft tool required list not found in prompt.ts');
+  return top;
+}
+
+describe('the tool schema asks for exactly what the validator accepts', () => {
+  it('requires every key in KNOWN_KEYS, and requires nothing the validator would drop', () => {
+    const prompt = fs.readFileSync(path.join(FUNCTION_DIR, 'prompt.ts'), 'utf8');
+    const required = draftToolRequired(prompt);
+    const known = knownKeys(SOURCE);
+    // Missing from `required` and the model may omit a field the confirm screen
+    // needs; present in `required` but unknown to the validator and it is asked
+    // for, generated, then silently dropped as an unknown key.
+    expect(required.slice().sort()).toEqual(known.slice().sort());
+  });
+});
+
 describe('messages the app matches on', () => {
   it('uses the same daily-quota message in the edge function and in siteEventRules', () => {
     const util = fs.readFileSync(path.join(FUNCTION_DIR, 'util.ts'), 'utf8');

@@ -33,7 +33,7 @@ import type { AiConfidence, SiteEventDraft, SiteEventStatus, SiteEventType } fro
 /**
  * Written to site_events.last_error by the edge function when the per-project
  * daily cap is spent. Duplicated verbatim in
- * supabase/functions/site-event-analyze/index.ts (Deno cannot import this
+ * supabase/functions/site-event-analyze/util.ts (Deno cannot import this
  * module); siteEventDraftValidateTwin.test.ts fails if the two differ.
  */
 export const AI_QUOTA_MESSAGE =

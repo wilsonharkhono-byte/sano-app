@@ -9,6 +9,14 @@
 // function at another model, and an unpriced call is recorded as unknown rather
 // than as a number someone made up.
 
+/**
+ * Keep a row here for whatever SITE_EVENT_MODEL names. Two conditions, both
+ * real: the model must accept a forced tool_choice (the Sonnet / Opus tier -
+ * a small or reasoning-only model that ignores forced tool use returns no
+ * draft at all), and it must appear in this table, or claudeCostUsd returns
+ * null and the run is recorded with cost_usd unknown. Unknown is the honest
+ * answer; a made-up number in a spend report is not (CLAUDE.md §12).
+ */
 export const CLAUDE_USD_PER_MTOK: Readonly<Record<string, { input: number; output: number }>> = {
   'claude-sonnet-5': { input: 2, output: 10 },
   'claude-opus-5': { input: 5, output: 25 },

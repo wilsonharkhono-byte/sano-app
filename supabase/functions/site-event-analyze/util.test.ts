@@ -5,6 +5,7 @@ import {
   bytesToBase64,
   clampWorkGroupNames,
   isUuid,
+  jakartaTodayLabel,
   selectAnalysisPhotos,
   sha256Hex,
   startOfJakartaDayUtcIso,
@@ -55,6 +56,37 @@ Deno.test('audioFilename keeps the stored extension, else derives one from the M
   assertEquals(audioFilename('site-events/p/e/a.webm', 'audio/webm'), 'audio.webm');
   assertEquals(audioFilename('site-events/p/e/a', 'audio/webm'), 'audio.webm');
   assertEquals(audioFilename('site-events/p/e/a', null), 'audio.m4a');
+});
+
+Deno.test('audioFilename maps every MIME type the recorders actually report', () => {
+  const cases: Array<[string | null, string]> = [
+    ['audio/m4a', 'audio.m4a'],
+    ['audio/x-m4a', 'audio.m4a'],
+    ['audio/mp4', 'audio.m4a'],
+    ['audio/aac', 'audio.aac'],
+    ['audio/webm', 'audio.webm'],
+    ['audio/webm;codecs=opus', 'audio.webm'],
+    ['AUDIO/WEBM', 'audio.webm'],
+    ['audio/mpeg', 'audio.mp3'],
+    ['audio/wav', 'audio.wav'],
+    ['audio/ogg', 'audio.m4a'],
+    [null, 'audio.m4a'],
+  ];
+  for (const [mime, expected] of cases) {
+    assertEquals(audioFilename('site-events/p/e/a', mime), expected, `${mime}`);
+  }
+});
+
+Deno.test('jakartaTodayLabel names the Jakarta day, in Indonesian, across the UTC midnight', () => {
+  // 17:30 UTC is already the next morning in Jakarta (UTC+7).
+  assertEquals(jakartaTodayLabel('2026-09-10T17:30:00.000Z'), 'Jumat, 11 September 2026 (WIB)');
+  assertEquals(jakartaTodayLabel('2026-09-10T16:59:59.000Z'), 'Kamis, 10 September 2026 (WIB)');
+  // 23:00 UTC on new year's eve is already 1 January in Jakarta.
+  assertEquals(jakartaTodayLabel('2026-12-31T23:00:00.000Z'), 'Jumat, 1 Januari 2027 (WIB)');
+});
+
+Deno.test('jakartaTodayLabel says it does not know rather than naming a wrong day', () => {
+  assertEquals(jakartaTodayLabel('kemarin'), '(tanggal tidak diketahui)');
 });
 
 Deno.test('clampWorkGroupNames keeps unique trimmed strings, 80 characters, 30 at most', () => {

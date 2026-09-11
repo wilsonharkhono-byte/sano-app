@@ -43,12 +43,38 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/** Asia/Jakarta is UTC+7 all year; Indonesia keeps no daylight saving. */
+const JAKARTA_OFFSET_MS = 7 * 60 * 60 * 1000;
+
 /** Start of the current Asia/Jakarta day (UTC+7, no daylight saving) as a UTC ISO timestamp. */
 export function startOfJakartaDayUtcIso(now: Date): string {
-  const offsetMs = 7 * 60 * 60 * 1000;
-  const jakarta = new Date(now.getTime() + offsetMs);
+  const jakarta = new Date(now.getTime() + JAKARTA_OFFSET_MS);
   const midnight = Date.UTC(jakarta.getUTCFullYear(), jakarta.getUTCMonth(), jakarta.getUTCDate());
-  return new Date(midnight - offsetMs).toISOString();
+  return new Date(midnight - JAKARTA_OFFSET_MS).toISOString();
+}
+
+const HARI: ReadonlyArray<string> = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+const BULAN: ReadonlyArray<string> = [
+  'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+  'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember',
+];
+
+/**
+ * Today in Jakarta, spelled out for the prompt: "Jumat, 11 September 2026 (WIB)".
+ *
+ * The model cannot know the date, so "besok" and "hari Sabtu" have nothing to
+ * count from unless the prompt says what today is. The names are hard-coded
+ * rather than taken from Intl, because a Deno deployment carries whatever
+ * locale data it carries and an English month name in an Indonesian prompt is
+ * exactly the sort of small wrongness nobody notices.
+ *
+ * An unparseable timestamp says so instead of naming a day that might be wrong.
+ */
+export function jakartaTodayLabel(nowIso: string): string {
+  const ms = Date.parse(nowIso);
+  if (!Number.isFinite(ms)) return '(tanggal tidak diketahui)';
+  const jakarta = new Date(ms + JAKARTA_OFFSET_MS);
+  return `${HARI[jakarta.getUTCDay()]}, ${jakarta.getUTCDate()} ${BULAN[jakarta.getUTCMonth()]} ${jakarta.getUTCFullYear()} (WIB)`;
 }
 
 /** Context photo first, then close-ups by sort order; only types Claude accepts; at most `max`. */
@@ -68,13 +94,30 @@ export function findAudio<T extends MediaRow>(media: T[]): T | null {
   return media.find((m) => m.kind === 'audio') ?? null;
 }
 
+/**
+ * OpenAI reads the audio format off the filename, so the wrong extension is a
+ * rejected upload, not a worse transcript. Expo records m4a on iOS and Android
+ * and webm on web; the map covers what those platforms actually report.
+ */
+const AUDIO_EXT_BY_MIME: Readonly<Record<string, string>> = {
+  'audio/m4a': 'm4a',
+  'audio/x-m4a': 'm4a',
+  'audio/mp4': 'm4a',
+  'audio/aac': 'aac',
+  'audio/webm': 'webm',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+};
+
 /** OpenAI detects the audio format from the filename, so it must carry the right extension. */
 export function audioFilename(storagePath: string, mimeType: string | null): string {
   const last = storagePath.split('/').pop() ?? '';
   const dot = last.lastIndexOf('.');
   const ext = dot > 0 ? last.slice(dot + 1).toLowerCase() : '';
   if (ext) return `audio.${ext}`;
-  return mimeType === 'audio/webm' ? 'audio.webm' : 'audio.m4a';
+  // 'audio/webm;codecs=opus' is one of these types with a parameter attached.
+  const type = (mimeType ?? '').split(';')[0].trim().toLowerCase();
+  return `audio.${AUDIO_EXT_BY_MIME[type] ?? 'm4a'}`;
 }
 
 /** Client-supplied prompt hints: strings only, trimmed, unique, 80 characters, 30 at most. */
