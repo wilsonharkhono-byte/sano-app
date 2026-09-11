@@ -196,14 +196,18 @@ export async function ensureAreaUmum(
 // replaces it with the database clock (now()), so a phone with a wrong clock
 // can never become the printed date shown on the label history.
 export async function markRoomsPrinted(ids: string[]): Promise<{ error?: string }> {
-  if (ids.length === 0) return {};
+  // Deduped before the query (a caller re-selecting the same room twice) and
+  // before the count comparison below, so a duplicate id never reads as a
+  // partial-success RLS refusal for a request that actually fully succeeded.
+  const uniqueIds = [...new Set(ids)];
+  if (uniqueIds.length === 0) return {};
   const { data, error } = await supabase
     .from('rooms')
     .update({ qr_printed_at: new Date().toISOString() })
-    .in('id', ids)
+    .in('id', uniqueIds)
     .select('id');
   if (error) return { error: error.message };
-  if ((data ?? []).length !== ids.length) {
+  if ((data ?? []).length !== uniqueIds.length) {
     return { error: 'Sebagian ruangan tidak bisa ditandai tercetak (hak akses atau ruangan tidak ditemukan).' };
   }
   return {};

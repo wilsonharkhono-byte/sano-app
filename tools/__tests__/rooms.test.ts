@@ -410,6 +410,13 @@ describe('markRoomsPrinted (Supabase mocked)', () => {
     await expect(markRoomsPrinted(['r1', 'r2'])).resolves.toEqual({});
   });
 
+  it('dedupes ids before the query and the count comparison, so a repeated id is still a success', async () => {
+    const chain = bulkUpdateChain({ data: [{ id: 'r1' }], error: null });
+    (mockSupabase.from as jest.Mock).mockReturnValue(chain);
+    await expect(markRoomsPrinted(['r1', 'r1'])).resolves.toEqual({});
+    expect(chain.in).toHaveBeenCalledWith('id', ['r1']);
+  });
+
   it('passes a database error through', async () => {
     (mockSupabase.from as jest.Mock).mockReturnValue(
       bulkUpdateChain({ data: null, error: { message: 'boom' } }),

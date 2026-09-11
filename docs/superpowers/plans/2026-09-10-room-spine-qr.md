@@ -2261,6 +2261,13 @@ describe('markRoomsPrinted (Supabase mocked)', () => {
     await expect(markRoomsPrinted(['r1', 'r2'])).resolves.toEqual({});
   });
 
+  it('dedupes ids before the query and the count comparison, so a repeated id is still a success', async () => {
+    const chain = bulkUpdateChain({ data: [{ id: 'r1' }], error: null });
+    (mockSupabase.from as jest.Mock).mockReturnValue(chain);
+    await expect(markRoomsPrinted(['r1', 'r1'])).resolves.toEqual({});
+    expect(chain.in).toHaveBeenCalledWith('id', ['r1']);
+  });
+
   it('passes a database error through', async () => {
     (mockSupabase.from as jest.Mock).mockReturnValue(
       bulkUpdateChain({ data: null, error: { message: 'boom' } }),
@@ -2481,14 +2488,18 @@ export async function ensureAreaUmum(
 // replaces it with the database clock (now()), so a phone with a wrong clock
 // can never become the printed date shown on the label history.
 export async function markRoomsPrinted(ids: string[]): Promise<{ error?: string }> {
-  if (ids.length === 0) return {};
+  // Deduped before the query (a caller re-selecting the same room twice) and
+  // before the count comparison below, so a duplicate id never reads as a
+  // partial-success RLS refusal for a request that actually fully succeeded.
+  const uniqueIds = [...new Set(ids)];
+  if (uniqueIds.length === 0) return {};
   const { data, error } = await supabase
     .from('rooms')
     .update({ qr_printed_at: new Date().toISOString() })
-    .in('id', ids)
+    .in('id', uniqueIds)
     .select('id');
   if (error) return { error: error.message };
-  if ((data ?? []).length !== ids.length) {
+  if ((data ?? []).length !== uniqueIds.length) {
     return { error: 'Sebagian ruangan tidak bisa ditandai tercetak (hak akses atau ruangan tidak ditemukan).' };
   }
   return {};
@@ -2715,7 +2726,7 @@ export function roomsToDatumAreas(rooms: Room[]): DatumAreaExport[] {
 npx jest tools/__tests__/rooms.test.ts
 ```
 
-Expected: `Tests: 37 passed, 37 total` (27 from the original module, plus 10 covering the RLS read-back later added to `updateRoom`, `setRoomActive` and `markRoomsPrinted` - see the module and its header comment above).
+Expected: `Tests: 38 passed, 38 total` (27 from the original module, plus 11 covering the RLS read-back later added to `updateRoom`, `setRoomActive` and `markRoomsPrinted`, including `markRoomsPrinted`'s id-dedup fix (a repeated id no longer inflates the requested count) - see the module and its header comment above).
 
 - [ ] **Step 5: Commit**
 
@@ -2748,8 +2759,9 @@ Create `tools/__tests__/gateRefs.test.ts`:
 /**
  * Gates are data (spec §2 decision 3), so the office can relabel them - but the
  * CODE is a foreign key that release 2's site_events will reference. The client
- * refuses a `code` in a patch before the database ever sees it, so the message
- * is Indonesian and the failure is at the call site, not a 500 from a trigger.
+ * refuses a `code` (and, for steps, `gate_code`) in a patch before the database
+ * ever sees it, so the message is Indonesian and the failure is at the call
+ * site, not a 500 from a trigger.
  *
  * updateGateRef and updateGateStepRef UPDATE gate_refs/gate_step_refs, which
  * RLS restricts to office roles. A filtered UPDATE is not an error under RLS:
@@ -2760,18 +2772,30 @@ Create `tools/__tests__/gateRefs.test.ts`:
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
 
 import { supabase } from '../supabase';
-import { gateChipLabel, stepChipLabel, updateGateRef, updateGateStepRef } from '../gateRefs';
+import {
+  gateChipLabel, stepChipLabel, updateGateRef, updateGateStepRef, createGateStepRef,
+  GATE_COLUMNS, STEP_COLUMNS,
+} from '../gateRefs';
 import type { GateRef, GateStepRef } from '../types';
 
 const mockSupabase = supabase as jest.Mocked<typeof supabase>;
 
-/** update().eq().select().maybeSingle() - the read-back chain both functions share. */
+/** update().eq().select().maybeSingle() - the read-back chain both update functions share. */
 function updateChain(result: { data: unknown; error: { message: string } | null }) {
   return {
     update: jest.fn().mockReturnThis(),
     eq: jest.fn().mockReturnThis(),
     select: jest.fn().mockReturnThis(),
     maybeSingle: jest.fn().mockResolvedValue(result),
+  };
+}
+
+/** insert().select().single() - createGateStepRef's chain. */
+function insertChain(result: { data: unknown; error: { code?: string; message: string } | null }) {
+  return {
+    insert: jest.fn().mockReturnThis(),
+    select: jest.fn().mockReturnThis(),
+    single: jest.fn().mockResolvedValue(result),
   };
 }
 
@@ -2801,6 +2825,25 @@ describe('chip labels', () => {
   });
 });
 
+describe('GATE_COLUMNS / STEP_COLUMNS', () => {
+  /** Splits a select-list literal into its individual column names, for exact (not substring) matching. */
+  const columnNames = (cols: string): string[] => cols.split(',').map((c) => c.trim());
+
+  it('GATE_COLUMNS lists every field of GateRef, including created_at', () => {
+    const cols = columnNames(GATE_COLUMNS);
+    for (const key of Object.keys(gate())) {
+      expect(cols).toContain(key);
+    }
+  });
+
+  it('STEP_COLUMNS lists every field of GateStepRef, including created_at', () => {
+    const cols = columnNames(STEP_COLUMNS);
+    for (const key of Object.keys(step())) {
+      expect(cols).toContain(key);
+    }
+  });
+});
+
 describe('updateGateRef', () => {
   beforeEach(() => jest.clearAllMocks());
 
@@ -2808,6 +2851,7 @@ describe('updateGateRef', () => {
     await expect(
       updateGateRef('B', { code: 'Z' } as never),
     ).rejects.toThrow(/kode/i);
+    expect(mockSupabase.from).not.toHaveBeenCalled();
   });
 
   it('reports the RLS refusal instead of a silent success when the update is filtered', async () => {
@@ -2816,11 +2860,12 @@ describe('updateGateRef', () => {
     expect(result.error).toMatch(/peran kantor/i);
   });
 
-  it('reports success when the row comes back', async () => {
+  it('reports success when the row comes back, returning the confirmed row', async () => {
+    const updated = gate({ short_label: 'Basah 2' });
     (mockSupabase.from as jest.Mock).mockReturnValue(
-      updateChain({ data: { code: 'B' }, error: null }),
+      updateChain({ data: updated, error: null }),
     );
-    await expect(updateGateRef('B', { short_label: 'Basah 2' })).resolves.toEqual({});
+    await expect(updateGateRef('B', { short_label: 'Basah 2' })).resolves.toEqual({ gate: updated });
   });
 
   it('passes a database error through', async () => {
@@ -2834,17 +2879,32 @@ describe('updateGateRef', () => {
 describe('updateGateStepRef', () => {
   beforeEach(() => jest.clearAllMocks());
 
+  it('refuses a patch carrying code, before touching the database', async () => {
+    await expect(
+      updateGateStepRef('B4', { code: 'Z' } as never),
+    ).rejects.toThrow(/kode/i);
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+  });
+
+  it('refuses a patch carrying gate_code, before touching the database', async () => {
+    await expect(
+      updateGateStepRef('B4', { gate_code: 'C' } as never),
+    ).rejects.toThrow(/kode/i);
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+  });
+
   it('reports the RLS refusal instead of a silent success when the update is filtered', async () => {
     (mockSupabase.from as jest.Mock).mockReturnValue(updateChain({ data: null, error: null }));
     const result = await updateGateStepRef('B4', { name_id: 'Waterproofing 2' });
     expect(result.error).toMatch(/peran kantor/i);
   });
 
-  it('reports success when the row comes back', async () => {
+  it('reports success when the row comes back, returning the confirmed row', async () => {
+    const updated = step({ name_id: 'Waterproofing 2' });
     (mockSupabase.from as jest.Mock).mockReturnValue(
-      updateChain({ data: { code: 'B4' }, error: null }),
+      updateChain({ data: updated, error: null }),
     );
-    await expect(updateGateStepRef('B4', { name_id: 'Waterproofing 2' })).resolves.toEqual({});
+    await expect(updateGateStepRef('B4', { name_id: 'Waterproofing 2' })).resolves.toEqual({ step: updated });
   });
 
   it('passes a database error through', async () => {
@@ -2854,6 +2914,64 @@ describe('updateGateStepRef', () => {
     await expect(updateGateStepRef('B4', { name_id: 'Waterproofing 2' })).resolves.toEqual({
       error: 'boom',
     });
+  });
+});
+
+describe('createGateStepRef', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('refuses a blank code, before touching the database', async () => {
+    const result = await createGateStepRef({ code: '   ', gate_code: 'B', name_id: 'Waterproofing' });
+    expect(result.error).toMatch(/kode langkah/i);
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+  });
+
+  it('refuses a blank or whitespace-only gate_code, before touching the database', async () => {
+    const result = await createGateStepRef({ code: 'B4', gate_code: '   ', name_id: 'Waterproofing' });
+    expect(result.error).toMatch(/gerbang induk/i);
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+  });
+
+  it('refuses a blank name, before touching the database', async () => {
+    const result = await createGateStepRef({ code: 'B4', gate_code: 'B', name_id: '  ' });
+    expect(result.error).toMatch(/nama langkah/i);
+    expect(mockSupabase.from).not.toHaveBeenCalled();
+  });
+
+  it('maps a duplicate code (23505) to an Indonesian message', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      insertChain({ data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint' } }),
+    );
+    const result = await createGateStepRef({ code: 'B4', gate_code: 'B', name_id: 'Waterproofing' });
+    expect(result.error).toBe('Kode langkah "B4" sudah dipakai.');
+  });
+
+  it('maps a foreign key violation (23503) to a friendly "gate not found" message', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      insertChain({
+        data: null,
+        error: { code: '23503', message: 'insert or update on table "gate_step_refs" violates foreign key constraint' },
+      }),
+    );
+    const result = await createGateStepRef({ code: 'Z9', gate_code: 'Z', name_id: 'Langkah baru' });
+    expect(result.error).toBe('Gerbang "Z" tidak ditemukan.');
+  });
+
+  it('does not validate gate_code against a fixed A-H pattern - any non-blank code reaches the database', async () => {
+    const created = step({ code: 'Z9', gate_code: 'Z', name_id: 'Langkah baru' });
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      insertChain({ data: created, error: null }),
+    );
+    const result = await createGateStepRef({ code: 'z9', gate_code: 'Z', name_id: 'Langkah baru' });
+    expect(result.step).toEqual(created);
+  });
+
+  it('passes a database error through', async () => {
+    (mockSupabase.from as jest.Mock).mockReturnValue(
+      insertChain({ data: null, error: { message: 'boom' } }),
+    );
+    const result = await createGateStepRef({ code: 'B4', gate_code: 'B', name_id: 'Waterproofing' });
+    expect(result.error).toBe('boom');
   });
 });
 ```
@@ -2882,8 +3000,15 @@ Create `tools/gateRefs.ts`:
 import { supabase } from './supabase';
 import type { GateRef, GateStepRef } from './types';
 
-const GATE_COLUMNS = 'code, name_id, short_label, description, sort_order, active, datum_gate_code';
-const STEP_COLUMNS = 'code, gate_code, name_id, description, sort_order, active, datum_step_code';
+// One string literal each, exported so gateRefs.test.ts can assert every
+// GateRef/GateStepRef field is listed - see the comment on ROOM_COLUMNS in
+// tools/rooms.ts for why it must stay a literal (a concatenated string
+// defeats supabase-js's row typing and every `as GateRef`/`as GateStepRef`
+// cast below then fails tsc with TS2352).
+export const GATE_COLUMNS =
+  'code, name_id, short_label, description, sort_order, active, datum_gate_code, created_at';
+export const STEP_COLUMNS =
+  'code, gate_code, name_id, description, sort_order, active, datum_step_code, created_at';
 
 export async function listGateRefs(opts: { activeOnly?: boolean } = {}): Promise<GateRef[]> {
   let q = supabase.from('gate_refs').select(GATE_COLUMNS).order('sort_order', { ascending: true });
@@ -2905,20 +3030,35 @@ export async function listGateStepRefs(opts: { activeOnly?: boolean } = {}): Pro
 export type GateRefPatch = Partial<Pick<GateRef, 'name_id' | 'short_label' | 'description' | 'sort_order' | 'active'>>;
 export type GateStepRefPatch = Partial<Pick<GateStepRef, 'name_id' | 'description' | 'sort_order' | 'active'>>;
 
-function refuseCodeChange(patch: object): void {
-  if (Object.prototype.hasOwnProperty.call(patch, 'code')) {
-    throw new Error('Kode gerbang tidak boleh diubah - kode adalah kunci referensi kejadian lapangan.');
+/**
+ * Throws synchronously, before any request, when `patch` carries any of
+ * `keys` as an own property, naming the offending key - `code` and
+ * `gate_code` are foreign keys release 2's site_events will reference, so
+ * like updateRoom's room_code guard (tools/rooms.ts), this is an invariant
+ * violation in the caller's code, not a runtime error to catch and display.
+ */
+function refuseImmutableKeys(patch: object, keys: string[]): void {
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) {
+      throw new Error(`Kode "${key}" tidak boleh diubah - kode adalah kunci referensi kejadian lapangan.`);
+    }
   }
 }
 
 const GATE_UPDATE_REFUSED = 'Perubahan gerbang tidak tersimpan. Hanya peran kantor yang dapat mengubah data gerbang.';
 
-export async function updateGateRef(code: string, patch: GateRefPatch): Promise<{ error?: string }> {
-  refuseCodeChange(patch);
-  const { data, error } = await supabase.from('gate_refs').update(patch).eq('code', code).select('code').maybeSingle();
+/**
+ * Throws synchronously (a rejected promise, since this function is async),
+ * before any request, if `patch` contains `code` - that is an invariant
+ * violation in the caller's code (see the header), not a runtime error to
+ * catch and display.
+ */
+export async function updateGateRef(code: string, patch: GateRefPatch): Promise<{ gate?: GateRef; error?: string }> {
+  refuseImmutableKeys(patch, ['code']);
+  const { data, error } = await supabase.from('gate_refs').update(patch).eq('code', code).select(GATE_COLUMNS).maybeSingle();
   if (error) return { error: error.message };
   if (!data) return { error: GATE_UPDATE_REFUSED };
-  return {};
+  return { gate: data as GateRef };
 }
 
 export async function createGateStepRef(input: {
@@ -2927,27 +3067,40 @@ export async function createGateStepRef(input: {
 }): Promise<{ step?: GateStepRef; error?: string }> {
   const code = input.code.trim().toUpperCase();
   if (!code) return { error: 'Kode langkah wajib diisi.' };
+  // Not validated against a fixed A-H pattern: gates are editable reference
+  // data (see the header) and more may be added, so any non-blank code is
+  // sent to the database - the 23503 branch below turns an unknown one into
+  // a friendly message once Postgres has actually checked it.
+  const gate_code = input.gate_code.trim();
+  if (!gate_code) return { error: 'Kode gerbang induk wajib diisi.' };
   if (!input.name_id.trim()) return { error: 'Nama langkah wajib diisi.' };
 
   const { data, error } = await supabase.from('gate_step_refs').insert({
     code,
-    gate_code: input.gate_code,
+    gate_code,
     name_id: input.name_id.trim(),
     description: input.description ?? null,
     sort_order: input.sort_order ?? 0,
   }).select(STEP_COLUMNS).single();
 
   if (error?.code === '23505') return { error: `Kode langkah "${code}" sudah dipakai.` };
+  if (error?.code === '23503') return { error: `Gerbang "${gate_code}" tidak ditemukan.` };
   if (error) return { error: error.message };
   return { step: data as GateStepRef };
 }
 
-export async function updateGateStepRef(code: string, patch: GateStepRefPatch): Promise<{ error?: string }> {
-  refuseCodeChange(patch);
-  const { data, error } = await supabase.from('gate_step_refs').update(patch).eq('code', code).select('code').maybeSingle();
+/**
+ * Throws synchronously (a rejected promise, since this function is async),
+ * before any request, if `patch` contains `code` or `gate_code` - that is an
+ * invariant violation in the caller's code (see the header), not a runtime
+ * error to catch and display.
+ */
+export async function updateGateStepRef(code: string, patch: GateStepRefPatch): Promise<{ step?: GateStepRef; error?: string }> {
+  refuseImmutableKeys(patch, ['code', 'gate_code']);
+  const { data, error } = await supabase.from('gate_step_refs').update(patch).eq('code', code).select(STEP_COLUMNS).maybeSingle();
   if (error) return { error: error.message };
   if (!data) return { error: GATE_UPDATE_REFUSED };
-  return {};
+  return { step: data as GateStepRef };
 }
 
 // ─── Pure: chip labels ───────────────────────────────────────────────────────
@@ -2963,7 +3116,7 @@ export function stepChipLabel(step: GateStepRef, gate?: GateRef): string {
 }
 ```
 
-- [ ] **Step 4: Run it, expect PASS** - `npx jest tools/__tests__/gateRefs.test.ts` → `Tests: 10 passed, 10 total` (4 from the original module, plus 6 covering the RLS read-back added to `updateGateRef` and `updateGateStepRef` - see the module and its header comment above).
+- [ ] **Step 4: Run it, expect PASS** - `npx jest tools/__tests__/gateRefs.test.ts` → `Tests: 21 passed, 21 total` (10 from the original module, plus 11 added for this plan's code-review fixes: `GATE_COLUMNS`/`STEP_COLUMNS` field coverage, the `gate_code` immutable-key guard on `updateGateStepRef`, and full coverage of `createGateStepRef` including its blank-`gate_code` refusal and its 23503-to-Indonesian-message mapping - see the module and its header comment above).
 
 - [ ] **Step 5: Commit**
 
