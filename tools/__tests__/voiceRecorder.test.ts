@@ -24,8 +24,13 @@ jest.mock('expo-audio', () => ({
   useAudioRecorder: jest.fn(),
   useAudioRecorderState: jest.fn(),
 }));
-jest.mock('react-native', () => ({ Platform: { OS: 'android' } }));
+jest.mock('react-native', () => ({
+  Platform: { OS: 'android' },
+  AppState: { addEventListener: jest.fn(() => ({ remove: jest.fn() })) },
+}));
 
+import { act, renderHook } from '@testing-library/react-native';
+import { requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder, useAudioRecorderState } from 'expo-audio';
 import {
   INITIAL_VOICE_STATE,
   VOICE_BIT_RATE,
@@ -34,6 +39,7 @@ import {
   formatVoiceDuration,
   pickWebMimeType,
   shouldAutoStop,
+  useVoiceRecorder,
   voiceFileInfo,
   voiceReducer,
   type VoiceAction,
@@ -133,5 +139,129 @@ describe('voiceReducer', () => {
 
   it('only ticks while recording', () => {
     expect(voiceReducer(INITIAL_VOICE_STATE, { type: 'tick', durationMs: 4000 })).toBe(INITIAL_VOICE_STATE);
+  });
+
+  it('carries canAskAgain through a fail so the screen can offer Settings on a permanent denial', () => {
+    const permanentlyDenied = voiceReducer(INITIAL_VOICE_STATE, {
+      type: 'fail',
+      error: 'Izin mikrofon ditolak. Aktifkan di pengaturan HP.',
+      canAskAgain: false,
+    });
+    expect(permanentlyDenied).toMatchObject({ phase: 'error', canAskAgain: false });
+
+    const askAgain = voiceReducer(INITIAL_VOICE_STATE, {
+      type: 'fail',
+      error: 'Izin mikrofon ditolak. Aktifkan di pengaturan HP.',
+      canAskAgain: true,
+    });
+    expect(askAgain.canAskAgain).toBe(true);
+
+    // Failures unrelated to permission (e.g. a stop() timeout) carry no
+    // canAskAgain at all — the field stays undefined, not false.
+    const timeout = voiceReducer(INITIAL_VOICE_STATE, {
+      type: 'fail',
+      error: 'Rekaman gagal disimpan: waktu habis. Coba lagi.',
+    });
+    expect(timeout.canAskAgain).toBeUndefined();
+  });
+});
+
+/**
+ * Hook-level coverage with expo-audio and AppState mocked. renderHook works
+ * fine under this repo's ts-jest setup (testEnvironment: node, ts-jest
+ * preset, react-native/jest/setup in setupFiles) with a minimal { Platform,
+ * AppState } mock of 'react-native' — no jsdom or fuller RN mock needed.
+ * The one gotcha: a dispatch that arms an effect's setTimeout (requestStop
+ * here) needs its own `act()` before advancing fake timers past it, or the
+ * timer may not exist yet when the advance runs.
+ */
+describe('useVoiceRecorder (hook)', () => {
+  const mockUseAudioRecorder = useAudioRecorder as jest.Mock;
+  const mockUseAudioRecorderState = useAudioRecorderState as jest.Mock;
+  const mockRequestPermission = requestRecordingPermissionsAsync as jest.Mock;
+  const mockSetAudioMode = setAudioModeAsync as jest.Mock;
+
+  function makeRecorder(stopImpl: () => Promise<void> = () => Promise.resolve()) {
+    return {
+      prepareToRecordAsync: jest.fn().mockResolvedValue(undefined),
+      record: jest.fn(),
+      stop: jest.fn(stopImpl),
+      uri: 'file:///take.m4a',
+    };
+  }
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockUseAudioRecorderState.mockReturnValue({ durationMillis: 0, metering: null });
+    mockSetAudioMode.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.clearAllMocks();
+  });
+
+  it('stops the recorder once and restores the audio mode on unmount while recording', async () => {
+    const recorder = makeRecorder();
+    mockUseAudioRecorder.mockReturnValue(recorder);
+    mockRequestPermission.mockResolvedValue({ granted: true, canAskAgain: true });
+
+    const { result, unmount } = renderHook(() => useVoiceRecorder());
+
+    await act(async () => {
+      result.current.start();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.state.phase).toBe('recording');
+
+    unmount();
+
+    expect(recorder.stop).toHaveBeenCalledTimes(1);
+    expect(mockSetAudioMode).toHaveBeenCalledWith({ allowsRecording: false });
+  });
+
+  it('fails with the Indonesian timeout message when stop() never resolves', async () => {
+    const recorder = makeRecorder(() => new Promise(() => {}));
+    mockUseAudioRecorder.mockReturnValue(recorder);
+    mockRequestPermission.mockResolvedValue({ granted: true, canAskAgain: true });
+
+    const { result } = renderHook(() => useVoiceRecorder());
+
+    await act(async () => {
+      result.current.start();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.state.phase).toBe('recording');
+
+    // Flush the requestStop dispatch (and the effect that arms the 8s timer)
+    // in its own act() before advancing timers, so the setTimeout exists
+    // before we fast-forward past it.
+    await act(async () => {
+      result.current.stop();
+    });
+    expect(result.current.state.phase).toBe('stopping');
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(8000);
+    });
+
+    expect(result.current.state.phase).toBe('error');
+    expect(result.current.state.error).toBe('Rekaman gagal disimpan: waktu habis. Coba lagi.');
+  });
+
+  it('lands in error with canAskAgain === false on a permanent permission denial', async () => {
+    const recorder = makeRecorder();
+    mockUseAudioRecorder.mockReturnValue(recorder);
+    mockRequestPermission.mockResolvedValue({ granted: false, canAskAgain: false });
+
+    const { result } = renderHook(() => useVoiceRecorder());
+
+    await act(async () => {
+      result.current.start();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+
+    expect(result.current.state.phase).toBe('error');
+    expect(result.current.state.canAskAgain).toBe(false);
   });
 });

@@ -9,7 +9,7 @@
 // the iOS enum values) and override only primitive fields.
 
 import { useCallback, useEffect, useReducer, useRef } from 'react';
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import {
   RecordingPresets,
   requestRecordingPermissionsAsync,
@@ -81,6 +81,14 @@ export interface VoiceState {
   error: string | null;
   /** The finger lifted while the recorder was still starting. */
   stopRequested: boolean;
+  /**
+   * Only meaningful when `phase` is `error` from a denied microphone
+   * permission: mirrors `PermissionResponse.canAskAgain` so the screen can
+   * offer `Linking.openSettings()` when it's false, matching
+   * `workflows/screens/RoomScanScreen.tsx`. Undefined for every other
+   * failure.
+   */
+  canAskAgain?: boolean;
 }
 
 export const INITIAL_VOICE_STATE: VoiceState = {
@@ -93,7 +101,7 @@ export type VoiceAction =
   | { type: 'requestStop' }
   | { type: 'tick'; durationMs: number }
   | { type: 'stopped'; uri: string | null; durationMs: number }
-  | { type: 'fail'; error: string }
+  | { type: 'fail'; error: string; canAskAgain?: boolean }
   | { type: 'reset' };
 
 export const VOICE_ERRORS = {
@@ -124,12 +132,16 @@ export function voiceReducer(state: VoiceState, action: VoiceAction): VoiceState
       return {
         phase: 'recorded',
         uri: action.uri,
+        // Clamped to the 90s cap. The file on disk can run ~200-500ms past
+        // it — the 200ms poll interval plus native stop() latency both land
+        // after the cap fires — so this is what the UI reports, not a claim
+        // about the actual file length.
         durationMs: Math.min(action.durationMs, VOICE_NOTE_MAX_SECONDS * 1000),
         error: null,
         stopRequested: false,
       };
     case 'fail':
-      return { ...INITIAL_VOICE_STATE, phase: 'error', error: action.error };
+      return { ...INITIAL_VOICE_STATE, phase: 'error', error: action.error, canAskAgain: action.canAskAgain };
     case 'reset':
       if (state.phase === 'starting' || state.phase === 'stopping') return state;
       return INITIAL_VOICE_STATE;
@@ -146,13 +158,28 @@ function browserIsTypeSupported(): ((type: string) => boolean) | undefined {
   return typeof check === 'function' ? (type: string) => check.call(recorder, type) : undefined;
 }
 
+/** Pull a printable message out of a caught value without assuming it's an `Error`. */
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** How long we wait for `recorder.stop()` before giving up on a hung take. */
+export const VOICE_STOP_TIMEOUT_MS = 8000;
+
 export interface VoiceRecorderApi {
   state: VoiceState;
   /** Press in. */
   start: () => void;
   /** Release. Safe to call while the recorder is still starting. */
   stop: () => void;
-  /** Discard the take so the supervisor can record again. */
+  /**
+   * Discard the take so the supervisor can record again.
+   *
+   * No-op while `phase` is `starting` or `stopping` (the reducer ignores it,
+   * same as `start`). A "Batal" control shown during those phases should
+   * call `stop()` instead, so the take finishes landing before it's thrown
+   * away — calling `reset()` there would silently do nothing.
+   */
   reset: () => void;
   fileInfo: { mimeType: string; ext: string };
   /** Live input level in dB while recording, for the level bar; null otherwise. */
@@ -170,6 +197,13 @@ export function useVoiceRecorder(): VoiceRecorderApi {
   const [state, dispatch] = useReducer(voiceReducer, INITIAL_VOICE_STATE);
   const durationRef = useRef(0);
 
+  // Mirrors state.phase for the effects below that only run at mount/unmount
+  // (empty deps) and so can't close over a fresh `state.phase` themselves.
+  const phaseRef = useRef(state.phase);
+  useEffect(() => {
+    phaseRef.current = state.phase;
+  }, [state.phase]);
+
   // Mirror the recorder clock into the reducer and enforce the cap.
   useEffect(() => {
     if (state.phase !== 'recording') return;
@@ -186,7 +220,11 @@ export function useVoiceRecorder(): VoiceRecorderApi {
       try {
         const permission = await requestRecordingPermissionsAsync();
         if (!permission.granted) {
-          dispatch({ type: 'fail', error: 'Izin mikrofon ditolak. Aktifkan di pengaturan HP.' });
+          dispatch({
+            type: 'fail',
+            error: 'Izin mikrofon ditolak. Aktifkan di pengaturan HP.',
+            canAskAgain: permission.canAskAgain,
+          });
           return;
         }
         await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
@@ -194,23 +232,70 @@ export function useVoiceRecorder(): VoiceRecorderApi {
         recorder.record();
         dispatch({ type: 'started' });
       } catch (err) {
-        dispatch({ type: 'fail', error: `Rekaman gagal dimulai: ${(err as Error).message}` });
+        console.warn('[voiceRecorder]', errMessage(err));
+        dispatch({ type: 'fail', error: 'Rekaman gagal dimulai.' });
       }
     })();
   }, [state.phase, recorder]);
 
-  // stopping: finalize the file.
+  // stopping: finalize the file. Races recorder.stop() against a timeout so a
+  // native promise that never settles can't leave the UI stuck on "stopping"
+  // forever (reset()/start() are both no-ops in that phase).
   useEffect(() => {
     if (state.phase !== 'stopping') return;
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      dispatch({ type: 'fail', error: 'Rekaman gagal disimpan: waktu habis. Coba lagi.' });
+    }, VOICE_STOP_TIMEOUT_MS);
     void (async () => {
       try {
         await recorder.stop();
+        if (timedOut) return; // already failed the take; ignore the late resolution
+        clearTimeout(timeoutId);
         dispatch({ type: 'stopped', uri: recorder.uri ?? null, durationMs: durationRef.current });
       } catch (err) {
-        dispatch({ type: 'fail', error: `Rekaman gagal disimpan: ${(err as Error).message}` });
+        if (timedOut) return;
+        clearTimeout(timeoutId);
+        console.warn('[voiceRecorder]', errMessage(err));
+        dispatch({ type: 'fail', error: 'Rekaman gagal disimpan.' });
       }
     })();
+    return () => clearTimeout(timeoutId);
   }, [state.phase, recorder]);
+
+  // Restore the audio session once a take lands (successfully or not), so the
+  // mic session doesn't stay open for other apps between takes.
+  useEffect(() => {
+    if (state.phase !== 'recorded' && state.phase !== 'error') return;
+    setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+  }, [state.phase]);
+
+  // Backgrounding mid-recording behaves like lifting the finger: request a
+  // stop so the file finalizes cleanly instead of continuing to record (or
+  // getting killed) while SANO isn't in the foreground.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active' && (phaseRef.current === 'recording' || phaseRef.current === 'starting')) {
+        dispatch({ type: 'requestStop' });
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Unmount while recording/starting: Android's MediaRecorder.release() (what
+  // useAudioRecorder's teardown calls) without a prior stop() leaves a
+  // truncated .m4a, so stop explicitly first. Also always restore the audio
+  // session here, regardless of phase, so an abandoned screen never leaves it
+  // open.
+  useEffect(() => {
+    return () => {
+      if (phaseRef.current === 'recording' || phaseRef.current === 'starting') {
+        recorder.stop().catch(() => {});
+      }
+      setAudioModeAsync({ allowsRecording: false }).catch(() => {});
+    };
+  }, [recorder]);
 
   const start = useCallback(() => dispatch({ type: 'start' }), []);
   const stop = useCallback(() => dispatch({ type: 'requestStop' }), []);
