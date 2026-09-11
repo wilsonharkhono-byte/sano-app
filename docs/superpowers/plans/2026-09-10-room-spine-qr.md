@@ -3963,6 +3963,10 @@ export default function RoomsAdminScreen() {
   const [busy, setBusy] = useState(false);
 
   const canPhase = canSetProjectPhase(profile?.role);
+  // Falls back to the database default until migration 096 is pasted:
+  // select('*') on a projects row with no phase column yields undefined at
+  // runtime, even though Project.phase is typed required.
+  const phase = project?.phase ?? 'STRUKTUR';
 
   const load = useCallback(async () => {
     if (!project) { setRooms([]); setLoading(false); return; }
@@ -4109,7 +4113,7 @@ export default function RoomsAdminScreen() {
               {canPhase ? (
                 <View style={styles.pickerWrap}>
                   <Picker
-                    selectedValue={project.phase} enabled={!busy}
+                    selectedValue={phase} enabled={!busy}
                     onValueChange={(v) => void handlePhase(v as ProjectPhase)}
                   >
                     {PROJECT_PHASES.map((p) => <Picker.Item key={p.value} label={p.label} value={p.value} />)}
@@ -4117,7 +4121,7 @@ export default function RoomsAdminScreen() {
                 </View>
               ) : (
                 <Text style={styles.hint}>
-                  Fase saat ini: {PROJECT_PHASES.find((p) => p.value === project.phase)?.label ?? project.phase}.
+                  Fase saat ini: {PROJECT_PHASES.find((p) => p.value === phase)?.label ?? phase}.
                   {'\n'}Hanya admin, prinsipal, atau estimator yang ditugaskan ke proyek ini yang dapat mengubahnya.
                 </Text>
               )}
@@ -4830,6 +4834,12 @@ Expected: `assetlinks.json`. If the directory is missing, the `public/` conventi
 // NavigationContainer, so the URL is not consumed. On web it stays in the
 // address bar and resolves when the container mounts after sign-in; on native
 // Linking.getInitialURL() still returns it at that point. No extra machinery.
+//
+// expo-linking is installed for the sano:// scheme pairing - Expo's docs pair
+// the app.json `scheme` with the expo-linking package - and for
+// `Linking.createURL` in plan 2's capture/queue work. Nothing in plan 1
+// imports it: every prefix here (LINKING_PREFIXES, ROOM_PATH) is a plain
+// string built in tools/roomLinks.ts, not an expo-linking call.
 
 import { getPathFromState as defaultGetPathFromState } from '@react-navigation/native';
 import type { LinkingOptions } from '@react-navigation/native';
@@ -5265,7 +5275,11 @@ export default function RoomScreen() {
     return () => { alive = false; };
   }, [target, wantedCode]);
 
-  const phaseLabel = target ? PROJECT_PHASE_LABELS[target.phase] ?? target.phase : '';
+  // Falls back to the database default until migration 096 is pasted:
+  // select('*') on a projects row with no phase column yields undefined at
+  // runtime, even though Project.phase is typed required.
+  const phase = target?.phase ?? 'STRUKTUR';
+  const phaseLabel = target ? PROJECT_PHASE_LABELS[phase] ?? phase : '';
 
   return (
     <View style={styles.flex}>
@@ -5398,6 +5412,10 @@ export default function RoomDetailScreen() {
   const target = projects.find(
     (p) => p.code.toLowerCase() === (params.projectCode ?? '').toLowerCase(),
   );
+  // Falls back to the database default until migration 096 is pasted:
+  // select('*') on a projects row with no phase column yields undefined at
+  // runtime, even though Project.phase is typed required.
+  const phase = target?.phase ?? 'STRUKTUR';
 
   useEffect(() => {
     let alive = true;
@@ -5437,7 +5455,7 @@ export default function RoomDetailScreen() {
         {!loading && target && room && (
           <Card title={room.room_name} subtitle={`${room.floor || 'Tanpa lantai'} · ${AREA_TYPE_LABELS[room.area_type]}`}>
             <Text style={styles.row}>Proyek: {target.name} ({target.code})</Text>
-            <Text style={styles.row}>Fase: {PROJECT_PHASE_LABELS[target.phase] ?? target.phase}</Text>
+            <Text style={styles.row}>Fase: {PROJECT_PHASE_LABELS[phase] ?? phase}</Text>
             <Text style={styles.row}>Kode ruangan: {room.room_code}</Text>
             <Text style={styles.row}>Status: {room.active ? 'Aktif' : 'Nonaktif'}</Text>
             <Text style={styles.row}>
@@ -5861,6 +5879,7 @@ Read this plan once more against the spec before starting, and check these speci
 3. **No "Ruangan" tab for principal** (task 9 step 5). Spec §9 wants one for principal too, but that tab is the Papan Ruangan board, which is plan 4. Principal gets the hidden `RoomDetail` route now so a scanned label resolves in that role.
 4. **`useProject` needed no query change** (task 7 step 4). The spec implies wiring; the hook already does `select('*')`. Only the comment changes, so the next reader does not narrow it.
 5. **Linking config declares only the routes that need paths, and overrides `getPathFromState`.** React Navigation 6 falls back to route names for undeclared routes, so without the override every tab switch would rewrite the web address bar. The override keeps the bar at `/` except for declared links (task 10 step 6, tested in task 12). Corrected by the orchestrator on 2026-09-10.
+6. **`expo-linking` is a dependency with no plan-1 import.** Task 10 adds it to `package.json` alongside `scheme` in `app.json`, but every `Linking` call in this plan uses `react-native`'s own module, not `expo-linking`. It stays installed for the `sano://` scheme pairing and for `Linking.createURL` in plan 2's capture/queue work; `workflows/linking.ts` now says so in its header comment.
 
 **Things to check while executing:**
 

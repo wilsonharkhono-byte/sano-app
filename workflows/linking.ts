@@ -16,6 +16,12 @@
 // NavigationContainer, so the URL is not consumed. On web it stays in the
 // address bar and resolves when the container mounts after sign-in; on native
 // Linking.getInitialURL() still returns it at that point. No extra machinery.
+//
+// expo-linking is installed for the sano:// scheme pairing - Expo's docs pair
+// the app.json `scheme` with the expo-linking package - and for
+// `Linking.createURL` in plan 2's capture/queue work. Nothing in plan 1
+// imports it: every prefix here (LINKING_PREFIXES, ROOM_PATH) is a plain
+// string built in tools/roomLinks.ts, not an expo-linking call.
 
 import { getPathFromState as defaultGetPathFromState } from '@react-navigation/native';
 import type { LinkingOptions } from '@react-navigation/native';

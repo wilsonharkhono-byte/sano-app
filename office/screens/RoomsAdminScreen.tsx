@@ -35,6 +35,10 @@ export default function RoomsAdminScreen() {
   const [busy, setBusy] = useState(false);
 
   const canPhase = canSetProjectPhase(profile?.role);
+  // Falls back to the database default until migration 096 is pasted:
+  // select('*') on a projects row with no phase column yields undefined at
+  // runtime, even though Project.phase is typed required.
+  const phase = project?.phase ?? 'STRUKTUR';
 
   const load = useCallback(async () => {
     if (!project) { setRooms([]); setLoading(false); return; }
@@ -181,7 +185,7 @@ export default function RoomsAdminScreen() {
               {canPhase ? (
                 <View style={styles.pickerWrap}>
                   <Picker
-                    selectedValue={project.phase} enabled={!busy}
+                    selectedValue={phase} enabled={!busy}
                     onValueChange={(v) => void handlePhase(v as ProjectPhase)}
                   >
                     {PROJECT_PHASES.map((p) => <Picker.Item key={p.value} label={p.label} value={p.value} />)}
@@ -189,7 +193,7 @@ export default function RoomsAdminScreen() {
                 </View>
               ) : (
                 <Text style={styles.hint}>
-                  Fase saat ini: {PROJECT_PHASES.find((p) => p.value === project.phase)?.label ?? project.phase}.
+                  Fase saat ini: {PROJECT_PHASES.find((p) => p.value === phase)?.label ?? phase}.
                   {'\n'}Hanya admin, prinsipal, atau estimator yang ditugaskan ke proyek ini yang dapat mengubahnya.
                 </Text>
               )}

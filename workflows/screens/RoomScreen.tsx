@@ -72,7 +72,11 @@ export default function RoomScreen() {
     return () => { alive = false; };
   }, [target, wantedCode]);
 
-  const phaseLabel = target ? PROJECT_PHASE_LABELS[target.phase] ?? target.phase : '';
+  // Falls back to the database default until migration 096 is pasted:
+  // select('*') on a projects row with no phase column yields undefined at
+  // runtime, even though Project.phase is typed required.
+  const phase = target?.phase ?? 'STRUKTUR';
+  const phaseLabel = target ? PROJECT_PHASE_LABELS[phase] ?? phase : '';
 
   return (
     <View style={styles.flex}>

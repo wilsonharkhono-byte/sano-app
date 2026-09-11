@@ -28,6 +28,10 @@ export default function RoomDetailScreen() {
   const target = projects.find(
     (p) => p.code.toLowerCase() === (params.projectCode ?? '').toLowerCase(),
   );
+  // Falls back to the database default until migration 096 is pasted:
+  // select('*') on a projects row with no phase column yields undefined at
+  // runtime, even though Project.phase is typed required.
+  const phase = target?.phase ?? 'STRUKTUR';
 
   useEffect(() => {
     let alive = true;
@@ -67,7 +71,7 @@ export default function RoomDetailScreen() {
         {!loading && target && room && (
           <Card title={room.room_name} subtitle={`${room.floor || 'Tanpa lantai'} · ${AREA_TYPE_LABELS[room.area_type]}`}>
             <Text style={styles.row}>Proyek: {target.name} ({target.code})</Text>
-            <Text style={styles.row}>Fase: {PROJECT_PHASE_LABELS[target.phase] ?? target.phase}</Text>
+            <Text style={styles.row}>Fase: {PROJECT_PHASE_LABELS[phase] ?? phase}</Text>
             <Text style={styles.row}>Kode ruangan: {room.room_code}</Text>
             <Text style={styles.row}>Status: {room.active ? 'Aktif' : 'Nonaktif'}</Text>
             <Text style={styles.row}>
