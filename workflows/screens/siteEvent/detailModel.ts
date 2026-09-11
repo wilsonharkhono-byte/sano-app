@@ -11,6 +11,8 @@ export interface DetailActions {
 /** routeNames: the navigator's registered routes; only the supervisor navigator has SiteEventConfirm. */
 export function detailActions(ev: Pick<SiteEvent, 'status'>, routeNames: ReadonlyArray<string>): DetailActions {
   return {
+    // Reviewed and kept role-agnostic on purpose: close_site_event (097:854) already
+    // allows project members and office roles. A future role gate belongs here, not in the RPC.
     canClose: ev.status === 'open',
     canOpenConfirm: (ev.status === 'pending_analysis' || ev.status === 'draft') && routeNames.includes('SiteEventConfirm'),
   };

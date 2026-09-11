@@ -406,6 +406,7 @@ describe('getSiteEvent', () => {
           rooms: { room_name: 'Kamar 1', floor: 'Lt 2' },
           owner: { full_name: 'Owner Satu' },
           reporter: { full_name: 'Reporter Satu' },
+          closer: { full_name: 'Penutup Satu' },
         },
         error: null,
       }),
@@ -416,7 +417,29 @@ describe('getSiteEvent', () => {
     expect(r?.room_floor).toBe('Lt 2');
     expect(r?.owner_name).toBe('Owner Satu');
     expect(r?.reporter_name).toBe('Reporter Satu');
+    expect(r?.closed_by_name).toBe('Penutup Satu');
     expect((r as unknown as { site_event_media?: unknown }).site_event_media).toBeUndefined();
+  });
+
+  it('leaves closed_by_name null when the event is not closed (closer join returns no row)', async () => {
+    mocked.from.mockImplementationOnce(() =>
+      makeChain({
+        data: {
+          id: EVENT,
+          project_id: PROJECT,
+          title: 'Retak acian',
+          status: 'open',
+          site_event_media: [],
+          rooms: { room_name: 'Kamar 1', floor: 'Lt 2' },
+          owner: { full_name: 'Owner Satu' },
+          reporter: { full_name: 'Reporter Satu' },
+          closer: null,
+        },
+        error: null,
+      }),
+    );
+    const r = await getSiteEvent(EVENT);
+    expect(r?.closed_by_name).toBeNull();
   });
 });
 

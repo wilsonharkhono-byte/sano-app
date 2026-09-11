@@ -291,13 +291,15 @@ export interface SiteEventWithMedia extends SiteEvent {
   room_floor: string | null;
   owner_name: string | null;
   reporter_name: string | null;
+  /** Who closed the event, via `closed_by` -> profiles. Null when unclosed or the join found no row. */
+  closed_by_name: string | null;
 }
 
 // One string literal on purpose (the ROOM_COLUMNS / readBackUpdate.ts rule):
 // a concatenated select string types every row as GenericStringError under
 // supabase-js 2.100, forcing a double cast through `unknown`. Do not split it.
 const EVENT_SELECT =
-  '*, site_event_media(*), rooms(room_name, floor), owner:profiles!site_events_owner_id_fkey(full_name), reporter:profiles!site_events_reporter_id_fkey(full_name)';
+  '*, site_event_media(*), rooms(room_name, floor), owner:profiles!site_events_owner_id_fkey(full_name), reporter:profiles!site_events_reporter_id_fkey(full_name), closer:profiles!site_events_closed_by_fkey(full_name)';
 
 export async function getSiteEvent(eventId: string): Promise<SiteEventWithMedia | null> {
   const { data, error } = await supabase.from('site_events').select(EVENT_SELECT).eq('id', eventId).maybeSingle();
@@ -311,8 +313,9 @@ export async function getSiteEvent(eventId: string): Promise<SiteEventWithMedia 
     rooms?: { room_name?: string; floor?: string | null } | null;
     owner?: { full_name?: string } | null;
     reporter?: { full_name?: string } | null;
+    closer?: { full_name?: string } | null;
   };
-  const { site_event_media, rooms, owner, reporter, ...event } = row;
+  const { site_event_media, rooms, owner, reporter, closer, ...event } = row;
   return {
     ...(event as SiteEvent),
     media: [...(site_event_media ?? [])].sort((a, b) => a.sort_order - b.sort_order),
@@ -320,6 +323,7 @@ export async function getSiteEvent(eventId: string): Promise<SiteEventWithMedia 
     room_floor: rooms?.floor ?? null,
     owner_name: owner?.full_name ?? null,
     reporter_name: reporter?.full_name ?? null,
+    closed_by_name: closer?.full_name ?? null,
   };
 }
 

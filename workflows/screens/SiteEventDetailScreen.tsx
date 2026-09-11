@@ -5,10 +5,10 @@ import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import Card from '../components/Card';
 import { getSiteEvent, type SiteEventWithMedia } from '../../tools/siteEvents';
-import { gateChipLabel, listGateRefs } from '../../tools/gateRefs';
+import { gateChipLabel, listGateRefs, listGateStepRefs, stepChipLabel } from '../../tools/gateRefs';
 import { todayIsoLocal } from '../../tools/siteEventRules';
 import { SITE_EVENT_STATUS_LABELS, SITE_EVENT_TYPE_LABELS } from '../../tools/constants';
-import type { GateRef } from '../../tools/types';
+import type { GateRef, GateStepRef } from '../../tools/types';
 import { COLORS, SPACE } from '../theme';
 import { formStyles as s } from './siteEvent/styles';
 import MediaStrip from './siteEvent/MediaStrip';
@@ -28,6 +28,11 @@ function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
+/** Shown for a related event when the row is missing or unreadable (RLS), so the id isn't just a raw UUID. */
+function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
 /**
  * One site event: read view, "Selesai", and the SITE_EVENT_ASSIGNED deeplink
  * target. Registered under this name in the supervisor, office and principal
@@ -41,16 +46,26 @@ export default function SiteEventDetailScreen() {
 
   const [event, setEvent] = useState<SiteEventWithMedia | null>(null);
   const [gates, setGates] = useState<GateRef[]>([]);
+  const [steps, setSteps] = useState<GateStepRef[]>([]);
   const [loading, setLoading] = useState(true);
   const [closing, setClosing] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
+  /** null = no related event, or its row is missing/unreadable (guarded below to id-only, no link). */
+  const [related, setRelated] = useState<{ id: string; title: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [ev, gateRows] = await Promise.all([getSiteEvent(params.eventId ?? ''), listGateRefs()]);
+    const [ev, gateRows, stepRows] = await Promise.all([getSiteEvent(params.eventId ?? ''), listGateRefs(), listGateStepRefs()]);
     setEvent(ev);
     setGates(gateRows);
+    setSteps(stepRows);
     setLoading(false);
+    if (ev?.related_event_id) {
+      const rel = await getSiteEvent(ev.related_event_id);
+      setRelated(rel ? { id: rel.id, title: rel.title ?? (rel.ai_draft ? `Draf AI: ${rel.ai_draft.title}` : shortId(rel.id)) } : null);
+    } else {
+      setRelated(null);
+    }
   }, [params.eventId]);
 
   useEffect(() => {
@@ -65,6 +80,7 @@ export default function SiteEventDetailScreen() {
 
   const today = todayIsoLocal();
   const gate = event?.gate_code ? gates.find((g) => g.code === event.gate_code) : undefined;
+  const step = event?.step_code ? steps.find((st) => st.code === event.step_code) : undefined;
   const actions = event ? detailActions(event, routeNames) : { canClose: false, canOpenConfirm: false };
   const vo = event ? voStatusText(event) : null;
   const transcript = event ? event.transcript_edited ?? event.transcript : null;
@@ -115,6 +131,11 @@ export default function SiteEventDetailScreen() {
                     <Text style={s.chipText}>{gateChipLabel(gate)}</Text>
                   </View>
                 ) : null}
+                {step ? (
+                  <View style={s.chip}>
+                    <Text style={s.chipText}>{stepChipLabel(step, gate)}</Text>
+                  </View>
+                ) : null}
                 {event.is_blocking ? (
                   <View style={s.chip}>
                     <Text style={s.chipText}>Menghambat</Text>
@@ -132,6 +153,23 @@ export default function SiteEventDetailScreen() {
               {event.confirmed_at ? <Row label="Dikonfirmasi" value={formatDateTime(event.confirmed_at)} /> : null}
               {event.confirmed_at && !event.ai_used ? <Row label="Sumber" value="Diisi manual" /> : null}
               {vo ? <Text style={s.hint}>{vo}</Text> : null}
+              {event.related_event_id ? (
+                <TouchableOpacity
+                  style={s.row}
+                  onPress={
+                    related
+                      ? () => navigation.navigate('SiteEventDetail', { eventId: related.id, projectId: event.project_id })
+                      : undefined
+                  }
+                  disabled={!related}
+                  accessibilityRole="button"
+                >
+                  <Text style={s.rowLabel}>Kejadian terkait</Text>
+                  <Text style={[s.rowValue, related ? { color: COLORS.primary } : null]}>
+                    {related ? related.title : shortId(event.related_event_id)}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
             </Card>
 
             <Card title="Bukti">
@@ -155,7 +193,16 @@ export default function SiteEventDetailScreen() {
 
             {event.status === 'done' ? (
               <Card title="Selesai" borderColor={COLORS.ok}>
-                <Row label="Ditutup" value={event.closed_at ? formatDateTime(event.closed_at) : '—'} />
+                <Row
+                  label={event.closed_by_name ? 'Ditutup oleh' : 'Ditutup'}
+                  value={
+                    event.closed_at
+                      ? event.closed_by_name
+                        ? `${event.closed_by_name} · ${formatDateTime(event.closed_at)}`
+                        : formatDateTime(event.closed_at)
+                      : '—'
+                  }
+                />
                 {event.closure_note ? <Text style={s.bannerText}>{event.closure_note}</Text> : null}
               </Card>
             ) : null}

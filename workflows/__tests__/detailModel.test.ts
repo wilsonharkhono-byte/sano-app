@@ -14,6 +14,10 @@ describe('detailActions', () => {
     expect(detailActions({ status: 'open' }, SUPERVISOR_ROUTES)).toEqual({ canClose: true, canOpenConfirm: false });
     expect(detailActions({ status: 'done' }, SUPERVISOR_ROUTES)).toEqual({ canClose: false, canOpenConfirm: false });
     expect(detailActions({ status: 'discarded' }, SUPERVISOR_ROUTES)).toEqual({ canClose: false, canOpenConfirm: false });
+    // Guards against a broken implementation like `status !== 'done' && status !== 'discarded'`,
+    // which would pass the assertions above but wrongly show "Selesai" on an unconfirmed draft.
+    expect(detailActions({ status: 'draft' }, SUPERVISOR_ROUTES).canClose).toBe(false);
+    expect(detailActions({ status: 'pending_analysis' }, SUPERVISOR_ROUTES).canClose).toBe(false);
   });
 
   it('offers Buka konfirmasi for a draft only where the confirm screen is registered', () => {
@@ -51,6 +55,10 @@ describe('voStatusText and draftCardLine', () => {
     });
     expect(draftCardLine({ status: 'pending_analysis', draft_title: null, last_error: null, room_name: 'Dapur' })).toEqual({
       title: 'Menunggu analisis AI', line: 'Dapur · sedang dianalisis', tone: 'info',
+    });
+    // The 'draft' branch's `item.draft_title ?? 'Draf AI siap'` fallback, otherwise never exercised.
+    expect(draftCardLine({ status: 'draft', draft_title: null, last_error: null, room_name: 'Dapur' })).toEqual({
+      title: 'Draf AI siap', line: 'Dapur · siap dikonfirmasi', tone: 'ok',
     });
   });
 });
