@@ -1,0 +1,78 @@
+import { assertEquals } from 'std/assert';
+import {
+  AI_QUOTA_MESSAGE,
+  audioFilename,
+  bytesToBase64,
+  clampWorkGroupNames,
+  isUuid,
+  selectAnalysisPhotos,
+  sha256Hex,
+  startOfJakartaDayUtcIso,
+  truncate,
+  type MediaRow,
+} from './util.ts';
+
+const media = (over: Partial<MediaRow>): MediaRow => ({
+  id: crypto.randomUUID(), kind: 'photo', role: 'closeup', storage_path: 'site-events/p/e/x.jpg',
+  mime_type: 'image/jpeg', sort_order: 0, duration_s: null, bytes: null, ...over,
+});
+
+Deno.test('isUuid accepts a v4 uuid and rejects anything else', () => {
+  assertEquals(isUuid('11111111-1111-4111-8111-111111111111'), true);
+  assertEquals(isUuid('not-a-uuid'), false);
+  assertEquals(isUuid(42), false);
+});
+
+Deno.test('bytesToBase64 encodes small and large buffers', () => {
+  assertEquals(bytesToBase64(new TextEncoder().encode('SANO')), 'U0FOTw==');
+  const big = new Uint8Array(200_000).fill(65);
+  assertEquals(atob(bytesToBase64(big)).length, 200_000);
+});
+
+Deno.test('startOfJakartaDayUtcIso uses the Jakarta calendar day', () => {
+  assertEquals(startOfJakartaDayUtcIso(new Date('2026-09-10T18:30:00Z')), '2026-09-10T17:00:00.000Z');
+  assertEquals(startOfJakartaDayUtcIso(new Date('2026-09-10T16:59:59Z')), '2026-09-09T17:00:00.000Z');
+});
+
+Deno.test('selectAnalysisPhotos puts the context photo first, caps at 4, and counts what it skipped', () => {
+  const rows = [
+    media({ role: 'closeup', sort_order: 1 }),
+    media({ role: 'closeup', sort_order: 2 }),
+    media({ role: 'context', sort_order: 0 }),
+    media({ role: 'closeup', sort_order: 3 }),
+    media({ role: 'closeup', sort_order: 4 }),
+    media({ role: 'closeup', sort_order: 5, mime_type: 'image/heic' }),
+    media({ kind: 'audio', role: 'audio', mime_type: 'audio/mp4' }),
+    media({ role: 'closure' }),
+  ];
+  const { selected, skipped } = selectAnalysisPhotos(rows);
+  assertEquals(selected.map((m) => `${m.role}:${m.sort_order}`), ['context:0', 'closeup:1', 'closeup:2', 'closeup:3']);
+  assertEquals(skipped, 2);
+});
+
+Deno.test('audioFilename keeps the stored extension, else derives one from the MIME type', () => {
+  assertEquals(audioFilename('site-events/p/e/a.m4a', 'audio/mp4'), 'audio.m4a');
+  assertEquals(audioFilename('site-events/p/e/a.webm', 'audio/webm'), 'audio.webm');
+  assertEquals(audioFilename('site-events/p/e/a', 'audio/webm'), 'audio.webm');
+  assertEquals(audioFilename('site-events/p/e/a', null), 'audio.m4a');
+});
+
+Deno.test('clampWorkGroupNames keeps unique trimmed strings, 80 characters, 30 at most', () => {
+  assertEquals(clampWorkGroupNames('Kolom'), []);
+  assertEquals(clampWorkGroupNames([' Kolom  Lantai 1 ', 'Kolom Lantai 1', 7, '']), ['Kolom Lantai 1']);
+  assertEquals(clampWorkGroupNames(['x'.repeat(120)])[0].length, 80);
+  assertEquals(clampWorkGroupNames(Array.from({ length: 50 }, (_, i) => `G${i}`)).length, 30);
+});
+
+Deno.test('sha256Hex matches the known digest of "abc"', async () => {
+  assertEquals(await sha256Hex('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+});
+
+Deno.test('truncate adds an ellipsis only when needed', () => {
+  assertEquals(truncate('pendek', 10), 'pendek');
+  assertEquals(truncate('panjang sekali', 8), 'panjang…');
+});
+
+Deno.test('the quota message is the one the app matches on', () => {
+  assertEquals(AI_QUOTA_MESSAGE, 'Kuota analisis AI hari ini habis. Draf akan dibuat besok, atau isi manual.');
+});
