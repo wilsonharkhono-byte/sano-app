@@ -567,6 +567,9 @@ a SANO room URL gives `QR bukan label ruangan SANO.`
 
 **In-app scanner.** `expo-camera` `CameraView` with
 `barcodeScannerSettings={{barcodeTypes: ['qr']}}`, accepting only SANO room URLs.
+The scanner screen unmounts when it loses focus and resets its scan lock on
+focus, so repeated scans in one shift work and the camera never runs in the
+background.
 
 **New dependencies:** `expo-camera`, `expo-linking`, `expo-audio`,
 `expo-network`, `react-native-qrcode-svg` (its peer `react-native-svg` 15.12.1 is

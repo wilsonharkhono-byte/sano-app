@@ -6,7 +6,7 @@
  * resolver rather than just the object shape.
  */
 import { getStateFromPath } from '@react-navigation/native';
-import { buildLinking, LINKING_PREFIXES, ROOM_PATH } from '../linking';
+import { buildLinking, focusedRouteName, LINKING_PREFIXES, ROOM_PATH } from '../linking';
 
 const SUPERVISOR = { Beranda: '', RoomScan: 'scan', Room: ROOM_PATH };
 const OFFICE     = { Home: '', RoomDetail: ROOM_PATH };
@@ -71,5 +71,19 @@ describe('getPathFromState - the web address bar only carries declared links', (
     const tab  = { index: 0, routes: [{ name: 'Permintaan' }] };
     expect(linking.getPathFromState!(room as any, linking.config as any)).toBe('/r/GA17/L2-KM');
     expect(linking.getPathFromState!(tab as any, linking.config as any)).toBe('/');
+  });
+});
+
+describe('focusedRouteName - walks nested navigator state to the deepest route', () => {
+  it('descends into a nested tab state to find the focused leaf route', () => {
+    const state = {
+      index: 0,
+      routes: [{ name: 'Progres', state: { index: 0, routes: [{ name: 'RoomScan' }] } }],
+    };
+    expect(focusedRouteName(state as any)).toBe('RoomScan');
+  });
+
+  it('returns undefined for an undefined state', () => {
+    expect(focusedRouteName(undefined)).toBeUndefined();
   });
 });

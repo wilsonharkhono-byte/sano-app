@@ -151,6 +151,9 @@ export default function AppNavigation() {
             tabBarAccessibilityLabel: 'Scan ruangan',
             tabBarButton: () => null,
             tabBarItemStyle: { display: 'none' },
+            // Blurred tab screens stay mounted by default; without this the
+            // camera keeps running and the scan lock never resets on revisit.
+            unmountOnBlur: true,
           }}
         />
         <Tab.Screen

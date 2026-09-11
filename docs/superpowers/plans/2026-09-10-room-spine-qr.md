@@ -5029,9 +5029,9 @@ const styles = StyleSheet.create({
 
 ```tsx
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Platform, Linking } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import RoomPicker from './components/RoomPicker';
@@ -5046,17 +5046,40 @@ import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../theme';
  * Two ways to reach a room without a working label: the in-app scanner (native)
  * and the picker (web, and native when permission is refused). A QR that is not
  * a SANO room URL gets the spec §8 refusal, never a silent no-op.
+ *
+ * This is a hidden bottom-tab screen (`unmountOnBlur: true` in navigation.tsx),
+ * but React Navigation does not guarantee an unmount on every host/version, so
+ * the screen also defends itself: the scan lock resets on focus and the camera
+ * only renders while focused, so a second visit never inherits a stale lock or
+ * a background-running camera.
  */
 export default function RoomScanScreen() {
   const navigation = useNavigation<any>();
+  const isFocused = useIsFocused();
   const { project } = useProject();
   const { show: toast } = useToast();
   const [permission, requestPermission] = useCameraPermissions();
   const [rooms, setRooms] = useState<Room[]>([]);
   // One scan per visit: CameraView fires onBarcodeScanned on every frame.
   const handled = useRef(false);
+  const invalidScanTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isWeb = Platform.OS === 'web';
+
+  // Reset the lock every time this screen gains focus, and drop any pending
+  // "try again" timeout when it loses focus, so a blurred-not-unmounted screen
+  // never fires a stale reset into a fresh visit.
+  useFocusEffect(
+    useCallback(() => {
+      handled.current = false;
+      return () => {
+        if (invalidScanTimeout.current) {
+          clearTimeout(invalidScanTimeout.current);
+          invalidScanTimeout.current = null;
+        }
+      };
+    }, []),
+  );
 
   useEffect(() => {
     if (!project) return;
@@ -5074,12 +5097,17 @@ export default function RoomScanScreen() {
       handled.current = true;
       toast('QR bukan label ruangan SANO.', 'critical');
       // Let the supervisor try again on the next label after a beat.
-      setTimeout(() => { handled.current = false; }, 1500);
+      invalidScanTimeout.current = setTimeout(() => {
+        handled.current = false;
+        invalidScanTimeout.current = null;
+      }, 1500);
       return;
     }
     handled.current = true;
     goToRoom(target.projectCode, target.roomCode);
   }, [goToRoom, toast]);
+
+  const isPermanentlyDenied = !isWeb && !!permission && !permission.granted && !permission.canAskAgain;
 
   const pickerNote = isWeb
     ? 'Pemindai QR hanya tersedia di aplikasi Android. Pilih ruangan dari daftar.'
@@ -5091,7 +5119,7 @@ export default function RoomScanScreen() {
       <View style={styles.content}>
         <Text style={styles.sectionHead}>Scan ruangan</Text>
 
-        {!isWeb && permission?.granted && (
+        {!isWeb && permission?.granted && isFocused && (
           <View style={styles.cameraBox}>
             <CameraView
               style={StyleSheet.absoluteFill}
@@ -5106,12 +5134,25 @@ export default function RoomScanScreen() {
         {!isWeb && !permission?.granted && (
           <View style={styles.permBox}>
             <Ionicons name="camera-outline" size={28} color={COLORS.textSec} />
-            <Text style={styles.permText}>
-              SANO perlu izin kamera untuk memindai label QR ruangan.
-            </Text>
-            <TouchableOpacity style={styles.primaryBtn} onPress={() => void requestPermission()}>
-              <Text style={styles.primaryText}>Izinkan kamera</Text>
-            </TouchableOpacity>
+            {isPermanentlyDenied ? (
+              <>
+                <Text style={styles.permText}>
+                  Akses kamera untuk SANO telah dimatikan. Aktifkan lagi lewat Pengaturan untuk memindai label QR ruangan.
+                </Text>
+                <TouchableOpacity style={styles.primaryBtn} onPress={() => void Linking.openSettings()}>
+                  <Text style={styles.primaryText}>Buka Pengaturan</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <Text style={styles.permText}>
+                  SANO perlu izin kamera untuk memindai label QR ruangan.
+                </Text>
+                <TouchableOpacity style={styles.primaryBtn} onPress={() => void requestPermission()}>
+                  <Text style={styles.primaryText}>Izinkan kamera</Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         )}
 
@@ -5460,6 +5501,9 @@ Then the two screens, after the hidden `Notifikasi` block (`:129`), using the sa
             tabBarAccessibilityLabel: 'Scan ruangan',
             tabBarButton: () => null,
             tabBarItemStyle: { display: 'none' },
+            // Blurred tab screens stay mounted by default; without this the
+            // camera keeps running and the scan lock never resets on revisit.
+            unmountOnBlur: true,
           }}
         />
         <Tab.Screen
@@ -5572,6 +5616,21 @@ MSG
 )"
 ```
 
+**Follow-up landed: scanner lifecycle.** Code review on Task 11 found that `handled`
+was a `useRef` lock set `true` on a valid scan and never reset except on the
+invalid-scan branch's 1.5s timeout. `RoomScan` is a hidden bottom-tab screen, and
+React Navigation does not unmount a blurred tab screen by default, so after the
+first successful scan every later visit showed a live camera that silently
+ignored every frame - and the camera kept running while the tab sat blurred in
+the background. Fixed two ways, belt and braces: `workflows/navigation.tsx` sets
+`unmountOnBlur: true` on the `RoomScan` `Tab.Screen`, and `RoomScanScreen.tsx`
+independently resets `handled.current = false` in a `useFocusEffect` callback
+(clearing any pending invalid-scan timeout on blur) and renders `<CameraView>`
+only while `useIsFocused()` is true. The permission-denied branch also gained an
+escape hatch: when `permission.canAskAgain === false`, the screen shows a "Buka
+Pengaturan" button calling `Linking.openSettings()` instead of a no-op
+re-request, with the room picker still visible as a fallback.
+
 ---
 
 ### Task 12: Routing test
@@ -5593,7 +5652,7 @@ Create `workflows/__tests__/linking.test.ts`:
  * resolver rather than just the object shape.
  */
 import { getStateFromPath } from '@react-navigation/native';
-import { buildLinking, LINKING_PREFIXES, ROOM_PATH } from '../linking';
+import { buildLinking, focusedRouteName, LINKING_PREFIXES, ROOM_PATH } from '../linking';
 
 const SUPERVISOR = { Beranda: '', RoomScan: 'scan', Room: ROOM_PATH };
 const OFFICE     = { Home: '', RoomDetail: ROOM_PATH };
@@ -5660,6 +5719,20 @@ describe('getPathFromState - the web address bar only carries declared links', (
     expect(linking.getPathFromState!(tab as any, linking.config as any)).toBe('/');
   });
 });
+
+describe('focusedRouteName - walks nested navigator state to the deepest route', () => {
+  it('descends into a nested tab state to find the focused leaf route', () => {
+    const state = {
+      index: 0,
+      routes: [{ name: 'Progres', state: { index: 0, routes: [{ name: 'RoomScan' }] } }],
+    };
+    expect(focusedRouteName(state as any)).toBe('RoomScan');
+  });
+
+  it('returns undefined for an undefined state', () => {
+    expect(focusedRouteName(undefined)).toBeUndefined();
+  });
+});
 ```
 
 - [ ] **Step 2: Note the ordering, honestly**
@@ -5679,7 +5752,7 @@ disagree; fix the config, not the test.
 npx jest workflows/__tests__/linking.test.ts
 ```
 
-Expected: `Tests: 9 passed, 9 total`. If `getStateFromPath` is undefined on your installed version, drop the second describe block to config-shape assertions only and note the version in the commit body - do not silently weaken the first block too.
+Expected: `Tests: 11 passed, 11 total`. If `getStateFromPath` is undefined on your installed version, drop the second describe block to config-shape assertions only and note the version in the commit body - do not silently weaken the first block too.
 
 - [ ] **Step 4: Commit**
 
