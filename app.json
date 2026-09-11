@@ -58,7 +58,13 @@
       "expo-location",
       "expo-asset",
       "expo-font",
-      "expo-camera"
+      "expo-camera",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "SANO memakai mikrofon untuk merekam catatan suara di lapangan."
+        }
+      ]
     ],
     "extra": {
       "eas": {
