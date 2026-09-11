@@ -175,8 +175,10 @@ the whole script. Second, trigger `rooms_freeze_code` rejects a `room_code`
 change when `qr_printed_at IS NOT NULL`: a printed label is a physical object and
 the code behind it cannot move. The freeze also covers `project_id`, since the
 label is `/r/{projectCode}/{roomCode}` (§8), and it refuses clearing the stamp.
-The database sets `qr_printed_at` to `now()` whenever it is stamped (a first
-print or a reprint), so a client clock never lands.
+The trigger runs `BEFORE UPDATE`, so an UPDATE that stamps `qr_printed_at` (a
+first print or a reprint) records `now()`, not the client's clock. A room
+inserted already stamped keeps the inserted value; the app never inserts one
+(`createRoom` does not send the column).
 
 `room_code` is produced client-side by `normalizeRoomCode`, a verbatim port of
 DATUM's `normalizeAreaCode` (`packages/core/src/areas/extract.ts:100-109`): trim,
@@ -241,7 +243,7 @@ authenticated user may read; office roles may write.
 | `reporter_id` | `UUID NOT NULL REFERENCES profiles(id)` | |
 | `status` | `TEXT NOT NULL` | `CHECK IN ('pending_analysis','draft','open','done','discarded')`. |
 | `event_type` | `TEXT NULL` | `CHECK IN ('progres','isu','hambatan','cacat','butuh_keputusan','info')`. Null until confirm. |
-| `gate_code`, `step_code` | `TEXT NULL` | `gate_code` FK to `gate_refs(code)`; `(gate_code, step_code)` composite FK to `gate_step_refs(gate_code, code)` (default `MATCH SIMPLE`, so a NULL `step_code` skips it); plus `CHECK (step_code IS NULL OR gate_code IS NOT NULL)`, so an event can never carry a step from a different gate. |
+| `gate_code`, `step_code` | `TEXT NULL` | `gate_code` FK to `gate_refs(code)`; `(gate_code, step_code)` composite FK to `gate_step_refs(gate_code, code)`. The composite foreign key uses the default `MATCH SIMPLE`, so it is not checked when either `gate_code` or `step_code` is NULL; the `CHECK (step_code IS NULL OR gate_code IS NOT NULL)` blocks a step without a gate; together they guarantee an event never carries a step from a different gate. |
 | `title`, `summary` | `TEXT NULL` | Max 80 and 300 characters, enforced by the validator and the form. |
 | `raw_text` | `TEXT NULL` | The supervisor's typed note as sent. |
 | `transcript` | `TEXT NULL` | Service role only. |

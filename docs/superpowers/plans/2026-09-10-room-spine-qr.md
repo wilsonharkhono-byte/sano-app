@@ -565,12 +565,16 @@ Create `tools/__tests__/migration096.test.ts`:
  * into the Supabase Dashboard, so the SQL text IS the artifact under test. Each
  * assertion protects a decision a later tidy-up could silently undo. Guards on
  * the SQL read CODE, the file with every full-line comment removed, so the
- * header or the self-check footer can never satisfy a guard the SQL fails.
+ * header or the self-check footer can never satisfy a guard the SQL fails. The
+ * scans that list policies, constraints and triggers ignore case, so lower-case
+ * SQL cannot slip past them.
  *
  *  • The room_code CHECK and the QR freeze trigger: a printed QR is a physical
  *    object naming /r/{projectCode}/{roomCode}. If the code or the project
  *    behind it can move, or its stamp can be cleared, the label lies, and the
  *    release-2 DATUM join on (project_code, room_code) breaks with it.
+ *  • Both trigger functions open on their first refusal and hold exactly one
+ *    RETURN, so no early exit (a service-role bypass, say) skips a guard.
  *  • rooms is created in 035's exact shape when absent, BEFORE the first
  *    ALTER TABLE rooms: 035 may never have landed on the divergent remote, and
  *    an ALTER against a missing table aborts the paste.
@@ -586,34 +590,55 @@ Create `tools/__tests__/migration096.test.ts`:
  *    refuses to move a step to another gate: site_events.gate_code and
  *    (gate_code, step_code) are foreign keys, and a reused letter would
  *    silently re-label history.
- *  • ON CONFLICT DO NOTHING on the seed: a re-paste must never overwrite a
- *    label or description an office user edited.
+ *  • ON CONFLICT DO NOTHING on the seed, and no other statement writes gate
+ *    rows: a re-paste must never overwrite a label or description an office
+ *    user edited.
  *  • Every CREATE POLICY and CREATE TRIGGER follows exactly one DROP ... IF
  *    EXISTS, and every constraint sits in a pg_constraint guard, or the second
  *    paste fails and rolls back.
- *  • The inlined helpers equal their latest definition in any other migration,
- *    and no later migration touches a rooms policy: CREATE OR REPLACE and
- *    DROP/CREATE POLICY mean a re-paste of 096 would revert such a change.
+ *  • The inlined helpers equal their latest definition in any other migration
+ *    (a definition this suite cannot read fails, naming its file), and no later
+ *    migration redefines rooms_freeze_code or gate_refs_immutable_code, or
+ *    touches a policy on rooms, gate_refs or gate_step_refs or one of 096's
+ *    triggers: CREATE OR REPLACE and DROP/CREATE mean a re-paste of 096 would
+ *    revert such a change.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 
 const MIGRATIONS = path.join(__dirname, '..', '..', 'supabase', 'migrations');
-const SQL = fs.readFileSync(path.join(MIGRATIONS, '096_rooms_gates_phase.sql'), 'utf8');
-const CODE = SQL.replace(/^\s*--.*$/gm, ''); // comments can never satisfy a guard
+const FILE = '096_rooms_gates_phase.sql';
+const stripComments = (src: string): string => src.replace(/^\s*--.*$/gm, '');
+const SQL = fs.readFileSync(path.join(MIGRATIONS, FILE), 'utf8');
+const CODE = stripComments(SQL); // comments can never satisfy a guard
 
 const HELPERS = ['is_office_role()', 'is_project_member(p_project_id UUID)'];
 
-/** `CREATE OR REPLACE FUNCTION <sig>` through its closing `$$;`, whitespace collapsed; null when absent. */
-function fnText(src: string, sig: string): string | null {
-  const start = src.indexOf(`CREATE OR REPLACE FUNCTION ${sig}`);
-  if (start < 0) return null;
-  return src.slice(start, src.indexOf('\n$$;', start) + 4).replace(/\s+/g, ' ');
+/**
+ * The last `CREATE [OR REPLACE] FUNCTION [public.]<sig>` in src, in any case,
+ * through the `\n$$;` that closes its body, whitespace collapsed and the head
+ * spelled one way so only the definition itself is compared. Null when src
+ * never defines sig. Throws, naming the file, when src defines it but the body
+ * does not close on a `$$;` line: an unreadable definition must fail the suite,
+ * never drop out of a comparison.
+ */
+function fnText(src: string, sig: string, file: string): string | null {
+  const name = sig.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ +/g, '\\s+');
+  const heads = [...src.matchAll(new RegExp(`\\bCREATE\\s+(?:OR\\s+REPLACE\\s+)?FUNCTION\\s+(?:public\\.)?${name}`, 'gi'))];
+  if (heads.length === 0) return null;
+  const head = heads[heads.length - 1];
+  const afterHead = head.index! + head[0].length;
+  const open = src.indexOf('$$', afterHead);
+  const close = open < 0 ? -1 : src.indexOf('$$', open + 2);
+  if (close < 0 || src.slice(close - 1, close + 3) !== '\n$$;') {
+    throw new Error(`${file} defines ${sig}, but its body does not close on a "$$;" line, so it cannot be compared with 096's copy`);
+  }
+  return `CREATE OR REPLACE FUNCTION ${sig}${src.slice(afterHead, close + 3)}`.replace(/\s+/g, ' ');
 }
 
 /** This migration's own definition of a function, read from CODE. */
 function fnBody(sig: string): string {
-  const text = fnText(CODE, sig);
+  const text = fnText(CODE, sig, FILE);
   if (!text) throw new Error(`${sig} not found in 096`);
   return text;
 }
@@ -636,7 +661,7 @@ describe('migration 096 - paste ergonomics', () => {
   });
 
   it('resets lock_timeout after every DDL statement, then shows the constraint outcome', () => {
-    const resets = [...CODE.matchAll(/^RESET lock_timeout;$/gm)];
+    const resets = [...CODE.matchAll(/^[ \t]*RESET\s+lock_timeout\s*;/gim)];
     expect(resets).toHaveLength(1);
     // Only the result query may follow RESET, so no DDL runs without the timeout,
     // and the grid shows the outcome even when the editor hides WARNINGs.
@@ -648,7 +673,9 @@ describe('migration 096 - paste ergonomics', () => {
 
 describe('migration 096 - a second paste cannot fail', () => {
   it('adds every constraint inside a pg_constraint guard for its own name', () => {
-    const names = [...CODE.matchAll(/ADD CONSTRAINT (\w+)/g)].map((m) => m[1]);
+    // Any case and a quoted name still count, so an unguarded lower-case
+    // ADD CONSTRAINT lands in this list and fails it.
+    const names = [...CODE.matchAll(/\bADD\s+CONSTRAINT\s+"?(\w+)"?/gi)].map((m) => m[1]);
     expect([...names].sort()).toEqual([
       'gate_step_refs_gate_code_code_key',
       'projects_phase_check',
@@ -659,28 +686,40 @@ describe('migration 096 - a second paste cannot fail', () => {
       expect(CODE).toMatch(
         new RegExp(
           `IF NOT EXISTS \\(\\s*SELECT 1 FROM pg_constraint\\s+WHERE conname = '${name}' AND conrelid = 'public\\.(\\w+)'::regclass\\s*\\) THEN\\s+ALTER TABLE \\1\\s+ADD CONSTRAINT ${name}\\b`,
+          'i',
         ),
       );
     }
   });
 
   it('drops every policy exactly once, BEFORE its CREATE', () => {
-    for (const c of CODE.matchAll(/^CREATE POLICY\s+(\w+)\s+ON\s+(\w+)/gm)) {
-      const d = [...CODE.matchAll(new RegExp(`^DROP POLICY IF EXISTS ${c[1]}\\s+ON\\s+${c[2]};`, 'gm'))];
+    const creates = [...CODE.matchAll(/^[ \t]*CREATE\s+POLICY\s+"?(\w+)"?\s+ON\s+(?:public\.)?(\w+)/gim)];
+    expect(creates).toHaveLength(8);
+    for (const c of creates) {
+      const d = [
+        ...CODE.matchAll(new RegExp(`^[ \\t]*DROP\\s+POLICY\\s+IF\\s+EXISTS\\s+"?${c[1]}"?\\s+ON\\s+(?:public\\.)?${c[2]}\\s*;`, 'gim')),
+      ];
       expect(d).toHaveLength(1);
       expect(d[0].index!).toBeLessThan(c.index!);
     }
   });
 
   it('drops every trigger exactly once, BEFORE its CREATE', () => {
-    const creates = [...CODE.matchAll(/^CREATE TRIGGER\s+(\w+)\s+BEFORE\s[^;]*?\sON\s+(\w+)/gm)];
+    const creates = [
+      ...CODE.matchAll(/^[ \t]*CREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER\s+"?(\w+)"?\s[^;]*?\bON\s+(?:public\.)?(\w+)/gim),
+    ];
     expect(creates.map((c) => c[1]).sort()).toEqual([
       'gate_refs_immutable_trg',
       'gate_step_refs_immutable_trg',
       'rooms_freeze_code_trg',
     ]);
+    // Counted anywhere on a line too, so a trigger created mid-line cannot hide
+    // from the list above.
+    expect(CODE.match(/\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:CONSTRAINT\s+)?TRIGGER\b/gi) ?? []).toHaveLength(creates.length);
     for (const c of creates) {
-      const d = [...CODE.matchAll(new RegExp(`^DROP TRIGGER IF EXISTS ${c[1]} ON ${c[2]};`, 'gm'))];
+      const d = [
+        ...CODE.matchAll(new RegExp(`^[ \\t]*DROP\\s+TRIGGER\\s+IF\\s+EXISTS\\s+"?${c[1]}"?\\s+ON\\s+(?:public\\.)?${c[2]}\\s*;`, 'gim')),
+      ];
       expect(d).toHaveLength(1);
       expect(d[0].index!).toBeLessThan(c.index!);
     }
@@ -705,7 +744,7 @@ describe('migration 096 §2 - rooms', () => {
     // An ALTER against a missing table would abort the paste on a remote that
     // never received 035, so the CREATE has to come first.
     const create = CODE.search(/^CREATE TABLE IF NOT EXISTS rooms \(/m);
-    const firstAlter = CODE.search(/^ALTER TABLE rooms\b/m);
+    const firstAlter = CODE.search(/\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(?:public\.)?rooms\b/i);
     expect(create).toBeGreaterThan(-1);
     expect(create).toBeLessThan(firstAlter);
   });
@@ -730,7 +769,9 @@ describe('migration 096 §2 - rooms', () => {
   });
 
   it('VALIDATE runs only in the clean branch, and the dirty branch warns', () => {
-    expect([...CODE.matchAll(/^\s*ALTER TABLE rooms VALIDATE CONSTRAINT rooms_room_code_shape;/gm)]).toHaveLength(1);
+    expect([
+      ...CODE.matchAll(/^[ \t]*ALTER\s+TABLE\s+(?:public\.)?rooms\s+VALIDATE\s+CONSTRAINT\s+rooms_room_code_shape\s*;/gim),
+    ]).toHaveLength(1);
     expect(CODE).toMatch(/IF v_bad = 0 THEN\s*\n\s*ALTER TABLE rooms VALIDATE CONSTRAINT rooms_room_code_shape;/);
     expect(CODE).toMatch(/\bELSE\s+RAISE WARNING\s+'096: rooms_room_code_shape left NOT VALID/);
   });
@@ -740,6 +781,14 @@ describe('migration 096 §2 - rooms', () => {
     expect(body).toMatch(/IF OLD\.qr_printed_at IS NOT NULL AND NEW\.room_code IS DISTINCT FROM OLD\.room_code THEN\s+RAISE EXCEPTION\s+'ROOM_CODE_FROZEN:/);
     expect(body).toMatch(/IF OLD\.qr_printed_at IS NOT NULL AND NEW\.qr_printed_at IS NULL THEN\s+RAISE EXCEPTION\s+'ROOM_CODE_FROZEN:/);
     expect(CODE).toMatch(/CREATE TRIGGER rooms_freeze_code_trg\s+BEFORE UPDATE ON rooms\s+FOR EACH ROW EXECUTE FUNCTION rooms_freeze_code\(\);/);
+  });
+
+  it('opens on the code freeze and returns once, so no early exit skips a guard', () => {
+    const body = fnBody('rooms_freeze_code()');
+    // A bypass such as IF auth.role() = 'service_role' THEN RETURN NEW has to
+    // sit before the first refusal or add a second RETURN; both fail here.
+    expect(body).toMatch(/AS \$\$ BEGIN IF OLD\.qr_printed_at IS NOT NULL AND NEW\.room_code IS DISTINCT FROM OLD\.room_code THEN /);
+    expect(body.match(/\bRETURN\b/gi) ?? []).toHaveLength(1);
   });
 
   it('freezes project_id too, and lets the database own the stamp', () => {
@@ -759,7 +808,7 @@ describe('migration 096 §2 - rooms', () => {
 
   it('rooms has exactly two policies: member SELECT, office ALL', () => {
     expect(CODE).toMatch(/^ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;$/m);
-    const p = [...CODE.matchAll(/^CREATE POLICY\s+"?(\w+)"?\s+ON\s+rooms\s+FOR\s+(\w+)\s+([^;]*);/gm)]
+    const p = [...CODE.matchAll(/^[ \t]*CREATE\s+POLICY\s+"?(\w+)"?\s+ON\s+(?:public\.)?rooms\s+FOR\s+(\w+)\s+([^;]*);/gim)]
       .map((m) => `${m[1]}|${m[2]}|${m[3].replace(/\s+/g, ' ').trim()}`)
       .sort();
     expect(p).toEqual([
@@ -797,13 +846,22 @@ describe('migration 096 §3 - gate_refs', () => {
   it('the seed INSERT itself ends ON CONFLICT (code) DO NOTHING', () => {
     expect(CODE).toMatch(/INSERT INTO gate_refs[\s\S]*?\)\s*\nON CONFLICT \(code\) DO NOTHING;/);
   });
+
+  it('no other statement writes gate rows, so a re-paste cannot overwrite an edit', () => {
+    // A second INSERT ... DO UPDATE, or an UPDATE that "fixes" a seeded label,
+    // would clobber an office user's edit on every re-paste.
+    expect(CODE.match(/\bINSERT\s+INTO\s+(?:public\.)?gate_refs\b/gi) ?? []).toHaveLength(1);
+    expect(CODE).not.toMatch(
+      /\b(?:UPDATE\s+(?:ONLY\s+)?|DELETE\s+FROM\s+(?:ONLY\s+)?|TRUNCATE\s+(?:TABLE\s+)?(?:ONLY\s+)?)(?:public\.)?gate_(?:step_)?refs\b/i,
+    );
+  });
 });
 
 describe('migration 096 §4 - gate_step_refs', () => {
   it('creates the table, referencing gate_refs, and ships it empty', () => {
     expect(CODE).toMatch(/CREATE TABLE IF NOT EXISTS gate_step_refs \(/);
     expect(CODE).toMatch(/gate_code\s+TEXT NOT NULL REFERENCES gate_refs\(code\)/);
-    expect(CODE).not.toMatch(/INSERT INTO gate_step_refs/);
+    expect(CODE).not.toMatch(/\bINSERT\s+INTO\s+(?:public\.)?gate_step_refs\b/i);
   });
 
   it("adds UNIQUE (gate_code, code) inside its guard, for 097's composite foreign key", () => {
@@ -821,6 +879,15 @@ describe('migration 096 §5 - reference codes are immutable and undeletable', ()
 
   it('refuses DELETE outright', () => {
     expect(body()).toMatch(/IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'GATE_REF_IMMUTABLE:/);
+  });
+
+  it('opens on the DELETE refusal and returns once, at the end', () => {
+    const b = body();
+    // An early RETURN OLD for gate_step_refs (or any early exit) has to sit
+    // before the DELETE refusal or add a second RETURN; both fail here.
+    expect(b).toMatch(/AS \$\$ BEGIN IF TG_OP = 'DELETE' THEN RAISE /);
+    expect(b.match(/\bRETURN\b/gi) ?? []).toHaveLength(1);
+    expect(b).toMatch(/ END IF; RETURN NEW; END; \$\$;$/);
   });
 
   it('refuses to move code', () => {
@@ -859,7 +926,7 @@ describe('migration 096 §6 - RLS on the reference tables', () => {
 
   it('gives each exactly: authenticated read, office insert, office update', () => {
     for (const t of ['gate_refs', 'gate_step_refs']) {
-      const p = [...CODE.matchAll(new RegExp(`^CREATE POLICY\\s+"?(\\w+)"?\\s+ON\\s+${t}\\s+([^;]*);`, 'gm'))]
+      const p = [...CODE.matchAll(new RegExp(`^[ \\t]*CREATE\\s+POLICY\\s+"?(\\w+)"?\\s+ON\\s+(?:public\\.)?${t}\\s+([^;]*);`, 'gim'))]
         .map((m) => `${m[1]}|${m[2].replace(/\s+/g, ' ').trim()}`)
         .sort();
       expect(p).toEqual([
@@ -871,7 +938,7 @@ describe('migration 096 §6 - RLS on the reference tables', () => {
   });
 
   it('no reference-table policy can DELETE, FOR ALL included', () => {
-    expect(CODE).not.toMatch(/ON\s+gate_(?:step_)?refs\s+FOR\s+(?:DELETE|ALL)\b/);
+    expect(CODE).not.toMatch(/\bON\s+(?:public\.)?gate_(?:step_)?refs\s+FOR\s+(?:DELETE|ALL)\b/i);
   });
 
   it('writes every policy in the one shape these guards parse', () => {
@@ -901,7 +968,7 @@ describe('migration 096 §7 - self-contained helpers', () => {
   });
 
   it('pins search_path on every function it defines', () => {
-    const fns = CODE.match(/CREATE OR REPLACE FUNCTION [\s\S]*?\$\$;/g) ?? [];
+    const fns = CODE.match(/\bCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\b[\s\S]*?\$\$;/gi) ?? [];
     expect(fns.length).toBeGreaterThanOrEqual(4);
     for (const fn of fns) expect(fn).toMatch(/SET search_path = public/);
   });
@@ -913,18 +980,38 @@ describe('migration 096 §7 - self-contained helpers', () => {
       .sort()
       .reverse();
     for (const sig of HELPERS) {
-      const latest = files.map((f) => fnText(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'), sig)).find(Boolean);
-      expect(fnText(CODE, sig)).toBe(latest);
+      // fnText throws, naming the file, on a definition it cannot read, so a
+      // later helper in another shape can never be skipped here.
+      const latest = files
+        .map((f) => fnText(stripComments(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8')), sig, f))
+        .find(Boolean);
+      expect(fnBody(sig)).toBe(latest);
     }
   });
 
-  it('no later migration touches a rooms policy that re-pasting 096 would revert', () => {
+  it('no later migration changes an object that re-pasting 096 would revert', () => {
+    // CREATE OR REPLACE, DROP/CREATE POLICY and DROP/CREATE TRIGGER all win on a
+    // re-paste. If this fails, bring 096 up to date in the same change, then
+    // compare definitions here the way the helper test does.
+    const reverted: Array<[string, RegExp]> = [
+      [
+        'a policy on rooms, gate_refs or gate_step_refs',
+        /\bPOLICY\s+(?:IF\s+EXISTS\s+)?"?\w+"?\s+ON\s+(?:public\.)?(?:rooms|gate_refs|gate_step_refs)\b/i,
+      ],
+      [
+        'rooms_freeze_code() or gate_refs_immutable_code()',
+        /\b(?:CREATE\s+(?:OR\s+REPLACE\s+)?|DROP\s+)FUNCTION\s+(?:IF\s+EXISTS\s+)?(?:public\.)?(?:rooms_freeze_code|gate_refs_immutable_code)\b/i,
+      ],
+      [
+        "one of 096's triggers",
+        /\bTRIGGER\s+(?:IF\s+EXISTS\s+)?"?(?:rooms_freeze_code_trg|gate_refs_immutable_trg|gate_step_refs_immutable_trg)\b/i,
+      ],
+    ];
     const later = fs.readdirSync(MIGRATIONS).filter((f) => /^\d{3}_.*\.sql$/.test(f) && Number(f.slice(0, 3)) > 96);
-    const touching = later.filter((f) =>
-      /\bPOLICY\s+"?\w+"?\s+ON\s+(?:public\.)?rooms\b/i.test(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8')),
-    );
-    // If this fails, bring 096's rooms policies up to date in the same change,
-    // then compare definitions here the way the helper test does.
+    const touching = later.flatMap((f) => {
+      const sql = stripComments(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'));
+      return reverted.filter(([, re]) => re.test(sql)).map(([what]) => `${f} changes ${what}; re-pasting 096 would revert it`);
+    });
     expect(touching).toEqual([]);
   });
 });
@@ -975,11 +1062,16 @@ Create `supabase/migrations/096_rooms_gates_phase.sql`:
 -- whole paste back rather than half-applying it. lock_timeout (the first
 -- statement) turns a paste stuck behind a long transaction into such an error.
 -- What a re-paste CAN undo: pasted after a later migration that changes
--- is_office_role, is_project_member or the rooms policies, 096 reverts that
--- change (CREATE OR REPLACE and DROP/CREATE POLICY both win). The helper-
--- equality test in tools/__tests__/migration096.test.ts fails CI when a later
--- migration redefines either helper, and a sibling test fails when one touches
--- a rooms policy, so 096 is brought up to date in the same change.
+-- is_office_role(), is_project_member(), rooms_freeze_code(),
+-- gate_refs_immutable_code(), a policy on rooms, gate_refs or gate_step_refs,
+-- or one of the triggers rooms_freeze_code_trg, gate_refs_immutable_trg and
+-- gate_step_refs_immutable_trg, 096 reverts that change: CREATE OR REPLACE,
+-- DROP/CREATE POLICY and DROP/CREATE TRIGGER all win. In
+-- tools/__tests__/migration096.test.ts the helper-equality test fails CI when a
+-- later migration redefines either helper differently, and a sibling test fails
+-- when one redefines or drops rooms_freeze_code() or gate_refs_immutable_code(),
+-- creates or drops a policy on rooms, gate_refs or gate_step_refs, or touches
+-- one of those triggers, so 096 is brought up to date in the same change.
 --
 -- THE TWO ROOM GUARDS.
 --   1. room_code shape. Codes are produced client-side by normalizeRoomCode
@@ -994,9 +1086,12 @@ Create `supabase/migrations/096_rooms_gates_phase.sql`:
 --   2. QR freeze. Once qr_printed_at is stamped, the room is behind a printed
 --      physical label, /r/{projectCode}/{roomCode} (spec §8); a trigger refuses
 --      to move its code or its project, and refuses to clear the stamp. The
---      database owns the stamp: any new value becomes now(). Names, floor and
---      type stay editable. To fix a mistyped code before printing, deactivate
---      the room and create it again - the app offers no rename path either.
+--      trigger is BEFORE UPDATE, so an UPDATE that sets a new stamp records
+--      now(), not the client's clock. A room INSERTed already stamped keeps the
+--      inserted value; the app never inserts one (createRoom in tools/rooms.ts
+--      does not send qr_printed_at). Names, floor and type stay editable. To
+--      fix a mistyped code before printing, deactivate the room and create it
+--      again - the app offers no rename path either.
 --
 -- ROOMS DO NOT REQUIRE 035. 035 created rooms, but it may never have been
 -- applied on the divergent remote (the reason 050 and 051 inline its helpers),
@@ -1125,8 +1220,11 @@ ALTER TABLE rooms
 COMMENT ON COLUMN rooms.area_type IS
   'DATUM area_type, nine values (packages/core/src/areas/mutations.ts:7-16).';
 COMMENT ON COLUMN rooms.qr_printed_at IS
-  'Stamped when a label sheet including this room is printed; the database sets '
-  'it to now(). Freezes room_code and project_id, and cannot be cleared.';
+  'Stamped when a label sheet including this room is printed. The trigger is '
+  'BEFORE UPDATE: an UPDATE that sets a new stamp records now(), not the client '
+  'clock, while a room inserted already stamped keeps the inserted value (the '
+  'app never inserts one). Once set, freezes room_code and project_id, and '
+  'cannot be cleared.';
 COMMENT ON COLUMN rooms.datum_area_id IS
   'Set only by a release-2 sync. NULL in release 1.';
 
@@ -1515,7 +1613,7 @@ ORDER BY conname;
 npx jest tools/__tests__/migration096.test.ts
 ```
 
-Expected: all describe blocks green, `Tests: 36 passed, 36 total`. If `§7 pins search_path` fails, one of the four functions is missing `SET search_path = public` - add it rather than relaxing the assertion; an unpinned `SECURITY DEFINER` function is a search-path hijack.
+Expected: all describe blocks green, `Tests: 39 passed, 39 total`. If `§7 pins search_path` fails, one of the four functions is missing `SET search_path = public` - add it rather than relaxing the assertion; an unpinned `SECURITY DEFINER` function is a search-path hijack. The new guards catch an early-return bypass in either trigger function (exactly one `RETURN` each), a second write to `gate_refs` on re-paste, a lower-case `create policy`/`add constraint`/`create trigger`, and a later migration that redefines `rooms_freeze_code()` or `gate_refs_immutable_code()`, or touches a policy on `rooms`, `gate_refs` or `gate_step_refs`, or one of 096's triggers.
 
 - [ ] **Step 6: Paste the migration in the Supabase Dashboard**
 

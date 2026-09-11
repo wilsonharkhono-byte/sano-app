@@ -30,11 +30,16 @@
 -- whole paste back rather than half-applying it. lock_timeout (the first
 -- statement) turns a paste stuck behind a long transaction into such an error.
 -- What a re-paste CAN undo: pasted after a later migration that changes
--- is_office_role, is_project_member or the rooms policies, 096 reverts that
--- change (CREATE OR REPLACE and DROP/CREATE POLICY both win). The helper-
--- equality test in tools/__tests__/migration096.test.ts fails CI when a later
--- migration redefines either helper, and a sibling test fails when one touches
--- a rooms policy, so 096 is brought up to date in the same change.
+-- is_office_role(), is_project_member(), rooms_freeze_code(),
+-- gate_refs_immutable_code(), a policy on rooms, gate_refs or gate_step_refs,
+-- or one of the triggers rooms_freeze_code_trg, gate_refs_immutable_trg and
+-- gate_step_refs_immutable_trg, 096 reverts that change: CREATE OR REPLACE,
+-- DROP/CREATE POLICY and DROP/CREATE TRIGGER all win. In
+-- tools/__tests__/migration096.test.ts the helper-equality test fails CI when a
+-- later migration redefines either helper differently, and a sibling test fails
+-- when one redefines or drops rooms_freeze_code() or gate_refs_immutable_code(),
+-- creates or drops a policy on rooms, gate_refs or gate_step_refs, or touches
+-- one of those triggers, so 096 is brought up to date in the same change.
 --
 -- THE TWO ROOM GUARDS.
 --   1. room_code shape. Codes are produced client-side by normalizeRoomCode
@@ -49,9 +54,12 @@
 --   2. QR freeze. Once qr_printed_at is stamped, the room is behind a printed
 --      physical label, /r/{projectCode}/{roomCode} (spec §8); a trigger refuses
 --      to move its code or its project, and refuses to clear the stamp. The
---      database owns the stamp: any new value becomes now(). Names, floor and
---      type stay editable. To fix a mistyped code before printing, deactivate
---      the room and create it again - the app offers no rename path either.
+--      trigger is BEFORE UPDATE, so an UPDATE that sets a new stamp records
+--      now(), not the client's clock. A room INSERTed already stamped keeps the
+--      inserted value; the app never inserts one (createRoom in tools/rooms.ts
+--      does not send qr_printed_at). Names, floor and type stay editable. To
+--      fix a mistyped code before printing, deactivate the room and create it
+--      again - the app offers no rename path either.
 --
 -- ROOMS DO NOT REQUIRE 035. 035 created rooms, but it may never have been
 -- applied on the divergent remote (the reason 050 and 051 inline its helpers),
@@ -180,8 +188,11 @@ ALTER TABLE rooms
 COMMENT ON COLUMN rooms.area_type IS
   'DATUM area_type, nine values (packages/core/src/areas/mutations.ts:7-16).';
 COMMENT ON COLUMN rooms.qr_printed_at IS
-  'Stamped when a label sheet including this room is printed; the database sets '
-  'it to now(). Freezes room_code and project_id, and cannot be cleared.';
+  'Stamped when a label sheet including this room is printed. The trigger is '
+  'BEFORE UPDATE: an UPDATE that sets a new stamp records now(), not the client '
+  'clock, while a room inserted already stamped keeps the inserted value (the '
+  'app never inserts one). Once set, freezes room_code and project_id, and '
+  'cannot be cleared.';
 COMMENT ON COLUMN rooms.datum_area_id IS
   'Set only by a release-2 sync. NULL in release 1.';
 
