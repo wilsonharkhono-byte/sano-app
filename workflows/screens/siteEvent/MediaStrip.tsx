@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, useEffect, useState } from 'react';
 import { View, Text, Image, ScrollView, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { signedMediaUrl } from '../../../tools/siteEvents';
@@ -12,6 +12,14 @@ const ROLE_LABELS: Record<string, string> = {
   closure: 'Penutupan',
   audio: 'Suara',
 };
+
+/**
+ * The playback control is the ONLY thing on the read path that touches
+ * expo-audio, and the office and principal bundles render site events without
+ * ever showing one. Lazy so the native audio module is pulled in at the moment
+ * an event actually has a voice note, not at import time.
+ */
+const AudioPlayback = React.lazy(() => import('./AudioPlayback'));
 
 /** Local formatter: importing tools/voiceRecorder here would pull expo-audio into the office bundles. */
 function formatSeconds(seconds: number): string {
@@ -66,11 +74,19 @@ export default function MediaStrip({ media }: { media: SiteEventMedia[] }) {
         <Text style={s.empty}>Tidak ada foto.</Text>
       )}
       {audio ? (
-        <View style={styles.audioRow}>
-          <Ionicons name="mic-outline" size={16} color={COLORS.textSec} />
-          <Text style={styles.audioText}>
-            Rekaman suara{audio.duration_s ? ` · ${formatSeconds(Number(audio.duration_s))}` : ''}. Isinya ada di transkrip.
-          </Text>
+        <View>
+          <View style={styles.audioRow}>
+            <Ionicons name="mic-outline" size={16} color={COLORS.textSec} />
+            {/* `audio.duration_s ? …` hid the length of a 0-second note, which
+                is exactly the note a supervisor needs told about. Only a NULL
+                duration is unknown; 0 is a fact, and reads 0:00. */}
+            <Text style={styles.audioText}>
+              Rekaman suara{audio.duration_s != null ? ` · ${formatSeconds(Number(audio.duration_s))}` : ''}.
+            </Text>
+          </View>
+          <Suspense fallback={<Text style={s.hint}>Memuat pemutar…</Text>}>
+            <AudioPlayback storagePath={audio.storage_path} durationS={audio.duration_s} />
+          </Suspense>
         </View>
       ) : null}
     </View>

@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text } from 'react-native';
+import { View, Text, TouchableOpacity } from 'react-native';
 import SelectSheet, { type SelectOption } from '../../components/SelectSheet';
 import type { TeamMember } from '../../../tools/projectManagement';
 import { formStyles as s } from './styles';
@@ -38,6 +38,22 @@ export default function OwnerField({ team, value, onChange, required, disabled =
         emptyText="Tim proyek belum diatur. Hubungi kantor."
         accessibilityLabel="Pemilik"
       />
+      {/* SelectSheet only ever emits a value from its list, so once a name is
+          picked there is no way back to "nobody" — and for a non-actionable
+          type (progres, info) nobody is a legitimate answer the RPC accepts.
+          Not offered while the type is actionable: there the owner is
+          required, and clearing it would only produce a refusal. */}
+      {!required && value ? (
+        <TouchableOpacity
+          style={s.secondaryBtn}
+          onPress={() => onChange(null)}
+          disabled={disabled}
+          accessibilityRole="button"
+          accessibilityLabel="Kosongkan pemilik"
+        >
+          <Text style={s.secondaryText}>Kosongkan</Text>
+        </TouchableOpacity>
+      ) : null}
       <Text style={s.hint}>
         {required ? 'Satu orang yang bertanggung jawab menyelesaikan ini.' : 'Opsional untuk progres dan info.'}
       </Text>

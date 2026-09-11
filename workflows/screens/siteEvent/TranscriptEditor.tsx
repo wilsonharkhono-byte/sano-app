@@ -10,10 +10,17 @@ interface Props {
   dirty: boolean;
   onReanalyze: () => void;
   busy: boolean;
+  /**
+   * False while the supervisor is authoring by hand: manual authoring is the
+   * escape hatch FROM the model (spec §12), so offering "Analisis ulang" here
+   * would walk them back into the AI path — and past the daily quota guard,
+   * which is exactly why they are authoring by hand.
+   */
+  canReanalyze?: boolean;
 }
 
 /** Expandable, editable transcript. An edit offers "Analisis ulang" (spec §5.4). */
-export default function TranscriptEditor({ value, onChange, dirty, onReanalyze, busy }: Props) {
+export default function TranscriptEditor({ value, onChange, dirty, onReanalyze, busy, canReanalyze = true }: Props) {
   const [open, setOpen] = useState(false);
   return (
     <View style={styles.wrap}>
@@ -38,8 +45,14 @@ export default function TranscriptEditor({ value, onChange, dirty, onReanalyze, 
             placeholderTextColor={COLORS.textMuted}
             accessibilityLabel="Transkrip"
           />
-          <Text style={s.hint}>Koreksi kata yang salah dengar. Kutipan dasar AI dicocokkan dengan teks ini.</Text>
-          {dirty ? (
+          {/* The old wording ("dicocokkan dengan teks ini") promised something no
+              code does: the stored quotes are matched against the transcript ONCE,
+              by the edge function, when the draft is written. Editing here does not
+              re-match them — re-analysing does. */}
+          <Text style={s.hint}>
+            Koreksi kata yang salah dengar, lalu jalankan "Analisis ulang" agar kutipan dasar AI dicocokkan ulang.
+          </Text>
+          {dirty && canReanalyze ? (
             <TouchableOpacity style={s.secondaryBtn} onPress={onReanalyze} disabled={busy} accessibilityRole="button">
               <Text style={s.secondaryText}>{busy ? 'Menganalisis…' : 'Analisis ulang dengan transkrip ini'}</Text>
             </TouchableOpacity>

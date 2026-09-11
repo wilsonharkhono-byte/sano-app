@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, Switch, Alert, Platform } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -33,19 +33,30 @@ import MediaStrip from './siteEvent/MediaStrip';
 import PendingAnalysisCard from './siteEvent/PendingAnalysisCard';
 import VoAndRelatedBlock from './siteEvent/VoAndRelatedBlock';
 import {
+  clearFieldErrors,
   initialConfirmForm,
   relatedSuggestion,
+  staleVoQuotes,
   toConfirmInput,
   withEventType,
   withGate,
   withTranscript,
+  VO_STALE_EVIDENCE_MESSAGE,
   type ConfirmForm,
 } from './siteEvent/confirmModel';
+
+/** How often a still-analysing draft re-checks itself, so nobody has to tap "Muat ulang". */
+const PENDING_POLL_MS = 10_000;
+
+/** A manual confirm cannot proceed once the model's draft has landed (see onConfirm). */
+const DRAFT_ARRIVED_MESSAGE = 'Draf AI baru saja tiba. Muat ulang untuk melihatnya.';
 
 /**
  * The only writer of human-facing fields (spec §1.1 rule 2, §5.4). Everything
  * the AI proposed is visible and editable; nothing reaches the database until
- * "Konfirmasi", and confirm_site_event re-checks every rule this screen checks.
+ * "Konfirmasi", and confirm_site_event re-checks every rule this screen checks
+ * — with ONE exception, the stale-VO-evidence rule below, which exists only
+ * here.
  */
 export default function SiteEventConfirmScreen() {
   const route = useRoute<any>();
@@ -53,7 +64,10 @@ export default function SiteEventConfirmScreen() {
   const { project: activeProject, boqItems } = useProject();
   const { show: toast } = useToast();
   const eventId = ((route.params ?? {}) as { eventId?: string }).eventId ?? '';
-  // `today` is the phone's LOCAL calendar day, not Asia/Jakarta — confirm_site_event checks the due date against WIB, so right after local midnight in WITA/WIT this screen can reject a same-day (Jakarta) due date the RPC would still accept, which fails closed rather than open (see validateConfirmInput's duePast comment in tools/siteEventRules.ts).
+  // WIB (Asia/Jakarta), not the phone's own calendar day: todayIsoLocal now
+  // delegates to timeWindow's todayIsoWIB, so this screen and
+  // confirm_site_event's `(now() AT TIME ZONE 'Asia/Jakarta')::date` agree on
+  // which day "today" is for every device timezone.
   const today = todayIsoLocal();
 
   const [event, setEvent] = useState<SiteEventWithMedia | null>(null);
@@ -68,35 +82,79 @@ export default function SiteEventConfirmScreen() {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const ev = await getSiteEvent(eventId);
-    setEvent(ev);
-    if (ev) {
-      const [gateRows, stepRows, members, open] = await Promise.all([
-        listGateRefs({ activeOnly: true }),
-        listGateStepRefs({ activeOnly: true }),
-        getProjectTeam(ev.project_id),
-        listOpenEventsForRoom(ev.room_id, 10),
-      ]);
-      setGates(gateRows);
-      setSteps(stepRows);
-      setTeam(members);
-      setOpenEvents(open.filter((o) => o.id !== ev.id));
-      const initial = initialConfirmForm(ev, todayIsoLocal(), false);
-      setForm(initial.form);
-      setUi(initial.ui);
-      setManual(false);
-      setErrors([]);
-    }
-    setLoading(false);
-  }, [eventId]);
+  // Every await on this screen can outlive the screen — a supervisor taps back
+  // while a confirm or a signed-URL fetch is in flight. Guard each setState
+  // that follows an await, or React warns and, worse, a stale response can
+  // repaint a screen that is gone.
+  const alive = useRef(true);
+  // Double-tap guards. `busy` disables the buttons, but it is state: two taps
+  // inside one render commit both see the old value, and a second
+  // confirm_site_event call would be a second Catatan Perubahan.
+  const confirming = useRef(false);
+  const reanalyzing = useRef(false);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  /**
+   * `silent` is the polling path: no "Memuat draf…" flash, and a transient
+   * null (a dropped connection mid-poll) leaves the event on screen instead of
+   * replacing it with "tidak ditemukan".
+   */
+  const load = useCallback(
+    async (opts: { silent?: boolean } = {}) => {
+      if (!opts.silent) setLoading(true);
+      const ev = await getSiteEvent(eventId);
+      if (!alive.current) return;
+      if (!ev && opts.silent) return;
+      setEvent(ev);
+      if (ev) {
+        const [gateRows, stepRows, members, open] = await Promise.all([
+          listGateRefs({ activeOnly: true }),
+          listGateStepRefs({ activeOnly: true }),
+          getProjectTeam(ev.project_id),
+          listOpenEventsForRoom(ev.room_id, 10),
+        ]);
+        if (!alive.current) return;
+        setGates(gateRows);
+        setSteps(stepRows);
+        setTeam(members);
+        setOpenEvents(open.filter((o) => o.id !== ev.id));
+        const initial = initialConfirmForm(ev, todayIsoLocal(), false);
+        setForm(initial.form);
+        setUi(initial.ui);
+        setManual(false);
+        setErrors([]);
+      }
+      if (!opts.silent) setLoading(false);
+    },
+    [eventId],
+  );
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  const update = (patch: Partial<ConfirmForm>) => setForm((f) => (f ? { ...f, ...patch } : f));
+  // Spec §5.3: the draft arrives on its own, so the screen should notice on its
+  // own. Not while authoring by hand (a reload would throw the supervisor's
+  // typed fields away) and not mid-request.
+  const pending = event?.status === 'pending_analysis';
+  useEffect(() => {
+    if (!pending || manual || busy) return;
+    const timer = setInterval(() => {
+      void load({ silent: true });
+    }, PENDING_POLL_MS);
+    return () => clearInterval(timer);
+  }, [pending, manual, busy, load]);
+
+  const update = (patch: Partial<ConfirmForm>) => {
+    setForm((f) => (f ? { ...f, ...patch } : f));
+    setErrors((prev) => clearFieldErrors(prev, Object.keys(patch) as Array<keyof ConfirmForm>));
+  };
 
   const startManual = () => {
     if (!event) return;
@@ -104,43 +162,79 @@ export default function SiteEventConfirmScreen() {
     setForm(initial.form);
     setUi(initial.ui);
     setManual(true);
+    setErrors([]);
   };
 
   const reanalyze = async () => {
-    if (!event) return;
+    if (!event || reanalyzing.current) return;
+    reanalyzing.current = true;
     setBusy(true);
-    if (form?.transcriptDirty) {
-      const saved = await saveTranscriptEdit(event.id, form.transcript);
-      if (saved.error) {
-        setBusy(false);
-        toast(saved.error, 'critical');
+    try {
+      if (form?.transcriptDirty) {
+        const saved = await saveTranscriptEdit(event.id, form.transcript);
+        if (!alive.current) return;
+        if (saved.error) {
+          toast(saved.error, 'critical');
+          return;
+        }
+      }
+      const hints = activeProject?.id === event.project_id ? workGroupHints(boqItems) : [];
+      const result = await invokeSiteEventAnalysis(event.id, { force: true, workGroupNames: hints });
+      if (!alive.current) return;
+      // Only reload on success. Reloading after a failure re-read the SAME
+      // stored draft and rebuilt the form from it, silently discarding the
+      // supervisor's edits — including the transcript correction they had just
+      // asked to be analysed.
+      if (!result.ok) {
+        if (result.error) toast(result.error, 'warning');
         return;
       }
+      await load();
+    } finally {
+      reanalyzing.current = false;
+      if (alive.current) setBusy(false);
     }
-    const hints = activeProject?.id === event.project_id ? workGroupHints(boqItems) : [];
-    const result = await invokeSiteEventAnalysis(event.id, { force: true, workGroupNames: hints });
-    setBusy(false);
-    if (!result.ok && result.error) toast(result.error, 'warning');
-    await load();
   };
 
   const onConfirm = async () => {
-    if (!event || !form) return;
+    if (!event || !form || confirming.current) return;
+    confirming.current = true;
     setBusy(true);
-    const r = await confirmSiteEvent(event.id, toConfirmInput(form, event, today, manual, steps));
-    setBusy(false);
-    if (r.errors || r.error) {
-      setErrors(r.errors ?? [r.error as string]);
-      return;
+    try {
+      // A manual confirm sends draft: null and ai_used: false. If the model's
+      // draft landed while the supervisor was typing, confirming "manually"
+      // would record that no AI was used AND let the RPC write
+      // vo_flag = 'rejected' for a VO suggestion they were never shown.
+      if (manual) {
+        const fresh = await getSiteEvent(event.id);
+        if (!alive.current) return;
+        if (fresh?.ai_draft) {
+          await load();
+          if (!alive.current) return;
+          setErrors([DRAFT_ARRIVED_MESSAGE]);
+          toast(DRAFT_ARRIVED_MESSAGE, 'warning');
+          return;
+        }
+      }
+
+      const r = await confirmSiteEvent(event.id, toConfirmInput(form, event, today, manual, steps));
+      if (!alive.current) return;
+      if (r.errors || r.error) {
+        setErrors(r.errors ?? [r.error as string]);
+        return;
+      }
+      setErrors([]);
+      const voNote = r.result?.vo_flag === 'confirmed' ? ' Catatan Perubahan dibuat untuk estimator.' : '';
+      const ownerNote =
+        form.ownerId && form.ownerId !== event.reporter_id
+          ? r.result?.notified ? ' Pemilik sudah diberi tahu.' : ' Pemilik belum bisa diberi tahu.'
+          : '';
+      toast(`Kejadian dikonfirmasi.${voNote}${ownerNote}`, 'ok');
+      navigation.navigate('SiteEventDetail', { eventId: event.id, projectId: event.project_id });
+    } finally {
+      confirming.current = false;
+      if (alive.current) setBusy(false);
     }
-    setErrors([]);
-    const voNote = r.result?.vo_flag === 'confirmed' ? ' Catatan Perubahan dibuat untuk estimator.' : '';
-    const ownerNote =
-      form.ownerId && form.ownerId !== event.reporter_id
-        ? r.result?.notified ? ' Pemilik sudah diberi tahu.' : ' Pemilik belum bisa diberi tahu.'
-        : '';
-    toast(`Kejadian dikonfirmasi.${voNote}${ownerNote}`, 'ok');
-    navigation.navigate('SiteEventDetail', { eventId: event.id, projectId: event.project_id });
   };
 
   const askDiscard = () => {
@@ -148,6 +242,7 @@ export default function SiteEventConfirmScreen() {
       if (!event) return;
       setBusy(true);
       const r = await discardSiteEvent(event.id);
+      if (!alive.current) return;
       setBusy(false);
       if (r.error) {
         toast(r.error, 'critical');
@@ -168,10 +263,29 @@ export default function SiteEventConfirmScreen() {
   };
 
   const related = event && !manual ? relatedSuggestion(event, openEvents) : null;
-  const showForm = !!event && !!form && !!ui && (event.status === 'draft' || (event.status === 'pending_analysis' && manual));
+  const showForm =
+    !loading && !!event && !!form && !!ui && (event.status === 'draft' || (event.status === 'pending_analysis' && manual));
   const actionable = isActionableType(form?.eventType ?? null);
   const mismatchBlocks = !!event && !manual && event.ai_mismatch && !form?.mismatchAcknowledged;
-  const confirmDisabled = busy || mismatchBlocks;
+
+  /**
+   * The VO quotes that are no longer in the transcript as it stands NOW.
+   *
+   * confirm_site_event (097:681-697) reads the quotes out of the stored
+   * ai_draft and checks only that vo.flag is 'suggested' and the array is
+   * non-empty — it never re-runs the literal-substring test the edge function
+   * applied once, at draft-write time. So an edited transcript cannot
+   * invalidate the stored evidence as far as the RPC is concerned, and the
+   * Catatan Perubahan it writes would quote words the transcript no longer
+   * contains. This check is the only thing standing between that and the
+   * estimator (spec §1.1 rule 4).
+   */
+  const staleQuotes = useMemo(
+    () => (event && form && !manual ? staleVoQuotes(event.ai_draft, [form.transcript, event.raw_text]) : []),
+    [event, form, manual],
+  );
+  const voEvidenceStale = !!form?.voConfirm && staleQuotes.length > 0;
+  const confirmDisabled = busy || mismatchBlocks || voEvidenceStale;
 
   return (
     <View style={s.flex}>
@@ -269,11 +383,37 @@ export default function SiteEventConfirmScreen() {
               {event.raw_text ? <Text style={s.hint}>Catatan: {event.raw_text}</Text> : null}
               <TranscriptEditor
                 value={form.transcript}
-                onChange={(text) => setForm((f) => (f ? withTranscript(f, text) : f))}
+                onChange={(text) => {
+                  setForm((f) => (f ? withTranscript(f, text) : f));
+                  setErrors((prev) => clearFieldErrors(prev, ['voConfirm']));
+                }}
                 dirty={form.transcriptDirty}
                 onReanalyze={() => void reanalyze()}
                 busy={busy}
+                canReanalyze={!manual}
               />
+
+              {/* What the model says it read, and what the validator threw away.
+                  Both travel inside ai_draft and were rendered nowhere, so the
+                  only person who could check the AI's working could not see it. */}
+              {!manual && event.ai_draft && event.ai_draft.evidence_quotes.length > 0 ? (
+                <>
+                  <Text style={s.label}>Dasar AI</Text>
+                  {event.ai_draft.evidence_quotes.map((quote) => (
+                    <Text key={quote} style={s.hint}>“{quote}”</Text>
+                  ))}
+                </>
+              ) : null}
+              {!manual && event.ai_draft && event.ai_draft.dropped.length > 0 ? (
+                <>
+                  <Text style={s.label}>Tidak dipakai AI</Text>
+                  {event.ai_draft.dropped.map((drop, i) => (
+                    <Text key={`${drop.field}-${i}`} style={s.hint}>
+                      {drop.field}: {drop.reason}
+                    </Text>
+                  ))}
+                </>
+              ) : null}
             </Card>
 
             <Card title="Konfirmasi kejadian">
@@ -282,7 +422,10 @@ export default function SiteEventConfirmScreen() {
               </Text>
               <EventTypeChipRow
                 value={form.eventType}
-                onChange={(type) => setForm((f) => (f ? withEventType(f, type, event.reporter_id) : f))}
+                onChange={(type) => {
+                  setForm((f) => (f ? withEventType(f, type, event.reporter_id) : f));
+                  setErrors((prev) => clearFieldErrors(prev, ['eventType', 'ownerId']));
+                }}
                 markPeriksa={ui.markPeriksa}
                 hint={ui.hintType}
                 disabled={busy}
@@ -292,7 +435,10 @@ export default function SiteEventConfirmScreen() {
               <GateChipRow
                 gates={gates}
                 value={form.gateCode}
-                onChange={(code) => setForm((f) => (f ? withGate(f, code) : f))}
+                onChange={(code) => {
+                  setForm((f) => (f ? withGate(f, code) : f));
+                  setErrors((prev) => clearFieldErrors(prev, ['gateCode', 'stepCode']));
+                }}
                 markPeriksa={ui.markPeriksa}
                 hintCode={ui.hintGate}
                 disabled={busy}
@@ -368,6 +514,8 @@ export default function SiteEventConfirmScreen() {
                 voState={ui.voCheckbox}
                 voConfirm={form.voConfirm}
                 onVoChange={(v) => update({ voConfirm: v })}
+                eventType={form.eventType}
+                staleQuotes={staleQuotes}
                 related={related}
                 relatedEventId={form.relatedEventId}
                 onLink={(id) => update({ relatedEventId: id })}
@@ -391,6 +539,7 @@ export default function SiteEventConfirmScreen() {
               >
                 <Text style={s.primaryText}>{busy ? 'Menyimpan…' : 'Konfirmasi'}</Text>
               </TouchableOpacity>
+              {voEvidenceStale ? <Text style={s.errorText}>{VO_STALE_EVIDENCE_MESSAGE}</Text> : null}
               {mismatchBlocks ? <Text style={s.hint}>Centang pemeriksaan ketidakcocokan di atas untuk melanjutkan.</Text> : null}
               {!manual ? (
                 <TouchableOpacity style={s.secondaryBtn} onPress={() => void reanalyze()} disabled={busy} accessibilityRole="button">
