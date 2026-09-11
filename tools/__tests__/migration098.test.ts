@@ -7,12 +7,22 @@
  * hazard). Dropping an OLD type is just as silent, for every flow that uses it.
  * So this suite derives the expected list from 088's own text rather than
  * restating it, and fails if a later migration swapped the constraint first.
+ *
+ * The swap itself is guarded twice over: it may only ever drop a CHECK
+ * (contype = 'c'), never the primary key or a foreign key whose definition
+ * happens to contain the word "type"; and it loops rather than taking an
+ * arbitrary first row, so a second CHECK left behind cannot collide with the
+ * ADD. 096's paste ergonomics are asserted here too - this file is pasted by
+ * hand, possibly twice.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 
 const MIGRATIONS = path.join(__dirname, '..', '..', 'supabase', 'migrations');
-const SQL = fs.readFileSync(path.join(MIGRATIONS, '098_daily_log_room_link.sql'), 'utf8');
+const FILE = '098_daily_log_room_link.sql';
+const stripComments = (src: string): string => src.replace(/^\s*--.*$/gm, '');
+const SQL = fs.readFileSync(path.join(MIGRATIONS, FILE), 'utf8');
+const CODE = stripComments(SQL); // comments can never satisfy a guard
 
 /** The quoted type names inside the LAST notifications_type_check in a file. */
 function typeList(sql: string): string[] {
@@ -28,6 +38,28 @@ describe('migration 098 - header', () => {
     expect(SQL).toMatch(/PASTE ORDER/);
     expect(SQL).toMatch(/097/);
     expect(SQL).toMatch(/tools\/notificationRouting\.ts/);
+  });
+
+  it('says out loud that it must be re-paste safe', () => {
+    expect(SQL).toMatch(/RE-PASTE SAFETY/);
+  });
+});
+
+describe("migration 098 - paste ergonomics (096's lock_timeout pattern)", () => {
+  it("sets lock_timeout = '5s' as the first statement", () => {
+    expect(CODE.trimStart()).toMatch(/^SET lock_timeout = '5s';/);
+    expect(CODE.indexOf("SET lock_timeout = '5s';")).toBeLessThan(CODE.indexOf('ALTER TABLE'));
+  });
+
+  it('resets it exactly once, after the last DDL statement', () => {
+    // A stalled transaction on daily_log_highlights or notifications must fail
+    // this paste after 5 s, not queue the app behind it - and the editor
+    // connection is reused, so the timeout has to be handed back afterwards.
+    const resets = [...CODE.matchAll(/^[ \t]*RESET\s+lock_timeout\s*;/gim)];
+    expect(resets).toHaveLength(1);
+    for (const marker of ['ALTER TABLE', 'CREATE INDEX', 'END $$;']) {
+      expect(resets[0].index!).toBeGreaterThan(CODE.lastIndexOf(marker));
+    }
   });
 });
 
@@ -70,10 +102,25 @@ describe('migration 098 §2 - notifications.type', () => {
   });
 
   it('swaps by shape inside a DO block, the 067/078/079/088 pattern', () => {
-    expect(SQL).toMatch(/DO \$\$/);
-    expect(SQL).toMatch(/con\.conrelid = 'public\.notifications'::regclass/);
-    expect(SQL).toMatch(/pg_get_constraintdef\(con\.oid\) ILIKE '%type%'/);
-    expect(SQL).toMatch(/EXECUTE format\('ALTER TABLE public\.notifications DROP CONSTRAINT %I', c\.conname\)/);
+    expect(CODE).toMatch(/DO \$\$/);
+    expect(CODE).toMatch(/con\.conrelid = 'public\.notifications'::regclass/);
+    expect(CODE).toMatch(/pg_get_constraintdef\(con\.oid\) ILIKE '%type%'/);
+  });
+
+  it('drops CHECK constraints only, every match, in a loop a second paste can re-run', () => {
+    // contype = 'c' is what keeps this from dropping the primary key or a
+    // foreign key whose definition merely contains "type". The FOR loop is what
+    // keeps it from taking an arbitrary first row and leaving a second CHECK to
+    // collide with the ADD below - and an empty result is simply zero
+    // iterations, which is what a re-paste sees.
+    expect(CODE).toMatch(/DECLARE c record;/);
+    expect(CODE).toMatch(
+      /FOR c IN\s+SELECT con\.conname\s+FROM pg_constraint con\s+WHERE con\.conrelid = 'public\.notifications'::regclass\s+AND con\.contype = 'c'\s+AND pg_get_constraintdef\(con\.oid\) ILIKE '%type%'\s+LOOP\s+EXECUTE format\('ALTER TABLE public\.notifications DROP CONSTRAINT %I', c\.conname\);\s+END LOOP;/,
+    );
+    // One DROP CONSTRAINT in the file, and it is that one: an unguarded drop
+    // outside the loop would fail the second paste.
+    expect(CODE.match(/DROP CONSTRAINT/g) ?? []).toHaveLength(1);
+    expect(CODE.indexOf('END LOOP;')).toBeLessThan(CODE.indexOf('ADD CONSTRAINT notifications_type_check'));
   });
 
   it('allows the exact type confirm_site_event enqueues in 097', () => {
