@@ -19,6 +19,7 @@ const LaporanScreen = lazyScreen(() => import('./screens/LaporanScreen'));
 const RoomScanScreen = lazyScreen(() => import('./screens/RoomScanScreen'));
 const RoomScreen = lazyScreen(() => import('./screens/RoomScreen'));
 const SiteEventCaptureScreen = lazyScreen(() => import('./screens/SiteEventCaptureScreen'));
+const SiteEventConfirmScreen = lazyScreen(() => import('./screens/SiteEventConfirmScreen'));
 
 export type TabParamList = {
   Beranda:    undefined;
@@ -30,6 +31,7 @@ export type TabParamList = {
   RoomScan:   undefined;
   Room:       { projectCode: string; roomCode: string };
   SiteEventCapture: { projectId: string; roomId: string };
+  SiteEventConfirm: { eventId: string };
 };
 
 const linking = buildLinking<TabParamList>({
@@ -51,6 +53,7 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   RoomScan:   'qr-code-outline',
   Room:       'business-outline',
   SiteEventCapture: 'camera-outline',
+  SiteEventConfirm: 'create-outline',
 };
 
 const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -63,6 +66,7 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   RoomScan:   'qr-code',
   Room:       'business',
   SiteEventCapture: 'camera',
+  SiteEventConfirm: 'create',
 };
 
 export default function AppNavigation() {
@@ -174,6 +178,16 @@ export default function AppNavigation() {
           component={SiteEventCaptureScreen}
           options={{
             tabBarAccessibilityLabel: 'Lapor kejadian',
+            tabBarButton: () => null,
+            tabBarItemStyle: { display: 'none' },
+            unmountOnBlur: true,
+          }}
+        />
+        <Tab.Screen
+          name="SiteEventConfirm"
+          component={SiteEventConfirmScreen}
+          options={{
+            tabBarAccessibilityLabel: 'Konfirmasi kejadian',
             tabBarButton: () => null,
             tabBarItemStyle: { display: 'none' },
             unmountOnBlur: true,
