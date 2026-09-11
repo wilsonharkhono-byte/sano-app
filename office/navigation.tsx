@@ -10,6 +10,7 @@ import { useProject } from '../workflows/hooks/useProject';
 import { useUnreadCount } from '../workflows/screens/hooks/useUnreadCount';
 import { navigationRef } from '../workflows/App';
 import NotificationsScreen from './screens/NotificationsScreen';
+import { buildLinking, ROOM_PATH } from '../workflows/linking';
 
 const OfficeHomeScreen = lazyScreen(() => import('./screens/OfficeHomeScreen'));
 const ApprovalsScreen = lazyScreen(() => import('./screens/ApprovalsScreen'));
@@ -21,6 +22,7 @@ const OfficeReportsScreen = lazyScreen(() => import('./screens/OfficeReportsScre
 const OfficeBaselineScreen = lazyScreen(() => import('./screens/OfficeBaselineScreen'));
 const MandorSetupScreen = lazyScreen(() => import('../workflows/screens/MandorSetupScreen'));
 const OpnameScreen = lazyScreen(() => import('../workflows/screens/OpnameScreen'));
+const RoomDetailScreen = lazyScreen(() => import('./screens/RoomDetailScreen'));
 
 export type OfficeTabParamList = {
   Home: undefined;
@@ -34,7 +36,13 @@ export type OfficeTabParamList = {
   Opname: undefined;
   Reports: undefined;
   Notifikasi: undefined;
+  RoomDetail: { projectCode: string; roomCode: string };
 };
+
+const linking = buildLinking<OfficeTabParamList>({
+  Home:       '',
+  RoomDetail: ROOM_PATH,
+});
 
 const Tab = createBottomTabNavigator<OfficeTabParamList>();
 
@@ -50,6 +58,7 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Opname: 'receipt-outline',
   Reports: 'bar-chart-outline',
   Notifikasi: 'notifications-outline',
+  RoomDetail: 'business-outline',
 };
 
 const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -64,6 +73,7 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Opname: 'receipt',
   Reports: 'bar-chart',
   Notifikasi: 'notifications',
+  RoomDetail: 'business',
 };
 
 const LABEL_MAP: Record<string, string> = {
@@ -78,6 +88,7 @@ const LABEL_MAP: Record<string, string> = {
   Opname: 'Opname',
   Reports: 'Laporan',
   Notifikasi: 'Notifikasi',
+  RoomDetail: 'Ruangan',
 };
 
 export default function OfficeNavigation() {
@@ -94,7 +105,7 @@ export default function OfficeNavigation() {
   const labelStyle = isWide ? styles.labelWide : styles.label;
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer ref={navigationRef} linking={linking}>
       <Tab.Navigator
         screenOptions={({ route }) => ({
           tabBarIcon: ({ color, focused }) => (
@@ -134,6 +145,7 @@ export default function OfficeNavigation() {
         <Tab.Screen name="Materials" component={MaterialCatalogScreen} />
         <Tab.Screen name="Equipment" component={EquipmentScreen} />
         <Tab.Screen name="Rooms" component={RoomsAdminScreen} />
+        <Tab.Screen name="RoomDetail" component={RoomDetailScreen} options={{ tabBarButton: () => null }} />
         {/* Mandor setup and Opname are accessed from the workflow Progres tab, not as standalone tabs */}
         <Tab.Screen
           name="Mandor"

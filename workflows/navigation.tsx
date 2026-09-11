@@ -9,12 +9,15 @@ import { lazyScreen } from './components/LazyScreen';
 import { useProject } from './hooks/useProject';
 import { navigationRef } from './App';
 import NotificationsScreen from './screens/NotificationsScreen';
+import { buildLinking, ROOM_PATH } from './linking';
 
 const BerandaScreen = lazyScreen(() => import('./screens/BerandaScreen'));
 const PermintaanScreen = lazyScreen(() => import('./screens/PermintaanScreen'));
 const TerimaScreen = lazyScreen(() => import('./screens/TerimaScreen'));
 const ProgresScreen = lazyScreen(() => import('./screens/ProgresScreen'));
 const LaporanScreen = lazyScreen(() => import('./screens/LaporanScreen'));
+const RoomScanScreen = lazyScreen(() => import('./screens/RoomScanScreen'));
+const RoomScreen = lazyScreen(() => import('./screens/RoomScreen'));
 
 export type TabParamList = {
   Beranda:    undefined;
@@ -23,7 +26,15 @@ export type TabParamList = {
   Progres:    undefined;
   Laporan:    { initialSection?: 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' } | undefined;
   Notifikasi: undefined;
+  RoomScan:   undefined;
+  Room:       { projectCode: string; roomCode: string };
 };
+
+const linking = buildLinking<TabParamList>({
+  Beranda:  '',
+  RoomScan: 'scan',
+  Room:     ROOM_PATH,
+});
 
 const Tab = createBottomTabNavigator<TabParamList>();
 
@@ -35,6 +46,8 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Progres:    'trending-up-outline',
   Laporan:    'bar-chart-outline',    // was document-text
   Notifikasi: 'notifications-outline',
+  RoomScan:   'qr-code-outline',
+  Room:       'business-outline',
 };
 
 const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -44,6 +57,8 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Progres:    'trending-up',
   Laporan:    'bar-chart',
   Notifikasi: 'notifications',
+  RoomScan:   'qr-code',
+  Room:       'business',
 };
 
 export default function AppNavigation() {
@@ -60,7 +75,7 @@ export default function AppNavigation() {
   const labelStyle = isWide ? styles.labelWide : styles.label;
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer ref={navigationRef} linking={linking}>
       <Tab.Navigator
         screenOptions={({ route }) => ({
           tabBarIcon: ({ color, focused }) => (
@@ -127,6 +142,26 @@ export default function AppNavigation() {
         >
           {() => <NotificationsScreen profileId={profile!.id} />}
         </Tab.Screen>
+
+        {/* Reached by QR scan, deep link, or the Beranda card - never a tab. */}
+        <Tab.Screen
+          name="RoomScan"
+          component={RoomScanScreen}
+          options={{
+            tabBarAccessibilityLabel: 'Scan ruangan',
+            tabBarButton: () => null,
+            tabBarItemStyle: { display: 'none' },
+          }}
+        />
+        <Tab.Screen
+          name="Room"
+          component={RoomScreen}
+          options={{
+            tabBarAccessibilityLabel: 'Ruangan',
+            tabBarButton: () => null,
+            tabBarItemStyle: { display: 'none' },
+          }}
+        />
       </Tab.Navigator>
     </NavigationContainer>
   );

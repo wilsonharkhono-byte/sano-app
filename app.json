@@ -3,6 +3,7 @@
     "name": "SANO",
     "slug": "san-contractor-supervisor",
     "version": "3.0.1",
+    "scheme": "sano",
     "icon": "./assets/icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
@@ -30,6 +31,20 @@
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.RECORD_AUDIO",
         "android.permission.ACCESS_COARSE_LOCATION"
+      ],
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "sano-app.vercel.app",
+              "pathPrefix": "/r"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
       ]
     },
     "updates": {
@@ -42,7 +57,8 @@
       "expo-image-picker",
       "expo-location",
       "expo-asset",
-      "expo-font"
+      "expo-font",
+      "expo-camera"
     ],
     "extra": {
       "eas": {
