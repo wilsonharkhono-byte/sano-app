@@ -18,6 +18,8 @@ const photoUrlCache = new Map<string, { url: string; expiresAt: number }>();
  * (migration 097). confirm_site_event writes VO photo paths into
  * site_changes.photo_urls this way, so every existing renderer that already
  * calls resolvePhotoUrl shows them without knowing about site events.
+ * Matched case-sensitively: its only writers are confirm_site_event
+ * (migration 097) and tools/siteEvents.ts, and both use this constant.
  */
 export const SITE_MEDIA_PATH_PREFIX = `${SITE_MEDIA_BUCKET}:`;
 

@@ -76,4 +76,30 @@ describe('resolvePhotoUrl', () => {
     await expect(resolvePhotoUrl('site-changes/p1/legacy.jpg')).resolves.toBe('https://public.example/photo.jpg');
     expect(storageFrom).toHaveBeenCalledWith('photos');
   });
+
+  // Distinct paths per test below (not reused from other tests in this file):
+  // the signed-URL cache is module-level state that otherwise leaks across
+  // tests within this file.
+  it('reuses the cache on a second call for the same site-media path', async () => {
+    const bucket = bucketMock({ signedUrl: 'https://signed.example/cache-reuse' });
+    storageFrom.mockReturnValue(bucket);
+    const path = 'site-media:site-events/p/e/cache-reuse.jpg';
+
+    await expect(resolvePhotoUrl(path)).resolves.toBe('https://signed.example/cache-reuse');
+    await expect(resolvePhotoUrl(path)).resolves.toBe('https://signed.example/cache-reuse');
+
+    expect(bucket.createSignedUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches a site-media path and its legacy-bucket counterpart separately', async () => {
+    const bucket = bucketMock({ signedUrl: 'https://signed.example/dual-cache' });
+    storageFrom.mockReturnValue(bucket);
+
+    await expect(resolvePhotoUrl(`${SITE_MEDIA_PATH_PREFIX}x/y.jpg`)).resolves.toBe('https://signed.example/dual-cache');
+    await expect(resolvePhotoUrl('x/y.jpg')).resolves.toBe('https://signed.example/dual-cache');
+
+    expect(bucket.createSignedUrl).toHaveBeenCalledTimes(2);
+    expect(storageFrom).toHaveBeenNthCalledWith(1, 'site-media');
+    expect(storageFrom).toHaveBeenNthCalledWith(2, 'photos');
+  });
 });
