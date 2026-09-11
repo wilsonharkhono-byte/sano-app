@@ -542,8 +542,10 @@ ditutup. Gunakan aplikasi Android di lapangan.`
 QR and also printed as readable text under it, so a human can type it when a
 camera fails. **Label sheet:** an A4 sheet generated from "Kelola ruangan" using
 the same `window.print()` export path as `tools/clientReportHtml.ts:360`.
-Printing stamps `qr_printed_at` on the rooms included; reprints are allowed and
-do not clear the stamp.
+Printing stamps `qr_printed_at` on the rooms included, but only after the user
+confirms the print finished: the browser's print call returns the same way
+whether the sheet printed or the dialog was cancelled, and a cancelled print
+must not freeze the codes. Reprints are allowed and do not clear the stamp.
 
 **Android App Links.** `app.json` gains `android.intentFilters` (action VIEW,
 scheme https, host `sano-app.vercel.app`, `pathPrefix: "/r"`, `autoVerify: true`)
