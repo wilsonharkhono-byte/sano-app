@@ -10,9 +10,9 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-10-room-site-events-design.md` (sections 1.1, 2, 3, 4.2, 4.3, 5, 6, 11, 12, 13, 14, 16, 18).
 
-**Branch and working tree:** `feat/room-site-events`, checked out in the git worktree `/Users/carissatjondro/Dropbox/AI/Claude Code/.claude/worktrees/room-site-events`. The main tree stays on `main`. Because that path contains `/.claude/worktrees/`, the repo's `testPathIgnorePatterns` would hide every test, so every `npx jest <path>` in this plan must be run as `npx jest <path> --testPathIgnorePatterns='/node_modules/' '__tests__/fixtures\.ts$' '__tests__/_serverGateHarness\.ts$' 'supabase/functions/' 'tmp/'`. Never set `ALLOW_PROD_DB_TESTS`. Never apply a migration to the live database; migrations are pasted by the user. Never call the live Supabase, OpenAI or Anthropic endpoints from a test or a verification step; deploying the function and setting secrets are user-run steps (task 15).
+**Branch and working tree:** `feat/site-events-capture` (cut from `main` after plan 1 merged as PR #61), checked out in the git worktree `/Users/carissatjondro/Dropbox/AI/Claude Code/.claude/worktrees/room-site-events`. The main tree stays on `main`. Because that path contains `/.claude/worktrees/`, the repo's `testPathIgnorePatterns` would hide every test, so every `npx jest <path>` in this plan must be run as `npx jest <path> --testPathIgnorePatterns='/node_modules/' '__tests__/fixtures\.ts$' '__tests__/_serverGateHarness\.ts$' 'supabase/functions/' 'tmp/'`. Never set `ALLOW_PROD_DB_TESTS`. Never apply a migration to the live database; migrations are pasted by the user. Never call the live Supabase, OpenAI or Anthropic endpoints from a test or a verification step; deploying the function and setting secrets are user-run steps (task 15).
 
-**Commit identity:** the repo's commits are authored by `Test User <test@example.com>`, which is already the configured git user here - a plain `git commit` is correct. End every commit message with the trailer line `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+**Commit identity:** the repo's commits are authored by `Test User <test@example.com>`, which is already the configured git user here - a plain `git commit` is correct. End every commit message with the trailer line `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
 ---
 
@@ -850,7 +850,7 @@ Every change is recorded in `dropped`, which is stored inside ai_draft.
 No imports on purpose: task 6 copies this file byte-for-byte into the Deno
 edge function and adds a jest guard against drift.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -1122,7 +1122,7 @@ than redeclared: the validator is copied into the Deno function and cannot
 import, so it owns the shape. ACTIONABLE_EVENT_TYPES documents the three places
 that enforce owner and due date together.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -1689,7 +1689,7 @@ the VO checkbox is hidden whenever there is nothing to confirm. mapVoChangeType
 uses the human-confirmed type and exports its keyword lists so migration 097's
 static test can hold the SQL to the same words.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -3169,7 +3169,7 @@ confirm_site_event re-checks the form's rules, hands a confirmed VO to
 site_changes as a pending, unpriced row using the same change_type keywords as
 siteEventRules.ts, and notifies a different owner without ever rolling back.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -3423,7 +3423,7 @@ forward plus SITE_EVENT_ASSIGNED. The static test derives the expected list
 from 088's own text and fails if a later migration swapped it first, because a
 missing type does not error: the enqueue helpers swallow it as a warning.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -4397,7 +4397,7 @@ one forced tool call to claude-sonnet-5 with images before text and no
 sampling parameters. cost.ts records spend and returns null for an unpriced
 model rather than guessing. Deno tests cover all four modules.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -5218,7 +5218,7 @@ result. Every attempt writes a site_event_ai_runs row; every write to
 site_events is limited to analysis columns and guarded on the event still being
 pending or a draft, so a human confirm can never be overwritten.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -5488,7 +5488,7 @@ Perubahan and report renderers show them unchanged. Local URIs pass straight
 through for the capture preview. pickPhoto and readUploadBody expose the
 existing compression preset without uploading; pickAndUploadPhoto is untouched.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -6335,7 +6335,7 @@ confirmSiteEvent validates locally with siteEventRules before calling the RPC
 and maps every server prefix to Indonesian. Discard is a guarded status update,
 never a delete. expo-crypto supplies UUIDs because Hermes has no crypto global.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -6789,7 +6789,7 @@ release into a recording: a release during start-up becomes a stop, a blip under
 plugin for the iOS microphone string; this is a native module and needs the APK
 build.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -6884,7 +6884,7 @@ The route has the same name in all three navigators, so it resolves to itself;
 the entry and its test make that explicit instead of relying on the
 pass-through fallback.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -7832,7 +7832,7 @@ createSiteEventWithMedia. Ids are fixed before sending, so "Kirim ulang" after a
 failed upload reuses the same paths and row. The route unmounts on blur so a
 second report never inherits the first one's photos.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -9080,7 +9080,7 @@ mismatch disables Konfirmasi until acknowledged. While analysis is pending the
 screen offers Analisis ulang, and Isi manual after three failures or a spent
 quota. Buang is a status change; media stays.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -9724,7 +9724,7 @@ optional closure photo and note through close_site_event. Beranda's "Draf
 menunggu" card lists the reporter's pending and ready drafts and stays hidden
 when there are none.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -9872,4 +9872,4 @@ Smaller additions consistent with the spec: `site_events.status` defaults to `pe
 - Edit `tools/siteEventDraftValidate.ts` only, then `cp` it; `tools/__tests__/siteEventDraftValidateTwin.test.ts` fails on any drift.
 - The three `update(...)` calls in `index.ts` spell out `.in('status', ['pending_analysis', 'draft'])` literally because the static test matches that text; keep them literal.
 - If the installed `expo-audio` is not 1.1.x, check `recorder.uri` and `recorderState.metering` against its own type declarations before changing the reducer.
-- Every commit ends with `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+- Every commit ends with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
