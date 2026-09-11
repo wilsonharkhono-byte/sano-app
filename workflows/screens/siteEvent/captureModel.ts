@@ -28,7 +28,10 @@ export interface CaptureDraft {
   projectId: string;
   roomId: string;
   reporterId: string;
+  /** The supervisor's explicit chip tap. Null until they pick one. */
   gateCode: string | null;
+  /** Spec §5.2: the room's last tagged gate, shown as a "Saran AI" chip — a suggestion, not a pick. */
+  gateHint: string | null;
   note: string;
   context: CapturePhoto | null;
   closeups: CapturePhoto[];
@@ -83,7 +86,8 @@ export function buildNewSiteEvent(draft: CaptureDraft, nowIso: string): NewSiteE
     projectId: draft.projectId,
     roomId: draft.roomId,
     reporterId: draft.reporterId,
-    gateCode: draft.gateCode,
+    // The explicit pick wins; the hint fills in only when the supervisor made no pick.
+    gateCode: draft.gateCode ?? draft.gateHint,
     rawText: note ? note : null,
     capturedAt: draft.context?.photo.capturedAt ?? nowIso,
     media,

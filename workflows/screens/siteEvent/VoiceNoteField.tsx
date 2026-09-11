@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { View, Text, Pressable, TouchableOpacity, StyleSheet, type DimensionValue } from 'react-native';
+import { View, Text, Pressable, TouchableOpacity, StyleSheet, Linking, type DimensionValue } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { formatVoiceDuration, useVoiceRecorder } from '../../../tools/voiceRecorder';
 import { newSiteEventId } from '../../../tools/siteEvents';
@@ -11,6 +11,8 @@ import { formStyles as s } from './styles';
 interface Props {
   value: CaptureVoice | null;
   onChange: (voice: CaptureVoice | null) => void;
+  /** Fires whenever the recorder is mid-take (starting/recording/stopping), so the parent can hold Kirim until the file lands. */
+  onBusyChange?: (busy: boolean) => void;
   disabled?: boolean;
 }
 
@@ -23,10 +25,12 @@ function levelWidth(db: number | null): DimensionValue {
 }
 
 /** Hold to record, release to stop, 90 s cap (spec §5.2). */
-export default function VoiceNoteField({ value, onChange, disabled = false }: Props) {
+export default function VoiceNoteField({ value, onChange, onBusyChange, disabled = false }: Props) {
   const rec = useVoiceRecorder();
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onBusyChangeRef = useRef(onBusyChange);
+  onBusyChangeRef.current = onBusyChange;
 
   useEffect(() => {
     if (rec.state.phase !== 'recorded' || !rec.state.uri) return;
@@ -39,6 +43,12 @@ export default function VoiceNoteField({ value, onChange, disabled = false }: Pr
       capturedAt: new Date().toISOString(),
     });
   }, [rec.state.phase, rec.state.uri, rec.state.durationMs, rec.fileInfo.mimeType, rec.fileInfo.ext]);
+
+  // Kirim must wait for a take to finish landing, not just for the finger to lift.
+  useEffect(() => {
+    const busy = rec.state.phase === 'starting' || rec.state.phase === 'recording' || rec.state.phase === 'stopping';
+    onBusyChangeRef.current?.(busy);
+  }, [rec.state.phase]);
 
   if (value) {
     return (
@@ -87,7 +97,20 @@ export default function VoiceNoteField({ value, onChange, disabled = false }: Pr
           <View style={[styles.levelFill, { width: levelWidth(rec.meteringDb) }]} />
         </View>
       ) : null}
-      {rec.state.error ? <Text style={s.errorText}>{rec.state.error}</Text> : null}
+      {rec.state.error ? (
+        <View style={styles.errorRow}>
+          <Text style={[s.errorText, styles.errorTextFlex]}>{rec.state.error}</Text>
+          {rec.state.canAskAgain === false ? (
+            <TouchableOpacity
+              onPress={() => void Linking.openSettings()}
+              accessibilityRole="button"
+              accessibilityLabel="Buka Pengaturan"
+            >
+              <Text style={styles.settingsLink}>Buka Pengaturan</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : null}
       <Text style={s.hint}>Opsional. Maksimal {VOICE_NOTE_MAX_SECONDS} detik, berhenti otomatis.</Text>
     </View>
   );
@@ -110,4 +133,7 @@ const styles = StyleSheet.create({
   doneText: { flex: 1, fontSize: TYPE.sm, fontFamily: FONTS.medium, color: COLORS.text },
   rerecord: { paddingVertical: SPACE.xs, paddingHorizontal: SPACE.sm, minHeight: 44, justifyContent: 'center' },
   rerecordText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.primary, textTransform: 'uppercase' },
+  errorRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: SPACE.sm, marginTop: 4 },
+  errorTextFlex: { flexShrink: 1 },
+  settingsLink: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.primary, textDecorationLine: 'underline' },
 });
