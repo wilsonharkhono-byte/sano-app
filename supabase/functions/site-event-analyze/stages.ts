@@ -76,20 +76,33 @@ export function successUpdate(
   return update;
 }
 
-export function failureUpdate(
-  ev: { analysis_attempts: number },
-  message: string,
-  sttError: string | null,
-): Record<string, unknown> {
+/**
+ * The attempt itself is claimed up front by `claimUpdate` (before either
+ * provider is called), so a failure must not increment analysis_attempts a
+ * second time — that would both double-count against a retry limit and,
+ * more importantly, make the conditional claim on the *next* call race
+ * against a value this function silently bumped again.
+ */
+export function failureUpdate(message: string, sttError: string | null): Record<string, unknown> {
   return {
     last_error: truncate([sttError, message].filter((part) => !!part).join(' '), 500),
-    analysis_attempts: ev.analysis_attempts + 1,
   };
 }
 
 /** Not a failure of the model, so it does not count as an attempt. */
 export function quotaUpdate(): Record<string, unknown> {
   return { last_error: AI_QUOTA_MESSAGE };
+}
+
+/**
+ * Reserves the next attempt before either provider is called (index.ts): a
+ * conditional update — `.eq('analysis_attempts', ev.analysis_attempts)`
+ * alongside the id/project/status filters — only succeeds for the request
+ * that still sees the row's current attempt count, so two concurrent POSTs
+ * for the same event can never both spend an OpenAI/Claude call.
+ */
+export function claimUpdate(ev: { analysis_attempts: number }): Record<string, unknown> {
+  return { analysis_attempts: ev.analysis_attempts + 1 };
 }
 
 export interface RunRow {

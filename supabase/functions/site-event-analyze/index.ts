@@ -55,6 +55,7 @@ import {
 } from './util.ts';
 import {
   buildRunRow,
+  claimUpdate,
   decideStages,
   effectiveTranscript,
   failureUpdate,
@@ -197,6 +198,24 @@ async function analyzeEvent(
     );
   }
 
+  // ── Claim the attempt before spending any provider budget. A conditional
+  //    update on id + project_id + the row's own analysis_attempts + status
+  //    only succeeds for one caller: two concurrent POSTs for the same event
+  //    (a double-tap, or a client retry racing the original) cannot both
+  //    reach OpenAI/Claude. Zero rows back means someone else already claimed
+  //    it, or a human confirmed/discarded the event in the meantime.
+  const { data: claimedRows, error: claimError } = await admin
+    .from('site_events')
+    .update(sanitizeJsonForPostgres(claimUpdate(ev)))
+    .eq('id', ev.id)
+    .eq('project_id', ev.project_id)
+    .eq('analysis_attempts', ev.analysis_attempts)
+    .in('status', ['pending_analysis', 'draft'])
+    .select('id');
+  if (claimError || !claimedRows || claimedRows.length === 0) {
+    return json({ ok: false, error: 'Analisis sedang berjalan atau sudah selesai. Muat ulang.' }, 409);
+  }
+
   // ── Stage 1: transcription. Runs even when the analysis quota is spent, so a
   //    supervisor authoring by hand can still read what they said.
   let transcript = ev.transcript;
@@ -237,8 +256,16 @@ async function analyzeEvent(
       // every other jsonb/text write carrying model-derived text.
       const text = sanitizeJsonForPostgres(rawText);
 
-      const { error: saveError } = await admin.from('site_events').update({ transcript: text }).eq('id', ev.id);
+      const { data: transcriptRows, error: saveError } = await admin
+        .from('site_events')
+        .update(sanitizeJsonForPostgres({ transcript: text }))
+        .eq('id', ev.id)
+        .in('status', ['pending_analysis', 'draft'])
+        .select('id');
       if (saveError) throw new Error(`transkrip tidak tersimpan: ${saveError.message}`);
+      if (!transcriptRows || transcriptRows.length === 0) {
+        throw new Error('transkrip tidak tersimpan: kejadian sudah berubah status');
+      }
       transcript = text;
       transcribed = true;
 
@@ -263,7 +290,16 @@ async function analyzeEvent(
 
   if (!decision.analyze) {
     if (sttError) {
-      await admin.from('site_events').update({ last_error: sttError }).eq('id', ev.id);
+      const { data: errorRows, error } = await admin
+        .from('site_events')
+        .update(sanitizeJsonForPostgres({ last_error: sttError }))
+        .eq('id', ev.id)
+        .in('status', ['pending_analysis', 'draft'])
+        .select('id');
+      if (error) console.error('site-event-analyze: last_error write failed:', error.message);
+      else if (!errorRows || errorRows.length === 0) {
+        console.error('site-event-analyze: last_error write touched no row (event status changed)');
+      }
     }
     return json({ ok: sttError === null, code: sttError ? 'TRANSCRIBE_ERROR' : 'TRANSCRIBED', error: sttError, transcribed, analyzed: false, status: ev.status });
   }
@@ -279,7 +315,7 @@ async function analyzeEvent(
     return json({ ok: false, code: 'CAP_CHECK_FAILED', error: 'Kuota AI tidak bisa diperiksa. Coba lagi sebentar.', transcribed });
   }
   if ((count ?? 0) >= DAILY_CAP) {
-    await admin.from('site_events').update(quotaUpdate()).eq('id', ev.id).in('status', ['pending_analysis', 'draft']);
+    await admin.from('site_events').update(sanitizeJsonForPostgres(quotaUpdate())).eq('id', ev.id).in('status', ['pending_analysis', 'draft']);
     return json({ ok: false, code: 'DAILY_CAP', error: AI_QUOTA_MESSAGE, transcribed });
   }
 
@@ -362,7 +398,11 @@ async function analyzeEvent(
       tokensIn: usage?.input_tokens, tokensOut: usage?.output_tokens, costUsd: claudeCostUsd(MODEL, usage),
       latencyMs: Date.now() - started, status, error: safeMessage,
     }));
-    await admin.from('site_events').update(failureUpdate(ev, safeMessage, sttError)).eq('id', ev.id).in('status', ['pending_analysis', 'draft']);
+    await admin
+      .from('site_events')
+      .update(sanitizeJsonForPostgres(failureUpdate(safeMessage, sttError)))
+      .eq('id', ev.id)
+      .in('status', ['pending_analysis', 'draft']);
     return json({
       ok: false,
       code: status === 'rejected' ? 'ANALYSIS_REJECTED' : 'ANALYSIS_ERROR',
@@ -428,20 +468,27 @@ async function analyzeEvent(
     return fail('rejected', truncate(`Hasil AI tidak valid: ${result.reason}`, 300), outcome.input, usage);
   }
 
-  const { error: saveError } = await admin
+  const { data: savedRows, error: saveError } = await admin
     .from('site_events')
-    .update(successUpdate(ev, result.draft, MODEL, sttError))
+    .update(sanitizeJsonForPostgres(successUpdate(ev, result.draft, MODEL, sttError)))
     .eq('id', ev.id)
-    .in('status', ['pending_analysis', 'draft']);
+    .in('status', ['pending_analysis', 'draft'])
+    .select('id');
+  // A guard-blocked update (e.g. a human confirmed the event in the race
+  // window) returns no error and zero rows — indistinguishable from success
+  // unless the row count is checked. Treat that the same as a real saveError:
+  // never report ANALYZED for a draft that was not actually persisted.
+  const persisted = !saveError && !!savedRows && savedRows.length > 0;
+  const persistError = saveError ? saveError.message : 'kejadian sudah berubah status';
 
   await writeRun(admin, buildRunRow({
     eventId: ev.id, stage: 'analyze', model: MODEL, promptHash, inputSummary, output: outcome.input,
     tokensIn: usage?.input_tokens, tokensOut: usage?.output_tokens, costUsd: claudeCostUsd(MODEL, usage),
-    latencyMs: Date.now() - started, status: saveError ? 'error' : 'ok',
-    error: saveError ? `draf valid tetapi tidak tersimpan: ${saveError.message}` : null,
+    latencyMs: Date.now() - started, status: persisted ? 'ok' : 'error',
+    error: persisted ? null : `draf valid tetapi tidak tersimpan: ${persistError}`,
   }));
-  if (saveError) {
-    return json({ ok: false, code: 'SAVE_FAILED', error: truncate(`Draf AI tidak tersimpan: ${saveError.message}`, 300) }, 500);
+  if (!persisted) {
+    return json({ ok: false, code: 'SAVE_FAILED', error: truncate(`Draf AI tidak tersimpan: ${persistError}`, 300) }, 500);
   }
 
   return json({

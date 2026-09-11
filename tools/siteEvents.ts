@@ -225,6 +225,7 @@ export interface AnalyzeResponse {
   transcribed?: boolean;
   analyzed?: boolean;
   confidence?: string;
+  dropped?: number;
   attempts?: number;
 }
 

@@ -47,9 +47,37 @@ describe('site-event-analyze index.ts', () => {
     expect(SRC).not.toMatch(/\b(event_type|title|summary|owner_id|due_date|is_blocking|vo_flag|site_change_id|confirmed_at|closed_at|related_event_id|downstream_impact)\s*:/);
   });
 
-  it('guards every analysis write on the event still being pending or a draft', () => {
-    const guarded = SRC.match(/update\((successUpdate|failureUpdate|quotaUpdate)\([^;]*?\.in\('status', \['pending_analysis', 'draft'\]\)/g) ?? [];
-    expect(guarded).toHaveLength(3);
+  it('guards every named-builder analysis write (claim, success, failure, quota) on the event still being pending or a draft', () => {
+    const guarded = SRC.match(
+      /update\(sanitizeJsonForPostgres\((claimUpdate|successUpdate|failureUpdate|quotaUpdate)\([^;]*?\.in\('status', \['pending_analysis', 'draft'\]\)/g,
+    ) ?? [];
+    expect(guarded).toHaveLength(4);
+  });
+
+  it('guards the transcript and STT-error-only writes on status too, same as the others', () => {
+    expect(SRC).toMatch(
+      /update\(sanitizeJsonForPostgres\(\{ transcript: text \}\)\)[^;]*?\.in\('status', \['pending_analysis', 'draft'\]\)/,
+    );
+    expect(SRC).toMatch(
+      /update\(sanitizeJsonForPostgres\(\{ last_error: sttError \}\)\)[^;]*?\.in\('status', \['pending_analysis', 'draft'\]\)/,
+    );
+  });
+
+  it('sanitises every site_events write before it reaches Postgres — no bare .update(', () => {
+    const allUpdates = SRC.match(/\.update\(/g) ?? [];
+    const sanitizedUpdates = SRC.match(/\.update\(sanitizeJsonForPostgres\(/g) ?? [];
+    expect(allUpdates.length).toBeGreaterThan(0);
+    expect(sanitizedUpdates.length).toBe(allUpdates.length);
+  });
+
+  it('claims the attempt (filtered on analysis_attempts) before calling either provider', () => {
+    const claimIdx = SRC.indexOf(".eq('analysis_attempts', ev.analysis_attempts)");
+    const openaiIdx = SRC.indexOf("'https://api.openai.com/v1/audio/transcriptions'");
+    const claudeIdx = SRC.indexOf("'https://api.anthropic.com/v1/messages'");
+    expect(claimIdx).toBeGreaterThan(-1);
+    expect(claimIdx).toBeLessThan(openaiIdx);
+    expect(claimIdx).toBeLessThan(claudeIdx);
+    expect(SRC).toContain('Analisis sedang berjalan atau sudah selesai. Muat ulang.');
   });
 
   it('counts the daily cap from analyze runs since the start of the Jakarta day', () => {

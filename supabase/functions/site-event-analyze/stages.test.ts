@@ -2,6 +2,7 @@ import { assertEquals } from 'std/assert';
 import {
   ANALYSIS_WRITABLE_COLUMNS,
   buildRunRow,
+  claimUpdate,
   decideStages,
   effectiveTranscript,
   failureUpdate,
@@ -9,7 +10,7 @@ import {
   successUpdate,
   transcriptSource,
 } from './stages.ts';
-import { AI_QUOTA_MESSAGE } from './util.ts';
+import { AI_QUOTA_MESSAGE, sanitizeJsonForPostgres } from './util.ts';
 import type { SiteEventDraft } from './validate.ts';
 
 const ev = (over: Partial<{ status: string; transcript: string | null; ai_draft: unknown; analysis_attempts: number }> = {}) => ({
@@ -61,15 +62,35 @@ Deno.test('a forced re-analysis of a draft never touches status', () => {
   assertEquals('status' in successUpdate({ status: 'draft' }, draft, 'claude-sonnet-5', 'Transkripsi gagal.'), false);
 });
 
-Deno.test('a failure counts the attempt and keeps the transcription error visible', () => {
-  const u = failureUpdate({ analysis_attempts: 2 }, 'Hasil AI tidak valid: title kosong', 'Transkripsi gagal. timeout');
-  assertEquals(u.analysis_attempts, 3);
+Deno.test('a failure keeps the transcription error visible and never touches analysis_attempts (claimed separately, up front)', () => {
+  const u = failureUpdate('Hasil AI tidak valid: title kosong', 'Transkripsi gagal. timeout');
   assertEquals(u.last_error, 'Transkripsi gagal. timeout Hasil AI tidak valid: title kosong');
+  assertEquals('analysis_attempts' in u, false);
   for (const key of Object.keys(u)) assertEquals(ANALYSIS_WRITABLE_COLUMNS.includes(key), true);
 });
 
 Deno.test('the quota update writes the exact message the app matches on, and nothing else', () => {
   assertEquals(quotaUpdate(), { last_error: AI_QUOTA_MESSAGE });
+});
+
+Deno.test('claimUpdate reserves exactly the next attempt and nothing else', () => {
+  const u = claimUpdate({ analysis_attempts: 4 });
+  assertEquals(u, { analysis_attempts: 5 });
+  for (const key of Object.keys(u)) assertEquals(ANALYSIS_WRITABLE_COLUMNS.includes(key), true);
+});
+
+Deno.test('sanitizeJsonForPostgres strips a lone surrogate the model left in vo.reason before it reaches ai_draft', () => {
+  const dirty = {
+    confidence: 'medium',
+    mismatch: { flag: true, reason: 'x' },
+    vo: { flag: 'suggested', reason: 'retak\uD800 struktur', evidence_quotes: ['a'] },
+  } as unknown as SiteEventDraft;
+  const u = sanitizeJsonForPostgres(successUpdate({ status: 'pending_analysis' }, dirty, 'claude-sonnet-5', null));
+  const savedDraft = u.ai_draft as { vo: { reason: string } };
+  assertEquals(savedDraft.vo.reason, 'retak� struktur');
+  // Everything else in the update survives the round trip untouched.
+  assertEquals(u.status, 'draft');
+  assertEquals(u.ai_confidence, 'medium');
 });
 
 Deno.test('the supervisor-edited transcript wins, and the source is labelled', () => {
