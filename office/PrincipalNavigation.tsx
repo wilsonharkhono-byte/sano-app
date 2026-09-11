@@ -16,6 +16,7 @@ const PrincipalHomeScreen = lazyScreen(() => import('./screens/PrincipalHomeScre
 const ApprovalsScreen = lazyScreen(() => import('./screens/ApprovalsScreen'));
 const OfficeReportsScreen = lazyScreen(() => import('./screens/OfficeReportsScreen'));
 const RoomDetailScreen = lazyScreen(() => import('./screens/RoomDetailScreen'));
+const SiteEventDetailScreen = lazyScreen(() => import('../workflows/screens/SiteEventDetailScreen'));
 
 export type PrincipalTabParamList = {
   Home: undefined;
@@ -23,6 +24,7 @@ export type PrincipalTabParamList = {
   Reports: undefined;
   Notifikasi: undefined;
   RoomDetail: { projectCode: string; roomCode: string };
+  SiteEventDetail: { eventId: string; projectId: string };
 };
 
 const linking = buildLinking<PrincipalTabParamList>({
@@ -38,6 +40,7 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Reports: 'bar-chart-outline',
   Notifikasi: 'notifications-outline',
   RoomDetail: 'business-outline',
+  SiteEventDetail: 'document-text-outline',
 };
 
 const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -46,6 +49,7 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Reports: 'bar-chart',
   Notifikasi: 'notifications',
   RoomDetail: 'business',
+  SiteEventDetail: 'document-text',
 };
 
 const LABEL_MAP: Record<string, string> = {
@@ -54,6 +58,7 @@ const LABEL_MAP: Record<string, string> = {
   Reports: 'Laporan',
   Notifikasi: 'Notifikasi',
   RoomDetail: 'Ruangan',
+  SiteEventDetail: 'Kejadian',
 };
 
 export default function PrincipalNavigation() {
@@ -103,6 +108,7 @@ export default function PrincipalNavigation() {
         <Tab.Screen name="Approvals" component={ApprovalsScreen} />
         <Tab.Screen name="Reports" component={OfficeReportsScreen} />
         <Tab.Screen name="RoomDetail" component={RoomDetailScreen} options={{ tabBarButton: () => null }} />
+        <Tab.Screen name="SiteEventDetail" component={SiteEventDetailScreen} options={{ tabBarButton: () => null, unmountOnBlur: true }} />
         <Tab.Screen
           name="Notifikasi"
           options={{

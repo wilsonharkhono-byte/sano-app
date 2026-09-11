@@ -20,6 +20,7 @@ const RoomScanScreen = lazyScreen(() => import('./screens/RoomScanScreen'));
 const RoomScreen = lazyScreen(() => import('./screens/RoomScreen'));
 const SiteEventCaptureScreen = lazyScreen(() => import('./screens/SiteEventCaptureScreen'));
 const SiteEventConfirmScreen = lazyScreen(() => import('./screens/SiteEventConfirmScreen'));
+const SiteEventDetailScreen = lazyScreen(() => import('./screens/SiteEventDetailScreen'));
 
 export type TabParamList = {
   Beranda:    undefined;
@@ -32,6 +33,7 @@ export type TabParamList = {
   Room:       { projectCode: string; roomCode: string };
   SiteEventCapture: { projectId: string; roomId: string };
   SiteEventConfirm: { eventId: string };
+  SiteEventDetail: { eventId: string; projectId: string };
 };
 
 const linking = buildLinking<TabParamList>({
@@ -54,6 +56,7 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Room:       'business-outline',
   SiteEventCapture: 'camera-outline',
   SiteEventConfirm: 'create-outline',
+  SiteEventDetail: 'document-text-outline',
 };
 
 const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -67,6 +70,7 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Room:       'business',
   SiteEventCapture: 'camera',
   SiteEventConfirm: 'create',
+  SiteEventDetail: 'document-text',
 };
 
 export default function AppNavigation() {
@@ -188,6 +192,16 @@ export default function AppNavigation() {
           component={SiteEventConfirmScreen}
           options={{
             tabBarAccessibilityLabel: 'Konfirmasi kejadian',
+            tabBarButton: () => null,
+            tabBarItemStyle: { display: 'none' },
+            unmountOnBlur: true,
+          }}
+        />
+        <Tab.Screen
+          name="SiteEventDetail"
+          component={SiteEventDetailScreen}
+          options={{
+            tabBarAccessibilityLabel: 'Detail kejadian',
             tabBarButton: () => null,
             tabBarItemStyle: { display: 'none' },
             unmountOnBlur: true,

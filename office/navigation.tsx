@@ -23,6 +23,7 @@ const OfficeBaselineScreen = lazyScreen(() => import('./screens/OfficeBaselineSc
 const MandorSetupScreen = lazyScreen(() => import('../workflows/screens/MandorSetupScreen'));
 const OpnameScreen = lazyScreen(() => import('../workflows/screens/OpnameScreen'));
 const RoomDetailScreen = lazyScreen(() => import('./screens/RoomDetailScreen'));
+const SiteEventDetailScreen = lazyScreen(() => import('../workflows/screens/SiteEventDetailScreen'));
 
 export type OfficeTabParamList = {
   Home: undefined;
@@ -37,6 +38,7 @@ export type OfficeTabParamList = {
   Reports: undefined;
   Notifikasi: undefined;
   RoomDetail: { projectCode: string; roomCode: string };
+  SiteEventDetail: { eventId: string; projectId: string };
 };
 
 const linking = buildLinking<OfficeTabParamList>({
@@ -59,6 +61,7 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Reports: 'bar-chart-outline',
   Notifikasi: 'notifications-outline',
   RoomDetail: 'business-outline',
+  SiteEventDetail: 'document-text-outline',
 };
 
 const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -74,6 +77,7 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Reports: 'bar-chart',
   Notifikasi: 'notifications',
   RoomDetail: 'business',
+  SiteEventDetail: 'document-text',
 };
 
 const LABEL_MAP: Record<string, string> = {
@@ -89,6 +93,7 @@ const LABEL_MAP: Record<string, string> = {
   Reports: 'Laporan',
   Notifikasi: 'Notifikasi',
   RoomDetail: 'Ruangan',
+  SiteEventDetail: 'Kejadian',
 };
 
 export default function OfficeNavigation() {
@@ -146,6 +151,7 @@ export default function OfficeNavigation() {
         <Tab.Screen name="Equipment" component={EquipmentScreen} />
         <Tab.Screen name="Rooms" component={RoomsAdminScreen} />
         <Tab.Screen name="RoomDetail" component={RoomDetailScreen} options={{ tabBarButton: () => null }} />
+        <Tab.Screen name="SiteEventDetail" component={SiteEventDetailScreen} options={{ tabBarButton: () => null, unmountOnBlur: true }} />
         {/* Mandor setup and Opname are accessed from the workflow Progres tab, not as standalone tabs */}
         <Tab.Screen
           name="Mandor"
