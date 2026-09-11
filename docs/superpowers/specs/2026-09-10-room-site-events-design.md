@@ -597,8 +597,10 @@ the linked Catatan Perubahan when one exists.
 
 **Office sub-screens:** "Kelola ruangan" creates rooms, pastes a list from a
 sheet, prints QR labels and exports rooms in DATUM area shape. "Kelola gerbang"
-edits gate and step labels, descriptions, order and the active flag; codes are
-neither editable nor deletable. Project phase is set from the same office area.
+edits gate and step labels, descriptions, order and the active flag, and adds a
+new step under a gate (code, name, description, order); codes are neither
+editable nor deletable. Adding a new gate code is a row insert in the
+Dashboard in release 1; the app picks it up on the next load. Project phase is set from the same office area.
 
 Board data comes from `v_room_board`; the timeline reads `site_events` directly.
 
