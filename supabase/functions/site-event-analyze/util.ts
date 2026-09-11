@@ -152,3 +152,54 @@ export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs
     clearTimeout(timer);
   }
 }
+
+/**
+ * Postgres's jsonb parser rejects an unpaired UTF-16 surrogate outright (it
+ * cannot represent a lone \uD800-\uDFFF as a Unicode scalar value), and a
+ * model can echo one back verbatim from a transcript. `validate.ts` only
+ * sanitises what becomes `ai_draft`; it never runs against the raw tool-call
+ * input stored in `site_event_ai_runs.output`, the raw STT transcript, or a
+ * `last_error` string built from provider text. Call this immediately before
+ * each of those writes: it walks strings (recursing into arrays and plain
+ * objects) and replaces any surrogate not part of a valid high+low pair with
+ * U+FFFD; every other value (numbers, booleans, null, already-paired
+ * surrogates such as emoji) survives unchanged.
+ */
+export function sanitizeJsonForPostgres<T>(value: T): T {
+  if (typeof value === 'string') return sanitizeSurrogates(value) as unknown as T;
+  if (Array.isArray(value)) return value.map((item) => sanitizeJsonForPostgres(item)) as unknown as T;
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = sanitizeJsonForPostgres(val);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
+function sanitizeSurrogates(text: string): string {
+  let out = '';
+  let changed = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      // High surrogate: valid only when immediately followed by a low surrogate.
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        out += text[i] + text[i + 1];
+        i += 1;
+      } else {
+        out += '�';
+        changed = true;
+      }
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      // Low surrogate with no preceding high surrogate: always unpaired here.
+      out += '�';
+      changed = true;
+    } else {
+      out += text[i];
+    }
+  }
+  return changed ? out : text;
+}

@@ -6,6 +6,7 @@ import {
   clampWorkGroupNames,
   isUuid,
   jakartaTodayLabel,
+  sanitizeJsonForPostgres,
   selectAnalysisPhotos,
   sha256Hex,
   startOfJakartaDayUtcIso,
@@ -107,4 +108,48 @@ Deno.test('truncate adds an ellipsis only when needed', () => {
 
 Deno.test('the quota message is the one the app matches on', () => {
   assertEquals(AI_QUOTA_MESSAGE, 'Kuota analisis AI hari ini habis. Draf akan dibuat besok, atau isi manual.');
+});
+
+Deno.test('sanitizeJsonForPostgres replaces an unpaired high surrogate with U+FFFD', () => {
+  assertEquals(sanitizeJsonForPostgres('a\uD800b'), 'a�b');
+});
+
+Deno.test('sanitizeJsonForPostgres replaces an unpaired low surrogate with U+FFFD', () => {
+  assertEquals(sanitizeJsonForPostgres('a\uDC00b'), 'a�b');
+});
+
+Deno.test('sanitizeJsonForPostgres leaves a valid surrogate pair (emoji) untouched', () => {
+  assertEquals(sanitizeJsonForPostgres('lantai 🏠 rumah'), 'lantai 🏠 rumah');
+});
+
+Deno.test('sanitizeJsonForPostgres leaves a string with no surrogates untouched', () => {
+  const text = 'sudah dicor, tunggu besok';
+  assertEquals(sanitizeJsonForPostgres(text), text);
+});
+
+Deno.test('sanitizeJsonForPostgres walks arrays and nested objects without dropping other fields', () => {
+  const input = {
+    event_type: 'isu',
+    evidence_quotes: ['baik\uD800', 'normal'],
+    mismatch: { flag: true, reason: 'catatan\uDC00lain' },
+    confidence: 'low',
+    count: 3,
+    is_blocking: false,
+    related_open_event_id: null,
+  };
+  assertEquals(sanitizeJsonForPostgres(input), {
+    event_type: 'isu',
+    evidence_quotes: ['baik�', 'normal'],
+    mismatch: { flag: true, reason: 'catatan�lain' },
+    confidence: 'low',
+    count: 3,
+    is_blocking: false,
+    related_open_event_id: null,
+  });
+});
+
+Deno.test('sanitizeJsonForPostgres leaves non-string primitives untouched', () => {
+  assertEquals(sanitizeJsonForPostgres(42), 42);
+  assertEquals(sanitizeJsonForPostgres(null), null);
+  assertEquals(sanitizeJsonForPostgres(true), true);
 });
