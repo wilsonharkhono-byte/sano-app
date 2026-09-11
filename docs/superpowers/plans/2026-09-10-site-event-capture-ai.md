@@ -1302,11 +1302,14 @@ import {
   confidenceUi,
   mapVoChangeType,
   canOfferManualAuthoring,
+  normalizeTitle,
+  voEvidenceText,
   VO_OWNER_REQUEST_KEYWORDS,
   VO_DESIGN_KEYWORDS,
   AI_QUOTA_MESSAGE,
   CONFIDENCE_BANNER_MEDIUM,
   CONFIDENCE_BANNER_LOW,
+  CONFIRM_ERRORS,
   type ConfirmInput,
 } from '../siteEventRules';
 import type { SiteEventDraft } from '../types';
@@ -1401,6 +1404,13 @@ describe('dates', () => {
   });
 });
 
+describe('normalizeTitle', () => {
+  it('collapses inner whitespace runs and trims the ends', () => {
+    expect(normalizeTitle('Keramik  lantai   selesai')).toBe('Keramik lantai selesai');
+    expect(normalizeTitle('  Pipa AC menonjol  ')).toBe('Pipa AC menonjol');
+  });
+});
+
 describe('validateConfirmInput', () => {
   it('accepts a minimal progres event with no owner and no due date', () => {
     expect(validateConfirmInput(input())).toEqual({ ok: true });
@@ -1445,7 +1455,8 @@ describe('validateConfirmInput', () => {
   });
 
   it('refuses a VO confirm with no surviving quote in the draft', () => {
-    const msg = 'VO hanya bisa dikonfirmasi bila AI menemukan kutipan dasar dari suara atau catatan.';
+    const msg = CONFIRM_ERRORS.voNoEvidence;
+    expect(msg).toBe('VO hanya bisa dikonfirmasi bila ada kutipan dasar.');
     expect(errorsOf(input({ voConfirm: true, draft: null }))).toContain(msg);
     expect(errorsOf(input({ voConfirm: true, draft: draft({ vo: { flag: 'none', reason: '', evidence_quotes: [] } }) }))).toContain(msg);
     expect(errorsOf(input({ voConfirm: true, draft: draft() }))).toEqual([]);
@@ -1459,6 +1470,13 @@ describe('validateConfirmInput', () => {
 
   it('reports every problem at once, not one per tap', () => {
     expect(errorsOf(input({ eventType: 'cacat', title: '', aiMismatch: true }))).toHaveLength(4);
+  });
+
+  it('reports exactly one error for exactly one violation', () => {
+    // Actionable type, owner set, but no due date: dueRequired should fire alone.
+    expect(errorsOf(input({ eventType: 'isu', ownerId: 'u1', dueDate: null }))).toEqual([
+      CONFIRM_ERRORS.dueRequired,
+    ]);
   });
 });
 
@@ -1492,6 +1510,23 @@ describe('confidenceUi - spec §1.1 table', () => {
       prefillTypeAndGate: false, markPeriksa: false, hintType: null, hintGate: null,
       voCheckbox: 'hidden', banner: null,
     });
+  });
+});
+
+describe('voEvidenceText', () => {
+  it('joins the evidence quotes with a space and normalizes them (lowercased, whitespace collapsed)', () => {
+    const d = draft({
+      vo: {
+        flag: 'suggested',
+        reason: 'Permintaan owner',
+        evidence_quotes: ['Owner  minta', 'pindah   pipa AC'],
+      },
+    });
+    expect(voEvidenceText(d)).toBe('owner minta pindah pipa ac');
+  });
+
+  it('is empty for a null draft', () => {
+    expect(voEvidenceText(null)).toBe('');
   });
 });
 
@@ -1566,12 +1601,21 @@ Create `tools/siteEventRules.ts`:
 // Spec: docs/superpowers/specs/2026-09-10-room-site-events-design.md §1.1
 // (confidence to UI table), §4.2 (confirm_site_event), §5.4 and §12.
 //
-// Three consumers must agree on these rules:
+// Three consumers must agree on these RULES:
 //   - the confirm screen, which pre-fills and blocks Konfirmasi with them;
 //   - confirm_site_event in migration 097, which re-checks them in SQL because
 //     a client can always skip its own validation;
 //   - tools/__tests__/migration097.test.ts, which builds the SQL keyword regex
 //     from the lists exported here, so a keyword added on one side only fails.
+// Agreement is on the RULES, not necessarily on every message's exact
+// wording: this module (the pre-flight) reports one error per FIELD, so the
+// supervisor sees which field to fix before tapping Konfirmasi; the RPC
+// reports one error per RULE CODE (SITE_EVENT_*), mapped to copy in
+// tools/siteEvents.ts. Where the same rule reads identically on both sides
+// — e.g. CONFIRM_ERRORS.voNoEvidence and the SITE_EVENT_VO_NO_EVIDENCE copy
+// — keep the two strings byte-identical, so a supervisor never sees two
+// different wordings for the same refusal depending on whether the client
+// or the server caught it.
 
 import { ACTIONABLE_EVENT_TYPES, SITE_EVENT_MANUAL_AFTER_ATTEMPTS } from './constants';
 import {
@@ -1581,6 +1625,7 @@ import {
   DRAFT_TITLE_MAX,
   normalizeForQuoteMatch,
 } from './siteEventDraftValidate';
+import { addCalendarDays, isRealCalendarDate } from './timeWindow';
 import type { AiConfidence, SiteEventDraft, SiteEventStatus, SiteEventType } from './types';
 
 /**
@@ -1601,18 +1646,22 @@ export function isActionableType(type: SiteEventType | null | undefined): boolea
 
 // ─── Dates ───────────────────────────────────────────────────────────────────
 
-/** A real calendar date written YYYY-MM-DD. Rejects 2026-02-30. */
+/**
+ * A real calendar date written YYYY-MM-DD. Rejects 2026-02-30. Thin wrapper
+ * over tools/timeWindow.ts's `isRealCalendarDate`, the single source of
+ * truth for date-only arithmetic — kept here under its established name so
+ * every existing call site (and the exported signature) stays unchanged.
+ */
 export function isIsoDate(value: string | null | undefined): value is string {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [y, m, d] = value.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  return !!value && isRealCalendarDate(value);
 }
 
-/** Date-only arithmetic in UTC, so a device timezone can never shift the day. */
+/**
+ * Date-only arithmetic in UTC, so a device timezone can never shift the day.
+ * Thin wrapper over tools/timeWindow.ts's `addCalendarDays`.
+ */
 export function addDaysIso(isoDate: string, days: number): string {
-  const [y, m, d] = isoDate.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+  return addCalendarDays(isoDate, days);
 }
 
 /** Today on the phone's own calendar, YYYY-MM-DD (the DailyLogScreen convention). */
@@ -1676,7 +1725,9 @@ export const CONFIRM_ERRORS = {
   dueRequired: 'Tenggat wajib diisi untuk isu, hambatan, cacat dan butuh keputusan.',
   dueFormat: 'Format tenggat harus YYYY-MM-DD.',
   duePast: 'Tenggat tidak boleh sebelum hari ini.',
-  voNoEvidence: 'VO hanya bisa dikonfirmasi bila AI menemukan kutipan dasar dari suara atau catatan.',
+  // Byte-identical to the RPC's SITE_EVENT_VO_NO_EVIDENCE copy (Task 9's
+  // RPC_ERROR_COPY) — see the module header.
+  voNoEvidence: 'VO hanya bisa dikonfirmasi bila ada kutipan dasar.',
   mismatchAck: 'Tandai dulu bahwa Anda sudah memeriksa ketidakcocokan foto dan suara.',
 } as const;
 
@@ -1711,6 +1762,13 @@ export function validateConfirmInput(input: ConfirmInput): ConfirmValidation {
 
   if (input.dueDate) {
     if (!isIsoDate(input.dueDate)) errors.push(CONFIRM_ERRORS.dueFormat);
+    // `input.today` is the phone's LOCAL calendar day (todayIsoLocal), but
+    // confirm_site_event re-checks this same rule against Asia/Jakarta (WIB,
+    // UTC+7). A supervisor on WITA (UTC+8) or WIT (UTC+9) rolls over to a
+    // new local calendar day before Jakarta does, so for up to two hours
+    // after local midnight the client can consider a due date "past" that
+    // the RPC would still accept as "today" — the client is only ever
+    // stricter than the server here, never looser, so this fails closed.
     else if (isIsoDate(input.today) && input.dueDate < input.today) errors.push(CONFIRM_ERRORS.duePast);
   }
 
@@ -1740,6 +1798,11 @@ export interface ConfidenceUi {
   banner: string | null;
 }
 
+/** Not exported: exists only so `confidenceUi`'s switch fails to compile if `AiConfidence` grows a member this function hasn't handled. */
+function assertNever(x: never): never {
+  throw new Error(`confidenceUi: unhandled AiConfidence "${String(x)}"`);
+}
+
 /**
  * The §1.1 table. One addition: when the model did not suggest a VO (or the
  * validator downgraded it), the checkbox is hidden at every confidence level,
@@ -1751,22 +1814,25 @@ export function confidenceUi(confidence: AiConfidence | null, draft: SiteEventDr
     return { prefillTypeAndGate: false, markPeriksa: false, hintType: null, hintGate: null, voCheckbox: 'hidden', banner: null };
   }
   const suggested = draft.vo.flag === 'suggested' && draft.vo.evidence_quotes.length > 0;
-  if (confidence === 'high') {
-    return {
-      prefillTypeAndGate: true, markPeriksa: false, hintType: null, hintGate: null,
-      voCheckbox: suggested ? 'prechecked' : 'hidden', banner: null,
-    };
+  switch (confidence) {
+    case 'high':
+      return {
+        prefillTypeAndGate: true, markPeriksa: false, hintType: null, hintGate: null,
+        voCheckbox: suggested ? 'prechecked' : 'hidden', banner: null,
+      };
+    case 'medium':
+      return {
+        prefillTypeAndGate: true, markPeriksa: true, hintType: null, hintGate: null,
+        voCheckbox: suggested ? 'unchecked' : 'hidden', banner: CONFIDENCE_BANNER_MEDIUM,
+      };
+    case 'low':
+      return {
+        prefillTypeAndGate: false, markPeriksa: false, hintType: draft.event_type, hintGate: draft.gate_code,
+        voCheckbox: 'hidden', banner: CONFIDENCE_BANNER_LOW,
+      };
+    default:
+      return assertNever(confidence);
   }
-  if (confidence === 'medium') {
-    return {
-      prefillTypeAndGate: true, markPeriksa: true, hintType: null, hintGate: null,
-      voCheckbox: suggested ? 'unchecked' : 'hidden', banner: CONFIDENCE_BANNER_MEDIUM,
-    };
-  }
-  return {
-    prefillTypeAndGate: false, markPeriksa: false, hintType: draft.event_type, hintGate: draft.gate_code,
-    voCheckbox: 'hidden', banner: CONFIDENCE_BANNER_LOW,
-  };
 }
 
 // ─── VO → Catatan Perubahan change_type (spec §4.2 step 2) ───────────────────
@@ -1817,7 +1883,7 @@ export function canOfferManualAuthoring(ev: {
 npx jest tools/__tests__/siteEventRules.test.ts --testPathIgnorePatterns='/node_modules/' '__tests__/fixtures\.ts$' '__tests__/_serverGateHarness\.ts$' 'supabase/functions/' 'tmp/'
 ```
 
-Expected: `Tests: 31 passed, 31 total`. The "reports every problem at once" case expects exactly four errors for `cacat` with an empty title and an unacknowledged mismatch: owner, due date, title and mismatch.
+Expected: `Tests: 57 passed, 57 total`. The "reports every problem at once" case expects exactly four errors for `cacat` with an empty title and an unacknowledged mismatch: owner, due date, title and mismatch.
 
 - [ ] **Step 5: Commit**
 
@@ -1838,6 +1904,31 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
+
+**Follow-up landed: shared calendar-date primitive, error-text parity.** Code
+review on the Task 3 commit (`7ef22e6`) landed five further changes. (1)
+`tools/timeWindow.ts` gained two exported functions, `isRealCalendarDate(iso)`
+and `addCalendarDays(iso, days)`, as the single source of truth for date-only
+arithmetic; its private `nextCalendarDate` is now `addCalendarDays(date, 1)`,
+and `assertDateOnly` gained a comment clarifying it only checks shape (a
+caller wanting real-date validation should use `isRealCalendarDate`).
+`isIsoDate` and `addDaysIso` above are now thin wrappers over those two
+primitives — same exported names and signatures, so every call site is
+unchanged. (2) `CONFIRM_ERRORS.voNoEvidence` is now byte-identical to the
+RPC's `SITE_EVENT_VO_NO_EVIDENCE` copy in Task 9's `RPC_ERROR_COPY`
+(`'VO hanya bisa dikonfirmasi bila ada kutipan dasar.'`), and the module
+header now says the three consumers agree on the RULES, not necessarily on
+every message's wording — this module reports one error per field, the RPC
+one error per rule code. (3) `confidenceUi`'s branching is now a
+`switch (confidence)` with a local, non-exported `assertNever` default, so a
+new `AiConfidence` member fails to compile until handled. (4) The `duePast`
+check in `validateConfirmInput` gained a comment noting the client compares
+against the phone's local calendar day while `confirm_site_event` compares
+against Asia/Jakarta, so on WITA/WIT the client can be up to two hours
+stricter right after local midnight — it fails closed, never open. (5) Tests
+were added for all of the above, including `normalizeTitle` collapsing inner
+whitespace runs and a direct `voEvidenceText` test; the suite is now 57
+tests, all still passing.
 
 ---
 
@@ -8821,6 +8912,7 @@ export default function SiteEventConfirmScreen() {
   const { project: activeProject, boqItems } = useProject();
   const { show: toast } = useToast();
   const eventId = ((route.params ?? {}) as { eventId?: string }).eventId ?? '';
+  // `today` is the phone's LOCAL calendar day, not Asia/Jakarta — confirm_site_event checks the due date against WIB, so right after local midnight in WITA/WIT this screen can reject a same-day (Jakarta) due date the RPC would still accept, which fails closed rather than open (see validateConfirmInput's duePast comment in tools/siteEventRules.ts).
   const today = todayIsoLocal();
 
   const [event, setEvent] = useState<SiteEventWithMedia | null>(null);

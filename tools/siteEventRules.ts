@@ -3,12 +3,21 @@
 // Spec: docs/superpowers/specs/2026-09-10-room-site-events-design.md §1.1
 // (confidence to UI table), §4.2 (confirm_site_event), §5.4 and §12.
 //
-// Three consumers must agree on these rules:
+// Three consumers must agree on these RULES:
 //   - the confirm screen, which pre-fills and blocks Konfirmasi with them;
 //   - confirm_site_event in migration 097, which re-checks them in SQL because
 //     a client can always skip its own validation;
 //   - tools/__tests__/migration097.test.ts, which builds the SQL keyword regex
 //     from the lists exported here, so a keyword added on one side only fails.
+// Agreement is on the RULES, not necessarily on every message's exact
+// wording: this module (the pre-flight) reports one error per FIELD, so the
+// supervisor sees which field to fix before tapping Konfirmasi; the RPC
+// reports one error per RULE CODE (SITE_EVENT_*), mapped to copy in
+// tools/siteEvents.ts. Where the same rule reads identically on both sides
+// — e.g. CONFIRM_ERRORS.voNoEvidence and the SITE_EVENT_VO_NO_EVIDENCE copy
+// — keep the two strings byte-identical, so a supervisor never sees two
+// different wordings for the same refusal depending on whether the client
+// or the server caught it.
 
 import { ACTIONABLE_EVENT_TYPES, SITE_EVENT_MANUAL_AFTER_ATTEMPTS } from './constants';
 import {
@@ -18,6 +27,7 @@ import {
   DRAFT_TITLE_MAX,
   normalizeForQuoteMatch,
 } from './siteEventDraftValidate';
+import { addCalendarDays, isRealCalendarDate } from './timeWindow';
 import type { AiConfidence, SiteEventDraft, SiteEventStatus, SiteEventType } from './types';
 
 /**
@@ -38,18 +48,22 @@ export function isActionableType(type: SiteEventType | null | undefined): boolea
 
 // ─── Dates ───────────────────────────────────────────────────────────────────
 
-/** A real calendar date written YYYY-MM-DD. Rejects 2026-02-30. */
+/**
+ * A real calendar date written YYYY-MM-DD. Rejects 2026-02-30. Thin wrapper
+ * over tools/timeWindow.ts's `isRealCalendarDate`, the single source of
+ * truth for date-only arithmetic — kept here under its established name so
+ * every existing call site (and the exported signature) stays unchanged.
+ */
 export function isIsoDate(value: string | null | undefined): value is string {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [y, m, d] = value.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  return !!value && isRealCalendarDate(value);
 }
 
-/** Date-only arithmetic in UTC, so a device timezone can never shift the day. */
+/**
+ * Date-only arithmetic in UTC, so a device timezone can never shift the day.
+ * Thin wrapper over tools/timeWindow.ts's `addCalendarDays`.
+ */
 export function addDaysIso(isoDate: string, days: number): string {
-  const [y, m, d] = isoDate.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+  return addCalendarDays(isoDate, days);
 }
 
 /** Today on the phone's own calendar, YYYY-MM-DD (the DailyLogScreen convention). */
@@ -113,7 +127,9 @@ export const CONFIRM_ERRORS = {
   dueRequired: 'Tenggat wajib diisi untuk isu, hambatan, cacat dan butuh keputusan.',
   dueFormat: 'Format tenggat harus YYYY-MM-DD.',
   duePast: 'Tenggat tidak boleh sebelum hari ini.',
-  voNoEvidence: 'VO hanya bisa dikonfirmasi bila AI menemukan kutipan dasar dari suara atau catatan.',
+  // Byte-identical to the RPC's SITE_EVENT_VO_NO_EVIDENCE copy (Task 9's
+  // RPC_ERROR_COPY) — see the module header.
+  voNoEvidence: 'VO hanya bisa dikonfirmasi bila ada kutipan dasar.',
   mismatchAck: 'Tandai dulu bahwa Anda sudah memeriksa ketidakcocokan foto dan suara.',
 } as const;
 
@@ -148,6 +164,13 @@ export function validateConfirmInput(input: ConfirmInput): ConfirmValidation {
 
   if (input.dueDate) {
     if (!isIsoDate(input.dueDate)) errors.push(CONFIRM_ERRORS.dueFormat);
+    // `input.today` is the phone's LOCAL calendar day (todayIsoLocal), but
+    // confirm_site_event re-checks this same rule against Asia/Jakarta (WIB,
+    // UTC+7). A supervisor on WITA (UTC+8) or WIT (UTC+9) rolls over to a
+    // new local calendar day before Jakarta does, so for up to two hours
+    // after local midnight the client can consider a due date "past" that
+    // the RPC would still accept as "today" — the client is only ever
+    // stricter than the server here, never looser, so this fails closed.
     else if (isIsoDate(input.today) && input.dueDate < input.today) errors.push(CONFIRM_ERRORS.duePast);
   }
 
@@ -177,6 +200,11 @@ export interface ConfidenceUi {
   banner: string | null;
 }
 
+/** Not exported: exists only so `confidenceUi`'s switch fails to compile if `AiConfidence` grows a member this function hasn't handled. */
+function assertNever(x: never): never {
+  throw new Error(`confidenceUi: unhandled AiConfidence "${String(x)}"`);
+}
+
 /**
  * The §1.1 table. One addition: when the model did not suggest a VO (or the
  * validator downgraded it), the checkbox is hidden at every confidence level,
@@ -188,22 +216,25 @@ export function confidenceUi(confidence: AiConfidence | null, draft: SiteEventDr
     return { prefillTypeAndGate: false, markPeriksa: false, hintType: null, hintGate: null, voCheckbox: 'hidden', banner: null };
   }
   const suggested = draft.vo.flag === 'suggested' && draft.vo.evidence_quotes.length > 0;
-  if (confidence === 'high') {
-    return {
-      prefillTypeAndGate: true, markPeriksa: false, hintType: null, hintGate: null,
-      voCheckbox: suggested ? 'prechecked' : 'hidden', banner: null,
-    };
+  switch (confidence) {
+    case 'high':
+      return {
+        prefillTypeAndGate: true, markPeriksa: false, hintType: null, hintGate: null,
+        voCheckbox: suggested ? 'prechecked' : 'hidden', banner: null,
+      };
+    case 'medium':
+      return {
+        prefillTypeAndGate: true, markPeriksa: true, hintType: null, hintGate: null,
+        voCheckbox: suggested ? 'unchecked' : 'hidden', banner: CONFIDENCE_BANNER_MEDIUM,
+      };
+    case 'low':
+      return {
+        prefillTypeAndGate: false, markPeriksa: false, hintType: draft.event_type, hintGate: draft.gate_code,
+        voCheckbox: 'hidden', banner: CONFIDENCE_BANNER_LOW,
+      };
+    default:
+      return assertNever(confidence);
   }
-  if (confidence === 'medium') {
-    return {
-      prefillTypeAndGate: true, markPeriksa: true, hintType: null, hintGate: null,
-      voCheckbox: suggested ? 'unchecked' : 'hidden', banner: CONFIDENCE_BANNER_MEDIUM,
-    };
-  }
-  return {
-    prefillTypeAndGate: false, markPeriksa: false, hintType: draft.event_type, hintGate: draft.gate_code,
-    voCheckbox: 'hidden', banner: CONFIDENCE_BANNER_LOW,
-  };
 }
 
 // ─── VO → Catatan Perubahan change_type (spec §4.2 step 2) ───────────────────

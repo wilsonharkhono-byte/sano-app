@@ -13,11 +13,14 @@ import {
   confidenceUi,
   mapVoChangeType,
   canOfferManualAuthoring,
+  normalizeTitle,
+  voEvidenceText,
   VO_OWNER_REQUEST_KEYWORDS,
   VO_DESIGN_KEYWORDS,
   AI_QUOTA_MESSAGE,
   CONFIDENCE_BANNER_MEDIUM,
   CONFIDENCE_BANNER_LOW,
+  CONFIRM_ERRORS,
   type ConfirmInput,
 } from '../siteEventRules';
 import type { SiteEventDraft } from '../types';
@@ -112,6 +115,13 @@ describe('dates', () => {
   });
 });
 
+describe('normalizeTitle', () => {
+  it('collapses inner whitespace runs and trims the ends', () => {
+    expect(normalizeTitle('Keramik  lantai   selesai')).toBe('Keramik lantai selesai');
+    expect(normalizeTitle('  Pipa AC menonjol  ')).toBe('Pipa AC menonjol');
+  });
+});
+
 describe('validateConfirmInput', () => {
   it('accepts a minimal progres event with no owner and no due date', () => {
     expect(validateConfirmInput(input())).toEqual({ ok: true });
@@ -156,7 +166,8 @@ describe('validateConfirmInput', () => {
   });
 
   it('refuses a VO confirm with no surviving quote in the draft', () => {
-    const msg = 'VO hanya bisa dikonfirmasi bila AI menemukan kutipan dasar dari suara atau catatan.';
+    const msg = CONFIRM_ERRORS.voNoEvidence;
+    expect(msg).toBe('VO hanya bisa dikonfirmasi bila ada kutipan dasar.');
     expect(errorsOf(input({ voConfirm: true, draft: null }))).toContain(msg);
     expect(errorsOf(input({ voConfirm: true, draft: draft({ vo: { flag: 'none', reason: '', evidence_quotes: [] } }) }))).toContain(msg);
     expect(errorsOf(input({ voConfirm: true, draft: draft() }))).toEqual([]);
@@ -170,6 +181,13 @@ describe('validateConfirmInput', () => {
 
   it('reports every problem at once, not one per tap', () => {
     expect(errorsOf(input({ eventType: 'cacat', title: '', aiMismatch: true }))).toHaveLength(4);
+  });
+
+  it('reports exactly one error for exactly one violation', () => {
+    // Actionable type, owner set, but no due date: dueRequired should fire alone.
+    expect(errorsOf(input({ eventType: 'isu', ownerId: 'u1', dueDate: null }))).toEqual([
+      CONFIRM_ERRORS.dueRequired,
+    ]);
   });
 });
 
@@ -203,6 +221,23 @@ describe('confidenceUi - spec §1.1 table', () => {
       prefillTypeAndGate: false, markPeriksa: false, hintType: null, hintGate: null,
       voCheckbox: 'hidden', banner: null,
     });
+  });
+});
+
+describe('voEvidenceText', () => {
+  it('joins the evidence quotes with a space and normalizes them (lowercased, whitespace collapsed)', () => {
+    const d = draft({
+      vo: {
+        flag: 'suggested',
+        reason: 'Permintaan owner',
+        evidence_quotes: ['Owner  minta', 'pindah   pipa AC'],
+      },
+    });
+    expect(voEvidenceText(d)).toBe('owner minta pindah pipa ac');
+  });
+
+  it('is empty for a null draft', () => {
+    expect(voEvidenceText(null)).toBe('');
   });
 });
 

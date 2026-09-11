@@ -31,23 +31,53 @@
 const WIB_OFFSET = '+07:00';
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * Checks SHAPE only (`YYYY-MM-DD`), not that the date actually exists —
+ * `assertDateOnly('2026-02-30')` does NOT throw, because `Date.UTC` silently
+ * rolls an out-of-range day into the next month before anything reads it
+ * back. That's fine for this module's own functions, which only ever add
+ * whole days to a shape-valid string and re-derive Y/M/D from the result.
+ * A caller that needs to know the INPUT itself is a real calendar date
+ * (e.g. validating a date typed by a person) should use
+ * `isRealCalendarDate` below instead.
+ */
 function assertDateOnly(date: string): void {
   if (!DATE_ONLY_RE.test(date)) {
     throw new Error(`timeWindow: expected a YYYY-MM-DD calendar date, got "${date}"`);
   }
 }
 
-/** The next calendar date (YYYY-MM-DD), independent of any timezone. */
-function nextCalendarDate(date: string): string {
-  const [y, m, d] = date.split('-').map(Number);
+/**
+ * True when `iso` is shaped `YYYY-MM-DD` AND is a calendar date that really
+ * exists — the Y/M/D round-trips through `Date.UTC` unchanged. Rejects
+ * `2026-02-30` (April 31st, February 30th, month 13, etc.), unlike
+ * `assertDateOnly`, which only checks the shape.
+ */
+export function isRealCalendarDate(iso: string): boolean {
+  if (!DATE_ONLY_RE.test(iso)) return false;
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/**
+ * `iso` plus `days` calendar days (negative goes backward), independent of
+ * any timezone. Returns `YYYY-MM-DD`.
+ */
+export function addCalendarDays(iso: string, days: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
   // UTC-anchored Date math avoids local-timezone DST edge cases entirely —
   // we only ever read back the Y/M/D fields, never an instant.
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() + 1);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
   const yyyy = dt.getUTCFullYear();
   const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
   const dd = String(dt.getUTCDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
+}
+
+/** The next calendar date (YYYY-MM-DD), independent of any timezone. */
+function nextCalendarDate(date: string): string {
+  return addCalendarDays(date, 1);
 }
 
 /**
