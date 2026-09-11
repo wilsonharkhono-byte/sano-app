@@ -9,36 +9,27 @@
 // 037). canSetProjectPhase only decides whether to SHOW the control, so it
 // offers it to all three office roles; the database decides the rest. A
 // refused UPDATE is FILTERED by RLS, not rejected: zero rows change and
-// Supabase reports error null. We therefore select the row back and treat "no
-// row" as the refusal it is, rather than reporting a success that did not
-// happen (CLAUDE.md §12).
+// Supabase reports error null. setProjectPhase reports this via the shared
+// tools/readBackUpdate.ts helper (CLAUDE.md §12).
 
-import { supabase } from './supabase';
+import { readBackUpdate } from './readBackUpdate';
 import type { ProjectPhase } from './types';
+import type { UserRoleType } from './constants';
 
-export const PHASE_UPDATE_ROLES = ['admin', 'principal', 'estimator'] as const;
+export const PHASE_UPDATE_ROLES: readonly UserRoleType[] = ['admin', 'principal', 'estimator'];
 
-export function canSetProjectPhase(role: string | null | undefined): boolean {
-  return !!role && (PHASE_UPDATE_ROLES as readonly string[]).includes(role);
+export function canSetProjectPhase(role: UserRoleType | null | undefined): boolean {
+  return !!role && PHASE_UPDATE_ROLES.includes(role);
 }
+
+const PHASE_UPDATE_REFUSED =
+  'Fase proyek tidak berubah. Hanya admin, prinsipal, atau estimator yang ditugaskan ke proyek ini yang dapat mengubahnya.';
 
 export async function setProjectPhase(
   projectId: string,
   phase: ProjectPhase,
 ): Promise<{ error?: string }> {
-  const { data, error } = await supabase
-    .from('projects')
-    .update({ phase })
-    .eq('id', projectId)
-    .select('id, phase')
-    .maybeSingle();
-
-  if (error) return { error: error.message };
-  if (!data) {
-    return {
-      error:
-        'Fase proyek tidak berubah. Hanya admin, prinsipal, atau estimator yang ditugaskan ke proyek ini yang dapat mengubahnya.',
-    };
-  }
+  const { error } = await readBackUpdate('projects', { phase }, 'id', projectId, 'id, phase', PHASE_UPDATE_REFUSED);
+  if (error) return { error };
   return {};
 }

@@ -15,13 +15,13 @@
 // pre-096 data and cannot be labelled or linked.
 //
 // Under RLS a filtered UPDATE is not an error: PostgREST matches zero rows and
-// Supabase reports error null. updateRoom (and markRoomsPrinted, which shares
-// the same shape) therefore select the row(s) back and treat a missing row as
-// the refusal it is, rather than reporting a success that did not happen
-// (CLAUDE.md §12; same idiom as setProjectPhase, Task 7 of this plan).
+// Supabase reports error null. updateRoom reports this via the shared
+// tools/readBackUpdate.ts helper (CLAUDE.md §12); markRoomsPrinted has its
+// own multi-row version of the same idiom, kept inline below.
 // setRoomActive inherits this for free - it calls updateRoom.
 
 import { supabase } from './supabase';
+import { readBackUpdate } from './readBackUpdate';
 import { normalizeRoomCode, normalizeRoomCodeUnsliced, isValidRoomCode, ROOM_CODE_MAX } from './roomCodes';
 import { AREA_TYPES, AREA_UMUM_CODE, AREA_UMUM_NAME } from './constants';
 import type { AreaType, Room } from './types';
@@ -140,9 +140,8 @@ export async function updateRoom(id: string, patch: RoomPatch): Promise<{ error?
   if (Object.prototype.hasOwnProperty.call(patch, 'room_code')) {
     throw new Error('updateRoom tidak boleh mengubah room_code - kode ruangan bersifat tetap.');
   }
-  const { data, error } = await supabase.from('rooms').update(patch).eq('id', id).select('id').maybeSingle();
-  if (error) return { error: error.message };
-  if (!data) return { error: ROOM_UPDATE_REFUSED };
+  const { error } = await readBackUpdate('rooms', patch, 'id', id, 'id', ROOM_UPDATE_REFUSED);
+  if (error) return { error };
   return {};
 }
 

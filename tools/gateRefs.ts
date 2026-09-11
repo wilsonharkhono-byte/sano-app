@@ -7,12 +7,11 @@
 // gets an Indonesian sentence instead of a Postgres exception.
 //
 // Under RLS a filtered UPDATE is not an error: PostgREST matches zero rows and
-// Supabase reports error null. updateGateRef and updateGateStepRef therefore
-// select the row back and treat a null row as the refusal it is, rather than
-// reporting a success that did not happen (CLAUDE.md §12; same idiom as
-// setProjectPhase, Task 7 of this plan).
+// Supabase reports error null. updateGateRef and updateGateStepRef report
+// this via the shared tools/readBackUpdate.ts helper (CLAUDE.md §12).
 
 import { supabase } from './supabase';
+import { readBackUpdate } from './readBackUpdate';
 import type { GateRef, GateStepRef } from './types';
 
 // One string literal each, exported so gateRefs.test.ts can assert every
@@ -70,10 +69,9 @@ const GATE_UPDATE_REFUSED = 'Perubahan gerbang tidak tersimpan. Hanya peran kant
  */
 export async function updateGateRef(code: string, patch: GateRefPatch): Promise<{ gate?: GateRef; error?: string }> {
   refuseImmutableKeys(patch, ['code']);
-  const { data, error } = await supabase.from('gate_refs').update(patch).eq('code', code).select(GATE_COLUMNS).maybeSingle();
-  if (error) return { error: error.message };
-  if (!data) return { error: GATE_UPDATE_REFUSED };
-  return { gate: data as GateRef };
+  const { data, error } = await readBackUpdate<GateRef>('gate_refs', patch, 'code', code, GATE_COLUMNS, GATE_UPDATE_REFUSED);
+  if (error) return { error };
+  return { gate: data };
 }
 
 export async function createGateStepRef(input: {
@@ -112,10 +110,9 @@ export async function createGateStepRef(input: {
  */
 export async function updateGateStepRef(code: string, patch: GateStepRefPatch): Promise<{ step?: GateStepRef; error?: string }> {
   refuseImmutableKeys(patch, ['code', 'gate_code']);
-  const { data, error } = await supabase.from('gate_step_refs').update(patch).eq('code', code).select(STEP_COLUMNS).maybeSingle();
-  if (error) return { error: error.message };
-  if (!data) return { error: GATE_UPDATE_REFUSED };
-  return { step: data as GateStepRef };
+  const { data, error } = await readBackUpdate<GateStepRef>('gate_step_refs', patch, 'code', code, STEP_COLUMNS, GATE_UPDATE_REFUSED);
+  if (error) return { error };
+  return { step: data };
 }
 
 // ─── Pure: chip labels ───────────────────────────────────────────────────────

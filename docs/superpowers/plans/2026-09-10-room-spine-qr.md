@@ -49,6 +49,8 @@ This is **plan 1 of 4** for the 2026-09-10 spec. The four are strictly ordered; 
 | `tools/__tests__/gateRefs.test.ts` (create) | The pure chip labels and the `code`-in-patch refusal. |
 | `tools/projectPhase.ts` (create) | `canSetProjectPhase`, `setProjectPhase`, and the honest report when RLS silently filters the row. |
 | `tools/__tests__/projectPhase.test.ts` (create) | The role guard and the zero-rows-updated branch. |
+| `tools/readBackUpdate.ts` (follow-up, create) | The `update().eq().select().maybeSingle()` read-back idiom, extracted out of `updateRoom`, `updateGateRef`, `updateGateStepRef` and `setProjectPhase` into one shared `readBackUpdate<T>(table, patch, keyColumn, keyValue, columns, refusalMessage)` helper. See Task 7's follow-up note. |
+| `tools/__tests__/readBackUpdate.test.ts` (follow-up, create) | Row returned, null row (RLS refusal), a real DB error, and the exact `from`/`eq`/`select` call arguments. |
 | `tools/roomLabelsHtml.ts` (create) | Pure `renderRoomLabelSheetHtml`, and the web-only `exportRoomLabelSheet` popup print path. |
 | `tools/__tests__/roomLabelsHtml.test.ts` (create) | One label per room, HTML escaping, a page break every 9 labels. |
 | `office/screens/RoomsAdminScreen.tsx` (create) | "Kelola ruangan": phase picker, rooms grouped by floor, add form, paste import, print, DATUM export, switch to gates. |
@@ -2307,13 +2309,13 @@ Create `tools/rooms.ts`:
 // pre-096 data and cannot be labelled or linked.
 //
 // Under RLS a filtered UPDATE is not an error: PostgREST matches zero rows and
-// Supabase reports error null. updateRoom (and markRoomsPrinted, which shares
-// the same shape) therefore select the row(s) back and treat a missing row as
-// the refusal it is, rather than reporting a success that did not happen
-// (CLAUDE.md §12; same idiom as setProjectPhase, Task 7 of this plan).
+// Supabase reports error null. updateRoom reports this via the shared
+// tools/readBackUpdate.ts helper (CLAUDE.md §12); markRoomsPrinted has its
+// own multi-row version of the same idiom, kept inline below.
 // setRoomActive inherits this for free - it calls updateRoom.
 
 import { supabase } from './supabase';
+import { readBackUpdate } from './readBackUpdate';
 import { normalizeRoomCode, normalizeRoomCodeUnsliced, isValidRoomCode, ROOM_CODE_MAX } from './roomCodes';
 import { AREA_TYPES, AREA_UMUM_CODE, AREA_UMUM_NAME } from './constants';
 import type { AreaType, Room } from './types';
@@ -2432,9 +2434,8 @@ export async function updateRoom(id: string, patch: RoomPatch): Promise<{ error?
   if (Object.prototype.hasOwnProperty.call(patch, 'room_code')) {
     throw new Error('updateRoom tidak boleh mengubah room_code - kode ruangan bersifat tetap.');
   }
-  const { data, error } = await supabase.from('rooms').update(patch).eq('id', id).select('id').maybeSingle();
-  if (error) return { error: error.message };
-  if (!data) return { error: ROOM_UPDATE_REFUSED };
+  const { error } = await readBackUpdate('rooms', patch, 'id', id, 'id', ROOM_UPDATE_REFUSED);
+  if (error) return { error };
   return {};
 }
 
@@ -2992,12 +2993,11 @@ Create `tools/gateRefs.ts`:
 // gets an Indonesian sentence instead of a Postgres exception.
 //
 // Under RLS a filtered UPDATE is not an error: PostgREST matches zero rows and
-// Supabase reports error null. updateGateRef and updateGateStepRef therefore
-// select the row back and treat a null row as the refusal it is, rather than
-// reporting a success that did not happen (CLAUDE.md §12; same idiom as
-// setProjectPhase, Task 7 of this plan).
+// Supabase reports error null. updateGateRef and updateGateStepRef report
+// this via the shared tools/readBackUpdate.ts helper (CLAUDE.md §12).
 
 import { supabase } from './supabase';
+import { readBackUpdate } from './readBackUpdate';
 import type { GateRef, GateStepRef } from './types';
 
 // One string literal each, exported so gateRefs.test.ts can assert every
@@ -3055,10 +3055,9 @@ const GATE_UPDATE_REFUSED = 'Perubahan gerbang tidak tersimpan. Hanya peran kant
  */
 export async function updateGateRef(code: string, patch: GateRefPatch): Promise<{ gate?: GateRef; error?: string }> {
   refuseImmutableKeys(patch, ['code']);
-  const { data, error } = await supabase.from('gate_refs').update(patch).eq('code', code).select(GATE_COLUMNS).maybeSingle();
-  if (error) return { error: error.message };
-  if (!data) return { error: GATE_UPDATE_REFUSED };
-  return { gate: data as GateRef };
+  const { data, error } = await readBackUpdate<GateRef>('gate_refs', patch, 'code', code, GATE_COLUMNS, GATE_UPDATE_REFUSED);
+  if (error) return { error };
+  return { gate: data };
 }
 
 export async function createGateStepRef(input: {
@@ -3097,10 +3096,9 @@ export async function createGateStepRef(input: {
  */
 export async function updateGateStepRef(code: string, patch: GateStepRefPatch): Promise<{ step?: GateStepRef; error?: string }> {
   refuseImmutableKeys(patch, ['code', 'gate_code']);
-  const { data, error } = await supabase.from('gate_step_refs').update(patch).eq('code', code).select(STEP_COLUMNS).maybeSingle();
-  if (error) return { error: error.message };
-  if (!data) return { error: GATE_UPDATE_REFUSED };
-  return { step: data as GateStepRef };
+  const { data, error } = await readBackUpdate<GateStepRef>('gate_step_refs', patch, 'code', code, STEP_COLUMNS, GATE_UPDATE_REFUSED);
+  if (error) return { error };
+  return { step: data };
 }
 
 // ─── Pure: chip labels ───────────────────────────────────────────────────────
@@ -3221,37 +3219,28 @@ Create `tools/projectPhase.ts`:
 // 037). canSetProjectPhase only decides whether to SHOW the control, so it
 // offers it to all three office roles; the database decides the rest. A
 // refused UPDATE is FILTERED by RLS, not rejected: zero rows change and
-// Supabase reports error null. We therefore select the row back and treat "no
-// row" as the refusal it is, rather than reporting a success that did not
-// happen (CLAUDE.md §12).
+// Supabase reports error null. setProjectPhase reports this via the shared
+// tools/readBackUpdate.ts helper (CLAUDE.md §12).
 
-import { supabase } from './supabase';
+import { readBackUpdate } from './readBackUpdate';
 import type { ProjectPhase } from './types';
+import type { UserRoleType } from './constants';
 
-export const PHASE_UPDATE_ROLES = ['admin', 'principal', 'estimator'] as const;
+export const PHASE_UPDATE_ROLES: readonly UserRoleType[] = ['admin', 'principal', 'estimator'];
 
-export function canSetProjectPhase(role: string | null | undefined): boolean {
-  return !!role && (PHASE_UPDATE_ROLES as readonly string[]).includes(role);
+export function canSetProjectPhase(role: UserRoleType | null | undefined): boolean {
+  return !!role && PHASE_UPDATE_ROLES.includes(role);
 }
+
+const PHASE_UPDATE_REFUSED =
+  'Fase proyek tidak berubah. Hanya admin, prinsipal, atau estimator yang ditugaskan ke proyek ini yang dapat mengubahnya.';
 
 export async function setProjectPhase(
   projectId: string,
   phase: ProjectPhase,
 ): Promise<{ error?: string }> {
-  const { data, error } = await supabase
-    .from('projects')
-    .update({ phase })
-    .eq('id', projectId)
-    .select('id, phase')
-    .maybeSingle();
-
-  if (error) return { error: error.message };
-  if (!data) {
-    return {
-      error:
-        'Fase proyek tidak berubah. Hanya admin, prinsipal, atau estimator yang ditugaskan ke proyek ini yang dapat mengubahnya.',
-    };
-  }
+  const { error } = await readBackUpdate('projects', { phase }, 'id', projectId, 'id, phase', PHASE_UPDATE_REFUSED);
+  if (error) return { error };
   return {};
 }
 ```
@@ -3299,6 +3288,8 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 MSG
 )"
 ```
+
+**Follow-up landed: shared read-back helper.** Code review on this plan flagged that `updateRoom` (Task 5), `updateGateRef` / `updateGateStepRef` (Task 6) and `setProjectPhase` above all hand-rolled the identical `update(patch).eq(keyColumn, keyValue).select(columns).maybeSingle()` call, followed by the identical null-row-means-refusal check. That was extracted into one shared `readBackUpdate<T>(table, patch, keyColumn, keyValue, columns, refusalMessage)` in `tools/readBackUpdate.ts` - see the header comment there for why `table` and `columns` stay plain `string` parameters (not literals) and why casting `data` to the function's own unconstrained `T` sidesteps the TS2352 overlap error that casting straight to `Room`/`GateRef`/`GateStepRef` would hit. Each of the four call sites now makes one call into the helper and keeps its own Indonesian refusal message, its own column constant, and its exact pre-existing return shape (`updateGateRef` still returns `{ gate?, error? }`, `updateGateStepRef` `{ step?, error? }`, `updateRoom` and `setProjectPhase` `{ error? }`). `markRoomsPrinted` was left alone - its multi-row `update().in().select()` shape doesn't fit this single-row helper. The helper's test lives in `tools/__tests__/readBackUpdate.test.ts` (row returned, null row, a real DB error, and the exact `from`/`eq`/`select` call arguments); `rooms.test.ts`, `gateRefs.test.ts` and `projectPhase.test.ts` were unchanged and still pass, since their mocks already chained `update → eq → select → maybeSingle`, exactly what the helper still calls. Also in this pass, `canSetProjectPhase`'s `role` parameter was retyped from `string | null | undefined` to `UserRoleType | null | undefined` (imported from `tools/constants.ts`), and `PHASE_UPDATE_ROLES` was retyped as `readonly UserRoleType[]` instead of an `as const` literal tuple cast to `readonly string[]` at the call site - `.includes(role)` now type-checks directly with no cast.
 
 ---
 
