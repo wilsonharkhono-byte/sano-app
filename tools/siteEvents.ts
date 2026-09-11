@@ -126,7 +126,7 @@ export function isDuplicateUploadError(err: unknown): boolean {
   );
 }
 
-const RPC_ERROR_COPY: ReadonlyArray<[string, string]> = [
+export const RPC_ERROR_COPY: ReadonlyArray<[string, string]> = [
   ['SITE_EVENT_NOT_FOUND', 'Kejadian tidak ditemukan.'],
   ['SITE_EVENT_AUTH', 'Anda tidak ditugaskan ke proyek ini.'],
   ['SITE_EVENT_STATE', 'Kejadian ini sudah dikonfirmasi atau dibuang. Muat ulang halaman.'],
@@ -292,10 +292,11 @@ export interface SiteEventWithMedia extends SiteEvent {
   reporter_name: string | null;
 }
 
+// One string literal on purpose (the ROOM_COLUMNS / readBackUpdate.ts rule):
+// a concatenated select string types every row as GenericStringError under
+// supabase-js 2.100, forcing a double cast through `unknown`. Do not split it.
 const EVENT_SELECT =
-  '*, site_event_media(*), rooms(room_name, floor), ' +
-  'owner:profiles!site_events_owner_id_fkey(full_name), ' +
-  'reporter:profiles!site_events_reporter_id_fkey(full_name)';
+  '*, site_event_media(*), rooms(room_name, floor), owner:profiles!site_events_owner_id_fkey(full_name), reporter:profiles!site_events_reporter_id_fkey(full_name)';
 
 export async function getSiteEvent(eventId: string): Promise<SiteEventWithMedia | null> {
   const { data, error } = await supabase.from('site_events').select(EVENT_SELECT).eq('id', eventId).maybeSingle();
@@ -304,7 +305,7 @@ export async function getSiteEvent(eventId: string): Promise<SiteEventWithMedia 
     return null;
   }
   if (!data) return null;
-  const row = data as unknown as SiteEvent & {
+  const row = data as SiteEvent & {
     site_event_media?: SiteEventMedia[] | null;
     rooms?: { room_name?: string; floor?: string | null } | null;
     owner?: { full_name?: string } | null;
@@ -331,6 +332,7 @@ export async function listOpenEventsForRoom(roomId: string, limit = 3): Promise<
     .eq('room_id', roomId)
     .eq('status', 'open')
     .order('confirmed_at', { ascending: false })
+    .order('id', { ascending: false })
     .limit(limit);
   if (error) {
     console.warn('listOpenEventsForRoom failed:', error.message);
@@ -360,6 +362,7 @@ export async function listDraftEvents(projectId: string, reporterId: string): Pr
     .eq('reporter_id', reporterId)
     .in('status', ['pending_analysis', 'draft'])
     .order('captured_at', { ascending: false })
+    .order('id', { ascending: false })
     .limit(20);
   if (error) {
     console.warn('listDraftEvents failed:', error.message);
@@ -401,7 +404,8 @@ export interface ConfirmSiteEventResult {
 export function buildConfirmRpcArgs(eventId: string, input: ConfirmInput): Record<string, unknown> {
   const summary = input.summary.trim();
   const impact = input.downstreamImpact.trim();
-  const edited = input.transcriptEdited && input.transcriptEdited.trim() ? input.transcriptEdited : null;
+  const trimmedTranscript = (input.transcriptEdited ?? '').trim();
+  const edited = trimmedTranscript ? trimmedTranscript : null;
   return {
     p_event_id: eventId,
     p_event_type: input.eventType,
@@ -470,13 +474,16 @@ export async function discardSiteEvent(eventId: string): Promise<{ error?: strin
     .in('status', ['pending_analysis', 'draft'])
     .select('id');
   if (error) return { error: mapSiteEventRpcError(error.message) };
-  if (!data || data.length === 0) return { error: 'Kejadian ini sudah dikonfirmasi dan tidak bisa dibuang.' };
+  if (!data || data.length === 0) {
+    return { error: 'Kejadian tidak ditemukan, bukan milik Anda, atau sudah tidak bisa dibuang.' };
+  }
   return {};
 }
 
 /** The supervisor's transcript correction, saved before "Analisis ulang" so the function reads it. */
 export async function saveTranscriptEdit(eventId: string, text: string): Promise<{ error?: string }> {
-  const value = text.trim() ? text : null;
+  const trimmed = text.trim();
+  const value = trimmed ? trimmed : null;
   const { data, error } = await supabase
     .from('site_events')
     .update({ transcript_edited: value })
@@ -484,7 +491,9 @@ export async function saveTranscriptEdit(eventId: string, text: string): Promise
     .in('status', ['pending_analysis', 'draft'])
     .select('id');
   if (error) return { error: mapSiteEventRpcError(error.message) };
-  if (!data || data.length === 0) return { error: 'Transkrip hanya bisa dikoreksi sebelum konfirmasi.' };
+  if (!data || data.length === 0) {
+    return { error: 'Kejadian tidak ditemukan, bukan milik Anda, atau transkrip sudah tidak bisa diubah.' };
+  }
   return {};
 }
 
