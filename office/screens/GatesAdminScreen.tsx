@@ -4,7 +4,9 @@ import { Ionicons } from '@expo/vector-icons';
 import Header from '../../workflows/components/Header';
 import Card from '../../workflows/components/Card';
 import { useToast } from '../../workflows/components/Toast';
-import { listGateRefs, listGateStepRefs, updateGateRef, updateGateStepRef, stepChipLabel } from '../../tools/gateRefs';
+import {
+  listGateRefs, listGateStepRefs, updateGateRef, updateGateStepRef, createGateStepRef, stepChipLabel,
+} from '../../tools/gateRefs';
 import type { GateRef, GateStepRef } from '../../tools/types';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../workflows/theme';
 
@@ -24,6 +26,11 @@ export default function GatesAdminScreen({ onBack }: Props) {
   const [draft, setDraft] = useState<{ short_label: string; name_id: string; description: string; sort_order: string }>({
     short_label: '', name_id: '', description: '', sort_order: '0',
   });
+  const [addingStepFor, setAddingStepFor] = useState<string | null>(null);
+  const [stepDraft, setStepDraft] = useState<{ code: string; name_id: string; description: string; sort_order: string }>({
+    code: '', name_id: '', description: '', sort_order: '0',
+  });
+  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     const [g, s] = await Promise.all([listGateRefs(), listGateStepRefs()]);
@@ -34,10 +41,17 @@ export default function GatesAdminScreen({ onBack }: Props) {
 
   const startEdit = (g: GateRef) => {
     setEditing(g.code);
+    setAddingStepFor(null);
     setDraft({
       short_label: g.short_label, name_id: g.name_id,
       description: g.description ?? '', sort_order: String(g.sort_order),
     });
+  };
+
+  const startAddStep = (gateCode: string) => {
+    setAddingStepFor(gateCode);
+    setEditing(null);
+    setStepDraft({ code: '', name_id: '', description: '', sort_order: '0' });
   };
 
   const save = async (code: string) => {
@@ -50,21 +64,71 @@ export default function GatesAdminScreen({ onBack }: Props) {
       Alert.alert('Urutan tidak valid', 'Urutan harus berupa angka.');
       return;
     }
-    const { error } = await updateGateRef(code, {
-      short_label: draft.short_label.trim(),
-      name_id: draft.name_id.trim(),
-      description: draft.description.trim() || null,
-      sort_order: order,
-    });
-    if (error) { Alert.alert('Gagal menyimpan', error); return; }
-    setEditing(null);
-    toast(`Gerbang ${code} diperbarui.`, 'ok');
-    await load();
+    setBusy(true);
+    try {
+      const { error } = await updateGateRef(code, {
+        short_label: draft.short_label.trim(),
+        name_id: draft.name_id.trim(),
+        description: draft.description.trim() || null,
+        sort_order: order,
+      });
+      if (error) { Alert.alert('Gagal menyimpan', error); return; }
+      setEditing(null);
+      toast(`Gerbang ${code} diperbarui.`, 'ok');
+      await load();
+    } finally {
+      setBusy(false);
+    }
   };
 
   const toggleActive = async (g: GateRef) => {
-    const { error } = await updateGateRef(g.code, { active: !g.active });
-    if (error) Alert.alert('Gagal', error); else await load();
+    setBusy(true);
+    try {
+      const { error } = await updateGateRef(g.code, { active: !g.active });
+      if (error) Alert.alert('Gagal', error); else await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleStepActive = async (s: GateStepRef) => {
+    setBusy(true);
+    try {
+      const { error } = await updateGateStepRef(s.code, { active: !s.active });
+      if (error) Alert.alert('Gagal', error); else await load();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveStep = async (gateCode: string) => {
+    const code = stepDraft.code.trim();
+    const name = stepDraft.name_id.trim();
+    if (!code || !name) {
+      Alert.alert('Belum lengkap', 'Kode dan nama langkah wajib diisi.');
+      return;
+    }
+    const order = Number(stepDraft.sort_order);
+    if (!Number.isFinite(order)) {
+      Alert.alert('Urutan tidak valid', 'Urutan harus berupa angka.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const { error } = await createGateStepRef({
+        code,
+        gate_code: gateCode,
+        name_id: name,
+        description: stepDraft.description.trim() || null,
+        sort_order: order,
+      });
+      if (error) { Alert.alert('Gagal menambah langkah', error); return; }
+      toast(`Langkah ${code} ditambahkan.`, 'ok');
+      setAddingStepFor(null);
+      await load();
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -104,10 +168,13 @@ export default function GatesAdminScreen({ onBack }: Props) {
                     value={draft.sort_order} onChangeText={(v) => setDraft({ ...draft, sort_order: v })}
                   />
                   <View style={styles.actions}>
-                    <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditing(null)}>
+                    <TouchableOpacity style={styles.cancelBtn} onPress={() => setEditing(null)} accessibilityRole="button">
                       <Text style={styles.cancelText}>Batal</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.saveBtn} onPress={() => void save(g.code)}>
+                    <TouchableOpacity
+                      style={[styles.saveBtn, busy && styles.btnDisabled]} disabled={busy}
+                      onPress={() => void save(g.code)} accessibilityRole="button"
+                    >
                       <Text style={styles.saveText}>Simpan</Text>
                     </TouchableOpacity>
                   </View>
@@ -118,29 +185,73 @@ export default function GatesAdminScreen({ onBack }: Props) {
                   {!!g.description && <Text style={styles.gateDesc}>{g.description}</Text>}
                   <Text style={styles.codeLine}>Kode: {g.code} (tetap) · Urutan: {g.sort_order}</Text>
 
-                  {gateSteps.length > 0 && (
-                    <View style={styles.stepBox}>
-                      <Text style={styles.subHead}>Langkah</Text>
-                      {gateSteps.map((s) => (
-                        <View key={s.code} style={styles.stepRow}>
-                          <Text style={styles.stepLabel} numberOfLines={1}>{stepChipLabel(s, g)}</Text>
-                          <Switch
-                            value={s.active}
-                            onValueChange={async () => {
-                              const { error } = await updateGateStepRef(s.code, { active: !s.active });
-                              if (error) Alert.alert('Gagal', error); else await load();
-                            }}
-                          />
+                  <View style={styles.stepBox}>
+                    <Text style={styles.subHead}>Langkah</Text>
+                    {gateSteps.map((s) => (
+                      <View key={s.code} style={styles.stepRow}>
+                        <Text style={styles.stepLabel} numberOfLines={1}>{stepChipLabel(s, g)}</Text>
+                        <Switch
+                          value={s.active}
+                          disabled={busy}
+                          accessibilityLabel={`${stepChipLabel(s, g)} aktif`}
+                          onValueChange={() => void toggleStepActive(s)}
+                        />
+                      </View>
+                    ))}
+
+                    {addingStepFor === g.code ? (
+                      <View style={styles.stepForm}>
+                        <Text style={styles.label}>Kode langkah</Text>
+                        <TextInput
+                          style={styles.input} value={stepDraft.code}
+                          onChangeText={(v) => setStepDraft({ ...stepDraft, code: v })}
+                          placeholder="B4" placeholderTextColor={COLORS.textMuted}
+                        />
+                        <Text style={styles.label}>Nama langkah</Text>
+                        <TextInput
+                          style={styles.input} value={stepDraft.name_id}
+                          onChangeText={(v) => setStepDraft({ ...stepDraft, name_id: v })}
+                        />
+                        <Text style={styles.label}>Deskripsi (opsional)</Text>
+                        <TextInput
+                          style={[styles.input, styles.inputMulti]} multiline numberOfLines={3} textAlignVertical="top"
+                          value={stepDraft.description}
+                          onChangeText={(v) => setStepDraft({ ...stepDraft, description: v })}
+                        />
+                        <Text style={styles.label}>Urutan</Text>
+                        <TextInput
+                          style={styles.input} keyboardType="number-pad"
+                          value={stepDraft.sort_order}
+                          onChangeText={(v) => setStepDraft({ ...stepDraft, sort_order: v })}
+                        />
+                        <View style={styles.actions}>
+                          <TouchableOpacity style={styles.cancelBtn} onPress={() => setAddingStepFor(null)} accessibilityRole="button">
+                            <Text style={styles.cancelText}>Batal</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.saveBtn, busy && styles.btnDisabled]} disabled={busy}
+                            onPress={() => void saveStep(g.code)} accessibilityRole="button"
+                          >
+                            <Text style={styles.saveText}>Simpan</Text>
+                          </TouchableOpacity>
                         </View>
-                      ))}
-                    </View>
-                  )}
+                      </View>
+                    ) : (
+                      <TouchableOpacity style={styles.ghostBtn} onPress={() => startAddStep(g.code)} accessibilityRole="button">
+                        <Ionicons name="add" size={16} color={COLORS.text} />
+                        <Text style={styles.ghostText}>Tambah langkah</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
 
                   <View style={styles.actions}>
-                    <TouchableOpacity style={styles.cancelBtn} onPress={() => void toggleActive(g)}>
+                    <TouchableOpacity
+                      style={[styles.cancelBtn, busy && styles.btnDisabled]} disabled={busy}
+                      onPress={() => void toggleActive(g)} accessibilityRole="button"
+                    >
                       <Text style={styles.cancelText}>{g.active ? 'Nonaktifkan' : 'Aktifkan'}</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.saveBtn} onPress={() => startEdit(g)}>
+                    <TouchableOpacity style={styles.saveBtn} onPress={() => startEdit(g)} accessibilityRole="button">
                       <Text style={styles.saveText}>Ubah</Text>
                     </TouchableOpacity>
                   </View>
@@ -189,10 +300,18 @@ const styles = StyleSheet.create({
   stepBox: { marginTop: SPACE.md, paddingTop: SPACE.sm, borderTopWidth: 1, borderTopColor: COLORS.borderSub },
   stepRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, paddingVertical: 2 },
   stepLabel: { flex: 1, fontSize: TYPE.sm, fontFamily: FONTS.regular, color: COLORS.text },
+  stepForm: { marginTop: SPACE.sm },
+  ghostBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: SPACE.xs, borderWidth: 1, borderColor: COLORS.border,
+    borderRadius: RADIUS, paddingVertical: SPACE.sm + 2, paddingHorizontal: SPACE.md, marginTop: SPACE.sm,
+    alignSelf: 'flex-start',
+  },
+  ghostText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
   actions: { flexDirection: 'row', gap: SPACE.sm, marginTop: SPACE.base },
   cancelBtn: { flex: 1, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, padding: SPACE.md, alignItems: 'center' },
   cancelText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textSec },
   saveBtn: { flex: 1, backgroundColor: COLORS.primary, borderRadius: RADIUS, padding: SPACE.md, alignItems: 'center' },
   saveText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textInverse, textTransform: 'uppercase', letterSpacing: 0.4 },
+  btnDisabled: { opacity: 0.6 },
   empty: { fontSize: TYPE.base, fontFamily: FONTS.regular, color: COLORS.textSec, textAlign: 'center', paddingVertical: SPACE.md },
 });

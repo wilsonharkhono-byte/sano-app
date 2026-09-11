@@ -32,6 +32,7 @@ export default function RoomsAdminScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
 
   const canPhase = canSetProjectPhase(profile?.role);
 
@@ -120,12 +121,15 @@ export default function RoomsAdminScreen() {
     const target = only === 'selected'
       ? rooms.filter((r) => selected.has(r.id))
       : rooms.filter((r) => r.active);
+    setBusy(true);
     try {
       await exportRoomLabelSheet(project, target);
       toast(`${target.length} label dikirim ke printer.`, 'ok');
       await load(); // pick up qr_printed_at
     } catch (err: any) {
       Alert.alert('Cetak label', err?.message ?? String(err));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -150,10 +154,15 @@ export default function RoomsAdminScreen() {
 
   const handlePhase = async (phase: ProjectPhase) => {
     if (!project) return;
-    const { error } = await setProjectPhase(project.id, phase);
-    if (error) { Alert.alert('Gagal mengubah fase', error); return; }
-    toast('Fase proyek diperbarui.', 'ok');
-    await refresh();
+    setBusy(true);
+    try {
+      const { error } = await setProjectPhase(project.id, phase);
+      if (error) { Alert.alert('Gagal mengubah fase', error); return; }
+      toast('Fase proyek diperbarui.', 'ok');
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (sub === 'gates') return <GatesAdminScreen onBack={() => setSub('rooms')} />;
@@ -171,7 +180,10 @@ export default function RoomsAdminScreen() {
             <Card title="Fase proyek" subtitle="Menentukan bentuk laporan progres klien.">
               {canPhase ? (
                 <View style={styles.pickerWrap}>
-                  <Picker selectedValue={project.phase} onValueChange={(v) => void handlePhase(v as ProjectPhase)}>
+                  <Picker
+                    selectedValue={project.phase} enabled={!busy}
+                    onValueChange={(v) => void handlePhase(v as ProjectPhase)}
+                  >
                     {PROJECT_PHASES.map((p) => <Picker.Item key={p.value} label={p.label} value={p.value} />)}
                   </Picker>
                 </View>
@@ -240,14 +252,20 @@ export default function RoomsAdminScreen() {
                         </Text>
                       </View>
                       <TouchableOpacity
+                        disabled={busy}
                         onPress={async () => {
-                          const { error } = await setRoomActive(r.id, !r.active);
-                          if (error) Alert.alert('Gagal', error); else await load();
+                          setBusy(true);
+                          try {
+                            const { error } = await setRoomActive(r.id, !r.active);
+                            if (error) Alert.alert('Gagal', error); else await load();
+                          } finally {
+                            setBusy(false);
+                          }
                         }}
                         accessibilityRole="button"
                         accessibilityLabel={r.active ? `Nonaktifkan ${r.room_name}` : `Aktifkan ${r.room_name}`}
                       >
-                        <Text style={styles.linkBtn}>{r.active ? 'Nonaktifkan' : 'Aktifkan'}</Text>
+                        <Text style={[styles.linkBtn, busy && styles.btnDisabled]}>{r.active ? 'Nonaktifkan' : 'Aktifkan'}</Text>
                       </TouchableOpacity>
                     </View>
                   ))}
@@ -258,13 +276,16 @@ export default function RoomsAdminScreen() {
             <Card title="Label QR" subtitle="Cetak pada kertas A4, sembilan label per halaman.">
               <View style={styles.btnRow}>
                 <TouchableOpacity
-                  style={[styles.primaryBtn, selected.size === 0 && styles.primaryBtnOff]}
-                  disabled={selected.size === 0}
+                  style={[styles.primaryBtn, (selected.size === 0 || busy) && styles.primaryBtnOff]}
+                  disabled={selected.size === 0 || busy}
                   onPress={() => void handlePrint('selected')}
                 >
                   <Text style={styles.primaryText}>Cetak {selected.size} terpilih</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.ghostBtn} onPress={() => void handlePrint('all')}>
+                <TouchableOpacity
+                  style={[styles.ghostBtn, busy && styles.btnDisabled]} disabled={busy}
+                  onPress={() => void handlePrint('all')}
+                >
                   <Ionicons name="qr-code-outline" size={16} color={COLORS.text} />
                   <Text style={styles.ghostText}>Cetak semua aktif</Text>
                 </TouchableOpacity>
@@ -275,7 +296,10 @@ export default function RoomsAdminScreen() {
             </Card>
 
             <Card title="Ekspor untuk DATUM" subtitle="Berkas JSON dalam bentuk area DATUM.">
-              <TouchableOpacity style={styles.ghostBtn} onPress={handleDatumExport}>
+              <TouchableOpacity
+                style={[styles.ghostBtn, busy && styles.btnDisabled]} disabled={busy}
+                onPress={handleDatumExport}
+              >
                 <Ionicons name="download-outline" size={16} color={COLORS.text} />
                 <Text style={styles.ghostText}>Unduh JSON</Text>
               </TouchableOpacity>
@@ -307,6 +331,7 @@ const styles = StyleSheet.create({
   primaryBtn: { backgroundColor: COLORS.primary, borderRadius: RADIUS, paddingVertical: SPACE.sm + 2, paddingHorizontal: SPACE.md },
   primaryBtnOff: { backgroundColor: COLORS.surfaceAlt },
   primaryText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textInverse, textTransform: 'uppercase', letterSpacing: 0.4 },
+  btnDisabled: { opacity: 0.6 },
   linkBtn: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.info },
   floorGroup: { marginTop: SPACE.md },
   floorHead: {
