@@ -16,6 +16,8 @@
 //   - every enumerated field holds an allowed value, or the draft is rejected
 //     outright (event_type, confidence, an empty title) or reset to a safe
 //     default with the reason recorded (vo.flag, due_suggestion, mismatch);
+//   - event_type and confidence are matched case-insensitively; gate_code and
+//     step_code resolve case-insensitively to the supplied list's own casing;
 //   - gate_code, step_code and related_open_event_id come from the lists the
 //     edge function supplied, never from the model's imagination;
 //   - step_code survives only under the gate_code that survived with it, the
@@ -88,7 +90,12 @@ export interface DraftValidationContext {
 }
 
 export type DraftValidationResult =
-  | { ok: true; draft: SiteEventDraft; dropped: DraftDrop[] }
+  | {
+      ok: true;
+      draft: SiteEventDraft;
+      /** The same array as draft.dropped, not a copy — do not mutate it. */
+      dropped: DraftDrop[];
+    }
   | { ok: false; reason: string };
 
 const KNOWN_KEYS: ReadonlyArray<string> = [
@@ -98,7 +105,12 @@ const KNOWN_KEYS: ReadonlyArray<string> = [
 ];
 
 export function normalizeForQuoteMatch(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, ' ').trim();
+  return value
+    .normalize('NFC')
+    .replace(/[\u200B-\u200D\u00AD\u2060\u200E\u200F]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export function isLiteralQuote(
@@ -126,11 +138,23 @@ function preview(value: unknown): string {
       text = String(value);
     }
   }
-  return text.length > 120 ? `${text.slice(0, 119)}…` : text;
+  const chars = Array.from(text);
+  return chars.length > 120 ? `${chars.slice(0, 119).join('')}…` : text;
 }
 
 function isPresent(value: unknown): boolean {
   return value !== null && value !== undefined && value !== '';
+}
+
+/**
+ * Resolves `candidate` to the canonical spelling in `options` ignoring case,
+ * but only when exactly one option matches ignoring case. A tie (two options
+ * differing only by case) is treated as not found rather than guessed at.
+ */
+function resolveCodeCaseInsensitive(candidate: string, options: ReadonlyArray<string>): string | null {
+  const needle = candidate.toLowerCase();
+  const matches = options.filter((option) => option.toLowerCase() === needle);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function clampText(
@@ -146,9 +170,10 @@ function clampText(
   }
   const text = collapse ? value.replace(/\s+/g, ' ').trim() : value.trim();
   if (!text) return null;
-  if (text.length > max) {
+  const chars = Array.from(text);
+  if (chars.length > max) {
     dropped.push({ field, reason: `dipotong ke ${max} karakter` });
-    return text.slice(0, max).trim();
+    return chars.slice(0, max).join('').trim();
   }
   return text;
 }
@@ -182,7 +207,7 @@ function filterQuotes(
   return kept;
 }
 
-function codeField(field: string, value: unknown, dropped: DraftDrop[]): string | null {
+function optionalString(field: string, value: unknown, dropped: DraftDrop[]): string | null {
   if (typeof value === 'string') return value.trim() || null;
   if (isPresent(value)) dropped.push({ field, reason: 'bukan teks, diabaikan', value: preview(value) });
   return null;
@@ -202,13 +227,15 @@ export function validateSiteEventDraft(
     }
   }
 
-  const eventType = raw.event_type;
+  const eventTypeRaw = raw.event_type;
+  const eventType = typeof eventTypeRaw === 'string' ? eventTypeRaw.trim().toLowerCase() : eventTypeRaw;
   if (typeof eventType !== 'string' || !(SITE_EVENT_TYPE_CODES as ReadonlyArray<string>).includes(eventType)) {
-    return { ok: false, reason: `event_type tidak valid: ${preview(eventType)}` };
+    return { ok: false, reason: `event_type tidak valid: ${preview(eventTypeRaw)}` };
   }
 
   const confidenceRaw = raw.confidence;
-  if (typeof confidenceRaw !== 'string' || !(AI_CONFIDENCE_LEVELS as ReadonlyArray<string>).includes(confidenceRaw)) {
+  const confidenceCandidate = typeof confidenceRaw === 'string' ? confidenceRaw.trim().toLowerCase() : confidenceRaw;
+  if (typeof confidenceCandidate !== 'string' || !(AI_CONFIDENCE_LEVELS as ReadonlyArray<string>).includes(confidenceCandidate)) {
     return { ok: false, reason: `confidence tidak valid: ${preview(confidenceRaw)}` };
   }
 
@@ -217,11 +244,13 @@ export function validateSiteEventDraft(
 
   const sources = [ctx.transcript, ctx.rawText];
 
-  // Gate: from the supplied active list, or nothing.
+  // Gate: from the supplied active list, or nothing. Matched case-insensitively,
+  // resolved to the list's own spelling.
   let gateCode: string | null = null;
-  const gateCandidate = codeField('gate_code', raw.gate_code, dropped);
+  const gateCandidate = optionalString('gate_code', raw.gate_code, dropped);
   if (gateCandidate) {
-    if (ctx.gateCodes.includes(gateCandidate)) gateCode = gateCandidate;
+    const resolved = resolveCodeCaseInsensitive(gateCandidate, ctx.gateCodes);
+    if (resolved) gateCode = resolved;
     else dropped.push({ field: 'gate_code', reason: 'kode gerbang tidak ada di daftar aktif', value: preview(gateCandidate) });
   }
 
@@ -229,9 +258,10 @@ export function validateSiteEventDraft(
   // keys (gate_code, step_code) to gate_step_refs (gate_code, code) and refuses
   // a step without a gate, so a pair that passes here is one the database takes.
   let stepCode: string | null = null;
-  const stepCandidate = codeField('step_code', raw.step_code, dropped);
+  const stepCandidate = optionalString('step_code', raw.step_code, dropped);
   if (stepCandidate) {
-    const step = ctx.steps.find((s) => s.code === stepCandidate);
+    const resolvedStepCode = resolveCodeCaseInsensitive(stepCandidate, ctx.steps.map((s) => s.code));
+    const step = resolvedStepCode ? ctx.steps.find((s) => s.code === resolvedStepCode) : undefined;
     if (!step) {
       dropped.push({ field: 'step_code', reason: 'kode langkah tidak ada di daftar aktif', value: preview(stepCandidate) });
     } else if (gateCode === null) {
@@ -239,7 +269,7 @@ export function validateSiteEventDraft(
     } else if (step.gate_code !== gateCode) {
       dropped.push({ field: 'step_code', reason: 'langkah bukan milik gerbang yang dipilih', value: preview(stepCandidate) });
     } else {
-      stepCode = stepCandidate;
+      stepCode = step.code;
     }
   }
 
@@ -262,6 +292,9 @@ export function validateSiteEventDraft(
       dueSuggestion = { kind: 'relative', days: DRAFT_DUE_DAYS_MAX };
     } else if (days >= 1) {
       dueSuggestion = { kind: 'relative', days };
+    } else {
+      dueSuggestion = { kind: 'none', days: 0 };
+      dropped.push({ field: 'due_suggestion', reason: 'tenggat kurang dari 1 hari, dianggap tidak ada', value: preview(due.days) });
     }
   } else if (!(isRecord(due) && due.kind === 'none') && isPresent(due)) {
     dropped.push({ field: 'due_suggestion', reason: 'format tenggat tidak valid, diabaikan', value: preview(due) });
@@ -277,7 +310,7 @@ export function validateSiteEventDraft(
   else if (voRaw && isPresent(voRaw.flag) && voRaw.flag !== 'none') {
     dropped.push({ field: 'vo.flag', reason: 'nilai flag VO tidak dikenal, dianggap none', value: preview(voRaw.flag) });
   }
-  const voReason = clampText('vo.reason', voRaw ? voRaw.reason : null, DRAFT_REASON_MAX, dropped, true) ?? '';
+  let voReason = clampText('vo.reason', voRaw ? voRaw.reason : null, DRAFT_REASON_MAX, dropped, true) ?? '';
   const voQuotes = filterQuotes('vo.evidence_quotes', voRaw ? voRaw.evidence_quotes : null, sources, dropped);
   if (voFlag === 'suggested' && voQuotes.length === 0) {
     voFlag = 'none';
@@ -286,6 +319,7 @@ export function validateSiteEventDraft(
       reason: 'usulan VO diturunkan ke none: tidak ada kutipan dasar yang lolos',
       value: preview(voReason),
     });
+    voReason = '';
   }
 
   let mismatch: SiteEventDraft['mismatch'] = { flag: false, reason: null };
@@ -302,7 +336,7 @@ export function validateSiteEventDraft(
   }
 
   let relatedOpenEventId: string | null = null;
-  const relatedCandidate = codeField('related_open_event_id', raw.related_open_event_id, dropped);
+  const relatedCandidate = optionalString('related_open_event_id', raw.related_open_event_id, dropped);
   if (relatedCandidate) {
     if (ctx.openEventIds.includes(relatedCandidate)) relatedOpenEventId = relatedCandidate;
     else {
@@ -316,7 +350,7 @@ export function validateSiteEventDraft(
 
   const evidenceQuotes = filterQuotes('evidence_quotes', raw.evidence_quotes, sources, dropped);
 
-  let confidence = confidenceRaw as AiConfidence;
+  let confidence = confidenceCandidate as AiConfidence;
   if (ctx.transcriptionFailed && confidence === 'high') {
     confidence = 'medium';
     dropped.push({ field: 'confidence', reason: 'transkripsi gagal, keyakinan diturunkan ke medium' });

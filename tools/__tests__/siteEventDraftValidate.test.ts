@@ -29,6 +29,8 @@ const TRANSCRIPT = 'Pipa AC  menonjol\n di sisi jendela, owner minta dipindah ke
 const NOTE = 'Kusen jendela belum dipasang';
 const OPEN_EVENT_ID = '11111111-1111-4111-8111-111111111111';
 
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
 const ctx = (over: Partial<DraftValidationContext> = {}): DraftValidationContext => ({
   gateCodes: ['A', 'B', 'C', 'D'],
   steps: [{ code: 'A2', gate_code: 'A' }, { code: 'C1', gate_code: 'C' }],
@@ -148,12 +150,30 @@ describe('literal quote matching (rule 4)', () => {
     expect(r.dropped.map((d) => d.field)).toContain('evidence_quotes');
   });
 
-  it(`keeps at most ${DRAFT_QUOTES_MAX} quotes and removes duplicates`, () => {
-    const many = ['pipa ac', 'Pipa AC', 'menonjol', 'sisi jendela', 'owner minta', 'atas plafon', 'bobok dinding'];
+  it('removes duplicate quotes, treating case and whitespace as equivalent', () => {
+    const r = validateSiteEventDraft(raw({ evidence_quotes: ['pipa ac', 'Pipa AC', 'menonjol'] }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.evidence_quotes).toEqual(['pipa ac', 'menonjol']);
+  });
+
+  it(`keeps at most ${DRAFT_QUOTES_MAX} quotes, dropping the rest with a reason`, () => {
+    const many = ['pipa ac', 'menonjol', 'sisi jendela', 'owner minta', 'atas plafon', 'bobok dinding'];
     const r = validateSiteEventDraft(raw({ evidence_quotes: many }), ctx());
     if (!r.ok) throw new Error('expected ok');
     expect(r.draft.evidence_quotes).toEqual(['pipa ac', 'menonjol', 'sisi jendela', 'owner minta', 'atas plafon']);
     expect(r.dropped).toContainEqual(expect.objectContaining({ field: 'evidence_quotes', value: 'bobok dinding' }));
+  });
+
+  it('strips zero-width and directional characters before matching a quote', () => {
+    const transcriptWithInvisibles = 'Pipa AC men\u200Bonjol di sisi jendela';
+    expect(isLiteralQuote('pipa ac menonjol', [transcriptWithInvisibles, null])).toBe(true);
+  });
+
+  it('drops every quote when both transcript and note are empty, and downgrades VO', () => {
+    const r = validateSiteEventDraft(raw(), ctx({ transcript: '', rawText: '' }));
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.evidence_quotes).toEqual([]);
+    expect(r.draft.vo.flag).toBe('none');
   });
 });
 
@@ -166,6 +186,7 @@ describe('VO suggestion (rule 4, second half)', () => {
     if (!r.ok) throw new Error('expected ok');
     expect(r.draft.vo.flag).toBe('none');
     expect(r.draft.vo.evidence_quotes).toEqual([]);
+    expect(r.draft.vo.reason).toBe('');
     expect(r.dropped).toContainEqual({
       field: 'vo.flag',
       reason: 'usulan VO diturunkan ke none: tidak ada kutipan dasar yang lolos',
@@ -251,6 +272,35 @@ describe('codes come from the supplied lists only', () => {
   });
 });
 
+describe('case-insensitive enums and codes', () => {
+  it('case-folds event_type and confidence before checking the enum', () => {
+    const r = validateSiteEventDraft(raw({ event_type: 'Hambatan', confidence: 'HIGH' }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.event_type).toBe('hambatan');
+    expect(r.draft.confidence).toBe('high');
+  });
+
+  it('resolves gate_code case-insensitively to the canonical spelling in the active list', () => {
+    const r = validateSiteEventDraft(raw({ gate_code: 'a', step_code: null }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.gate_code).toBe('A');
+  });
+
+  it('resolves step_code case-insensitively once its gate has resolved', () => {
+    const r = validateSiteEventDraft(raw({ gate_code: 'a', step_code: 'a2' }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.gate_code).toBe('A');
+    expect(r.draft.step_code).toBe('A2');
+  });
+
+  it('treats an ambiguous case-insensitive gate match as not found', () => {
+    const r = validateSiteEventDraft(raw({ gate_code: 'a', step_code: null }), ctx({ gateCodes: ['A', 'a', 'B'] }));
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.gate_code).toBeNull();
+    expect(r.dropped).toContainEqual({ field: 'gate_code', reason: 'kode gerbang tidak ada di daftar aktif', value: 'a' });
+  });
+});
+
 describe('clamps and defaults', () => {
   it(`clamps title to ${DRAFT_TITLE_MAX} and summary to ${DRAFT_SUMMARY_MAX}, recording both`, () => {
     const r = validateSiteEventDraft(raw({ title: 'T'.repeat(120), summary: 'S'.repeat(400) }), ctx());
@@ -265,6 +315,30 @@ describe('clamps and defaults', () => {
     const r = validateSiteEventDraft(raw({ title: '  Pipa \n AC   menonjol ' }), ctx());
     if (!r.ok) throw new Error('expected ok');
     expect(r.draft.title).toBe('Pipa AC menonjol');
+  });
+
+  it('collapses whitespace in the title but keeps newlines in downstream_impact', () => {
+    const r = validateSiteEventDraft(
+      raw({ title: '  Pipa \n AC   menonjol ', downstream_impact: '  Plafon tertunda.\n\nCat ikut mundur.  ' }),
+      ctx(),
+    );
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.title).toBe('Pipa AC menonjol');
+    expect(r.draft.downstream_impact).toBe('Plafon tertunda.\n\nCat ikut mundur.');
+  });
+
+  it('clamps by code point, so an emoji is never split into a lone surrogate', () => {
+    const r = validateSiteEventDraft(raw({ title: 'T'.repeat(79) + '\u{1F600}' + 'X'.repeat(9) }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(Array.from(r.draft.title)).toHaveLength(DRAFT_TITLE_MAX);
+    expect(r.draft.title.endsWith('\u{1F600}')).toBe(true);
+    expect(LONE_SURROGATE.test(r.draft.title)).toBe(false);
+  });
+
+  it('truncates a drop preview by code point too', () => {
+    const r = validateSiteEventDraft(raw({ evidence_quotes: ['Q'.repeat(118) + '\u{1F600}' + 'Z'.repeat(9)] }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(LONE_SURROGATE.test(JSON.stringify(r.dropped))).toBe(false);
   });
 
   it(`caps a relative due suggestion at ${DRAFT_DUE_DAYS_MAX} days`, () => {
@@ -285,6 +359,26 @@ describe('clamps and defaults', () => {
     const r = validateSiteEventDraft(raw({ due_suggestion: { kind: 'relative', days: 0 } }), ctx());
     if (!r.ok) throw new Error('expected ok');
     expect(r.draft.due_suggestion).toEqual({ kind: 'none', days: 0 });
+  });
+
+  it('records a drop when a relative due suggestion rounds to less than 1 day', () => {
+    const negative = validateSiteEventDraft(raw({ due_suggestion: { kind: 'relative', days: -5 } }), ctx());
+    if (!negative.ok) throw new Error('expected ok');
+    expect(negative.draft.due_suggestion).toEqual({ kind: 'none', days: 0 });
+    expect(negative.dropped).toContainEqual({
+      field: 'due_suggestion',
+      reason: 'tenggat kurang dari 1 hari, dianggap tidak ada',
+      value: '-5',
+    });
+
+    const fractional = validateSiteEventDraft(raw({ due_suggestion: { kind: 'relative', days: 0.2 } }), ctx());
+    if (!fractional.ok) throw new Error('expected ok');
+    expect(fractional.draft.due_suggestion).toEqual({ kind: 'none', days: 0 });
+    expect(fractional.dropped).toContainEqual({
+      field: 'due_suggestion',
+      reason: 'tenggat kurang dari 1 hari, dianggap tidak ada',
+      value: '0.2',
+    });
   });
 
   it('treats a non-boolean is_blocking as false and records it', () => {
@@ -323,6 +417,16 @@ describe('unknown keys never survive (rule 5)', () => {
     if (!r.ok) throw new Error('expected ok');
     expect(Object.keys(r.draft.vo).sort()).toEqual(['evidence_quotes', 'flag', 'reason']);
   });
+
+  it('drops a __proto__ key that arrived via JSON.parse, without touching Object.prototype', () => {
+    const json = JSON.stringify(raw()).replace(/^\{/, '{"__proto__":{"polluted":true},');
+    const parsed = JSON.parse(json);
+    const r = validateSiteEventDraft(parsed, ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(Object.keys(r.draft)).not.toContain('__proto__');
+    expect(r.dropped).toContainEqual({ field: '__proto__', reason: 'kunci tidak dikenal, dibuang', value: '{"polluted":true}' });
+    expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
+  });
 });
 
 describe('a failed transcription caps confidence', () => {
@@ -337,6 +441,13 @@ describe('a failed transcription caps confidence', () => {
     const r = validateSiteEventDraft(raw({ confidence: 'low' }), ctx({ transcriptionFailed: true }));
     if (!r.ok) throw new Error('expected ok');
     expect(r.draft.confidence).toBe('low');
+  });
+
+  it('leaves medium alone under a failed transcription and records no drop', () => {
+    const r = validateSiteEventDraft(raw({ confidence: 'medium' }), ctx({ transcriptionFailed: true }));
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.confidence).toBe('medium');
+    expect(r.dropped.map((d) => d.field)).not.toContain('confidence');
   });
 });
 
