@@ -11,7 +11,9 @@ import { useToast } from '../components/Toast';
 import { listRooms } from '../../tools/rooms';
 import { listGateRefs } from '../../tools/gateRefs';
 import { pickPhoto } from '../../tools/storage';
-import { createSiteEventWithMedia, getRoomLastGate, newSiteEventId, workGroupHints } from '../../tools/siteEvents';
+import { getRoomLastGate, newSiteEventId, workGroupHints } from '../../tools/siteEvents';
+import { enqueueNewCapture } from '../../tools/captureQueueStore';
+import { triggerDrain } from '../../tools/captureQueueWorker';
 import { PROJECT_PHASE_LABELS, SITE_EVENT_MAX_CLOSEUPS } from '../../tools/constants';
 import type { GateRef, Room } from '../../tools/types';
 import { COLORS } from '../theme';
@@ -19,6 +21,7 @@ import { formStyles as s } from './siteEvent/styles';
 import { GateChipRow } from './siteEvent/GateChipRow';
 import VoiceNoteField from './siteEvent/VoiceNoteField';
 import OpenEventsList from './siteEvent/OpenEventsList';
+import { WEB_QUEUE_WARNING } from './siteEvent/captureQueueModel';
 import {
   buildNewSiteEvent,
   canSend,
@@ -147,23 +150,35 @@ export default function SiteEventCaptureScreen() {
     // Work-group names are prompt hints; they come from the loaded BoQ only
     // when the scanned project is the active one.
     const hints = activeProject?.id === project.id ? workGroupHints(boqItems) : [];
-    const result = await createSiteEventWithMedia(buildNewSiteEvent(draft, new Date().toISOString()), {
-      workGroupNames: hints,
-    });
-    setSending(false);
-    sendingRef.current = false;
-    if (result.error) {
-      setSendError(result.error);
+    try {
+      await enqueueNewCapture({
+        userId: profile.id,
+        event: buildNewSiteEvent(draft, new Date().toISOString()),
+        workGroupNames: hints,
+        nowIso: new Date().toISOString(),
+      });
+    } catch (err) {
+      setSending(false);
+      sendingRef.current = false;
+      // enqueueNewCapture only throws for a genuinely unexpected failure
+      // (disk full, permission denied on the document directory) — the
+      // ordinary "no signal" case is exactly what the queue exists to
+      // absorb, so it never reaches here. The draft's inputs are untouched,
+      // so "Kirim ulang" retries with everything still in place.
+      const message = (err as Error).message || 'Gagal menyimpan laporan di HP ini.';
+      setSendError(message);
       // Also toast: if the supervisor already tapped "Ruangan" while this was
       // in flight, the screen (unmountOnBlur) is gone and setSendError is a
       // no-op — the toast is what still reaches them.
-      toast(result.error, 'critical');
+      toast(message, 'critical');
       return;
     }
-    toast('Terkirim. Draf AI akan muncul di Beranda.', 'ok');
-    void result.analysis?.then((analysis) => {
-      if (!analysis.ok && analysis.error) toast(analysis.error, 'warning');
-    });
+    // Kirim returns at once; the queue delivers this in the background
+    // (tools/captureQueueWorker.ts) whenever there is a signal.
+    triggerDrain();
+    setSending(false);
+    sendingRef.current = false;
+    toast('Tersimpan, dikirim saat ada sinyal', 'ok');
     backToRoom();
   };
 
@@ -310,7 +325,7 @@ export default function SiteEventCaptureScreen() {
                 <Text style={s.primaryText}>{sending ? 'Mengirim…' : sendError ? 'Kirim ulang' : 'Kirim'}</Text>
               </TouchableOpacity>
               {Platform.OS === 'web' ? (
-                <Text style={s.hint}>Di web, tetap di halaman ini sampai muncul "Terkirim".</Text>
+                <Text style={s.hint}>{WEB_QUEUE_WARNING}</Text>
               ) : null}
             </Card>
           </>
