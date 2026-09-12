@@ -660,6 +660,26 @@ describe('RPC_ERROR_COPY vs migrations 097, 099 and 100', () => {
     expect(raised.size).toBeGreaterThan(0);
     expect(covered).toEqual(raised);
   });
+
+  it("feeds 100's exact stale-evidence refusal through the mapper and gets the VO copy, not the raw SQL", () => {
+    // The test above only compares CODE *sets*, so it cannot see whether the
+    // FULL string confirm_site_event (100) actually raises — the existing
+    // SITE_EVENT_VO_NO_EVIDENCE code plus the new "(kutipan tidak lagi ada di
+    // transkrip)" extension — still matches on the `CODE:` prefix and maps to
+    // the same Indonesian copy 097's refusal always has. Read the literal
+    // RAISE EXCEPTION text out of the migration itself, not a re-typed copy of
+    // it, so a drift in either file fails here.
+    const sql = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'supabase', 'migrations', '100_confirm_vo_evidence_recheck.sql'),
+      'utf8',
+    );
+    const match = sql.match(
+      /RAISE EXCEPTION '(SITE_EVENT_VO_NO_EVIDENCE:[^']*kutipan tidak lagi ada di transkrip\))'/,
+    );
+    expect(match).not.toBeNull();
+    const message = match![1];
+    expect(mapSiteEventRpcError(message)).toBe('VO hanya bisa dikonfirmasi bila ada kutipan dasar.');
+  });
 });
 
 /**

@@ -37,10 +37,12 @@ import {
   initialConfirmForm,
   relatedSuggestion,
   staleVoQuotes,
+  survivingVoQuotes,
   toConfirmInput,
   withEventType,
   withGate,
   withTranscript,
+  VO_PARTIAL_EVIDENCE_NOTE,
   VO_STALE_EVIDENCE_MESSAGE,
   type ConfirmForm,
 } from './siteEvent/confirmModel';
@@ -269,23 +271,31 @@ export default function SiteEventConfirmScreen() {
   const mismatchBlocks = !!event && !manual && event.ai_mismatch && !form?.mismatchAcknowledged;
 
   /**
-   * The VO quotes that are no longer in the transcript as it stands NOW.
-   *
-   * confirm_site_event (097:681-697) reads the quotes out of the stored
-   * ai_draft and checks only that vo.flag is 'suggested' and the array is
-   * non-empty — it never re-runs the literal-substring test the edge function
-   * applied once, at draft-write time. So an edited transcript cannot
-   * invalidate the stored evidence as far as the RPC is concerned, and the
-   * Catatan Perubahan it writes would quote words the transcript no longer
-   * contains. This check is the only thing standing between that and the
-   * estimator (spec §1.1 rule 4).
+   * The VO quotes that are, and are not, still in the transcript as it stands
+   * NOW — `sources` is `[form.transcript, event.raw_text]`, the same two
+   * haystacks confirm_site_event (migration 100,
+   * supabase/migrations/100_confirm_vo_evidence_recheck.sql) checks against
+   * the transcript it is about to persist, through the same normaliser
+   * (site_event_norm_quote mirrors normalizeForQuoteMatch fold for fold). The
+   * RPC keeps whichever quotes still match and refuses the VO only when NONE
+   * do; this screen mirrors that exact rule so Konfirmasi is blocked only in
+   * the same case the server would refuse it (spec §1.1 rule 4).
    */
   const staleQuotes = useMemo(
     () => (event && form && !manual ? staleVoQuotes(event.ai_draft, [form.transcript, event.raw_text]) : []),
     [event, form, manual],
   );
-  const voEvidenceStale = !!form?.voConfirm && staleQuotes.length > 0;
-  const confirmDisabled = busy || mismatchBlocks || voEvidenceStale;
+  const survivingQuotes = useMemo(
+    () => (event && form && !manual ? survivingVoQuotes(event.ai_draft, [form.transcript, event.raw_text]) : []),
+    [event, form, manual],
+  );
+  // Blocked only when the edit wiped out every quote — the same case
+  // confirm_site_event (100) would refuse with SITE_EVENT_VO_NO_EVIDENCE.
+  const voEvidenceBlocked = !!form?.voConfirm && staleQuotes.length > 0 && survivingQuotes.length === 0;
+  // Some, but not all, quotes survived: Konfirmasi proceeds, but only the
+  // survivors will reach Catatan Perubahan, so say so.
+  const voEvidencePartial = staleQuotes.length > 0 && survivingQuotes.length > 0;
+  const confirmDisabled = busy || mismatchBlocks || voEvidenceBlocked;
 
   return (
     <View style={s.flex}>
@@ -516,6 +526,7 @@ export default function SiteEventConfirmScreen() {
                 onVoChange={(v) => update({ voConfirm: v })}
                 eventType={form.eventType}
                 staleQuotes={staleQuotes}
+                partialEvidenceNote={voEvidencePartial ? VO_PARTIAL_EVIDENCE_NOTE : null}
                 related={related}
                 relatedEventId={form.relatedEventId}
                 onLink={(id) => update({ relatedEventId: id })}
@@ -539,7 +550,7 @@ export default function SiteEventConfirmScreen() {
               >
                 <Text style={s.primaryText}>{busy ? 'Menyimpan…' : 'Konfirmasi'}</Text>
               </TouchableOpacity>
-              {voEvidenceStale ? <Text style={s.errorText}>{VO_STALE_EVIDENCE_MESSAGE}</Text> : null}
+              {voEvidenceBlocked ? <Text style={s.errorText}>{VO_STALE_EVIDENCE_MESSAGE}</Text> : null}
               {mismatchBlocks ? <Text style={s.hint}>Centang pemeriksaan ketidakcocokan di atas untuk melanjutkan.</Text> : null}
               {!manual ? (
                 <TouchableOpacity style={s.secondaryBtn} onPress={() => void reanalyze()} disabled={busy} accessibilityRole="button">

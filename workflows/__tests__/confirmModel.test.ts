@@ -13,6 +13,7 @@ import {
   initialConfirmForm,
   relatedSuggestion,
   staleVoQuotes,
+  survivingVoQuotes,
   toConfirmInput,
   withEventType,
   withGate,
@@ -170,6 +171,55 @@ describe('staleVoQuotes', () => {
     expect(staleVoQuotes(null, [''])).toEqual([]);
     expect(staleVoQuotes(undefined, [''])).toEqual([]);
     expect(staleVoQuotes(draft({ vo: { flag: 'none', reason: '', evidence_quotes: ['owner minta dipindah'] } }), ['']))
+      .toEqual([]);
+  });
+});
+
+/**
+ * The complement of staleVoQuotes, and the function that now decides whether
+ * Konfirmasi is blocked (SiteEventConfirmScreen's voEvidenceBlocked): mirrors
+ * confirm_site_event (migration 100), which keeps whichever quotes still
+ * match and refuses the VO only when NONE do. Three scenarios matter to the
+ * screen: zero survivors block Konfirmasi, some survivors allow it with a
+ * "hanya yang cocok akan dicatat" note, and all surviving means nothing is
+ * stale and no note is shown.
+ */
+describe('survivingVoQuotes', () => {
+  const withQuotes = (...quotes: string[]) =>
+    draft({ vo: { flag: 'suggested', reason: 'Owner minta pindah', evidence_quotes: quotes } });
+
+  it('is the exact complement of staleVoQuotes for the same draft and sources', () => {
+    const d = withQuotes('owner minta dipindah', 'plafon belum ditutup');
+    const sources = ['owner minta digeser ke atas plafon; plafon belum ditutup', null];
+    expect(survivingVoQuotes(d, sources)).toEqual(['plafon belum ditutup']);
+    expect(staleVoQuotes(d, sources)).toEqual(['owner minta dipindah']);
+  });
+
+  it('zero survive: the screen blocks Konfirmasi, the same case confirm_site_event (100) refuses', () => {
+    const d = withQuotes('owner minta dipindah');
+    const sources = ['transkrip baru tanpa kutipan apa pun', null];
+    expect(survivingVoQuotes(d, sources)).toEqual([]);
+    expect(staleVoQuotes(d, sources)).toEqual(['owner minta dipindah']);
+  });
+
+  it('some survive: the screen allows Konfirmasi and shows the "hanya yang cocok akan dicatat" note', () => {
+    const d = withQuotes('owner minta dipindah', 'plafon belum ditutup');
+    const sources = ['plafon belum ditutup saja', null];
+    expect(survivingVoQuotes(d, sources)).toEqual(['plafon belum ditutup']);
+    expect(staleVoQuotes(d, sources)).toEqual(['owner minta dipindah']);
+  });
+
+  it('all survive: nothing is stale, so the screen shows no note', () => {
+    const d = withQuotes('owner minta dipindah');
+    const sources = ['Pak OWNER   minta dipindah ke atas plafon', null];
+    expect(survivingVoQuotes(d, sources)).toEqual(['owner minta dipindah']);
+    expect(staleVoQuotes(d, sources)).toEqual([]);
+  });
+
+  it('has nothing to say when there is no draft or the model suggested no VO', () => {
+    expect(survivingVoQuotes(null, [''])).toEqual([]);
+    expect(survivingVoQuotes(undefined, [''])).toEqual([]);
+    expect(survivingVoQuotes(draft({ vo: { flag: 'none', reason: '', evidence_quotes: ['owner minta dipindah'] } }), ['']))
       .toEqual([]);
   });
 });

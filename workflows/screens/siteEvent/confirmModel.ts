@@ -138,22 +138,32 @@ export function relatedSuggestion(
 // ─── VO evidence must still be in the text the supervisor can see ────────────
 
 /**
- * Shown, and Konfirmasi blocked, when the supervisor edited the transcript out
- * from under the AI's VO quotes.
+ * Shown, and Konfirmasi blocked, only when EVERY VO evidence quote has fallen
+ * out of the transcript the supervisor can see.
  *
- * This is the one rule on this screen the server does NOT repeat.
- * confirm_site_event (097:681-697) reads the quotes out of the STORED
- * `ai_draft` and only checks that `vo.flag = 'suggested'` and the array is
- * non-empty — it never re-runs the literal-substring test, because the draft
- * it reads was written by the edge function, which ran that test once at
- * draft-write time (tools/siteEventDraftValidate.ts `isLiteralQuote`). A
- * transcript edit after that point cannot invalidate the stored quotes as far
- * as the RPC is concerned, so the resulting Catatan Perubahan would carry a
- * "Dasar" the transcript no longer contains. Refusing here is what keeps VO
- * evidence real (spec §1.1 rule 4).
+ * This used to be the one rule on this screen the server did not repeat.
+ * As of migration 100 (supabase/migrations/100_confirm_vo_evidence_recheck.sql),
+ * confirm_site_event re-runs the same literal-substring test itself — through
+ * site_event_norm_quote(), which mirrors normalizeForQuoteMatch() fold for
+ * fold — against the transcript the confirm is about to persist, keeps
+ * whichever quotes still match (the survivors), and refuses the whole VO
+ * (SITE_EVENT_VO_NO_EVIDENCE) only when NONE survive. This screen mirrors that
+ * exact rule so the supervisor sees the same verdict before tapping
+ * Konfirmasi, not as an RPC refusal after one: blocked when
+ * `survivingVoQuotes` is empty, allowed (with a note) when it is not (spec
+ * §1.1 rule 4).
  */
 export const VO_STALE_EVIDENCE_MESSAGE =
-  'Kutipan dasar VO tidak lagi ada di transkrip yang Anda ubah. Jalankan "Analisis ulang", atau hapus centang VO.';
+  'Tidak ada kutipan dasar VO yang masih ada di transkrip. Jalankan "Analisis ulang", atau hapus centang VO.';
+
+/**
+ * Shown (not blocking) when some, but not all, VO evidence quotes survive.
+ * The stale ones stay visible in VoAndRelatedBlock, labelled "tidak cocok
+ * lagi", but only the survivors are what confirm_site_event (100) will keep —
+ * the same filter this screen mirrors — so the supervisor should not expect
+ * the stale wording to reach Catatan Perubahan.
+ */
+export const VO_PARTIAL_EVIDENCE_NOTE = 'Hanya kutipan yang masih cocok yang akan dicatat.';
 
 /**
  * The VO evidence quotes that are no longer literal substrings of `sources`
@@ -165,8 +175,10 @@ export const VO_STALE_EVIDENCE_MESSAGE =
  * lowercased, whitespace collapsed. Fixing a mis-heard word breaks the quote;
  * retyping the same words with a curly apostrophe does not.
  *
- * Returns `[]` when there is nothing to be stale about (no draft, or the model
- * did not suggest a VO), so a caller can treat "empty" as "nothing to block".
+ * Returns `[]` when there is nothing to be stale about (no draft, the model
+ * did not suggest a VO, or every quote still matches). Used only to LABEL
+ * quotes in VoAndRelatedBlock and to size the "some survive" note — it no
+ * longer decides whether Konfirmasi is blocked; `survivingVoQuotes` does.
  */
 export function staleVoQuotes(
   draft: SiteEventDraft | null | undefined,
@@ -174,6 +186,25 @@ export function staleVoQuotes(
 ): string[] {
   if (!draft || draft.vo.flag !== 'suggested') return [];
   return draft.vo.evidence_quotes.filter((quote) => !isLiteralQuote(quote, sources));
+}
+
+/**
+ * The VO evidence quotes that ARE STILL literal substrings of `sources` — the
+ * exact complement of `staleVoQuotes`, and the same survivors
+ * confirm_site_event (100) would keep and record.
+ *
+ * This is the function that decides whether Konfirmasi is blocked: the screen
+ * blocks only when this returns `[]` while `staleVoQuotes` does not (i.e. the
+ * VO had evidence and none of it survived the edit) — never merely because
+ * `staleVoQuotes` is non-empty, since the server itself now accepts a VO with
+ * some, but not all, quotes intact.
+ */
+export function survivingVoQuotes(
+  draft: SiteEventDraft | null | undefined,
+  sources: ReadonlyArray<string | null | undefined>,
+): string[] {
+  if (!draft || draft.vo.flag !== 'suggested') return [];
+  return draft.vo.evidence_quotes.filter((quote) => isLiteralQuote(quote, sources));
 }
 
 // ─── Per-field error clearing ────────────────────────────────────────────────
