@@ -2,7 +2,8 @@ jest.mock('../supabase', () => ({ supabase: {} }));
 jest.mock('../storage', () => ({ SITE_MEDIA_PATH_PREFIX: 'site-media:' }));
 
 import {
-  CLIENT_SAFE_EVENT_TYPES, mergePulledHighlights, proposeHighlightsFromEvents, proposePhotosFromEvents,
+  CLIENT_SAFE_EVENT_TYPES, DISMISSED_NOTE, RISKY_TEXT_PATTERNS, hasRiskyLanguage, mergePulledHighlights,
+  proposeHighlightsFromEvents, proposePhotosFromEvents,
   type PullableEvent,
 } from '../dailyLogPull';
 import type { RoomLookupRow } from '../clientReportRooms';
@@ -20,6 +21,47 @@ function ev(p: Partial<PullableEvent> & { id: string }): PullableEvent {
     gate_code: 'C', confirmed_at: '2026-09-11T02:00:00Z', media: [], ...p,
   };
 }
+
+describe('hasRiskyLanguage', () => {
+  // One isolated positive/negative pair per pattern in RISKY_TEXT_PATTERNS,
+  // in the same order, so a broken or reordered pattern fails visibly.
+  const CASES: Array<{ label: string; positive: string; negative: string }> = [
+    { label: 'owner', positive: 'owner belum menyetujui desain', negative: 'progres pengecatan dinding lantai satu selesai' },
+    { label: 'minta', positive: 'klien minta ganti warna keramik', negative: 'klien menyetujui warna keramik' },
+    { label: 'VO (case-sensitive)', positive: 'ada VO baru untuk kanopi tambahan', negative: 'video pendek direkam untuk dokumentasi' },
+    { label: 'bayar/bayaran', positive: 'tim menunggu bayaran termin dua', negative: 'tim menunggu approval termin dua' },
+    { label: 'tukang', positive: 'tukang keramik mulai bekerja pagi ini', negative: 'pekerja keramik mulai bekerja pagi ini' },
+    { label: 'mandor', positive: 'mandor mengecek hasil pengecoran pagi ini', negative: 'pengawas mengecek hasil pengecoran pagi ini' },
+    { label: 'Rp amount', positive: 'tambahan biaya Rp250000 untuk material', negative: 'tambahan biaya belum dihitung untuk material' },
+    { label: 'quantity + unit', positive: 'butuh tambahan 5 sak semen', negative: 'butuh tambahan semen secukupnya' },
+    { label: 'AI', positive: 'draft dari AI perlu diperiksa dulu', negative: 'draft dari admin perlu diperiksa dulu' },
+    { label: 'gate/step/chapter code', positive: 'progres gate B.2 belum tuntas', negative: 'progres gate dua belum tuntas' },
+    { label: 'blocking', positive: 'isu ini sifatnya blocking untuk jadwal', negative: 'isu ini sifatnya minor untuk jadwal' },
+  ];
+
+  it('has one pattern per documented case', () => {
+    expect(RISKY_TEXT_PATTERNS).toHaveLength(CASES.length);
+  });
+
+  it.each(CASES)('$label: matches its positive text, not its negative text', ({ label, positive, negative }) => {
+    const i = CASES.findIndex((c) => c.label === label);
+    expect(RISKY_TEXT_PATTERNS[i].test(positive)).toBe(true);
+    expect(RISKY_TEXT_PATTERNS[i].test(negative)).toBe(false);
+  });
+
+  it.each(CASES)('$label: hasRiskyLanguage agrees with the pattern', ({ positive, negative }) => {
+    expect(hasRiskyLanguage(positive)).toBe(true);
+    expect(hasRiskyLanguage(negative)).toBe(false);
+  });
+
+  it('flags the leak-trace sample text', () => {
+    expect(hasRiskyLanguage('udah dicor, tapi si Budi belom bayar tukang, owner minta ganti keramik')).toBe(true);
+  });
+
+  it('does not flag a plain progress line', () => {
+    expect(hasRiskyLanguage('nat KM 2 selesai, tunggu waterproofing kering')).toBe(false);
+  });
+});
 
 describe('proposeHighlightsFromEvents', () => {
   it('pre-selects only the two client-safe types', () => {
@@ -72,6 +114,36 @@ describe('proposeHighlightsFromEvents', () => {
 
   it('ignores an unconfirmed event, which has no type yet', () => {
     expect(proposeHighlightsFromEvents([ev({ id: 'a', event_type: null })], ROOMS)).toEqual([]);
+  });
+
+  it('demotes a client-safe type to unticked and flagged when the text itself is risky', () => {
+    const [p] = proposeHighlightsFromEvents([
+      ev({ id: 'a', event_type: 'progres', summary: 'udah dicor, tapi si Budi belom bayar tukang, owner minta ganti keramik' }),
+    ], ROOMS);
+    expect(p.preselected).toBe(false);
+    expect(p.flaggedText).toBe(true);
+    expect(p.needsRewording).toBe(false); // progres is still a client-safe type
+  });
+
+  it('pre-ticks a clean progres line with no risky-text flag', () => {
+    const [p] = proposeHighlightsFromEvents([
+      ev({ id: 'a', event_type: 'progres', summary: 'nat KM 2 selesai, tunggu waterproofing kering' }),
+    ], ROOMS);
+    expect(p.preselected).toBe(true);
+    expect(p.flaggedText).toBe(false);
+  });
+
+  it('marks a previously-dismissed event unticked with DISMISSED_NOTE available, even for a clean safe type', () => {
+    const [p] = proposeHighlightsFromEvents([ev({ id: 'a', event_type: 'progres' })], ROOMS, [], ['a']);
+    expect(p.wasDismissed).toBe(true);
+    expect(p.preselected).toBe(false);
+    expect(typeof DISMISSED_NOTE).toBe('string');
+  });
+
+  it('does not mark an event dismissed when its id is only in alreadyPulled', () => {
+    const out = proposeHighlightsFromEvents([ev({ id: 'a' }), ev({ id: 'b' })], ROOMS, ['a'], []);
+    expect(out.map((o) => o.eventId)).toEqual(['b']);
+    expect(out[0].wasDismissed).toBe(false);
   });
 });
 

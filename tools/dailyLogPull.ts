@@ -27,6 +27,37 @@ export const REWORDING_NOTE =
 export const PULL_EMPTY_NOTE =
   'Belum ada kejadian terkonfirmasi di tanggal ini.';
 
+/**
+ * Conservative signals that a line still carries field/internal language,
+ * independent of event_type: money, trade/role names, a request TO the
+ * owner, variation-order shorthand, or an internal code. This cannot detect
+ * a person's name — nothing can, cheaply — but it catches the categories
+ * that actually showed up in the field text this feature is built to pull:
+ * payment disputes, scope-change asks, and site jargon. False positives are
+ * fine here; a false negative is the failure mode that matters.
+ */
+export const RISKY_TEXT_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bowner\b/i,
+  /\bminta\b/i,
+  /\bVO\b/, // Variation Order; case-sensitive on purpose
+  /\bbayar(an)?\b/i,
+  /\btukang\b/i,
+  /\bmandor\b/i,
+  /\bRp\.?\s?\d/i,
+  /\d+[.,]?\d*\s?(rb|ribu|jt|juta|m2|m3|m²|m³|kg|ton|sak|zak)\b/i,
+  /\bAI\b/,
+  /\b[A-Z]{1,3}\.\d+(?:\.\d+)*\b/, // gate/step/chapter codes: B.2, III.A.1
+  /\bblocking\b/i,
+];
+
+export function hasRiskyLanguage(text: string): boolean {
+  return RISKY_TEXT_PATTERNS.some((re) => re.test(text));
+}
+
+export const RISKY_TEXT_NOTE = 'Teks dari lapangan, periksa sebelum dipakai.';
+
+export const DISMISSED_NOTE = 'Pernah dihapus dari log ini — periksa sebelum menandainya lagi.';
+
 /** The shape tools/siteEvents.ts hands over; only what a proposal needs. */
 export interface PullableEvent {
   id: string;
@@ -43,10 +74,14 @@ export interface ProposedHighlight {
   eventId: string;
   eventType: SiteEventType;
   roomLabel: string;
-  /** Pre-ticked in the picker. False for the four internal types. */
+  /** Pre-ticked in the picker. False for the four internal types, risky text, or a dismissed event. */
   preselected: boolean;
   /** Shown as a warning line under the proposal. */
   needsRewording: boolean;
+  /** True when the note text itself trips a risky-language signal, independent of event type. */
+  flaggedText: boolean;
+  /** True when this event's id was previously pulled onto this log and then removed by the curator. */
+  wasDismissed: boolean;
   highlight: DailyLogHighlight;
 }
 
@@ -74,15 +109,26 @@ function eventOrder(a: PullableEvent, b: PullableEvent, order: Map<string, numbe
  * and the report order rooms. An event already pulled into this log (its id is
  * in `alreadyPulled`) is left out, so tapping "Tarik" twice cannot duplicate a
  * line.
+ *
+ * `dismissed` names events the curator pulled onto this log earlier in this
+ * session and then removed. They are still offered again (resurrection is
+ * fine — the event still happened), but never pre-ticked and always flagged
+ * with `DISMISSED_NOTE`, so a removal is never silently undone by a second
+ * "Tarik". This is a session-scoped, in-memory list, not a persisted
+ * tombstone: closing and reopening the Daily Log screen forgets it. That is
+ * the deliberately simpler option — an honest "we remember within this visit"
+ * rather than a DB-backed rejection table this task's scope doesn't call for.
  */
 export function proposeHighlightsFromEvents(
   events: PullableEvent[],
   rooms: RoomLookupRow[],
   alreadyPulled: ReadonlyArray<string> = [],
+  dismissed: ReadonlyArray<string> = [],
 ): ProposedHighlight[] {
   const order = roomOrderIndex(rooms);
   const nameById = new Map(rooms.map((r) => [r.id, r.room_name]));
   const pulled = new Set(alreadyPulled);
+  const dismissedIds = new Set(dismissed);
 
   return events
     .filter((e) => e.event_type !== null && !pulled.has(e.id))
@@ -91,16 +137,21 @@ export function proposeHighlightsFromEvents(
     .map((e) => {
       const type = e.event_type as SiteEventType;
       const roomLabel = nameById.get(e.room_id) ?? AREA_UMUM_NAME;
-      const safe = CLIENT_SAFE_EVENT_TYPES.includes(type);
+      const note = (e.summary ?? e.title ?? '').trim();
+      const typeSafe = CLIENT_SAFE_EVENT_TYPES.includes(type);
+      const flaggedText = hasRiskyLanguage(note);
+      const wasDismissed = dismissedIds.has(e.id);
       return {
         eventId: e.id,
         eventType: type,
         roomLabel,
-        preselected: safe,
-        needsRewording: !safe,
+        preselected: typeSafe && !flaggedText && !wasDismissed,
+        needsRewording: !typeSafe,
+        flaggedText,
+        wasDismissed,
         highlight: {
           area: roomLabel,
-          note: (e.summary ?? e.title ?? '').trim(),
+          note,
           boq_item_id: null,
           sort_order: 0,
           room_id: e.room_id,
