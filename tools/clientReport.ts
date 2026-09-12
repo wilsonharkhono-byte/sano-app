@@ -5,8 +5,11 @@
 // never routes through generateReport()/exportReportToPdf().
 
 import { supabase } from './supabase';
-import type { MilestoneStatus } from './types';
+import type { MilestoneStatus, ProjectPhase } from './types';
 import { aggregatePeriod } from './dailySiteLogs';
+import { listRooms } from './rooms';
+import { listGateRefs } from './gateRefs';
+import { groupHighlightsByRoom, roomNameById, type ClientReportRoomGroup } from './clientReportRooms';
 import { resolvePhotoUrl } from './storage';
 import { computeOverallProgress } from './progressMath';
 import { dayRangeWIB } from './timeWindow';
@@ -185,6 +188,8 @@ export interface AssembleParams {
   projectName: string;
   clientName: string | null;
   milestoneStatuses: MilestoneStatus[];
+  /** projects.phase (096). Omitted reads as STRUKTUR, which is the pre-096 behaviour. */
+  phase?: ProjectPhase;
 }
 
 export interface ClientReportUpdate {
@@ -192,7 +197,18 @@ export interface ClientReportUpdate {
   area: string;
   note: string;
 }
-export interface ClientReportPhoto { url: string; caption: string; date: string; }
+export interface ClientReportPhoto {
+  url: string;
+  caption: string;
+  date: string;
+  /**
+   * Room NAME only, and only in a room phase: the figure legend prints
+   * "Figur 3 · Kamar Mandi Utama" (spec §10.2). Absent when the photo carries
+   * no room, which prints exactly as it did before. Nothing internal - no
+   * owner, no due date, no flag - has a home on this type.
+   */
+  room?: string | null;
+}
 
 export interface ClientReportDraft {
   kind: 'harian' | 'mingguan';
@@ -212,6 +228,18 @@ export interface ClientReportDraft {
   updates: ClientReportUpdate[];
   hero: ClientReportPhoto | null;
   thumbs: ClientReportPhoto[];
+  /**
+   * 096. Absent on every snapshot frozen before the Finishing mode shipped;
+   * the renderer treats absent and 'STRUKTUR' identically, so an issued report
+   * re-renders exactly as it was sent.
+   */
+  phase?: ProjectPhase;
+  /**
+   * Section 01 grouped by room. Present only in a room phase; the renderer
+   * falls back to the flat `updates` when it is missing or empty, so a line is
+   * never lost. Carries labels and curated text only - spec §1.1.
+   */
+  roomGroups?: ClientReportRoomGroup[];
 }
 
 function fmtCaptionDate(iso: string): string {
@@ -226,15 +254,43 @@ export async function assembleClientReportDraft(params: AssembleParams): Promise
   const agg = await aggregatePeriod(params.projectId, params.periodStart, params.periodEnd);
   const reportNo = await assignNextReportNo(params.projectId);
 
+  const phase: ProjectPhase = params.phase ?? 'STRUKTUR';
+  const roomMode = phase === 'FINISHING' || phase === 'SERAH_TERIMA';
+
+  // Rooms and gates are read ONLY in a room phase: a Struktur project makes
+  // exactly the two queries it made before this change.
+  const [rooms, gates] = roomMode
+    ? await Promise.all([listRooms(params.projectId, { includeInactive: true }), listGateRefs()])
+    : [[], []];
+  const roomNames = roomNameById(rooms);
+
   const photos = await Promise.all(
-    agg.featuredPhotos.map(async (p: { storage_path: string; caption: string | null; log_date: string }) => ({
+    agg.featuredPhotos.map(async (p: { storage_path: string; caption: string | null; log_date: string; room_id?: string | null }) => ({
       url: await resolvePhotoUrl(p.storage_path),
       caption: p.caption ?? '',
       date: fmtCaptionDate(p.log_date),
+      ...(roomMode && p.room_id && roomNames.has(p.room_id) ? { room: roomNames.get(p.room_id)! } : {}),
     })),
   );
 
+  const updates = agg.highlights.map((h) => ({ date: fmtCaptionDate(h.log_date), area: h.area, note: h.note }));
+  const roomGroups: ClientReportRoomGroup[] | undefined = roomMode
+    ? groupHighlightsByRoom(
+        agg.highlights.map((h: { log_date: string; area: string; note: string; room_id?: string | null; gate_code?: string | null }) => ({
+          date: fmtCaptionDate(h.log_date), area: h.area, note: h.note,
+          room_id: h.room_id ?? null, gate_code: h.gate_code ?? null,
+        })),
+        rooms,
+        gates,
+      )
+    : undefined;
+
   return {
+    // Conditional spread, not `phase: roomMode ? phase : undefined`: an
+    // explicit undefined is a PRESENT key in memory and a MISSING one after
+    // JSON.stringify, and `'phase' in draft` is the cheapest check a reviewer
+    // has. A Struktur draft carries neither key, exactly as before.
+    ...(roomMode ? { phase, roomGroups } : {}),
     kind: params.kind,
     reportNo,
     periodStart: params.periodStart,
@@ -248,7 +304,10 @@ export async function assembleClientReportDraft(params: AssembleParams): Promise
     crewBreakdown: agg.crewBreakdown,
     safetyIncidents: agg.safetyIncidents,
     nextPlan: '',
-    updates: agg.highlights.map((h: { log_date: string; area: string; note: string }) => ({ date: fmtCaptionDate(h.log_date), area: h.area, note: h.note })),
+    // Kept alongside roomGroups on purpose: ClientReportBuilderScreen edits
+    // draft.updates directly, and the renderer falls back to it when a room
+    // phase has no groups.
+    updates,
     hero: photos.length > 0 ? photos[0] : null,
     thumbs: photos.slice(1),
   };

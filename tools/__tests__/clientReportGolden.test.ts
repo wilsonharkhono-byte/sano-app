@@ -70,6 +70,15 @@ describe('STRUKTUR client report is byte-identical to the captured golden', () =
   it('renders the daily report exactly as before', () => {
     checkGolden('clientReport.struktur.harian.html', renderClientReportHtml(DAILY));
   });
+
+  it('treats an explicit STRUKTUR phase exactly like an absent one', () => {
+    expect(renderClientReportHtml({ ...WEEKLY, phase: 'STRUKTUR' })).toBe(renderClientReportHtml(WEEKLY));
+  });
+
+  it('ignores room groups outside a room phase, so a stray field cannot change the sheet', () => {
+    const withGroups = { ...WEEKLY, roomGroups: [{ roomLabel: 'X · Lt. 1', gateLabel: 'B · Basah', updates: WEEKLY.updates }] };
+    expect(renderClientReportHtml(withGroups)).toBe(renderClientReportHtml(WEEKLY));
+  });
 });
 
 describe('BLUEPRINT_CSS is the verbatim port and stays byte-identical', () => {

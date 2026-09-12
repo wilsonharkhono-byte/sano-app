@@ -27,6 +27,7 @@
 
 import { Platform } from 'react-native';
 import type { ClientReportDraft } from './clientReport';
+import { PROJECT_PHASE_LABELS } from './constants';
 import {
   LAYOUT_JUSTIFIED_JS,
   GALLERY_REF_WIDTH_PX,
@@ -296,6 +297,29 @@ const REPORT_MEDIA_CSS = `
   @media print{ .flrow{ break-inside:avoid; } }
 `;
 
+// Additive again - BLUEPRINT_CSS stays byte-identical (2026-06-28 spec §1.2),
+// and this block is only ever emitted alongside it. Finishing-phase section 01
+// prints one bordered head per room ("Kamar Mandi Utama · Lt. 2" with a sand
+// gate chip) above that room's existing .row list, so the row treatment the
+// blueprint defines is untouched. The first .row of a group drops the
+// blueprint's :first-child top border, which would otherwise double the head's
+// own rule.
+const REPORT_ROOM_CSS = `
+  .rgroup{ margin-top:10px; }
+  .rgroup:first-child{ margin-top:6px; }
+  .rhead{ display:flex; align-items:baseline; justify-content:space-between; gap:12px;
+    padding:4px 0 3px; border-bottom:1.2px solid var(--line); }
+  .rname{ font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+  .rgate{ font-size:8.5px; font-weight:600; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--sand); white-space:nowrap; }
+  .rgroup .row:first-child{ border-top:0; }
+  /* the figure legend carries its room, so its first column wraps and widens */
+  .figlegend.byroom .flrow{ grid-template-columns:112px 52px 1fr; }
+  .figlegend.byroom.nodate .flrow{ grid-template-columns:112px 1fr; }
+  .figlegend.byroom .fl-no{ white-space:normal; }
+  @media print{ .rgroup{ break-inside:auto; } .rhead{ break-inside:avoid; break-after:avoid; } }
+`;
+
 // Self-contained gallery layout, embedded in the report so it justifies itself
 // on load (works even if the HTML is printed standalone). Runs on window 'load'
 // (all <img> measured), assigns the landscape first photo a full-width feature
@@ -358,7 +382,11 @@ ${LAYOUT_JUSTIFIED_JS}
 </script>`;
 
 export function renderClientReportHtml(draft: ClientReportDraft): string {
-  const kicker = draft.kind === 'harian' ? 'Laporan Harian' : 'Laporan Mingguan';
+  // Spec §10.2: the masthead states the phase the project is actually in.
+  // An undefined phase is a pre-096 snapshot and renders exactly as before.
+  const roomMode = draft.phase === 'FINISHING' || draft.phase === 'SERAH_TERIMA';
+  const kicker = (draft.kind === 'harian' ? 'Laporan Harian' : 'Laporan Mingguan')
+    + (roomMode ? ` · Fase ${PROJECT_PHASE_LABELS[draft.phase!]}` : '');
   const periodeLong = fmtPeriodLong(draft.kind, draft.periodStart, draft.periodEnd);
   const periodeShort = fmtPeriodShort(draft.kind, draft.periodStart, draft.periodEnd);
   const revisionTag = (draft.revision ?? 1) > 1 ? ` · R${draft.revision}` : '';
@@ -375,8 +403,23 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
   // Same span/class either way — the number inherits the sand uppercase style.
   const showDates = draft.kind !== 'harian';
 
-  const updateRows = draft.updates.map((u, i) => `
-      <div class="row"><span class="date">${showDates ? esc(u.date) : String(i + 1).padStart(2, '0')}</span><span class="area">${esc(u.area)}</span><span class="note">${esc(u.note)}</span></div>`).join('');
+  const updateRow = (u: { date: string; area: string; note: string }, i: number) => `
+      <div class="row"><span class="date">${showDates ? esc(u.date) : String(i + 1).padStart(2, '0')}</span><span class="area">${esc(u.area)}</span><span class="note">${esc(u.note)}</span></div>`;
+
+  // Room grouping needs BOTH a room phase and groups to print. A Finishing
+  // project whose report was assembled before 098 landed, or a frozen snapshot
+  // issued then, has no groups and keeps the flat list rather than losing lines.
+  // The group carries a room label, a gate label and curated text and NOTHING
+  // else (tools/clientReportRooms.ts): no owner, no due date, no blocking flag,
+  // no count and no percentage ever reaches this page.
+  const roomGroups = roomMode ? (draft.roomGroups ?? []) : [];
+  let figureRow = 0; // daily row numbers run on across groups, never restart
+  const updateRows = roomGroups.length > 0
+    ? roomGroups.map((g) => `
+      <div class="rgroup">
+        <div class="rhead"><span class="rname">${esc(g.roomLabel)}</span>${g.gateLabel ? `<span class="rgate">${esc(g.gateLabel)}</span>` : ''}</div>${g.updates.map((u) => updateRow(u, figureRow++)).join('')}
+      </div>`).join('')
+    : draft.updates.map(updateRow).join('');
 
   // All photos (hero first, then the rest) go into one gallery. Each renders as
   // a real <img> (not CSS background-image), which prints reliably — browsers
@@ -398,11 +441,11 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
     .map((p, i) => ({ p, no: i + 1 }))
     .filter(({ p }) => String(p.caption ?? '').trim() !== '')
     .map(({ p, no }) => `
-        <div class="flrow"><span class="fl-no">Figur ${no}</span>${showDates ? `<span class="fl-d">${esc(p.date)}</span>` : ''}<span class="fl-t">${esc(p.caption)}</span></div>`)
+        <div class="flrow"><span class="fl-no">Figur ${no}${roomMode && p.room ? ` · ${esc(p.room)}` : ''}</span>${showDates ? `<span class="fl-d">${esc(p.date)}</span>` : ''}<span class="fl-t">${esc(p.caption)}</span></div>`)
     .join('');
   // .nodate collapses the row grid to two columns when the date span is absent.
   const legend = legendRows
-    ? `<div class="figlegend${showDates ? '' : ' nodate'}">${legendRows}</div>`
+    ? `<div class="figlegend${showDates ? '' : ' nodate'}${roomMode ? ' byroom' : ''}">${legendRows}</div>`
     : '';
   const gallery = photos.length
     ? `<div class="gallery" id="gallery">${galleryFigures}</div>${legend}`
@@ -416,7 +459,8 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
 <style>${BLUEPRINT_CSS}</style>
-<style>${REPORT_MEDIA_CSS}</style></head>
+<style>${REPORT_MEDIA_CSS}</style>${roomMode ? `
+<style>${REPORT_ROOM_CSS}</style>` : ''}</head>
 <body>
   <div class="sheet">
     <span class="mark tl"></span><span class="mark tr"></span><span class="mark bl"></span><span class="mark br"></span>
