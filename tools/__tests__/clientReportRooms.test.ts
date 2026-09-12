@@ -1,0 +1,128 @@
+// tools/clientReportRooms.ts imports tools/gateRefs.ts for gateChipLabel, and
+// that module imports the Supabase client at load time. Nothing here touches
+// the network, so the client is stubbed away entirely.
+jest.mock('../supabase', () => ({ supabase: {} }));
+
+import {
+  compareRoomsForDisplay, formatRoomLabel, groupHighlightsByRoom, roomNameById,
+  type GroupableLine, type RoomLookupRow,
+} from '../clientReportRooms';
+import type { GateRef } from '../types';
+
+const gate = (code: string, short: string, sort_order: number): GateRef => ({
+  code, name_id: short, short_label: short, description: null, sort_order, active: true,
+  datum_gate_code: null, created_at: '2026-09-01T00:00:00Z',
+});
+const GATES: GateRef[] = [gate('B', 'Basah', 2), gate('D', 'Finishing', 4)];
+
+const room = (id: string, name: string, floor: string | null, sort_order: number, code = id.toUpperCase()): RoomLookupRow =>
+  ({ id, room_code: code, room_name: name, floor, sort_order });
+
+const ROOMS: RoomLookupRow[] = [
+  room('r2', 'Kamar Mandi Utama', '2', 0),
+  room('r1', 'Ruang Keluarga', '1', 1),
+  room('r10', 'Loteng', '10', 0),
+  room('rx', 'Gudang', null, 0),
+  room('ru', 'Area Umum', null, 9999, 'UMUM'),
+];
+
+const line = (area: string, note: string, room_id: string | null, gate_code: string | null): GroupableLine =>
+  ({ date: '14 Jun', area, note, room_id, gate_code });
+
+describe('compareRoomsForDisplay', () => {
+  it('orders by floor ascending, numerically, with 10 after 2', () => {
+    const sorted = [...ROOMS].sort(compareRoomsForDisplay).map((r) => r.room_name);
+    expect(sorted).toEqual(['Ruang Keluarga', 'Kamar Mandi Utama', 'Loteng', 'Gudang', 'Area Umum']);
+  });
+
+  it('puts floorless rooms after every floored room and Area Umum after those', () => {
+    const sorted = [room('ru', 'Area Umum', null, 9999, 'UMUM'), room('rx', 'Gudang', null, 0), room('r1', 'A', '3', 0)]
+      .sort(compareRoomsForDisplay).map((r) => r.room_name);
+    expect(sorted).toEqual(['A', 'Gudang', 'Area Umum']);
+  });
+
+  it('breaks a floor tie on sort_order, then on name', () => {
+    const sorted = [room('c', 'C', '1', 5), room('a', 'A', '1', 5), room('b', 'B', '1', 1)]
+      .sort(compareRoomsForDisplay).map((r) => r.room_name);
+    expect(sorted).toEqual(['B', 'A', 'C']);
+  });
+
+  it('ranks "Lt. 2", "2" and "Lantai 2" as the same floor', () => {
+    const sorted = [room('a', 'A', 'Lantai 2', 2), room('b', 'B', '2', 1), room('c', 'C', 'Lt. 2', 0)]
+      .sort(compareRoomsForDisplay).map((r) => r.room_name);
+    expect(sorted).toEqual(['C', 'B', 'A']);
+  });
+});
+
+describe('formatRoomLabel', () => {
+  it('reads "Kamar Mandi Utama · Lt. 2"', () => {
+    expect(formatRoomLabel(ROOMS[0])).toBe('Kamar Mandi Utama · Lt. 2');
+  });
+  it('does not spell the floor prefix twice', () => {
+    expect(formatRoomLabel(room('a', 'Balkon', 'Lt. 3', 0))).toBe('Balkon · Lt. 3');
+    expect(formatRoomLabel(room('a', 'Balkon', 'Lantai 3', 0))).toBe('Balkon · Lantai 3');
+  });
+  it('drops the separator when there is no floor', () => {
+    expect(formatRoomLabel(room('a', 'Area Umum', null, 9999, 'UMUM'))).toBe('Area Umum');
+  });
+});
+
+describe('groupHighlightsByRoom', () => {
+  it('orders groups by floor then sort_order, Area Umum last', () => {
+    const groups = groupHighlightsByRoom([
+      line('Plafon', 'Rangka terpasang', 'r10', null),
+      line('Dinding', 'Aci selesai', 'r1', 'B'),
+      line('Halaman', 'Bongkaran diangkut', 'ru', null),
+      line('Lantai', 'Keramik dipasang', 'r2', 'D'),
+    ], ROOMS, GATES);
+    expect(groups.map((g) => g.roomLabel)).toEqual([
+      'Ruang Keluarga · Lt. 1', 'Kamar Mandi Utama · Lt. 2', 'Loteng · Lt. 10', 'Area Umum',
+    ]);
+  });
+
+  it('drops a line into Area Umum when it has no room, rather than dropping the line', () => {
+    const groups = groupHighlightsByRoom([line('Umum', 'Pagar sementara dipasang', null, null)], ROOMS, GATES);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].roomLabel).toBe('Area Umum');
+    expect(groups[0].updates).toEqual([{ date: '14 Jun', area: 'Umum', note: 'Pagar sementara dipasang' }]);
+  });
+
+  it('still buckets a room-less line when the project never created Area Umum', () => {
+    const groups = groupHighlightsByRoom([line('Umum', 'Catatan', null, null)], [ROOMS[0]], GATES);
+    expect(groups.map((g) => g.roomLabel)).toEqual(['Area Umum']);
+  });
+
+  it('buckets a line whose room is not in this project into Area Umum too', () => {
+    const groups = groupHighlightsByRoom([line('Umum', 'Catatan', 'gone', null)], ROOMS, GATES);
+    expect(groups.map((g) => g.roomLabel)).toEqual(['Area Umum']);
+  });
+
+  it('chips the gate most of the group carries, ties going to the office ordering', () => {
+    const groups = groupHighlightsByRoom([
+      line('A', 'a', 'r2', 'B'), line('B', 'b', 'r2', 'D'), line('C', 'c', 'r2', 'B'),
+    ], ROOMS, GATES);
+    expect(groups[0].gateLabel).toBe('B · Basah');
+
+    const tie = groupHighlightsByRoom([line('A', 'a', 'r2', 'D'), line('B', 'b', 'r2', 'B')], ROOMS, GATES);
+    expect(tie[0].gateLabel).toBe('B · Basah');
+  });
+
+  it('leaves the chip off when no line carries a known gate', () => {
+    expect(groupHighlightsByRoom([line('A', 'a', 'r2', null)], ROOMS, GATES)[0].gateLabel).toBeNull();
+    expect(groupHighlightsByRoom([line('A', 'a', 'r2', 'Z')], ROOMS, GATES)[0].gateLabel).toBeNull();
+  });
+
+  it('keeps the curated line order inside a group and carries nothing but its text', () => {
+    const groups = groupHighlightsByRoom([
+      line('Satu', 'pertama', 'r2', null), line('Dua', 'kedua', 'r2', null),
+    ], ROOMS, GATES);
+    expect(groups[0].updates.map((u) => u.area)).toEqual(['Satu', 'Dua']);
+    expect(Object.keys(groups[0].updates[0]).sort()).toEqual(['area', 'date', 'note']);
+  });
+});
+
+describe('roomNameById', () => {
+  it('maps a photo room to its bare name for the figure legend', () => {
+    expect(roomNameById(ROOMS).get('r2')).toBe('Kamar Mandi Utama');
+  });
+});
