@@ -150,6 +150,12 @@ export const RPC_ERROR_COPY: ReadonlyArray<[string, string]> = [
   ['SITE_EVENT_HUMAN_FIELDS', 'Perubahan ini hanya bisa dilakukan lewat Konfirmasi atau Selesai.'],
   ['SITE_EVENT_AI_COLUMNS', 'Kolom hasil AI tidak boleh diubah dari aplikasi.'],
   ['SITE_EVENT_MEDIA_PATH', 'Lokasi berkas media tidak sesuai kejadian.'],
+  // Migration 099 (plan 4, spec §9): update_site_event_assignment's own two
+  // refusals, distinct from SITE_EVENT_NOT_OPEN above (which is
+  // close_site_event's — "sudah tidak terbuka" vs "sudah tidak bisa ditandai
+  // selesai" read as the same idea in English but are two different SQL codes).
+  ['SITE_EVENT_ASSIGN_ROLE', 'Hanya pelapor atau peran kantor yang dapat mengubah pemilik dan tenggat.'],
+  ['SITE_EVENT_ASSIGN_NOT_OPEN', 'Hanya kejadian terbuka yang bisa diubah pemilik atau tenggatnya.'],
 ];
 
 /** Matches `CODE:` exactly, so SITE_EVENT_OWNER_REQUIRED and SITE_EVENT_OWNER_NOT_MEMBER never collide. */
@@ -545,4 +551,74 @@ export async function listConfirmedEventsForDay(
   }
   return ((data ?? []) as unknown as Array<PullableEvent & { site_event_media?: PullableEvent['media'] | null }>)
     .map(({ site_event_media, ...e }) => ({ ...e, media: site_event_media ?? [] }));
+}
+
+// ─── Room timeline and reassignment (plan 4, spec §9) ───────────────────────
+
+export interface TimelineEventRow extends SiteEvent {
+  media: SiteEventMedia[];
+  owner_name: string | null;
+  reporter_name: string | null;
+}
+
+const TIMELINE_SELECT =
+  '*, site_event_media(*), ' +
+  'owner:profiles!site_events_owner_id_fkey(full_name), ' +
+  'reporter:profiles!site_events_reporter_id_fkey(full_name)';
+
+/**
+ * A room's events for the timeline. `discarded` is excluded because a discard
+ * is a decision, not history a PM needs to scroll past; the rows and their
+ * files are still there (spec §1.1 rule 3), just not on this list.
+ */
+export async function listRoomTimeline(roomId: string, limit = 50): Promise<TimelineEventRow[]> {
+  const { data, error } = await supabase
+    .from('site_events')
+    .select(TIMELINE_SELECT)
+    .eq('room_id', roomId)
+    .neq('status', 'discarded')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.warn('listRoomTimeline failed:', error.message);
+    return [];
+  }
+  return ((data ?? []) as unknown as Array<SiteEvent & {
+    site_event_media?: SiteEventMedia[] | null;
+    owner?: { full_name?: string } | null;
+    reporter?: { full_name?: string } | null;
+  }>).map(({ site_event_media, owner, reporter, ...e }) => ({
+    ...(e as SiteEvent),
+    media: [...(site_event_media ?? [])].sort((a, b) => a.sort_order - b.sort_order),
+    owner_name: owner?.full_name ?? null,
+    reporter_name: reporter?.full_name ?? null,
+  }));
+}
+
+export interface AssignmentResult {
+  event_id: string;
+  owner_id: string | null;
+  due_date: string | null;
+  changed: boolean;
+  notified: boolean;
+}
+
+/**
+ * Migration 099. A direct UPDATE on owner_id or due_date is refused by 097's
+ * site_events_human_fields_rpc_only trigger, deliberately, so this RPC is the
+ * only path. Its named refusals go through the same mapSiteEventRpcError
+ * table as confirm and close, so the user reads one sentence.
+ */
+export async function updateSiteEventAssignment(
+  eventId: string,
+  ownerId: string | null,
+  dueDate: string | null,
+): Promise<{ result?: AssignmentResult; error?: string }> {
+  const { data, error } = await supabase.rpc('update_site_event_assignment', {
+    p_event_id: eventId,
+    p_owner_id: ownerId,
+    p_due_date: dueDate,
+  });
+  if (error) return { error: mapSiteEventRpcError(error.message) };
+  return { result: data as AssignmentResult };
 }
