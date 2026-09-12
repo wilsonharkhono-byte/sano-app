@@ -21,7 +21,7 @@ import { formStyles as s } from './siteEvent/styles';
 import { GateChipRow } from './siteEvent/GateChipRow';
 import VoiceNoteField from './siteEvent/VoiceNoteField';
 import OpenEventsList from './siteEvent/OpenEventsList';
-import { WEB_QUEUE_WARNING } from './siteEvent/captureQueueModel';
+import { WEB_QUEUE_WARNING, WEB_QUEUED_TOAST } from './siteEvent/captureQueueModel';
 import {
   buildNewSiteEvent,
   canSend,
@@ -178,7 +178,10 @@ export default function SiteEventCaptureScreen() {
     triggerDrain();
     setSending(false);
     sendingRef.current = false;
-    toast('Tersimpan, dikirim saat ada sinyal', 'ok');
+    // Web's queue backend is in-memory only (captureQueueStore.ts), so
+    // "Tersimpan" would contradict WEB_QUEUE_WARNING at the moment it
+    // matters most — say so honestly instead of reusing the native toast.
+    toast(Platform.OS === 'web' ? WEB_QUEUED_TOAST : 'Tersimpan, dikirim saat ada sinyal', 'ok');
     backToRoom();
   };
 

@@ -1,5 +1,5 @@
 import { enqueueCapture, markUnrecoverable, recordFailure, type CaptureQueueEntry } from '../../tools/captureQueue';
-import { WEB_QUEUE_WARNING, attentionRows } from '../screens/siteEvent/captureQueueModel';
+import { WEB_QUEUE_WARNING, WEB_QUEUED_TOAST, attentionRows } from '../screens/siteEvent/captureQueueModel';
 import type { NewSiteEvent } from '../../tools/siteEvents';
 
 const NOW = '2026-09-11T03:00:00.000Z';
@@ -15,6 +15,12 @@ const fresh = (id: string, rawText: string | null = null): CaptureQueueEntry =>
 describe('WEB_QUEUE_WARNING', () => {
   it('states the exact web limitation from spec §7', () => {
     expect(WEB_QUEUE_WARNING).toBe('Di web, kiriman tidak tersimpan bila halaman ditutup. Gunakan aplikasi Android di lapangan.');
+  });
+});
+
+describe('WEB_QUEUED_TOAST', () => {
+  it('never claims the report is saved, unlike the native toast', () => {
+    expect(WEB_QUEUED_TOAST).toBe('Dikirim dari tab ini. Jangan tutup halaman sampai laporan muncul di Draf menunggu.');
   });
 });
 

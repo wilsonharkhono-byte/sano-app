@@ -11,6 +11,16 @@ export { queueBadgeText };
 export const WEB_QUEUE_WARNING =
   'Di web, kiriman tidak tersimpan bila halaman ditutup. Gunakan aplikasi Android di lapangan.';
 
+/**
+ * Success toast on web (Platform.OS === 'web' only): the web queue backend is
+ * an in-memory Map (see captureQueueStore.ts), so nothing is durably "saved"
+ * yet when Kirim returns — saying "Tersimpan" here would contradict
+ * WEB_QUEUE_WARNING at the exact moment it matters most. Native keeps the
+ * original 'Tersimpan, dikirim saat ada sinyal' wording, which is true there.
+ */
+export const WEB_QUEUED_TOAST =
+  'Dikirim dari tab ini. Jangan tutup halaman sampai laporan muncul di Draf menunggu.';
+
 export interface AttentionRow {
   id: string;
   title: string;
