@@ -43,8 +43,10 @@ export function sortTimeline<T extends Pick<TimelineEvent, 'id' | 'confirmed_at'
  * an event that is not open, so hiding the control here only spares the user
  * a refusal they would otherwise meet after typing.
  *
- * The current OWNER is deliberately absent: handing your own work to somebody
- * else is the accountability gap this feature closes.
+ * Being the current OWNER is neither a grant nor a bar: an office role or the
+ * reporter who happens to also be the owner can still hand the item on. Spec
+ * §9 names exactly two groups; owner-ness is not a third test layered on top
+ * of them.
  */
 export const OFFICE_ROLES: ReadonlyArray<string> = ['admin', 'estimator', 'principal'];
 

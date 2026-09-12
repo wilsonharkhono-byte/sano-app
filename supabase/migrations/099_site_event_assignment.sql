@@ -35,10 +35,11 @@
 -- tools/__tests__/migration099.test.ts fails when a later migration redefines
 -- it, so 099 is brought up to date in the same change.
 --
--- WHO MAY REASSIGN. Spec §9: office roles and the reporter. The current owner
--- is deliberately NOT on that list - an owner handing their own work to
--- somebody else is the accountability hole this feature exists to close. A
--- non-member of the project is refused before anything else is read.
+-- WHO MAY REASSIGN. Spec §9: office roles and the reporter. Being the current
+-- owner is neither a grant nor a bar - an office role or the reporter who
+-- happens to also be the owner can still hand the item on; owner-ness is not
+-- a third test layered on top of the two the spec names. A non-member of the
+-- project is refused before anything else is read.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 SET lock_timeout = '5s';

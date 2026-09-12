@@ -142,9 +142,10 @@ describe('migration 099 - the RPC is the only door through 097 D5', () => {
     );
   });
 
-  it('never lets the current owner reassign their own event', () => {
-    // Spec §9 lists office roles and the reporter only. owner_id must not
-    // appear in any authorisation test.
+  it('does not layer an owner-based check on top of office-role-or-reporter — owner-ness neither grants nor bars', () => {
+    // Spec §9 lists office roles and the reporter only. Being the current
+    // owner is not a third test: it grants nothing on its own, and it does
+    // not bar an office role or the reporter who happens to hold it.
     const authBlock = CODE.slice(CODE.indexOf('BEGIN'), CODE.indexOf('IF v_ev.status'));
     expect(authBlock).not.toMatch(/v_ev\.owner_id\s*=\s*v_uid/);
   });

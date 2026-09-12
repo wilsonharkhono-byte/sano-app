@@ -4,9 +4,10 @@
  * database cannot drift: a control the user can see but the server refuses is
  * worse than no control at all.
  *
- * The case that matters most is "refuses the current owner": spec §9 lists
- * office roles and the reporter, and an owner reassigning their own overdue
- * item is precisely the accountability gap this feature closes.
+ * Spec §9 names exactly two groups who may edit the owner and due date:
+ * office roles and the reporter. Being the current owner is neither a grant
+ * nor a bar — an office role or the reporter who is also the owner can still
+ * hand the item on.
  */
 import {
   canClose, canEditAssignment, dueLabel, fmtDate, sortTimeline, validateAssignment,
@@ -49,7 +50,11 @@ describe('canEditAssignment', () => {
     expect(canEditAssignment(open, { id: 'u-pri', role: 'principal' })).toBe(true);
     expect(canEditAssignment(open, { id: 'u-rep', role: 'supervisor' })).toBe(true);
   });
-  it('refuses the current owner and any other member', () => {
+  it('owner-ness alone neither grants nor bars: the reporter or an office role who is also the owner can still edit', () => {
+    expect(canEditAssignment({ ...open, owner_id: 'u-rep' } as TimelineEvent, { id: 'u-rep', role: 'supervisor' })).toBe(true);
+    expect(canEditAssignment({ ...open, owner_id: 'u-adm' } as TimelineEvent, { id: 'u-adm', role: 'admin' })).toBe(true);
+  });
+  it('refuses a member who is neither the reporter nor an office role, owner or not', () => {
     expect(canEditAssignment({ ...open, owner_id: 'u-own' } as TimelineEvent, { id: 'u-own', role: 'supervisor' })).toBe(false);
     expect(canEditAssignment(open, { id: 'u-other', role: 'supervisor' })).toBe(false);
   });
