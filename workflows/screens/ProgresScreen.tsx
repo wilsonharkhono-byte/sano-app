@@ -341,12 +341,14 @@ export default function ProgresScreen() {
                 { key: 'progress' as SubModule, icon: 'trending-up', label: 'Tambah Progres', color: COLORS.accent },
                 { key: 'perubahan' as SubModule, icon: 'create', label: 'Catatan Perubahan', color: COLORS.warning },
                 { key: 'ruangan' as const, icon: 'qr-code', label: 'Ruangan', color: COLORS.info },
+                { key: 'papan' as const, icon: 'grid', label: 'Papan', color: COLORS.accentDark },
               ]).map(btn => (
                 <TouchableOpacity
                   key={btn.key}
                   style={styles.hubBtn}
                   onPress={() => {
                     if (btn.key === 'ruangan') navigation.navigate('RoomScan');
+                    else if (btn.key === 'papan') navigation.navigate('RoomBoard');
                     else setActiveModule(btn.key as SubModule);
                   }}
                   accessibilityRole="button"

@@ -2,11 +2,13 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 import Header from '../../workflows/components/Header';
 import Card from '../../workflows/components/Card';
 import { useProject } from '../../workflows/hooks/useProject';
 import { useToast } from '../../workflows/components/Toast';
 import GatesAdminScreen from './GatesAdminScreen';
+import RoomBoardView from './rooms/RoomBoardView';
 import RoomForm from './rooms/RoomForm';
 import RoomPasteImport from './rooms/RoomPasteImport';
 import {
@@ -19,14 +21,19 @@ import { AREA_TYPE_LABELS, PROJECT_PHASES } from '../../tools/constants';
 import type { ProjectPhase, Room } from '../../tools/types';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../workflows/theme';
 
-type SubModule = 'rooms' | 'gates';
+// 'board' is the tab's main view (spec §9); the two authoring screens plan 1
+// shipped become sub-screens reached from it. Plan 1's route, icon, label and
+// deep link are untouched: this is one more value on a switch that already
+// existed.
+type SubModule = 'board' | 'rooms' | 'gates';
 type Mode = 'none' | 'add' | 'paste';
 
 export default function RoomsAdminScreen() {
   const { project, profile, refresh } = useProject();
   const { show: toast } = useToast();
+  const navigation = useNavigation<any>();
 
-  const [sub, setSub] = useState<SubModule>('rooms');
+  const [sub, setSub] = useState<SubModule>('board');
   const [mode, setMode] = useState<Mode>('none');
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
@@ -169,12 +176,38 @@ export default function RoomsAdminScreen() {
     }
   };
 
-  if (sub === 'gates') return <GatesAdminScreen onBack={() => setSub('rooms')} />;
+  if (sub === 'gates') return <GatesAdminScreen onBack={() => setSub('board')} />;
+
+  if (sub === 'board') {
+    return (
+      <View style={styles.flex}>
+        <Header />
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+          <RoomBoardView
+            projectId={project?.id ?? null}
+            onOpenRoom={(row) => {
+              if (!project || !row.room_code) return;
+              navigation.navigate('RoomDetail', { projectCode: project.code, roomCode: row.room_code });
+            }}
+            headerAction={
+              <TouchableOpacity onPress={() => setSub('rooms')} accessibilityRole="button">
+                <Text style={styles.linkBtn}>Kelola ruangan</Text>
+              </TouchableOpacity>
+            }
+          />
+        </ScrollView>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.flex}>
       <Header />
       <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+        <TouchableOpacity onPress={() => setSub('board')} style={styles.back} accessibilityRole="button">
+          <Ionicons name="chevron-back" size={18} color={COLORS.textSec} />
+          <Text style={styles.backText}>Papan Ruangan</Text>
+        </TouchableOpacity>
         <Text style={styles.sectionHead}>Kelola ruangan</Text>
 
         {!project && <Card><Text style={styles.empty}>Pilih proyek terlebih dahulu.</Text></Card>}
@@ -350,4 +383,6 @@ const styles = StyleSheet.create({
   roomName: { fontSize: TYPE.base, fontFamily: FONTS.medium, color: COLORS.text },
   roomOff: { color: COLORS.textMuted, textDecorationLine: 'line-through' },
   roomSub: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 1 },
+  back: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: SPACE.sm },
+  backText: { fontSize: TYPE.sm, fontFamily: FONTS.medium, color: COLORS.textSec },
 });

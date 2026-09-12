@@ -18,6 +18,7 @@ const ProgresScreen = lazyScreen(() => import('./screens/ProgresScreen'));
 const LaporanScreen = lazyScreen(() => import('./screens/LaporanScreen'));
 const RoomScanScreen = lazyScreen(() => import('./screens/RoomScanScreen'));
 const RoomScreen = lazyScreen(() => import('./screens/RoomScreen'));
+const RoomBoardScreen = lazyScreen(() => import('./screens/RoomBoardScreen'));
 const SiteEventCaptureScreen = lazyScreen(() => import('./screens/SiteEventCaptureScreen'));
 const SiteEventConfirmScreen = lazyScreen(() => import('./screens/SiteEventConfirmScreen'));
 const SiteEventDetailScreen = lazyScreen(() => import('./screens/SiteEventDetailScreen'));
@@ -31,6 +32,7 @@ export type TabParamList = {
   Notifikasi: undefined;
   RoomScan:   undefined;
   Room:       { projectCode: string; roomCode: string };
+  RoomBoard:  undefined;
   SiteEventCapture: { projectId: string; roomId: string };
   SiteEventConfirm: { eventId: string };
   SiteEventDetail: { eventId: string; projectId: string };
@@ -54,6 +56,7 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Notifikasi: 'notifications-outline',
   RoomScan:   'qr-code-outline',
   Room:       'business-outline',
+  RoomBoard:  'grid-outline',
   SiteEventCapture: 'camera-outline',
   SiteEventConfirm: 'create-outline',
   SiteEventDetail: 'document-text-outline',
@@ -68,6 +71,7 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Notifikasi: 'notifications',
   RoomScan:   'qr-code',
   Room:       'business',
+  RoomBoard:  'grid',
   SiteEventCapture: 'camera',
   SiteEventConfirm: 'create',
   SiteEventDetail: 'document-text',
@@ -173,6 +177,15 @@ export default function AppNavigation() {
           component={RoomScreen}
           options={{
             tabBarAccessibilityLabel: 'Ruangan',
+            tabBarButton: () => null,
+            tabBarItemStyle: { display: 'none' },
+          }}
+        />
+        <Tab.Screen
+          name="RoomBoard"
+          component={RoomBoardScreen}
+          options={{
+            tabBarAccessibilityLabel: 'Papan Ruangan',
             tabBarButton: () => null,
             tabBarItemStyle: { display: 'none' },
           }}
