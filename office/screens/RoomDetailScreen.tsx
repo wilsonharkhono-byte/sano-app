@@ -1,24 +1,31 @@
 import React, { useEffect, useState } from 'react';
 import { ScrollView, View, Text, StyleSheet } from 'react-native';
-import { useRoute } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import Header from '../../workflows/components/Header';
 import Card from '../../workflows/components/Card';
+import RoomTimeline from '../../workflows/screens/siteEvent/RoomTimeline';
 import { useProject } from '../../workflows/hooks/useProject';
 import { listRooms } from '../../tools/rooms';
 import { normalizeRoomCode } from '../../tools/roomCodes';
 import { buildRoomUrl } from '../../tools/roomLinks';
 import { AREA_TYPE_LABELS, PROJECT_PHASE_LABELS } from '../../tools/constants';
+import { todayIsoWIB } from '../../tools/timeWindow';
 import type { Room } from '../../tools/types';
 import { COLORS, FONTS, SPACE, TYPE } from '../../workflows/theme';
 
 /**
- * Where a scanned label lands for admin, estimator and principal: read-only.
- * Office roles author rooms in "Kelola ruangan"; this screen exists so a
+ * Where a scanned label lands for admin, estimator and principal. The room
+ * summary card itself is read-only — office roles author rooms in "Kelola
+ * ruangan" — but the mounted `RoomTimeline` below it is not: it writes
+ * `owner_id` and `due_date` through migration 099 for any office role or the
+ * reporter, principal included, even though the principal is read-only
+ * everywhere else by migration 090's seat rule. This screen exists so a
  * scanned QR does something sensible in every role rather than dead-ending.
  */
 export default function RoomDetailScreen() {
   const route = useRoute<any>();
-  const { projects } = useProject();
+  const navigation = useNavigation<any>();
+  const { projects, profile } = useProject();
   const params = (route.params ?? {}) as { projectCode?: string; roomCode?: string };
 
   const [room, setRoom] = useState<Room | null>(null);
@@ -79,9 +86,20 @@ export default function RoomDetailScreen() {
             </Text>
             <Text style={styles.url}>{buildRoomUrl(target.code, room.room_code)}</Text>
             <Text style={styles.note}>
-              Kelola ruangan ini dari tab Ruangan. Riwayat kejadian menyusul pada pembaruan berikutnya.
+              Kelola ruangan ini dari tab Ruangan.
             </Text>
           </Card>
+        )}
+
+        {!loading && target && room && (
+          <RoomTimeline
+            roomId={room.id}
+            projectId={target.id}
+            viewer={{ id: profile?.id ?? null, role: profile?.role ?? null }}
+            today={todayIsoWIB()}
+            onOpenEvent={(eventId) => navigation.navigate('SiteEventDetail', { eventId, projectId: target.id })}
+            onOpenSiteChange={() => navigation.navigate('Approvals')}
+          />
         )}
       </ScrollView>
     </View>

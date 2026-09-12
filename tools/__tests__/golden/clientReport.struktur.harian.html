@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="id"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SANO · Graha Family T-61 — Laporan #08</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  /* ============================================================
+     SANO — Laporan Harian / Mingguan · "Blueprint Precision"
+     Base: variant A. Monochrome + sand accent, near-white paper,
+     corner registration marks, A4 single page.
+     ============================================================ */
+  :root{
+    --ink:#16130f; --ink-2:#57514a; --ink-3:#8c857a;
+    --paper:#FFFFFF; --paper-2:#F4F1EA;
+    --sand:#7A6B56; --sand-lt:#C9B79A;
+    --line:#16130f; --line-sub:#dcd6ca;
+  }
+  *{box-sizing:border-box}
+  html{ -webkit-text-size-adjust:100%; }
+  body{
+    margin:0; background:#cfccc2; color:var(--ink);
+    font-family:"Space Grotesk", system-ui, sans-serif;
+    font-size:12px; line-height:1.4; font-weight:400; -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---- screen-only toolbar ----------------------------------- */
+  .toolbar{
+    position:sticky; top:0; z-index:50; display:flex; align-items:center; justify-content:space-between;
+    gap:14px; padding:9px 18px; background:rgba(207,204,194,.94);
+    backdrop-filter:saturate(120%) blur(4px); border-bottom:1px solid #b9b5a9; font-size:12px; color:var(--ink-2);
+  }
+  .toolbar .grp{ display:flex; align-items:center; gap:10px; }
+  .seg{ display:inline-flex; border:1px solid var(--ink); border-radius:7px; overflow:hidden; }
+  .seg button{
+    appearance:none; border:0; background:transparent; color:var(--ink); font-family:inherit;
+    font-size:10px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; padding:6px 12px; cursor:pointer;
+  }
+  .seg button.on{ background:var(--ink); color:var(--paper); }
+  .btn{
+    appearance:none; border:1px solid var(--ink); background:var(--ink); color:var(--paper); font-family:inherit;
+    font-size:11px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; padding:8px 16px; border-radius:7px; cursor:pointer;
+  }
+  .btn:hover{ opacity:.88 }
+
+  /* ---- A4 sheet ---------------------------------------------- */
+  .sheet{
+    position:relative; width:210mm; min-height:297mm; max-width:calc(100% - 24px); margin:20px auto;
+    background:var(--paper); color:var(--ink);
+    box-shadow:0 2px 6px rgba(70,58,44,.08), 0 18px 50px rgba(70,58,44,.12);
+    padding:16mm 15mm 12mm; display:flex; flex-direction:column;
+  }
+  /* corner registration marks */
+  .mark{ position:absolute; width:13px; height:13px; pointer-events:none; }
+  .mark.tl{ top:9mm; left:9mm; border-left:1.4px solid var(--ink); border-top:1.4px solid var(--ink); }
+  .mark.tr{ top:9mm; right:9mm; border-right:1.4px solid var(--ink); border-top:1.4px solid var(--ink); }
+  .mark.bl{ bottom:9mm; left:9mm; border-left:1.4px solid var(--ink); border-bottom:1.4px solid var(--ink); }
+  .mark.br{ bottom:9mm; right:9mm; border-right:1.4px solid var(--ink); border-bottom:1.4px solid var(--ink); }
+
+  /* ---- masthead --------------------------------------------- */
+  .top{ display:flex; align-items:flex-start; justify-content:space-between; }
+  .brand{ display:flex; align-items:center; gap:9px; }
+  .brand .logo{ font-weight:700; font-size:19px; letter-spacing:.14em; }
+  .top .hdrmeta{ text-align:right; font-size:9px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-3); line-height:1.7; }
+  .top .hdrmeta b{ color:var(--ink-2); font-weight:600; }
+
+  .kicker{ margin-top:14px; font-size:10px; letter-spacing:.26em; text-transform:uppercase; color:var(--sand); font-weight:600; }
+  h1{ font-size:34px; font-weight:700; letter-spacing:-.015em; line-height:1; margin:6px 0 0; }
+  .subtitle{ margin-top:5px; font-size:13px; color:var(--ink-2); }
+
+  /* ---- metadata strip --------------------------------------- */
+  .strip{
+    margin-top:13px; border-top:1.4px solid var(--line); border-bottom:1.4px solid var(--line);
+    display:grid; grid-template-columns:1.15fr 1.15fr .8fr 1.5fr 1.1fr;
+  }
+  .strip .cell{ padding:9px 13px; border-right:1px solid var(--line-sub); }
+  .strip .cell:last-child{ border-right:0; }
+  .strip .lab{ font-size:8.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-3); }
+  .strip .val{ margin-top:4px; font-size:13px; font-weight:600; }
+  .strip .val.accent{ color:var(--sand); }
+  .strip .crew{ margin-top:3px; font-size:9.5px; font-weight:400; color:var(--ink-2); line-height:1.45; }
+
+  /* ---- sections --------------------------------------------- */
+  section{ margin-top:13px; }
+  .sec-head{ display:flex; align-items:baseline; gap:9px; }
+  .sec-head .no{ font-size:11px; font-weight:700; letter-spacing:.1em; color:var(--sand); }
+  .sec-head h2{ font-size:12px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; margin:0; }
+
+  /* update list */
+  .updates{ margin-top:7px; }
+  .row{ display:grid; grid-template-columns:64px 200px 1fr; gap:14px; align-items:baseline;
+        padding:6px 0; border-bottom:1px solid var(--line-sub); }
+  .row:first-child{ border-top:1px solid var(--line-sub); }
+  .row .date{ font-size:9.5px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--sand); }
+  .row .area{ font-size:12.5px; font-weight:600; }
+  .row .note{ font-size:12px; color:var(--ink-2); }
+
+  /* documentation */
+  .hero{ margin-top:9px; position:relative; border:1px solid var(--ink); }
+  .ph{ display:flex; align-items:center; justify-content:center; width:100%;
+    background:repeating-linear-gradient(135deg, rgba(122,107,86,.06) 0 11px, rgba(122,107,86,.12) 11px 22px), var(--paper-2);
+    color:var(--sand); letter-spacing:.22em; text-transform:uppercase; }
+  .hero .ph{ height:50mm; font-size:10px; }
+  .hero .cap{ position:absolute; left:0; right:0; bottom:0; background:var(--ink); color:var(--paper);
+    font-size:10.5px; padding:7px 12px; display:flex; gap:9px; align-items:center; }
+  .hero .cap .d{ color:var(--sand-lt); font-weight:600; letter-spacing:.08em; text-transform:uppercase; font-size:9px; }
+  .thumbs{ margin-top:9px; display:grid; grid-template-columns:repeat(3,1fr); gap:9px; }
+  figure{ margin:0; }
+  figure .ph{ height:26mm; font-size:8.5px; border:1px solid var(--line-sub); }
+  figcaption{ margin-top:5px; font-size:9.5px; color:var(--ink-2); }
+  figcaption .d{ color:var(--sand); font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
+
+  /* ---- footer block ----------------------------------------- */
+  .closing{ margin-top:auto; padding-top:14px; }
+  .plan{ display:flex; justify-content:space-between; align-items:flex-start; gap:30px;
+    border-top:1.4px solid var(--line); padding-top:11px; }
+  .plan .body{ max-width:74%; }
+  .plan .body .no{ font-size:11px; font-weight:700; letter-spacing:.1em; color:var(--sand); }
+  .plan .body h2{ display:inline; font-size:12px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; margin:0 0 0 6px; }
+  .plan .body p{ margin:7px 0 0; font-size:12px; color:var(--ink-2); }
+  .plan .safety{ text-align:right; white-space:nowrap; }
+  .plan .safety .lab{ font-size:8.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-3); }
+  .plan .safety .num{ font-size:20px; font-weight:700; margin-top:2px; }
+  .plan .safety .sub{ font-size:8.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-3); }
+
+  .runfoot{ margin-top:12px; border-top:1px solid var(--line-sub); padding-top:7px;
+    display:flex; justify-content:space-between; font-size:8.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--ink-3); }
+  .dimline{ text-align:center; margin-top:4px; font-size:8px; letter-spacing:.3em; text-transform:uppercase; color:var(--ink-3); }
+
+  /* ---- print ------------------------------------------------- */
+  @media print{
+    /* Every printed page is true A4 with real margins on ALL pages (not just
+       page 1, which the old sheet-padding approach could not guarantee). */
+    @page{ size:A4; margin:12mm 14mm 13mm; }
+    html, body{ background:#fff; }
+    .toolbar{ display:none !important; }
+    /* @page supplies the margins now, so the sheet itself is padding-free. Its
+       min-height is ~one A4 content page so a SHORT report pins the closing
+       block — footer and all — to the page bottom (via .closing margin-top:auto),
+       while a LONG report grows past it and paginates onto further A4 pages, the
+       closing block landing on the final page. The footer stays in normal flow
+       (no position:fixed) so it can never overlap the closing content. */
+    .sheet{ width:auto; max-width:none; margin:0; padding:0; box-shadow:none; min-height:270mm; }
+    /* NO registration marks on print. Chrome anchors position:fixed to the
+       page CONTENT box (inside the @page margins) and clips anything painted
+       into the margin area (verified with a headless print repro, 2026-07-23).
+       So paper-edge marks are impossible: placed at 7mm they land ~19-21mm
+       into the paper and strike through the masthead/footer text on every
+       page ("cut off" text in the PDF). Screen keeps the marks — the sheet's
+       own padding hosts them there. */
+    .mark{ display:none; }
+    /* No CSS page counter: Chrome (the browser the app prints through) renders
+       the printed-page counters as 0, and there is no reliable cross-browser CSS
+       page number. Rather than print a wrong number, the footer carries no page
+       count; a user who needs page numbers can enable the browser print dialog's
+       own headers/footers. */
+    /* Avoid splitting individual photos, justified rows, update rows and the
+       closing block across a page break — but NOT the documentation <section>
+       itself: it must be free to start on page 1 and flow across pages, else a
+       photo-heavy report leaves page 1 half-empty. The WHOLE .closing block
+       (03 plan + runfoot + dimline) moves as one unit, so a tight fit can
+       never orphan the footer lines alone on the last page. */
+    .gitem, .grow-row, .feature, .row, .closing{ break-inside:avoid; }
+  }
+  @media (max-width:680px){
+    .sheet{ min-height:0; padding:18px 16px; }
+    .strip{ grid-template-columns:1fr 1fr; }
+    .strip .cell{ border-bottom:1px solid var(--line-sub); }
+    h1{ font-size:30px; } .row{ grid-template-columns:54px 1fr; } .row .note{ grid-column:1 / -1; }
+    .thumbs{ grid-template-columns:1fr 1fr; }
+  }
+</style>
+<style>
+  .gallery{ margin-top:9px; }
+  .gitem{ position:relative; margin:0; min-width:0; overflow:hidden;
+    border:1px solid var(--line-sub); background:var(--paper-2); }
+  .gitem img{ display:block; width:100%; height:auto; object-fit:cover; } /* fallback: true aspect */
+  /* justified row: figures fill the row width in proportion to their aspect,
+     the row's height comes from its inline aspect-ratio. */
+  .grow-row{ display:flex; gap:8px; align-items:stretch; margin-top:8px; }
+  .grow-row .gitem{ flex-basis:0; }
+  .grow-row .gitem img{ height:100%; }
+  .grow-row .gspace{ flex-basis:0; min-width:0; }
+  /* full-width feature (a landscape first photo), shown at its TRUE aspect */
+  .feature{ margin-top:0; border:1px solid var(--ink); }
+  .feature img{ width:100%; height:auto; }
+  /* caption overlay — one treatment for feature and flowed photos */
+  .gcap{ position:absolute; left:0; right:0; bottom:0; background:var(--ink); color:var(--paper);
+    font-size:10px; padding:6px 10px; display:flex; gap:8px; align-items:center; }
+  .gcap .d{ color:var(--sand-lt); font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+    font-size:9px; white-space:nowrap; }
+  /* the overlay carries only "Figur N" + the date, so the nowrap/ellipsis below
+     is purely defensive — with that content it can never actually trigger. */
+  .gcap .t{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* caption legend — the real caption text, below the gallery, wrapping freely.
+     Mirrors the "01 Update Lapangan" .row treatment one step smaller. */
+  .figlegend{ margin-top:8px; }
+  .flrow{ display:grid; grid-template-columns:52px 52px 1fr; gap:10px; align-items:baseline;
+    padding:4px 0; border-bottom:1px solid var(--line-sub); }
+  .flrow:first-child{ border-top:1px solid var(--line-sub); }
+  /* daily reports drop the per-photo date (the strip already states it), so the
+     row loses its middle column. */
+  .figlegend.nodate .flrow{ grid-template-columns:52px 1fr; }
+  .fl-no{ font-size:8.5px; font-weight:600; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--sand); white-space:nowrap; }
+  .fl-d{ font-size:8.5px; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--ink-3); white-space:nowrap; }
+  .fl-t{ font-size:9.5px; color:var(--ink-2); line-height:1.45; }
+  *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  /* BLUEPRINT_CSS's @media print break-inside rule is verbatim-locked, so the
+     legend rows get their own additive print rule here. */
+  @media print{ .flrow{ break-inside:avoid; } }
+</style></head>
+<body>
+  <div class="sheet">
+    <span class="mark tl"></span><span class="mark tr"></span><span class="mark bl"></span><span class="mark br"></span>
+    <div class="top">
+      <div class="brand"><svg viewBox="0 0 315.66 87.26" width="76" height="21" style="display:block" aria-label="SANO">
+  <g fill="#16130f">
+    <path d="M26.17,45.71c-4.05,0-7.85-1.58-10.71-4.44-2.86-2.86-4.44-6.67-4.44-10.71s1.58-7.85,4.44-10.71,6.67-4.44,10.71-4.44h52.29v7.32H26.17c-4.32,0-7.83,3.51-7.83,7.83s3.51,7.83,7.83,7.83h7.74l-7.32,7.32h-.41Z"/>
+    <path d="M9.6,68.69l7.32-7.32h56.42c2.09,0,4.06-.81,5.54-2.29l1.92-1.92,5.84,4.52-2.58,2.58c-2.86,2.86-6.67,4.44-10.71,4.44H9.6Z"/>
+    <path d="M166.3,68.69l-43.34-43.34-22.36,22.36-5.84-4.52,28.2-28.2,53.7,53.7h-10.36Z"/>
+    <path d="M110.91,68.69c-3.34,0-6.63-1.12-9.27-3.17l-23.51-18.18c-1.36-1.05-3.06-1.64-4.79-1.64h-40.06l7.32-7.32h32.74c3.34,0,6.63,1.12,9.27,3.17l23.51,18.18c1.36,1.05,3.06,1.64,4.79,1.64h38.69v7.32h-38.69Z"/>
+    <path d="M214.33,68.69c-2.76,0-5.36-1.07-7.31-3.03l-41.96-41.96c-.57-.57-1.32-.88-2.13-.88-.4,0-.78.08-1.15.23-1.13.47-1.86,1.56-1.86,2.78v18.25l-7.32-7.32v-10.92c0-4.19,2.5-7.94,6.38-9.55,1.26-.52,2.59-.79,3.95-.79,2.76,0,5.36,1.07,7.31,3.03l41.96,41.96c.57.57,1.32.88,2.13.88.4,0,.78-.08,1.15-.23,1.13-.47,1.86-1.56,1.86-2.78V15.4h7.32v42.95c0,4.19-2.5,7.94-6.38,9.55-1.26.52-2.59.79-3.95.79Z"/>
+    <path d="M242.17,68.69c-5.62-.09-10.19-4.72-10.19-10.33v-13.92l7.32,7.32v6.6c0,1.63,1.31,2.98,2.92,3.01h51.59c1.59-.03,2.9-1.38,2.91-3.01V25.74c0-.87-.38-1.7-1.04-2.27-.53-.46-1.22-.73-1.92-.74h-51.52c-.69.01-1.37.27-1.9.74-.66.57-1.04,1.4-1.04,2.27v19.34l-7.32-7.32v-12.02c0-2.99,1.3-5.84,3.56-7.8,1.83-1.59,4.17-2.49,6.59-2.53h51.74c2.44.04,4.78.94,6.61,2.53,2.26,1.96,3.56,4.81,3.56,7.8v32.62c0,5.61-4.56,10.24-10.17,10.33h-51.7Z"/>
+  </g>
+</svg></div>
+      <div class="hdrmeta">Konfidensial<br><b>Laporan #08</b><br><span>14 Jun 2026</span></div>
+    </div>
+    <div class="kicker">Laporan Harian</div>
+    <h1>Graha Family T-61</h1>
+    <div class="subtitle">Finishing Interior</div>
+    <div class="strip">
+      <div class="cell"><div class="lab">Klien</div><div class="val">Bpk. Jason Jordy</div></div>
+      <div class="cell"><div class="lab">Periode</div><div class="val">14 Juni 2026</div></div>
+      <div class="cell"><div class="lab">Cuaca</div><div class="val">Cerah</div></div>
+      <div class="cell"><div class="lab">Tenaga Kerja</div><div class="val">8 orang</div><div class="crew">3 tukang · 2 kenek · 1 mandor</div></div>
+      <div class="cell"><div class="lab">Status</div><div class="val accent">Sesuai Jadwal</div></div>
+    </div>
+    <section>
+      <div class="sec-head"><span class="no">01</span><h2>Update Lapangan</h2></div>
+      <div class="updates">
+      <div class="row"><span class="date">01</span><span class="area">Tangga</span><span class="note">Finishing anak tangga berjalan; railing menyusul.</span></div>
+      <div class="row"><span class="date">02</span><span class="area">Kamar Mandi Utama</span><span class="note">Waterproofing lapis kedua &lt;selesai&gt;.</span></div>
+      <div class="row"><span class="date">03</span><span class="area">Ruang Keluarga</span><span class="note">Rangka plafon terpasang.</span></div></div>
+    </section>
+    <section>
+      <div class="sec-head"><span class="no">02</span><h2>Dokumentasi Lapangan</h2></div>
+      
+    </section>
+    <div class="closing">
+      <div class="plan">
+        <div class="body"><span class="no">03</span><h2>Rencana Periode Berikutnya</h2><p>Penyelesaian railing tangga &amp; pemasangan kusen lantai 2.</p></div>
+        <div class="safety"><div class="lab">Keselamatan</div><div class="num">0 Insiden</div><div class="sub">Lingkungan Aman</div></div>
+      </div>
+      <div class="runfoot">
+        <span>SANcontractor © 2026 · Konfidensial</span>
+        <span>Graha Family T-61 · Laporan #08</span>
+        <span>14 Jun 2026</span>
+      </div>
+      <div class="dimline">A4 · 210 × 297 mm</div>
+    </div>
+  </div>
+  <script>
+function layoutJustified(aspects, opts) {
+  var gap = (opts.gap === undefined || opts.gap === null) ? 0 : opts.gap;
+  var target = opts.targetRowHeight;
+  var maxH = (opts.maxRowHeight === undefined || opts.maxRowHeight === null) ? target * 1.33 : opts.maxRowHeight;
+  var maxN = (opts.maxItemsPerRow === undefined || opts.maxItemsPerRow === null) ? 0 : opts.maxItemsPerRow;
+  var W = opts.containerWidth;
+  var rows = [];
+  var rowIdx = [];      // input indices in the current row
+  var rowAspects = [];  // their aspect ratios
+  var sumAspect = 0;
+
+  function rowHeight(aspSum, count) {
+    var gaps = gap * (count > 1 ? count - 1 : 0);
+    return aspSum > 0 ? (W - gaps) / aspSum : 0;
+  }
+  function commit(idxs, asps, height) {
+    var items = [];
+    for (var k = 0; k < idxs.length; k++) {
+      items.push({ index: idxs[k], width: asps[k] * height });
+    }
+    rows.push({ height: height, items: items });
+  }
+
+  for (var i = 0; i < aspects.length; i++) {
+    var a = aspects[i];
+    if (!(a > 0)) continue; // skip zero / negative / NaN aspects
+    rowIdx.push(i);
+    rowAspects.push(a);
+    sumAspect += a;
+    var h = rowHeight(sumAspect, rowIdx.length);
+    if (h <= target || (maxN > 0 && rowIdx.length >= maxN)) {
+      commit(rowIdx, rowAspects, h < maxH ? h : maxH);
+      rowIdx = [];
+      rowAspects = [];
+      sumAspect = 0;
+    }
+  }
+  if (rowIdx.length > 0) {
+    var natural = rowHeight(sumAspect, rowIdx.length);
+    commit(rowIdx, rowAspects, natural < maxH ? natural : maxH);
+  }
+  return rows;
+}
+(function(){
+  function build(){
+    try{
+      var gallery = document.getElementById('gallery');
+      if(!gallery){ window.__galleryReady = true; return; }
+      var kids = gallery.children, figs = [];
+      for(var i=0;i<kids.length;i++){ if(kids[i].tagName === 'FIGURE') figs.push(kids[i]); }
+      if(figs.length === 0){ window.__galleryReady = true; return; }
+      var aspects = [];
+      for(var j=0;j<figs.length;j++){
+        var im = figs[j].getElementsByTagName('img')[0];
+        aspects.push((im && im.naturalWidth > 0 && im.naturalHeight > 0) ? (im.naturalWidth / im.naturalHeight) : 1.3333);
+      }
+      var start = 0;
+      if(aspects[0] >= 1.3){ figs[0].className = 'gitem feature'; start = 1; }
+      var rowFigs = figs.slice(start), rowAspects = aspects.slice(start);
+      var rows = layoutJustified(rowAspects, { containerWidth:688, targetRowHeight:200, gap:8, maxRowHeight:300, maxItemsPerRow:3 });
+      for(var r=0;r<rows.length;r++){
+        var rowDiv = document.createElement('div');
+        rowDiv.className = 'grow-row';
+        var sum = 0, items = rows[r].items;
+        for(var c=0;c<items.length;c++){ sum += rowAspects[items[c].index]; }
+        // A row the model clamped to maxRowHeight (count-capped, or a sparse
+        // last row) must NOT be stretched flush — that would inflate the
+        // photos far past the clamp. Pad it with a flex spacer instead so the
+        // photos keep the clamped height and the row ends ragged.
+        var gaps = 8 * (items.length > 1 ? items.length - 1 : 0);
+        var flushH = (688 - gaps) / sum;
+        var padSum = flushH > rows[r].height + 0.5 ? (688 - gaps) / rows[r].height : 0;
+        rowDiv.style.aspectRatio = String(padSum > 0 ? padSum : sum);
+        for(var d=0;d<items.length;d++){
+          var idx = items[d].index, f = rowFigs[idx];
+          f.style.flexGrow = String(rowAspects[idx]);
+          rowDiv.appendChild(f);
+        }
+        if(padSum > 0){
+          var pad = document.createElement('div');
+          pad.className = 'gspace';
+          pad.style.flexGrow = String(padSum - sum);
+          rowDiv.appendChild(pad);
+        }
+        gallery.appendChild(rowDiv);
+      }
+      window.__galleryReady = true;
+    }catch(e){ window.__galleryReady = true; }
+  }
+  if(document.readyState === 'complete'){ build(); }
+  else { window.addEventListener('load', build); }
+  setTimeout(function(){ if(!window.__galleryReady){ build(); } }, 2500);
+})();
+</script>
+</body></html>

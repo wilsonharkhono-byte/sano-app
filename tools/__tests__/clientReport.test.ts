@@ -4,7 +4,14 @@ import { supabase } from '../supabase';
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
 jest.mock('../dailySiteLogs', () => ({ aggregatePeriod: jest.fn() }));
 jest.mock('../storage', () => ({ resolvePhotoUrl: jest.fn(async (p: string) => `https://cdn/${p}`) }));
+jest.mock('../rooms', () => ({ listRooms: jest.fn() }));
+jest.mock('../gateRefs', () => ({
+  listGateRefs: jest.fn(),
+  gateChipLabel: (g: { code: string; short_label: string }) => `${g.code} · ${g.short_label}`,
+}));
 import { aggregatePeriod } from '../dailySiteLogs';
+import { listRooms } from '../rooms';
+import { listGateRefs } from '../gateRefs';
 const mockSupabase = supabase as jest.Mocked<typeof supabase>;
 
 describe('clientReport status mapping', () => {
@@ -497,5 +504,94 @@ describe('assembleClientReportDraft', () => {
     expect(draft.thumbs[0].url).toBe('https://cdn/b.jpg');
     expect(draft.weather).toBe('Cerah');
     expect(draft.subtitle).toBe(''); // curator-typed, blank by default
+  });
+});
+
+describe('assembleClientReportDraft phase switch', () => {
+  const AGG = {
+    highlights: [
+      { area: 'Plafon', note: 'Rangka terpasang', boq_item_id: null, sort_order: 0, log_date: '2026-06-10', room_id: 'r1', gate_code: 'C' },
+      { area: 'Lantai', note: 'Keramik dipasang', boq_item_id: null, sort_order: 1, log_date: '2026-06-12', room_id: 'r2', gate_code: 'B' },
+      { area: 'Halaman', note: 'Bongkaran diangkut', boq_item_id: null, sort_order: 2, log_date: '2026-06-13', room_id: null, gate_code: null },
+    ],
+    featuredPhotos: [
+      { storage_path: 'a.jpg', caption: 'Hero', is_featured: true, captured_at: null, log_date: '2026-06-14', room_id: 'r2' },
+      { storage_path: 'b.jpg', caption: 'Thumb', is_featured: true, captured_at: null, log_date: '2026-06-12', room_id: null },
+    ],
+    weather: 'Cerah', crewTotal: 8, crewBreakdown: '3 tukang', safetyIncidents: 0,
+  };
+  const ROOMS = [
+    { id: 'r2', room_code: 'KM-UTAMA', room_name: 'Kamar Mandi Utama', floor: '2', sort_order: 0 },
+    { id: 'r1', room_code: 'RK', room_name: 'Ruang Keluarga', floor: '1', sort_order: 0 },
+    { id: 'ru', room_code: 'UMUM', room_name: 'Area Umum', floor: null, sort_order: 9999 },
+  ];
+  const GATES = [
+    { code: 'B', name_id: 'Basah', short_label: 'Basah', description: null, sort_order: 2, active: true, datum_gate_code: null, created_at: 'x' },
+    { code: 'C', name_id: 'Plafon', short_label: 'Plafon', description: null, sort_order: 3, active: true, datum_gate_code: null, created_at: 'x' },
+  ];
+  const PARAMS = {
+    projectId: 'proj-1', kind: 'mingguan' as const,
+    periodStart: '2026-06-08', periodEnd: '2026-06-14',
+    projectName: 'Graha Family T-61', clientName: 'Bpk. Jason Jordy',
+    milestoneStatuses: [],
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (aggregatePeriod as jest.Mock).mockResolvedValue(AGG);
+    (listRooms as jest.Mock).mockResolvedValue(ROOMS);
+    (listGateRefs as jest.Mock).mockResolvedValue(GATES);
+    (mockSupabase.from as jest.Mock).mockReturnValue({
+      select: jest.fn().mockReturnThis(), eq: jest.fn().mockReturnThis(),
+      order: jest.fn().mockReturnThis(), limit: jest.fn().mockReturnThis(),
+      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+    });
+  });
+
+  it('a STRUKTUR draft reads no rooms, carries no phase, and leaves updates untagged', async () => {
+    const draft = await assembleClientReportDraft(PARAMS);
+    expect(listRooms).not.toHaveBeenCalled();
+    expect(listGateRefs).not.toHaveBeenCalled();
+    expect('phase' in draft).toBe(false);
+    expect(draft.updates).toHaveLength(3);
+    // Exactly the three fields a Struktur update has always had - toEqual would
+    // pass with extra undefined keys, so check the key set itself.
+    expect(draft.updates.map((u) => Object.keys(u).sort())).toEqual([
+      ['area', 'date', 'note'], ['area', 'date', 'note'], ['area', 'date', 'note'],
+    ]);
+    expect('room' in (draft.hero ?? {})).toBe(false);
+  });
+
+  it('an explicit STRUKTUR phase behaves the same way', async () => {
+    const draft = await assembleClientReportDraft({ ...PARAMS, phase: 'STRUKTUR' });
+    expect(listRooms).not.toHaveBeenCalled();
+    expect('phase' in draft).toBe(false);
+    expect(draft.updates.every((u) => u.roomLabel === undefined)).toBe(true);
+  });
+
+  it('a FINISHING draft orders updates by room, Area Umum last, and tags each line', async () => {
+    const draft = await assembleClientReportDraft({ ...PARAMS, phase: 'FINISHING' });
+    expect(listRooms).toHaveBeenCalledWith('proj-1', { includeInactive: true });
+    expect(draft.phase).toBe('FINISHING');
+    // ONE list: the renderer groups THIS, and the builder edits THIS.
+    expect('roomGroups' in draft).toBe(false);
+    expect(draft.updates).toHaveLength(3);
+    expect(draft.updates.map((u) => u.note)).toEqual([
+      'Rangka terpasang', 'Keramik dipasang', 'Bongkaran diangkut',
+    ]);
+    expect(draft.updates.map((u) => u.roomLabel)).toEqual([
+      'Ruang Keluarga · Lt. 1', 'Kamar Mandi Utama · Lt. 2', 'Area Umum',
+    ]);
+    expect(draft.updates.map((u) => u.gateLabel)).toEqual(['C · Plafon', 'B · Basah', null]);
+    // The room NAME is the label; the room CODE never leaves this function.
+    expect(JSON.stringify(draft.updates)).not.toContain('KM-UTAMA');
+    // roomId rides along for grouping and the builder's picker only.
+    expect(draft.updates.map((u) => u.roomId)).toEqual(['r1', 'r2', 'ru']);
+  });
+
+  it('names the room on a photo that has one, and leaves the rest alone', async () => {
+    const draft = await assembleClientReportDraft({ ...PARAMS, phase: 'SERAH_TERIMA' });
+    expect(draft.hero?.room).toBe('Kamar Mandi Utama');
+    expect('room' in draft.thumbs[0]).toBe(false);
   });
 });

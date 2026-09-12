@@ -10,6 +10,13 @@ import { useToast } from '../components/Toast';
 import { pickAndUploadPhoto } from '../../tools/storage';
 import { sanitizeText } from '../../tools/validation';
 import { getDailyLog, upsertDailyLog, toggleFeaturedPhoto, type DailyLogHighlight, type DailyLogPhoto } from '../../tools/dailySiteLogs';
+import PullEventsSheet from './dailyLog/PullEventsSheet';
+import { listConfirmedEventsForDay } from '../../tools/siteEvents';
+import { listRooms } from '../../tools/rooms';
+import {
+  mergePulledHighlights, proposeHighlightsFromEvents, proposePhotosFromEvents,
+  type ProposedHighlight, type ProposedPhoto,
+} from '../../tools/dailyLogPull';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 function todayIso(): string {
@@ -17,6 +24,11 @@ function todayIso(): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
+
+const EMPTY_HIGHLIGHT: DailyLogHighlight = {
+  area: '', note: '', boq_item_id: null, sort_order: 0,
+  room_id: null, gate_code: null, source_event_id: null,
+};
 
 export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => void; initialDate?: string }) {
   const { project, profile, boqItems, refresh } = useProject();
@@ -27,9 +39,21 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
   const [crewTotal, setCrewTotal] = useState('');
   const [crewBreakdown, setCrewBreakdown] = useState('');
   const [safety, setSafety] = useState('0');
-  const [highlights, setHighlights] = useState<DailyLogHighlight[]>([{ area: '', note: '', boq_item_id: null, sort_order: 0 }]);
+  const [highlights, setHighlights] = useState<DailyLogHighlight[]>([EMPTY_HIGHLIGHT]);
   const [photos, setPhotos] = useState<DailyLogPhoto[]>([]);
   const [saving, setSaving] = useState(false);
+
+  const [pullOpen, setPullOpen] = useState(false);
+  const [pullLoading, setPullLoading] = useState(false);
+  const [pullError, setPullError] = useState<string | null>(null);
+  const [pullH, setPullH] = useState<ProposedHighlight[]>([]);
+  const [pullP, setPullP] = useState<ProposedPhoto[]>([]);
+  // Session-scoped only (Review issue #3): a highlight the curator pulled and
+  // then removed is remembered for the rest of this screen visit, so a later
+  // "Tarik" offers it again unticked with a "Pernah dihapus" note instead of
+  // silently re-approving it. Closing and reopening the screen forgets this —
+  // the deliberately simpler option over a DB-backed rejection table.
+  const [dismissedEventIds, setDismissedEventIds] = useState<string[]>([]);
 
   const boqOptions = useMemo(() => {
     // Flat option list; label = "code — label". Optional link, so include a blank.
@@ -44,7 +68,7 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
       setCrewTotal(existing.crew_total != null ? String(existing.crew_total) : '');
       setCrewBreakdown(existing.crew_breakdown ?? '');
       setSafety(String(existing.safety_incidents ?? 0));
-      setHighlights(existing.highlights.length ? existing.highlights : [{ area: '', note: '', boq_item_id: null, sort_order: 0 }]);
+      setHighlights(existing.highlights.length ? existing.highlights : [EMPTY_HIGHLIGHT]);
       setPhotos(existing.photos);
     }
   }, [project, logDate]);
@@ -53,8 +77,15 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
 
   const updateHighlight = (i: number, patch: Partial<DailyLogHighlight>) =>
     setHighlights((prev) => prev.map((h, idx) => (idx === i ? { ...h, ...patch } : h)));
-  const addHighlight = () => setHighlights((prev) => [...prev, { area: '', note: '', boq_item_id: null, sort_order: prev.length }]);
-  const removeHighlight = (i: number) => setHighlights((prev) => prev.filter((_, idx) => idx !== i));
+  const addHighlight = () => setHighlights((prev) => [...prev, { ...EMPTY_HIGHLIGHT, sort_order: prev.length }]);
+  const removeHighlight = (i: number) => {
+    const removed = highlights[i];
+    if (removed?.source_event_id) {
+      const id = removed.source_event_id;
+      setDismissedEventIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    }
+    setHighlights((prev) => prev.filter((_, idx) => idx !== i));
+  };
 
   const addPhoto = async () => {
     if (!project) return;
@@ -64,10 +95,49 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
     // explicitly star which ones should surface in the client report. Before
     // this fix every photo was force-featured, making the "yang ditandai"
     // (marked) filter in the client report vacuous.
-    setPhotos((prev) => [...prev, { storage_path: path, caption: null, is_featured: false, captured_at: new Date().toISOString() }]);
+    setPhotos((prev) => [...prev, { storage_path: path, caption: null, is_featured: false, captured_at: new Date().toISOString(), room_id: null, source_media_id: null }]);
   };
   const removePhoto = (i: number) => setPhotos((prev) => prev.filter((_, idx) => idx !== i));
   const toggleFeatured = (i: number) => setPhotos((prev) => toggleFeaturedPhoto(prev, i));
+
+  // Only offered once the project has rooms: a Struktur project with no rooms
+  // would show an empty sheet and teach the curator to ignore the button.
+  const openPull = async () => {
+    if (!project) return;
+    setPullOpen(true);
+    setPullLoading(true);
+    setPullError(null);
+    try {
+      const [eventsResult, rooms] = await Promise.all([
+        listConfirmedEventsForDay(project.id, logDate),
+        listRooms(project.id, { includeInactive: true }),
+      ]);
+      if (!eventsResult.events) {
+        // A read failure is not the same claim as "nothing happened today" —
+        // show it distinctly and let the curator retry (Review issue #2).
+        setPullError('Gagal memuat kejadian hari ini. Periksa koneksi lalu coba lagi.');
+        return;
+      }
+      // Anything already on this log is excluded, so re-opening the sheet after
+      // a pull never offers the same event or photo twice. A previously
+      // removed event is still offered (resurrection is fine) but flagged.
+      const pulledEvents = highlights.map((h) => h.source_event_id).filter((v): v is string => !!v);
+      const pulledMedia = photos.map((p) => p.source_media_id).filter((v): v is string => !!v);
+      setPullH(proposeHighlightsFromEvents(eventsResult.events, rooms, pulledEvents, dismissedEventIds));
+      setPullP(proposePhotosFromEvents(eventsResult.events, rooms, pulledMedia));
+    } catch (err: any) {
+      setPullError(err.message ?? 'Gagal memuat kejadian hari ini.');
+    } finally {
+      setPullLoading(false);
+    }
+  };
+
+  const applyPull = (picked: { highlights: ProposedHighlight[]; photos: ProposedPhoto[] }) => {
+    setHighlights((prev) => mergePulledHighlights(prev, picked.highlights));
+    setPhotos((prev) => [...prev, ...picked.photos.map((p) => p.photo)]);
+    setPullOpen(false);
+    toast(`${picked.highlights.length + picked.photos.length} item ditarik — silakan tinjau`, 'ok');
+  };
 
   const save = async () => {
     if (!project || !profile) return;
@@ -123,7 +193,27 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
           <TextInput style={styles.input} value={crewBreakdown} onChangeText={setCrewBreakdown} placeholder="3 tukang · 2 kenek · 1 mandor" placeholderTextColor={COLORS.textMuted} />
         </Card>
 
-        <Card title="Update Lapangan" subtitle="Catatan progres naratif. Kaitkan ke item BoQ bila relevan (opsional).">
+        <Card
+          title="Update Lapangan"
+          subtitle="Catatan progres naratif. Kaitkan ke item BoQ bila relevan (opsional)."
+          rightAction={
+            <TouchableOpacity onPress={() => (pullOpen ? setPullOpen(false) : void openPull())} accessibilityRole="button">
+              <Text style={styles.pullLink}>{pullOpen ? 'Tutup' : 'Tarik dari kejadian ruangan'}</Text>
+            </TouchableOpacity>
+          }
+        >
+          {pullOpen && (
+            <PullEventsSheet
+              loading={pullLoading}
+              error={pullError}
+              date={logDate}
+              highlights={pullH}
+              photos={pullP}
+              onCancel={() => setPullOpen(false)}
+              onRetry={openPull}
+              onApply={applyPull}
+            />
+          )}
           {highlights.map((h, i) => (
             <View key={i} style={styles.hlBlock}>
               <View style={styles.hlHead}>
@@ -190,6 +280,7 @@ const styles = StyleSheet.create({
   hlNum: { fontSize: TYPE.xs, fontFamily: FONTS.bold, color: COLORS.accent, letterSpacing: 1 },
   addRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.xs, paddingVertical: SPACE.sm, marginTop: SPACE.xs },
   addText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.primary },
+  pullLink: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.primary },
   saveBtn: { backgroundColor: COLORS.primary, borderRadius: RADIUS, padding: SPACE.base, alignItems: 'center', marginTop: SPACE.md },
   saveText: { color: COLORS.textInverse, fontSize: TYPE.sm, fontFamily: FONTS.semibold, textTransform: 'uppercase' },
 });

@@ -20,6 +20,13 @@ interface Props {
    * see WHICH basis their edit removed, not just that something broke.
    */
   staleQuotes?: ReadonlyArray<string>;
+  /**
+   * Set only when some, but not all, quotes survived the edit (confirmModel's
+   * `VO_PARTIAL_EVIDENCE_NOTE`): Konfirmasi is not blocked, but
+   * confirm_site_event (100) records the survivors only, so the stale labels
+   * above should not be read as still reaching Catatan Perubahan.
+   */
+  partialEvidenceNote?: string | null;
   related: { id: string; title: string } | null;
   relatedEventId: string | null;
   onLink: (id: string | null) => void;
@@ -28,8 +35,8 @@ interface Props {
 
 /** The VO checkbox with the literal quotes behind it, and the "Mungkin terkait" link (spec §5.4). */
 export default function VoAndRelatedBlock({
-  draft, voState, voConfirm, onVoChange, eventType, staleQuotes = [], related, relatedEventId, onLink,
-  disabled = false,
+  draft, voState, voConfirm, onVoChange, eventType, staleQuotes = [], partialEvidenceNote = null, related,
+  relatedEventId, onLink, disabled = false,
 }: Props) {
   const stale = new Set(staleQuotes);
   const quoteLine = (quote: string) =>
@@ -64,6 +71,7 @@ export default function VoAndRelatedBlock({
               {quoteLine(quote)}
             </Text>
           ))}
+          {partialEvidenceNote ? <Text style={s.hint}>{partialEvidenceNote}</Text> : null}
           {/* The category the RPC will file this under, computed here from the
               same keyword lists 097 mirrors — so the supervisor sees the
               consequence before tapping, not afterwards in Catatan Perubahan. */}

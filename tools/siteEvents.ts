@@ -19,6 +19,8 @@ import { readUploadBody, resolvePhotoUrl, SITE_MEDIA_PATH_PREFIX } from './stora
 import { SITE_EVENT_MAX_CLOSEUPS, SITE_MEDIA_BUCKET } from './constants';
 import { normalizeTitle, validateConfirmInput, type ConfirmInput } from './siteEventRules';
 import { buildWorkGroups, type GroupableItem } from './boqWorkGroups';
+import { wibStartOfDayIso, wibEndOfDayExclusiveIso } from './timeWindow';
+import type { PullableEvent } from './dailyLogPull';
 import type {
   SiteEvent,
   SiteEventMedia,
@@ -148,6 +150,12 @@ export const RPC_ERROR_COPY: ReadonlyArray<[string, string]> = [
   ['SITE_EVENT_HUMAN_FIELDS', 'Perubahan ini hanya bisa dilakukan lewat Konfirmasi atau Selesai.'],
   ['SITE_EVENT_AI_COLUMNS', 'Kolom hasil AI tidak boleh diubah dari aplikasi.'],
   ['SITE_EVENT_MEDIA_PATH', 'Lokasi berkas media tidak sesuai kejadian.'],
+  // Migration 099 (plan 4, spec §9): update_site_event_assignment's own two
+  // refusals, distinct from SITE_EVENT_NOT_OPEN above (which is
+  // close_site_event's — "sudah tidak terbuka" vs "sudah tidak bisa ditandai
+  // selesai" read as the same idea in English but are two different SQL codes).
+  ['SITE_EVENT_ASSIGN_ROLE', 'Hanya pelapor atau peran kantor yang dapat mengubah pemilik dan tenggat.'],
+  ['SITE_EVENT_ASSIGN_NOT_OPEN', 'Hanya kejadian terbuka yang bisa diubah pemilik atau tenggatnya.'],
 ];
 
 /** Matches `CODE:` exactly, so SITE_EVENT_OWNER_REQUIRED and SITE_EVENT_OWNER_NOT_MEMBER never collide. */
@@ -566,4 +574,153 @@ export async function saveTranscriptEdit(eventId: string, text: string): Promise
 export async function signedMediaUrl(storagePath: string): Promise<string | null> {
   const url = await resolvePhotoUrl(`${SITE_MEDIA_PATH_PREFIX}${storagePath}`);
   return url ? url : null;
+}
+
+// ─── Daily Site Log pull-through (plan 4, spec §10.1) ────────────────────────
+
+const PULL_SELECT =
+  'id, event_type, title, summary, room_id, gate_code, confirmed_at, ' +
+  'site_event_media(id, kind, role, storage_path, sort_order)';
+
+/**
+ * Either the day's confirmed events, or a read failure. Distinguishing these
+ * matters: `PullEventsSheet` must never render a network blip as "Belum ada
+ * kejadian terkonfirmasi di tanggal ini" (an absent day), which is a false
+ * claim, not an absent one — see CLAUDE.md's truth-correctness contract.
+ */
+export type ConfirmedEventsResult =
+  | { events: PullableEvent[]; error?: undefined }
+  | { events: null; error: string };
+
+/**
+ * The day's CONFIRMED events, for "Tarik dari kejadian ruangan". `draft` and
+ * `pending_analysis` are excluded because no human has read them yet, and
+ * `discarded` because a discarded event is a decision, not an oversight.
+ * `done` is included: an event opened and closed on the same day is still the
+ * day's news.
+ *
+ * The window is a WIB calendar day with an EXCLUSIVE end, per
+ * tools/timeWindow.ts - an inclusive '...T23:59:59' bound drops the last
+ * fraction of a second of the day. It windows on `confirmed_at`, not
+ * `captured_at`: this list is "what a human confirmed happened," and an
+ * event captured late at night but confirmed the next morning belongs to the
+ * day it was confirmed. `PullEventsSheet` states this explicitly so a
+ * curator who notices a gap knows where to look.
+ */
+export async function listConfirmedEventsForDay(
+  projectId: string,
+  isoDate: string,
+): Promise<ConfirmedEventsResult> {
+  const { data, error } = await supabase
+    .from('site_events')
+    .select(PULL_SELECT)
+    .eq('project_id', projectId)
+    .in('status', ['open', 'done'])
+    .gte('confirmed_at', wibStartOfDayIso(isoDate))
+    .lt('confirmed_at', wibEndOfDayExclusiveIso(isoDate))
+    .order('confirmed_at', { ascending: true });
+  if (error) {
+    console.warn('listConfirmedEventsForDay failed:', error.message);
+    return { events: null, error: error.message };
+  }
+  const events = ((data ?? []) as unknown as Array<PullableEvent & { site_event_media?: PullableEvent['media'] | null }>)
+    .map(({ site_event_media, ...e }) => ({ ...e, media: site_event_media ?? [] }));
+  return { events };
+}
+
+// ─── Room timeline and reassignment (plan 4, spec §9) ───────────────────────
+
+export interface TimelineEventRow extends SiteEvent {
+  media: SiteEventMedia[];
+  owner_name: string | null;
+  reporter_name: string | null;
+}
+
+const TIMELINE_SELECT =
+  '*, site_event_media(*), ' +
+  'owner:profiles!site_events_owner_id_fkey(full_name), ' +
+  'reporter:profiles!site_events_reporter_id_fkey(full_name)';
+
+/** Either the room's events, or a read failure — never a blip rendered as an empty room (CLAUDE.md §12). */
+export type RoomTimelineResult =
+  | { events: TimelineEventRow[]; error?: undefined }
+  | { events: null; error: string };
+
+/**
+ * A room's events for the timeline. `discarded` is excluded because a discard
+ * is a decision, not history a PM needs to scroll past; the rows and their
+ * files are still there (spec §1.1 rule 3), just not on this list.
+ *
+ * Ordered on the same key `sortTimeline` re-derives the list by (confirmed_at,
+ * falling back to created_at for a draft nobody has confirmed yet), so the
+ * 50-row cap keeps the newest-by-that-key rows rather than the newest-inserted
+ * ones. `project_id` is filtered alongside `room_id`: RLS and globally unique
+ * room ids make it redundant today, but it keeps the intended scope readable
+ * at the call site.
+ */
+export async function listRoomTimeline(
+  roomId: string,
+  projectId: string,
+  limit = 50,
+): Promise<RoomTimelineResult> {
+  const { data, error } = await supabase
+    .from('site_events')
+    .select(TIMELINE_SELECT)
+    .eq('room_id', roomId)
+    .eq('project_id', projectId)
+    .neq('status', 'discarded')
+    .order('confirmed_at', { ascending: false, nullsFirst: true })
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.warn('listRoomTimeline failed:', error.message);
+    return { events: null, error: error.message };
+  }
+  return { events: ((data ?? []) as unknown as Array<SiteEvent & {
+    site_event_media?: SiteEventMedia[] | null;
+    owner?: { full_name?: string } | null;
+    reporter?: { full_name?: string } | null;
+  }>).map(({ site_event_media, owner, reporter, ...e }) => ({
+    ...(e as SiteEvent),
+    media: [...(site_event_media ?? [])].sort((a, b) => a.sort_order - b.sort_order),
+    owner_name: owner?.full_name ?? null,
+    reporter_name: reporter?.full_name ?? null,
+  })) };
+}
+
+export interface AssignmentResult {
+  event_id: string;
+  status: SiteEventStatus;
+  owner_id: string | null;
+  due_date: string | null;
+  changed: boolean;
+  notified: boolean;
+}
+
+/**
+ * Migration 099. A direct UPDATE on owner_id or due_date is refused by 097's
+ * site_events_human_fields_rpc_only trigger, deliberately, so this RPC is the
+ * only path. Its named refusals go through the same mapSiteEventRpcError
+ * table as confirm and close, so the user reads one sentence.
+ *
+ * 099 always RETURNs a jsonb object; a null or shapeless row is a server
+ * response this client cannot read. Reporting that as a save (CLAUDE.md §12)
+ * would leave the old owner in place while the UI claims success.
+ */
+export async function updateSiteEventAssignment(
+  eventId: string,
+  ownerId: string | null,
+  dueDate: string | null,
+): Promise<{ result?: AssignmentResult; error?: string }> {
+  const { data, error } = await supabase.rpc('update_site_event_assignment', {
+    p_event_id: eventId,
+    p_owner_id: ownerId,
+    p_due_date: dueDate,
+  });
+  if (error) return { error: mapSiteEventRpcError(error.message) };
+  const row = data as AssignmentResult | null;
+  if (!row || typeof row !== 'object' || typeof row.event_id !== 'string') {
+    return { error: 'Perubahan tidak terkonfirmasi oleh server. Muat ulang lalu periksa.' };
+  }
+  return { result: row };
 }

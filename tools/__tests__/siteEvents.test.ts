@@ -43,14 +43,17 @@ import {
   insertSiteEvent,
   invokeSiteEventAnalysis,
   isDuplicateUploadError,
+  listConfirmedEventsForDay,
   listDraftEvents,
   listOpenEventsForRoom,
+  listRoomTimeline,
   mapSiteEventRpcError,
   newSiteEventId,
   RPC_ERROR_COPY,
   saveTranscriptEdit,
   signedMediaUrl,
   siteEventMediaPath,
+  updateSiteEventAssignment,
   uploadSiteEventMedia,
   validateNewSiteEvent,
   workGroupHints,
@@ -519,22 +522,163 @@ describe('getRoomLastGate', () => {
   });
 });
 
-describe('RPC_ERROR_COPY vs migration 097', () => {
-  it('covers exactly the SITE_EVENT_* codes migration 097 actually raises — no more, no less', () => {
-    const sql = fs.readFileSync(
-      path.join(__dirname, '..', '..', 'supabase', 'migrations', '097_site_events.sql'),
-      'utf8',
-    );
+describe('listConfirmedEventsForDay', () => {
+  function chain(result: { data: unknown; error: { message: string } | null }) {
+    const c: any = {};
+    for (const m of ['select', 'eq', 'in', 'gte', 'lt']) c[m] = jest.fn().mockReturnValue(c);
+    c.order = jest.fn().mockResolvedValue(result);
+    return c;
+  }
+
+  it('windows on the WIB day and takes confirmed statuses only', async () => {
+    const c = chain({ data: [{ id: 'e1', event_type: 'progres', title: 'T', summary: 'S', room_id: 'r1', gate_code: 'C', confirmed_at: '2026-09-11T02:00:00Z', site_event_media: [{ id: 'm1', kind: 'photo', role: 'context', storage_path: 'x.jpg', sort_order: 0 }] }], error: null });
+    (supabase.from as jest.Mock).mockReturnValue(c);
+
+    const out = await listConfirmedEventsForDay('p1', '2026-09-11');
+    expect(c.in).toHaveBeenCalledWith('status', ['open', 'done']);
+    expect(c.gte).toHaveBeenCalledWith('confirmed_at', '2026-09-10T17:00:00.000Z');
+    expect(c.lt).toHaveBeenCalledWith('confirmed_at', '2026-09-11T17:00:00.000Z');
+    expect(out.events).toHaveLength(1);
+    expect(out.events![0].media).toHaveLength(1);
+    expect('site_event_media' in out.events![0]).toBe(false);
+  });
+
+  it('reports a read failure distinctly rather than an empty list', async () => {
+    (supabase.from as jest.Mock).mockReturnValue(chain({ data: null, error: { message: 'nope' } }));
+    expect(await listConfirmedEventsForDay('p1', '2026-09-11')).toEqual({ events: null, error: 'nope' });
+  });
+
+  it('gives an event with no media an empty array', async () => {
+    (supabase.from as jest.Mock).mockReturnValue(chain({ data: [{ id: 'e1', event_type: 'info', title: null, summary: 'S', room_id: 'r1', gate_code: null, confirmed_at: 'x', site_event_media: null }], error: null }));
+    const out = await listConfirmedEventsForDay('p1', '2026-09-11');
+    expect(out.events![0].media).toEqual([]);
+  });
+});
+
+describe('listRoomTimeline', () => {
+  function chain(result: { data: unknown; error: { message: string } | null }) {
+    const c: any = {};
+    for (const m of ['select', 'eq', 'neq', 'order']) c[m] = jest.fn().mockReturnValue(c);
+    c.limit = jest.fn().mockResolvedValue(result);
+    return c;
+  }
+
+  it('flattens the joins, sorts media, scopes to the project and never shows a discarded event', async () => {
+    const c = chain({ data: [{
+      id: 'e1', room_id: 'r1', status: 'open', created_at: 'x',
+      site_event_media: [{ id: 'm2', sort_order: 1 }, { id: 'm1', sort_order: 0 }],
+      owner: { full_name: 'Andi Saputra' }, reporter: { full_name: 'Budi' },
+    }], error: null });
+    (supabase.from as jest.Mock).mockReturnValue(c);
+
+    const out = await listRoomTimeline('r1', 'p1');
+    expect(c.eq).toHaveBeenCalledWith('room_id', 'r1');
+    expect(c.eq).toHaveBeenCalledWith('project_id', 'p1');
+    expect(c.neq).toHaveBeenCalledWith('status', 'discarded');
+    expect(out.events![0].media.map((m) => m.id)).toEqual(['m1', 'm2']);
+    expect(out.events![0].owner_name).toBe('Andi Saputra');
+    expect(out.events![0].reporter_name).toBe('Budi');
+    expect('site_event_media' in out.events![0]).toBe(false);
+  });
+
+  it('reports a read failure instead of an empty room', async () => {
+    (supabase.from as jest.Mock).mockReturnValue(chain({ data: null, error: { message: 'nope' } }));
+    expect(await listRoomTimeline('r1', 'p1')).toEqual({ events: null, error: 'nope' });
+  });
+});
+
+describe('updateSiteEventAssignment', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('calls the 099 RPC with its three parameters', async () => {
+    (supabase.rpc as jest.Mock).mockResolvedValue({ data: { event_id: 'e1', status: 'open', owner_id: 'u2', due_date: '2026-09-20', changed: true, notified: true }, error: null });
+    const out = await updateSiteEventAssignment('e1', 'u2', '2026-09-20');
+    expect(supabase.rpc).toHaveBeenCalledWith('update_site_event_assignment', {
+      p_event_id: 'e1', p_owner_id: 'u2', p_due_date: '2026-09-20',
+    });
+    expect(out.result?.status).toBe('open');
+    expect(out.result?.notified).toBe(true);
+  });
+
+  it('refuses to call an empty answer a save', async () => {
+    (supabase.rpc as jest.Mock).mockResolvedValue({ data: null, error: null });
+    expect((await updateSiteEventAssignment('e1', 'u2', '2026-09-20')).error)
+      .toBe('Perubahan tidak terkonfirmasi oleh server. Muat ulang lalu periksa.');
+  });
+
+  it('refuses a malformed row that is not a real jsonb object', async () => {
+    (supabase.rpc as jest.Mock).mockResolvedValue({ data: 'ok', error: null });
+    expect((await updateSiteEventAssignment('e1', 'u2', '2026-09-20')).error)
+      .toBe('Perubahan tidak terkonfirmasi oleh server. Muat ulang lalu periksa.');
+  });
+
+  it('turns each named refusal into an Indonesian sentence', async () => {
+    const cases: Array<[string, string]> = [
+      ['SITE_EVENT_ASSIGN_ROLE: hanya pelapor', 'Hanya pelapor atau peran kantor yang dapat mengubah pemilik dan tenggat.'],
+      ['SITE_EVENT_OWNER_NOT_MEMBER: pemilik harus anggota', 'Pemilik harus anggota tim proyek.'],
+      ['SITE_EVENT_OWNER_REQUIRED: wajib', 'Pemilik dan tenggat wajib diisi untuk jenis ini.'],
+      ['SITE_EVENT_DUE: tenggat', 'Tenggat tidak boleh sebelum hari ini.'],
+      ['SITE_EVENT_ASSIGN_NOT_OPEN: status', 'Hanya kejadian terbuka yang bisa diubah pemilik atau tenggatnya.'],
+    ];
+    for (const [raw, friendly] of cases) {
+      (supabase.rpc as jest.Mock).mockResolvedValue({ data: null, error: { message: raw } });
+      expect((await updateSiteEventAssignment('e1', 'u2', null)).error).toBe(friendly);
+    }
+  });
+
+  it('clears the owner by passing nulls through', async () => {
+    (supabase.rpc as jest.Mock).mockResolvedValue({ data: { event_id: 'e1', owner_id: null, due_date: null, changed: true, notified: false }, error: null });
+    const out = await updateSiteEventAssignment('e1', null, null);
+    expect(supabase.rpc).toHaveBeenCalledWith('update_site_event_assignment', {
+      p_event_id: 'e1', p_owner_id: null, p_due_date: null,
+    });
+    expect(out.result?.notified).toBe(false);
+  });
+});
+
+describe('RPC_ERROR_COPY vs migrations 097, 099 and 100', () => {
+  it('covers exactly the SITE_EVENT_* codes 097, 099 and 100 actually raise — no more, no less', () => {
     // Only text inside `RAISE EXCEPTION '<CODE>:` counts as a code the client
-    // must translate — SITE_EVENT_ASSIGNED, mentioned in the header comment
+    // must translate — SITE_EVENT_ASSIGNED, mentioned in 099's header comment
     // and passed to enqueue_notification_user, is a notification type, not an
     // RPC error code, and must NOT be required here.
-    const raised = new Set(
-      [...sql.matchAll(/RAISE EXCEPTION '(SITE_EVENT_[A-Z_]+):/g)].map((m) => m[1]),
-    );
+    const codesIn = (file: string) => {
+      const sql = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', file), 'utf8');
+      return [...sql.matchAll(/RAISE EXCEPTION '(SITE_EVENT_[A-Z_]+):/g)].map((m) => m[1]);
+    };
+    // 100 re-creates confirm_site_event with one extra refusal, and that
+    // refusal deliberately re-uses 097's SITE_EVENT_VO_NO_EVIDENCE (the client
+    // matches on the `CODE:` prefix, so only the sentence after it grew). It is
+    // read anyway: the day 100 is edited to raise a NEW code, this fails until
+    // the copy exists.
+    const raised = new Set([
+      ...codesIn('097_site_events.sql'),
+      ...codesIn('099_site_event_assignment.sql'),
+      ...codesIn('100_confirm_vo_evidence_recheck.sql'),
+    ]);
     const covered = new Set(RPC_ERROR_COPY.map(([code]) => code));
     expect(raised.size).toBeGreaterThan(0);
     expect(covered).toEqual(raised);
+  });
+
+  it("feeds 100's exact stale-evidence refusal through the mapper and gets the VO copy, not the raw SQL", () => {
+    // The test above only compares CODE *sets*, so it cannot see whether the
+    // FULL string confirm_site_event (100) actually raises — the existing
+    // SITE_EVENT_VO_NO_EVIDENCE code plus the new "(kutipan tidak lagi ada di
+    // transkrip)" extension — still matches on the `CODE:` prefix and maps to
+    // the same Indonesian copy 097's refusal always has. Read the literal
+    // RAISE EXCEPTION text out of the migration itself, not a re-typed copy of
+    // it, so a drift in either file fails here.
+    const sql = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'supabase', 'migrations', '100_confirm_vo_evidence_recheck.sql'),
+      'utf8',
+    );
+    const match = sql.match(
+      /RAISE EXCEPTION '(SITE_EVENT_VO_NO_EVIDENCE:[^']*kutipan tidak lagi ada di transkrip\))'/,
+    );
+    expect(match).not.toBeNull();
+    const message = match![1];
+    expect(mapSiteEventRpcError(message)).toBe('VO hanya bisa dikonfirmasi bila ada kutipan dasar.');
   });
 });
 

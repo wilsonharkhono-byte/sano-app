@@ -19,6 +19,10 @@ import {
   type IssuedClientReport,
 } from '../../tools/clientReport';
 import { exportClientReportPdf } from '../../tools/clientReportHtml';
+import { formatRoomLabel } from '../../tools/clientReportRooms';
+import { listRooms } from '../../tools/rooms';
+import { AREA_UMUM_CODE, AREA_UMUM_NAME } from '../../tools/constants';
+import type { Room } from '../../tools/types';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 function isoNDaysAgo(n: number): string {
@@ -52,6 +56,11 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
   const [draft, setDraft] = useState<ClientReportDraft | null>(null);
   const [weeklyDelta, setWeeklyDelta] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  // Fills the per-line room picker in a room phase. Read once when the draft is
+  // generated, from the same source and with the same `includeInactive` as
+  // assembly, so a line re-filed here gets exactly the label assembly would
+  // have stamped — a different string would open a second room head.
+  const [rooms, setRooms] = useState<Room[]>([]);
 
   // Issued-report archive (Riwayat Laporan). Reports are immutable once
   // issued — viewing re-renders the frozen snapshot; a correction issues a
@@ -85,9 +94,21 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
         projectName: project.name,
         clientName: project.client_name ?? null,
         milestoneStatuses: milestones.map((m) => m.status),
+        // Falls back to the database default until migration 096 is pasted:
+        // select('*') on a projects row with no phase column yields undefined
+        // at runtime, even though Project.phase is typed required. Same guard
+        // RoomsAdminScreen.tsx:41 and RoomDetailScreen.tsx:34 use.
+        phase: project.phase ?? 'STRUKTUR',
       });
       setDraft(d);
       setViewing(null);
+      // Only in a room phase, and never fatal: without the list the curator
+      // still edits every line, a new one simply stays under Area Umum.
+      if (d.phase === 'FINISHING' || d.phase === 'SERAH_TERIMA') {
+        try { setRooms(await listRooms(project.id, { includeInactive: true })); } catch { setRooms([]); }
+      } else {
+        setRooms([]);
+      }
       toast('Draf laporan dibuat — silakan tinjau & lengkapi', 'ok');
       if (kind === 'mingguan') {
         try {
@@ -118,6 +139,9 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
     if (!draft) return;
     patch({ updates: draft.updates.map((u, idx) => (idx === i ? { ...u, ...p } : u)) });
   };
+  // A new line starts untagged, which files it under Area Umum; the curator
+  // picks a room from the row's own picker if it belongs to one. Identical in
+  // both phases — section 01 prints this list either way.
   const addUpdate = () => {
     if (!draft) return;
     patch({ updates: [...draft.updates, { date: todayShort(), area: '', note: '' }] });
@@ -125,6 +149,36 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
   const removeUpdate = (i: number) => {
     if (!draft) return;
     patch({ updates: draft.updates.filter((_, idx) => idx !== i) });
+  };
+
+  // ── Room filing (room phases only) ────────────────────────────────────────
+  const roomMode = draft?.phase === 'FINISHING' || draft?.phase === 'SERAH_TERIMA';
+
+  // The real Area Umum room already labels itself "Area Umum", so the bare
+  // fallback option is offered only when the project has no such room — one
+  // "Area Umum" entry either way.
+  const roomOptions = useMemo(() => {
+    const opts = rooms.map((r) => ({ value: r.id, code: r.room_code, label: formatRoomLabel(r) }));
+    const hasUmum = rooms.some((r) => (r.room_code ?? '').toUpperCase() === AREA_UMUM_CODE);
+    return hasUmum ? opts : [{ value: '', code: undefined, label: AREA_UMUM_NAME }, ...opts];
+  }, [rooms]);
+
+  /**
+   * Re-file one line. The label is composed here rather than carried from the
+   * draft so it matches assembly's exactly, and the gate chip is dropped: the
+   * old room's chip would be wrong under the new head, and the renderer takes
+   * the chip from whichever line in that room still carries one. A room with
+   * no other line prints no chip, which is the honest answer — we do not know
+   * its gate.
+   */
+  const setUpdateRoom = (i: number, roomId: string) => {
+    if (!draft) return;
+    const room = rooms.find((r) => r.id === roomId);
+    patch({
+      updates: draft.updates.map((u, idx) => (idx === i
+        ? { ...u, roomId: room ? room.id : null, roomLabel: room ? formatRoomLabel(room) : null, gateLabel: null }
+        : u)),
+    });
   };
 
   // ── Dokumentasi editing ───────────────────────────────────────────────────
@@ -340,7 +394,9 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
 
             <Card
               title={`Update Lapangan (${draft.updates.length})`}
-              subtitle="Deskripsi pekerjaan yang tampil di laporan. Diisi otomatis dari Log Harian; bisa ditambah/diedit di sini."
+              subtitle={roomMode
+                ? 'Deskripsi pekerjaan yang tampil di laporan, dikelompokkan per ruangan. Diisi otomatis dari Log Harian; bisa ditambah/diedit di sini.'
+                : 'Deskripsi pekerjaan yang tampil di laporan. Diisi otomatis dari Log Harian; bisa ditambah/diedit di sini.'}
             >
               {draft.updates.map((u, i) => (
                 <View key={i} style={styles.updBlock}>
@@ -350,6 +406,20 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
                       <Ionicons name="close-circle-outline" size={18} color={COLORS.critical} />
                     </TouchableOpacity>
                   </View>
+                  {roomMode && (
+                    <View style={{ marginBottom: SPACE.xs + 2 }}>
+                      <Text style={styles.label}>Ruangan</Text>
+                      <SelectSheet
+                        value={u.roomId ?? ''}
+                        options={roomOptions}
+                        onChange={(v) => setUpdateRoom(i, v)}
+                        title="Pilih ruangan"
+                        placeholder={AREA_UMUM_NAME}
+                        emptyText="Belum ada ruangan pada proyek ini."
+                        accessibilityLabel="Ruangan untuk update ini"
+                      />
+                    </View>
+                  )}
                   <TextInput placeholderTextColor={COLORS.textMuted}
                     style={styles.input}
                     value={u.area}

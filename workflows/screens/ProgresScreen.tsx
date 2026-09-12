@@ -154,7 +154,7 @@ export default function ProgresScreen() {
         crew_breakdown: existing?.crew_breakdown ?? null,
         safety_incidents: existing?.safety_incidents ?? 0,
         author_id: profile.id,
-        highlights: [...highlights, { area: item?.label ?? 'Progres', note, boq_item_id: boqId, sort_order: highlights.length }],
+        highlights: [...highlights, { area: item?.label ?? 'Progres', note, boq_item_id: boqId, sort_order: highlights.length, room_id: null, gate_code: null, source_event_id: null }],
         photos: existing?.photos ?? [],
       });
       toast('Ditambahkan ke Log Harian', 'ok');
@@ -341,12 +341,14 @@ export default function ProgresScreen() {
                 { key: 'progress' as SubModule, icon: 'trending-up', label: 'Tambah Progres', color: COLORS.accent },
                 { key: 'perubahan' as SubModule, icon: 'create', label: 'Catatan Perubahan', color: COLORS.warning },
                 { key: 'ruangan' as const, icon: 'qr-code', label: 'Ruangan', color: COLORS.info },
+                { key: 'papan' as const, icon: 'grid', label: 'Papan', color: COLORS.accentDark },
               ]).map(btn => (
                 <TouchableOpacity
                   key={btn.key}
                   style={styles.hubBtn}
                   onPress={() => {
                     if (btn.key === 'ruangan') navigation.navigate('RoomScan');
+                    else if (btn.key === 'papan') navigation.navigate('RoomBoard');
                     else setActiveModule(btn.key as SubModule);
                   }}
                   accessibilityRole="button"

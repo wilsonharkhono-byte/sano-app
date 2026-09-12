@@ -15,12 +15,14 @@ import { buildLinking, ROOM_PATH } from '../workflows/linking';
 const PrincipalHomeScreen = lazyScreen(() => import('./screens/PrincipalHomeScreen'));
 const ApprovalsScreen = lazyScreen(() => import('./screens/ApprovalsScreen'));
 const OfficeReportsScreen = lazyScreen(() => import('./screens/OfficeReportsScreen'));
+const PrincipalRoomsScreen = lazyScreen(() => import('./screens/PrincipalRoomsScreen'));
 const RoomDetailScreen = lazyScreen(() => import('./screens/RoomDetailScreen'));
 const SiteEventDetailScreen = lazyScreen(() => import('../workflows/screens/SiteEventDetailScreen'));
 
 export type PrincipalTabParamList = {
   Home: undefined;
   Approvals: undefined;
+  Rooms: undefined;
   Reports: undefined;
   Notifikasi: undefined;
   RoomDetail: { projectCode: string; roomCode: string };
@@ -37,6 +39,7 @@ const Tab = createBottomTabNavigator<PrincipalTabParamList>();
 const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Home: 'home-outline',
   Approvals: 'checkmark-done-outline',
+  Rooms: 'business-outline',
   Reports: 'bar-chart-outline',
   Notifikasi: 'notifications-outline',
   RoomDetail: 'business-outline',
@@ -46,6 +49,7 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
 const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Home: 'home',
   Approvals: 'checkmark-done',
+  Rooms: 'business',
   Reports: 'bar-chart',
   Notifikasi: 'notifications',
   RoomDetail: 'business',
@@ -55,6 +59,7 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
 const LABEL_MAP: Record<string, string> = {
   Home: 'Beranda',
   Approvals: 'Approval',
+  Rooms: 'Ruangan',
   Reports: 'Laporan',
   Notifikasi: 'Notifikasi',
   RoomDetail: 'Ruangan',
@@ -106,6 +111,7 @@ export default function PrincipalNavigation() {
       >
         <Tab.Screen name="Home" component={PrincipalHomeScreen} />
         <Tab.Screen name="Approvals" component={ApprovalsScreen} />
+        <Tab.Screen name="Rooms" component={PrincipalRoomsScreen} />
         <Tab.Screen name="Reports" component={OfficeReportsScreen} />
         <Tab.Screen name="RoomDetail" component={RoomDetailScreen} options={{ tabBarButton: () => null }} />
         <Tab.Screen name="SiteEventDetail" component={SiteEventDetailScreen} options={{ tabBarButton: () => null, unmountOnBlur: true }} />
