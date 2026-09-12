@@ -85,6 +85,11 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
         projectName: project.name,
         clientName: project.client_name ?? null,
         milestoneStatuses: milestones.map((m) => m.status),
+        // Falls back to the database default until migration 096 is pasted:
+        // select('*') on a projects row with no phase column yields undefined
+        // at runtime, even though Project.phase is typed required. Same guard
+        // RoomsAdminScreen.tsx:40 and RoomDetailScreen.tsx:34 use.
+        phase: project.phase ?? 'STRUKTUR',
       });
       setDraft(d);
       setViewing(null);
