@@ -536,19 +536,20 @@ describe('listConfirmedEventsForDay', () => {
     expect(c.in).toHaveBeenCalledWith('status', ['open', 'done']);
     expect(c.gte).toHaveBeenCalledWith('confirmed_at', '2026-09-10T17:00:00.000Z');
     expect(c.lt).toHaveBeenCalledWith('confirmed_at', '2026-09-11T17:00:00.000Z');
-    expect(out).toHaveLength(1);
-    expect(out[0].media).toHaveLength(1);
-    expect('site_event_media' in out[0]).toBe(false);
+    expect(out.events).toHaveLength(1);
+    expect(out.events![0].media).toHaveLength(1);
+    expect('site_event_media' in out.events![0]).toBe(false);
   });
 
-  it('returns an empty list rather than throwing when the read fails', async () => {
+  it('reports a read failure distinctly rather than an empty list', async () => {
     (supabase.from as jest.Mock).mockReturnValue(chain({ data: null, error: { message: 'nope' } }));
-    expect(await listConfirmedEventsForDay('p1', '2026-09-11')).toEqual([]);
+    expect(await listConfirmedEventsForDay('p1', '2026-09-11')).toEqual({ events: null, error: 'nope' });
   });
 
   it('gives an event with no media an empty array', async () => {
     (supabase.from as jest.Mock).mockReturnValue(chain({ data: [{ id: 'e1', event_type: 'info', title: null, summary: 'S', room_id: 'r1', gate_code: null, confirmed_at: 'x', site_event_media: null }], error: null }));
-    expect((await listConfirmedEventsForDay('p1', '2026-09-11'))[0].media).toEqual([]);
+    const out = await listConfirmedEventsForDay('p1', '2026-09-11');
+    expect(out.events![0].media).toEqual([]);
   });
 });
 

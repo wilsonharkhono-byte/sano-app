@@ -523,6 +523,16 @@ const PULL_SELECT =
   'site_event_media(id, kind, role, storage_path, sort_order)';
 
 /**
+ * Either the day's confirmed events, or a read failure. Distinguishing these
+ * matters: `PullEventsSheet` must never render a network blip as "Belum ada
+ * kejadian terkonfirmasi di tanggal ini" (an absent day), which is a false
+ * claim, not an absent one — see CLAUDE.md's truth-correctness contract.
+ */
+export type ConfirmedEventsResult =
+  | { events: PullableEvent[]; error?: undefined }
+  | { events: null; error: string };
+
+/**
  * The day's CONFIRMED events, for "Tarik dari kejadian ruangan". `draft` and
  * `pending_analysis` are excluded because no human has read them yet, and
  * `discarded` because a discarded event is a decision, not an oversight.
@@ -531,12 +541,16 @@ const PULL_SELECT =
  *
  * The window is a WIB calendar day with an EXCLUSIVE end, per
  * tools/timeWindow.ts - an inclusive '...T23:59:59' bound drops the last
- * fraction of a second of the day.
+ * fraction of a second of the day. It windows on `confirmed_at`, not
+ * `captured_at`: this list is "what a human confirmed happened," and an
+ * event captured late at night but confirmed the next morning belongs to the
+ * day it was confirmed. `PullEventsSheet` states this explicitly so a
+ * curator who notices a gap knows where to look.
  */
 export async function listConfirmedEventsForDay(
   projectId: string,
   isoDate: string,
-): Promise<PullableEvent[]> {
+): Promise<ConfirmedEventsResult> {
   const { data, error } = await supabase
     .from('site_events')
     .select(PULL_SELECT)
@@ -547,10 +561,11 @@ export async function listConfirmedEventsForDay(
     .order('confirmed_at', { ascending: true });
   if (error) {
     console.warn('listConfirmedEventsForDay failed:', error.message);
-    return [];
+    return { events: null, error: error.message };
   }
-  return ((data ?? []) as unknown as Array<PullableEvent & { site_event_media?: PullableEvent['media'] | null }>)
+  const events = ((data ?? []) as unknown as Array<PullableEvent & { site_event_media?: PullableEvent['media'] | null }>)
     .map(({ site_event_media, ...e }) => ({ ...e, media: site_event_media ?? [] }));
+  return { events };
 }
 
 // ─── Room timeline and reassignment (plan 4, spec §9) ───────────────────────
