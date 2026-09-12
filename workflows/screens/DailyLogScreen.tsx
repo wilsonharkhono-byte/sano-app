@@ -45,8 +45,15 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
 
   const [pullOpen, setPullOpen] = useState(false);
   const [pullLoading, setPullLoading] = useState(false);
+  const [pullError, setPullError] = useState<string | null>(null);
   const [pullH, setPullH] = useState<ProposedHighlight[]>([]);
   const [pullP, setPullP] = useState<ProposedPhoto[]>([]);
+  // Session-scoped only (Review issue #3): a highlight the curator pulled and
+  // then removed is remembered for the rest of this screen visit, so a later
+  // "Tarik" offers it again unticked with a "Pernah dihapus" note instead of
+  // silently re-approving it. Closing and reopening the screen forgets this —
+  // the deliberately simpler option over a DB-backed rejection table.
+  const [dismissedEventIds, setDismissedEventIds] = useState<string[]>([]);
 
   const boqOptions = useMemo(() => {
     // Flat option list; label = "code — label". Optional link, so include a blank.
@@ -71,7 +78,14 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
   const updateHighlight = (i: number, patch: Partial<DailyLogHighlight>) =>
     setHighlights((prev) => prev.map((h, idx) => (idx === i ? { ...h, ...patch } : h)));
   const addHighlight = () => setHighlights((prev) => [...prev, { ...EMPTY_HIGHLIGHT, sort_order: prev.length }]);
-  const removeHighlight = (i: number) => setHighlights((prev) => prev.filter((_, idx) => idx !== i));
+  const removeHighlight = (i: number) => {
+    const removed = highlights[i];
+    if (removed?.source_event_id) {
+      const id = removed.source_event_id;
+      setDismissedEventIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    }
+    setHighlights((prev) => prev.filter((_, idx) => idx !== i));
+  };
 
   const addPhoto = async () => {
     if (!project) return;
@@ -92,20 +106,27 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
     if (!project) return;
     setPullOpen(true);
     setPullLoading(true);
+    setPullError(null);
     try {
-      const [events, rooms] = await Promise.all([
+      const [eventsResult, rooms] = await Promise.all([
         listConfirmedEventsForDay(project.id, logDate),
         listRooms(project.id, { includeInactive: true }),
       ]);
+      if (!eventsResult.events) {
+        // A read failure is not the same claim as "nothing happened today" —
+        // show it distinctly and let the curator retry (Review issue #2).
+        setPullError('Gagal memuat kejadian hari ini. Periksa koneksi lalu coba lagi.');
+        return;
+      }
       // Anything already on this log is excluded, so re-opening the sheet after
-      // a pull never offers the same event or photo twice.
+      // a pull never offers the same event or photo twice. A previously
+      // removed event is still offered (resurrection is fine) but flagged.
       const pulledEvents = highlights.map((h) => h.source_event_id).filter((v): v is string => !!v);
       const pulledMedia = photos.map((p) => p.source_media_id).filter((v): v is string => !!v);
-      setPullH(proposeHighlightsFromEvents(events, rooms, pulledEvents));
-      setPullP(proposePhotosFromEvents(events, rooms, pulledMedia));
+      setPullH(proposeHighlightsFromEvents(eventsResult.events, rooms, pulledEvents, dismissedEventIds));
+      setPullP(proposePhotosFromEvents(eventsResult.events, rooms, pulledMedia));
     } catch (err: any) {
-      toast(err.message ?? 'Gagal memuat kejadian ruangan', 'critical');
-      setPullOpen(false);
+      setPullError(err.message ?? 'Gagal memuat kejadian hari ini.');
     } finally {
       setPullLoading(false);
     }
@@ -184,9 +205,12 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
           {pullOpen && (
             <PullEventsSheet
               loading={pullLoading}
+              error={pullError}
+              date={logDate}
               highlights={pullH}
               photos={pullP}
               onCancel={() => setPullOpen(false)}
+              onRetry={openPull}
               onApply={applyPull}
             />
           )}
