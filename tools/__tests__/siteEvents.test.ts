@@ -634,8 +634,8 @@ describe('updateSiteEventAssignment', () => {
   });
 });
 
-describe('RPC_ERROR_COPY vs migrations 097 and 099', () => {
-  it('covers exactly the SITE_EVENT_* codes 097 and 099 actually raise — no more, no less', () => {
+describe('RPC_ERROR_COPY vs migrations 097, 099 and 100', () => {
+  it('covers exactly the SITE_EVENT_* codes 097, 099 and 100 actually raise — no more, no less', () => {
     // Only text inside `RAISE EXCEPTION '<CODE>:` counts as a code the client
     // must translate — SITE_EVENT_ASSIGNED, mentioned in 099's header comment
     // and passed to enqueue_notification_user, is a notification type, not an
@@ -644,7 +644,16 @@ describe('RPC_ERROR_COPY vs migrations 097 and 099', () => {
       const sql = fs.readFileSync(path.join(__dirname, '..', '..', 'supabase', 'migrations', file), 'utf8');
       return [...sql.matchAll(/RAISE EXCEPTION '(SITE_EVENT_[A-Z_]+):/g)].map((m) => m[1]);
     };
-    const raised = new Set([...codesIn('097_site_events.sql'), ...codesIn('099_site_event_assignment.sql')]);
+    // 100 re-creates confirm_site_event with one extra refusal, and that
+    // refusal deliberately re-uses 097's SITE_EVENT_VO_NO_EVIDENCE (the client
+    // matches on the `CODE:` prefix, so only the sentence after it grew). It is
+    // read anyway: the day 100 is edited to raise a NEW code, this fails until
+    // the copy exists.
+    const raised = new Set([
+      ...codesIn('097_site_events.sql'),
+      ...codesIn('099_site_event_assignment.sql'),
+      ...codesIn('100_confirm_vo_evidence_recheck.sql'),
+    ]);
     const covered = new Set(RPC_ERROR_COPY.map(([code]) => code));
     expect(raised.size).toBeGreaterThan(0);
     expect(covered).toEqual(raised);
