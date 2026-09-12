@@ -919,7 +919,12 @@ export interface SiteEventAiStageRow {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  /** Runs where tokens_in/tokens_out was null - excluded from the token sums above, not counted as 0. */
+  unknown_token_runs: number;
   cost_usd: number;
+  /** Runs where cost_usd was null (cost.ts: unpriced model, or a failure before usage was known) -
+   *  excluded from cost_usd above, not counted as $0. See CLAUDE.md §12: unknown beats a made-up number. */
+  unknown_cost_runs: number;
   models: string[];
 }
 
@@ -928,7 +933,9 @@ export interface SiteEventAiUsage {
   total_input_tokens: number;
   total_output_tokens: number;
   total_tokens: number;
+  unknown_token_runs: number;
   total_cost_usd: number;
+  unknown_cost_runs: number;
   by_stage: SiteEventAiStageRow[];
   /** Present only when the read failed, so a missing 097 reads as an explanation, not a zero. */
   error?: string;
@@ -936,7 +943,7 @@ export interface SiteEventAiUsage {
 
 export const EMPTY_SITE_EVENT_AI_USAGE: SiteEventAiUsage = {
   total_runs: 0, total_input_tokens: 0, total_output_tokens: 0,
-  total_tokens: 0, total_cost_usd: 0, by_stage: [],
+  total_tokens: 0, unknown_token_runs: 0, total_cost_usd: 0, unknown_cost_runs: 0, by_stage: [],
 };
 
 /** Six decimals: a single analyze run costs fractions of a cent, and float noise must not show up as spend. */
@@ -960,7 +967,7 @@ export async function readSiteEventAiUsage(
   if (dateTo) q = q.lt('created_at', dateTo);
 
   const { data, error } = await q;
-  if (error) return { ...EMPTY_SITE_EVENT_AI_USAGE, by_stage: [], error: error.message };
+  if (error) return { ...EMPTY_SITE_EVENT_AI_USAGE, error: error.message };
 
   const rows = (data ?? []) as Array<{
     stage: string; model: string | null; tokens_in: number | null;
@@ -969,18 +976,31 @@ export async function readSiteEventAiUsage(
 
   const stages = new Map<string, SiteEventAiStageRow & { modelSet: Set<string> }>();
   let inTok = 0; let outTok = 0; let cost = 0;
+  let unknownTokenRuns = 0; let unknownCostRuns = 0;
 
   for (const r of rows) {
-    const tin = Number(r.tokens_in ?? 0);
-    const tout = Number(r.tokens_out ?? 0);
-    const c = Number(r.cost_usd ?? 0);
-    inTok += tin; outTok += tout; cost += c;
+    // tokens_in/tokens_out and cost_usd come back null together on most real
+    // failure modes (no usage returned -> no bill), but each is checked on
+    // its own: a null must never be coerced to 0 and folded into a sum that
+    // is presented as a known total (CLAUDE.md §12; see cost.ts's contract).
+    const hasTokens = r.tokens_in !== null && r.tokens_in !== undefined
+      && r.tokens_out !== null && r.tokens_out !== undefined;
+    const tin = hasTokens ? Number(r.tokens_in) : 0;
+    const tout = hasTokens ? Number(r.tokens_out) : 0;
+    if (hasTokens) { inTok += tin; outTok += tout; }
+    else unknownTokenRuns += 1;
+
+    const hasCost = r.cost_usd !== null && r.cost_usd !== undefined;
+    const c = hasCost ? Number(r.cost_usd) : 0;
+    if (hasCost) cost += c;
+    else unknownCostRuns += 1;
 
     const key = r.stage ?? 'unknown';
     if (!stages.has(key)) {
       stages.set(key, {
         stage: key, run_count: 0, ok_count: 0, rejected_count: 0, error_count: 0,
-        input_tokens: 0, output_tokens: 0, total_tokens: 0, cost_usd: 0,
+        input_tokens: 0, output_tokens: 0, total_tokens: 0, unknown_token_runs: 0,
+        cost_usd: 0, unknown_cost_runs: 0,
         models: [], modelSet: new Set<string>(),
       });
     }
@@ -989,10 +1009,15 @@ export async function readSiteEventAiUsage(
     if (r.status === 'ok') s.ok_count += 1;
     else if (r.status === 'rejected') s.rejected_count += 1;
     else s.error_count += 1;
-    s.input_tokens += tin;
-    s.output_tokens += tout;
-    s.total_tokens += tin + tout;
-    s.cost_usd += c;
+    if (hasTokens) {
+      s.input_tokens += tin;
+      s.output_tokens += tout;
+      s.total_tokens += tin + tout;
+    } else {
+      s.unknown_token_runs += 1;
+    }
+    if (hasCost) s.cost_usd += c;
+    else s.unknown_cost_runs += 1;
     if (r.model) s.modelSet.add(r.model);
   }
 
@@ -1005,7 +1030,9 @@ export async function readSiteEventAiUsage(
     total_input_tokens: inTok,
     total_output_tokens: outTok,
     total_tokens: inTok + outTok,
+    unknown_token_runs: unknownTokenRuns,
     total_cost_usd: round6(cost),
+    unknown_cost_runs: unknownCostRuns,
     by_stage,
   };
 }
