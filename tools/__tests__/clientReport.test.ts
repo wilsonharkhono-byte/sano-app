@@ -548,31 +548,45 @@ describe('assembleClientReportDraft phase switch', () => {
     });
   });
 
-  it('a STRUKTUR draft reads no rooms and carries neither phase nor roomGroups', async () => {
+  it('a STRUKTUR draft reads no rooms, carries no phase, and leaves updates untagged', async () => {
     const draft = await assembleClientReportDraft(PARAMS);
     expect(listRooms).not.toHaveBeenCalled();
     expect(listGateRefs).not.toHaveBeenCalled();
     expect('phase' in draft).toBe(false);
-    expect('roomGroups' in draft).toBe(false);
     expect(draft.updates).toHaveLength(3);
+    // Exactly the three fields a Struktur update has always had - toEqual would
+    // pass with extra undefined keys, so check the key set itself.
+    expect(draft.updates.map((u) => Object.keys(u).sort())).toEqual([
+      ['area', 'date', 'note'], ['area', 'date', 'note'], ['area', 'date', 'note'],
+    ]);
     expect('room' in (draft.hero ?? {})).toBe(false);
   });
 
   it('an explicit STRUKTUR phase behaves the same way', async () => {
     const draft = await assembleClientReportDraft({ ...PARAMS, phase: 'STRUKTUR' });
     expect(listRooms).not.toHaveBeenCalled();
-    expect('roomGroups' in draft).toBe(false);
+    expect('phase' in draft).toBe(false);
+    expect(draft.updates.every((u) => u.roomLabel === undefined)).toBe(true);
   });
 
-  it('a FINISHING draft groups by room, Area Umum last, and keeps the flat list too', async () => {
+  it('a FINISHING draft orders updates by room, Area Umum last, and tags each line', async () => {
     const draft = await assembleClientReportDraft({ ...PARAMS, phase: 'FINISHING' });
     expect(listRooms).toHaveBeenCalledWith('proj-1', { includeInactive: true });
     expect(draft.phase).toBe('FINISHING');
-    expect(draft.roomGroups?.map((g) => g.roomLabel)).toEqual([
+    // ONE list: the renderer groups THIS, and the builder edits THIS.
+    expect('roomGroups' in draft).toBe(false);
+    expect(draft.updates).toHaveLength(3);
+    expect(draft.updates.map((u) => u.note)).toEqual([
+      'Rangka terpasang', 'Keramik dipasang', 'Bongkaran diangkut',
+    ]);
+    expect(draft.updates.map((u) => u.roomLabel)).toEqual([
       'Ruang Keluarga · Lt. 1', 'Kamar Mandi Utama · Lt. 2', 'Area Umum',
     ]);
-    expect(draft.roomGroups?.map((g) => g.gateLabel)).toEqual(['C · Plafon', 'B · Basah', null]);
-    expect(draft.updates).toHaveLength(3);
+    expect(draft.updates.map((u) => u.gateLabel)).toEqual(['C · Plafon', 'B · Basah', null]);
+    // The room NAME is the label; the room CODE never leaves this function.
+    expect(JSON.stringify(draft.updates)).not.toContain('KM-UTAMA');
+    // roomId rides along for grouping and the builder's picker only.
+    expect(draft.updates.map((u) => u.roomId)).toEqual(['r1', 'r2', 'ru']);
   });
 
   it('names the room on a photo that has one, and leaves the rest alone', async () => {

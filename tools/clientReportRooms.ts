@@ -5,14 +5,28 @@
 // the client report and Papan Ruangan sort by, so the two surfaces can never
 // disagree about where a room sits (spec §9).
 //
-// Spec §1.1 protects the renderer structurally: ClientReportRoomGroup carries
-// a room label, a gate label and curated text, and has no field for an owner,
-// a due date, an event type, a flag or a confidence. An internal value cannot
-// leak into a client PDF because there is nowhere to put it.
+// Spec §1.1 protects the renderer structurally: a tagged line carries a room
+// label, a gate label and curated text, and has no field for an owner, a due
+// date, an event type, a flag or a confidence. An internal value cannot leak
+// into a client PDF because there is nowhere to put it. `roomId` is the one
+// non-label field and it exists only as a grouping key - no code path prints it.
 
 import { AREA_UMUM_CODE, AREA_UMUM_NAME } from './constants';
-import { gateChipLabel } from './gateRefs';
 import type { GateRef } from './types';
+
+/**
+ * "B · Basah" - the chip tools/gateRefs.ts `gateChipLabel` composes, and spec
+ * §10.2's literal for the client report, so the bare gate letter on it is
+ * sanctioned rather than a leaked internal code. Composed here instead of
+ * imported because gateRefs.ts creates the Supabase client at module scope,
+ * and tools/clientReportHtml.ts imports THIS module to group section 01 at
+ * render time - a renderer must stay loadable with no database in scope.
+ * clientReportRooms.test.ts pins this against `gateChipLabel` itself, so the
+ * two strings cannot drift apart.
+ */
+function gateChip(gate: GateRef): string {
+  return `${gate.code} · ${gate.short_label}`;
+}
 
 /** The minimum a row needs to be ordered and labelled: Room and RoomBoardRow both satisfy it. */
 export interface DisplayRoom {
@@ -41,6 +55,33 @@ export interface ClientReportRoomGroup {
   roomLabel: string;
   gateLabel: string | null;
   updates: Array<{ date: string; area: string; note: string }>;
+}
+
+/**
+ * The room tags a stored update line carries. Both labels are client-safe
+ * display strings frozen when the draft was assembled - the room NAME (never
+ * its code) and the gate chip - so an issued report prints what it was sent
+ * with even after a room is renamed. `roomId` is a grouping key and the
+ * builder's picker value; it is never printed.
+ */
+export interface RoomTaggedLine {
+  roomId?: string | null;
+  roomLabel?: string | null;
+  gateLabel?: string | null;
+}
+
+/** A curated update line plus its room tags: what `updates` holds in a room phase. */
+export interface TaggedUpdateLine extends RoomTaggedLine {
+  date: string;
+  area: string;
+  note: string;
+}
+
+/** One printed room block. Generic so the renderer keeps the whole update line. */
+export interface RoomUpdateGroup<T> {
+  roomLabel: string;
+  gateLabel: string | null;
+  updates: T[];
 }
 
 /** Area Umum absolutely last, then rooms with no floor, then floored rooms. */
@@ -120,7 +161,7 @@ function pickGateLabel(lines: GroupableLine[], gates: GateRef[]): string | null 
       bestCount = count;
     }
   }
-  return best ? gateChipLabel(best) : null;
+  return best ? gateChip(best) : null;
 }
 
 /** Room name by id, for photo legends ("Figur 3 · Kamar Mandi Utama"). */
@@ -141,6 +182,18 @@ export function groupHighlightsByRoom(
   rooms: RoomLookupRow[],
   gates: GateRef[],
 ): ClientReportRoomGroup[] {
+  return bucketLinesByRoom(lines, rooms).map((bucket) => ({
+    roomLabel: formatRoomLabel(bucket.room),
+    gateLabel: pickGateLabel(bucket.lines, gates),
+    updates: bucket.lines.map((l) => ({ date: l.date, area: l.area, note: l.note })),
+  }));
+}
+
+/** Shared by groupHighlightsByRoom and tagLinesByRoom: the ordered room buckets. */
+function bucketLinesByRoom(
+  lines: GroupableLine[],
+  rooms: RoomLookupRow[],
+): Array<{ room: RoomLookupRow; lines: GroupableLine[] }> {
   // A project whose Area Umum was never created still needs the bucket, or a
   // room-less line would have nowhere to go.
   const fallbackRoom: RoomLookupRow = rooms.find((r) => (r.room_code ?? '').toUpperCase() === AREA_UMUM_CODE)
@@ -156,11 +209,66 @@ export function groupHighlightsByRoom(
     buckets.set(room.id, bucket);
   }
 
-  return [...buckets.values()]
-    .sort((a, b) => compareRoomsForDisplay(a.room, b.room))
-    .map((bucket) => ({
-      roomLabel: formatRoomLabel(bucket.room),
-      gateLabel: pickGateLabel(bucket.lines, gates),
-      updates: bucket.lines.map((l) => ({ date: l.date, area: l.area, note: l.note })),
+  return [...buckets.values()].sort((a, b) => compareRoomsForDisplay(a.room, b.room));
+}
+
+/**
+ * The assembly half of the room model: the same buckets `groupHighlightsByRoom`
+ * builds, flattened back into ONE ordered list of lines, each carrying the room
+ * and gate LABELS of the bucket it landed in. The draft stores only this list,
+ * so the curator's edits, deletions and additions in the report builder are the
+ * single source of truth for what prints (spec §1-§3), and `groupUpdatesByRoom`
+ * rebuilds the printed blocks from it at render time. Every line of a room
+ * carries that room's one chip, so re-grouping reproduces the same chip without
+ * re-counting gates.
+ */
+export function tagLinesByRoom(
+  lines: GroupableLine[],
+  rooms: RoomLookupRow[],
+  gates: GateRef[],
+): TaggedUpdateLine[] {
+  return bucketLinesByRoom(lines, rooms).flatMap((bucket) => {
+    const roomLabel = formatRoomLabel(bucket.room);
+    const gateLabel = pickGateLabel(bucket.lines, gates);
+    // The synthesized Area Umum fallback has no real row, so no id to carry.
+    const roomId = bucket.room.id === '' ? null : bucket.room.id;
+    return bucket.lines.map((l) => ({
+      date: l.date, area: l.area, note: l.note, roomId, roomLabel, gateLabel,
     }));
+  });
+}
+
+/**
+ * Re-group stored update lines into the blocks the renderer prints. Pure, and
+ * deliberately reads ONLY the labels frozen on the lines - it never looks a
+ * room up, so an issued snapshot renders identically forever (decision 4).
+ *
+ * Lines keep the order they are given, which for an assembled draft is already
+ * floor then sort_order; Area Umum is forced last. A line the curator added
+ * joins the room it was filed under rather than opening a second head, and a
+ * line with no room label at all joins Area Umum. When NO line carries a label
+ * the result is empty and the caller keeps its flat list - a snapshot frozen
+ * before room tagging shipped must not grow a head it was never issued with.
+ */
+export function groupUpdatesByRoom<T extends RoomTaggedLine>(lines: readonly T[]): Array<RoomUpdateGroup<T>> {
+  if (!lines.some((l) => (l.roomLabel ?? '').trim() !== '')) return [];
+
+  const buckets = new Map<string, RoomUpdateGroup<T>>();
+  for (const line of lines) {
+    const roomLabel = (line.roomLabel ?? '').trim() || AREA_UMUM_NAME;
+    // Two rooms can share a display label, so the id decides when there is one.
+    // Area Umum is keyed by its label alone: the real UMUM room and an untagged
+    // line both belong under the one head.
+    const key = roomLabel === AREA_UMUM_NAME ? AREA_UMUM_NAME : ((line.roomId ?? '').trim() || `label:${roomLabel}`);
+    const bucket = buckets.get(key) ?? { roomLabel, gateLabel: null, updates: [] };
+    bucket.updates.push(line);
+    if (bucket.gateLabel === null) bucket.gateLabel = (line.gateLabel ?? '').trim() || null;
+    buckets.set(key, bucket);
+  }
+
+  const groups = [...buckets.values()].filter((g) => g.updates.length > 0);
+  return [
+    ...groups.filter((g) => g.roomLabel !== AREA_UMUM_NAME),
+    ...groups.filter((g) => g.roomLabel === AREA_UMUM_NAME),
+  ];
 }

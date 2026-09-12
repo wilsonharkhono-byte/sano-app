@@ -27,6 +27,7 @@
 
 import { Platform } from 'react-native';
 import type { ClientReportDraft } from './clientReport';
+import { groupUpdatesByRoom } from './clientReportRooms';
 import { PROJECT_PHASE_LABELS } from './constants';
 import {
   LAYOUT_JUSTIFIED_JS,
@@ -406,18 +407,23 @@ export function renderClientReportHtml(draft: ClientReportDraft): string {
   const updateRow = (u: { date: string; area: string; note: string }, i: number) => `
       <div class="row"><span class="date">${showDates ? esc(u.date) : String(i + 1).padStart(2, '0')}</span><span class="area">${esc(u.area)}</span><span class="note">${esc(u.note)}</span></div>`;
 
-  // Room grouping needs BOTH a room phase and groups to print. A Finishing
-  // project whose report was assembled before 098 landed, or a frozen snapshot
-  // issued then, has no groups and keeps the flat list rather than losing lines.
-  // The group carries a room label, a gate label and curated text and NOTHING
-  // else (tools/clientReportRooms.ts): no owner, no due date, no blocking flag,
-  // no count and no percentage ever reaches this page.
-  const roomGroups = roomMode ? (draft.roomGroups ?? []) : [];
-  let figureRow = 0; // daily row numbers run on across groups, never restart
+  // ONE source of truth: section 01 always prints draft.updates - the same list
+  // the report builder edits - and a room phase only re-GROUPS it at print time
+  // from the labels each line already carries (tools/clientReportRooms.ts). A
+  // reworded note, a deleted line and an added line therefore reach the client
+  // PDF in Finishing exactly as they do in Struktur. Grouping reads nothing but
+  // those labels and curated text: no owner, no due date, no blocking flag, no
+  // count and no percentage can reach this page. A room-phase draft whose lines
+  // carry no labels at all (assembled before room tagging shipped, or frozen
+  // then) groups into nothing and keeps the flat list rather than losing lines.
+  const roomGroups = roomMode ? groupUpdatesByRoom(draft.updates) : [];
+  let dailyRowNo = 0; // daily row numbers run on across groups, never restart
   const updateRows = roomGroups.length > 0
+    // The chip is `gateChipLabel`'s "B · Basah": spec §10.2 names that literal,
+    // so the bare gate letter on it is sanctioned, not a leaked internal code.
     ? roomGroups.map((g) => `
       <div class="rgroup">
-        <div class="rhead"><span class="rname">${esc(g.roomLabel)}</span>${g.gateLabel ? `<span class="rgate">${esc(g.gateLabel)}</span>` : ''}</div>${g.updates.map((u) => updateRow(u, figureRow++)).join('')}
+        <div class="rhead"><span class="rname">${esc(g.roomLabel)}</span>${g.gateLabel ? `<span class="rgate">${esc(g.gateLabel)}</span>` : ''}</div>${g.updates.map((u) => updateRow(u, dailyRowNo++)).join('')}
       </div>`).join('')
     : draft.updates.map(updateRow).join('');
 

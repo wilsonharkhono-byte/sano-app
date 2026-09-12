@@ -75,9 +75,26 @@ describe('STRUKTUR client report is byte-identical to the captured golden', () =
     expect(renderClientReportHtml({ ...WEEKLY, phase: 'STRUKTUR' })).toBe(renderClientReportHtml(WEEKLY));
   });
 
-  it('ignores room groups outside a room phase, so a stray field cannot change the sheet', () => {
-    const withGroups = { ...WEEKLY, roomGroups: [{ roomLabel: 'X · Lt. 1', gateLabel: 'B · Basah', updates: WEEKLY.updates }] };
-    expect(renderClientReportHtml(withGroups)).toBe(renderClientReportHtml(WEEKLY));
+  it('ignores room tags outside a room phase, so a stray field cannot change the sheet', () => {
+    // Room tags on the update lines AND a room on a photo: both are read only
+    // behind `roomMode`, and both would be visible markup if that guard slipped.
+    const stray: ClientReportDraft = {
+      ...WEEKLY,
+      updates: WEEKLY.updates.map((u) => ({
+        ...u, roomId: 'r2', roomLabel: 'Kamar Mandi Utama · Lt. 2', gateLabel: 'B · Basah',
+      })),
+      hero: { ...WEEKLY.hero!, room: 'Kamar Mandi Utama' },
+      thumbs: WEEKLY.thumbs.map((t) => ({ ...t, room: 'Ruang Keluarga' })),
+    };
+    expect(renderClientReportHtml(stray)).toBe(renderClientReportHtml(WEEKLY));
+  });
+
+  it('ignores a legacy roomGroups field left on a snapshot frozen before this change', () => {
+    const legacy = {
+      ...WEEKLY,
+      roomGroups: [{ roomLabel: 'X · Lt. 1', gateLabel: 'B · Basah', updates: WEEKLY.updates }],
+    } as unknown as ClientReportDraft;
+    expect(renderClientReportHtml(legacy)).toBe(renderClientReportHtml(WEEKLY));
   });
 });
 

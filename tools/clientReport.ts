@@ -9,7 +9,7 @@ import type { MilestoneStatus, ProjectPhase } from './types';
 import { aggregatePeriod } from './dailySiteLogs';
 import { listRooms } from './rooms';
 import { listGateRefs } from './gateRefs';
-import { groupHighlightsByRoom, roomNameById, type ClientReportRoomGroup } from './clientReportRooms';
+import { tagLinesByRoom, roomNameById } from './clientReportRooms';
 import { resolvePhotoUrl } from './storage';
 import { computeOverallProgress } from './progressMath';
 import { dayRangeWIB } from './timeWindow';
@@ -196,6 +196,19 @@ export interface ClientReportUpdate {
   date: string;   // formatted display date, e.g. '14 Jun' (not ISO)
   area: string;
   note: string;
+  /**
+   * Room tags, set only in a room phase (spec §10.2). The renderer groups
+   * `updates` by these at print time, so the ONE list the builder edits is the
+   * ONE list that reaches the client PDF. `roomLabel` is the room NAME plus its
+   * floor and `gateLabel` the sanctioned gate chip - both are client-safe
+   * strings frozen here, never re-read at render time, so an issued report
+   * survives a room rename. `roomId` is a grouping key and the builder's picker
+   * value; nothing prints it. Absent on a Struktur draft, which carries exactly
+   * the three fields above and renders exactly as it did before.
+   */
+  roomId?: string | null;
+  roomLabel?: string | null;
+  gateLabel?: string | null;
 }
 export interface ClientReportPhoto {
   url: string;
@@ -234,12 +247,6 @@ export interface ClientReportDraft {
    * re-renders exactly as it was sent.
    */
   phase?: ProjectPhase;
-  /**
-   * Section 01 grouped by room. Present only in a room phase; the renderer
-   * falls back to the flat `updates` when it is missing or empty, so a line is
-   * never lost. Carries labels and curated text only - spec §1.1.
-   */
-  roomGroups?: ClientReportRoomGroup[];
 }
 
 function fmtCaptionDate(iso: string): string {
@@ -273,9 +280,14 @@ export async function assembleClientReportDraft(params: AssembleParams): Promise
     })),
   );
 
-  const updates = agg.highlights.map((h) => ({ date: fmtCaptionDate(h.log_date), area: h.area, note: h.note }));
-  const roomGroups: ClientReportRoomGroup[] | undefined = roomMode
-    ? groupHighlightsByRoom(
+  // ONE list, in both phases. A room phase orders it by room (floor, then
+  // sort_order, Area Umum last) and stamps each line with its room and gate
+  // LABELS; the renderer rebuilds the printed room blocks from exactly this
+  // list, so every edit, deletion and addition the curator makes in the builder
+  // reaches the client PDF. A Struktur draft carries the three plain fields it
+  // always did.
+  const updates: ClientReportUpdate[] = roomMode
+    ? tagLinesByRoom(
         agg.highlights.map((h: { log_date: string; area: string; note: string; room_id?: string | null; gate_code?: string | null }) => ({
           date: fmtCaptionDate(h.log_date), area: h.area, note: h.note,
           room_id: h.room_id ?? null, gate_code: h.gate_code ?? null,
@@ -283,14 +295,14 @@ export async function assembleClientReportDraft(params: AssembleParams): Promise
         rooms,
         gates,
       )
-    : undefined;
+    : agg.highlights.map((h) => ({ date: fmtCaptionDate(h.log_date), area: h.area, note: h.note }));
 
   return {
     // Conditional spread, not `phase: roomMode ? phase : undefined`: an
     // explicit undefined is a PRESENT key in memory and a MISSING one after
     // JSON.stringify, and `'phase' in draft` is the cheapest check a reviewer
     // has. A Struktur draft carries neither key, exactly as before.
-    ...(roomMode ? { phase, roomGroups } : {}),
+    ...(roomMode ? { phase } : {}),
     kind: params.kind,
     reportNo,
     periodStart: params.periodStart,
@@ -304,9 +316,6 @@ export async function assembleClientReportDraft(params: AssembleParams): Promise
     crewBreakdown: agg.crewBreakdown,
     safetyIncidents: agg.safetyIncidents,
     nextPlan: '',
-    // Kept alongside roomGroups on purpose: ClientReportBuilderScreen edits
-    // draft.updates directly, and the renderer falls back to it when a room
-    // phase has no groups.
     updates,
     hero: photos.length > 0 ? photos[0] : null,
     thumbs: photos.slice(1),

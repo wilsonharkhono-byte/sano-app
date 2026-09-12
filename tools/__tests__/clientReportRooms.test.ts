@@ -4,9 +4,13 @@
 jest.mock('../supabase', () => ({ supabase: {} }));
 
 import {
-  compareRoomsForDisplay, formatRoomLabel, groupHighlightsByRoom, roomNameById,
-  type GroupableLine, type RoomLookupRow,
+  compareRoomsForDisplay, formatRoomLabel, groupHighlightsByRoom, groupUpdatesByRoom,
+  roomNameById, tagLinesByRoom,
+  type GroupableLine, type RoomLookupRow, type TaggedUpdateLine,
 } from '../clientReportRooms';
+// Imported ONLY so the chip this module composes locally can be pinned against
+// the app-wide definition - see the gateChip comment in clientReportRooms.ts.
+import { gateChipLabel } from '../gateRefs';
 import type { GateRef } from '../types';
 
 const gate = (code: string, short: string, sort_order: number): GateRef => ({
@@ -177,5 +181,108 @@ describe('groupHighlightsByRoom', () => {
 describe('roomNameById', () => {
   it('maps a photo room to its bare name for the figure legend', () => {
     expect(roomNameById(ROOMS).get('r2')).toBe('Kamar Mandi Utama');
+  });
+});
+
+describe('tagLinesByRoom', () => {
+  const LINES: GroupableLine[] = [
+    line('Halaman', 'Bongkaran diangkut', 'ru', null),
+    line('Lantai', 'Keramik dipasang', 'r2', 'B'),
+    line('Dinding', 'Nat selesai', 'r2', 'B'),
+    line('Plafon', 'Rangka terpasang', 'r1', 'D'),
+  ];
+
+  it('returns ONE list in room order, each line carrying its room and gate labels', () => {
+    const tagged = tagLinesByRoom(LINES, ROOMS, GATES);
+    expect(tagged.map((u) => u.note)).toEqual([
+      'Rangka terpasang', 'Keramik dipasang', 'Nat selesai', 'Bongkaran diangkut',
+    ]);
+    expect(tagged.map((u) => u.roomLabel)).toEqual([
+      'Ruang Keluarga · Lt. 1', 'Kamar Mandi Utama · Lt. 2', 'Kamar Mandi Utama · Lt. 2', 'Area Umum',
+    ]);
+    expect(tagged.map((u) => u.gateLabel)).toEqual(['D · Finishing', 'B · Basah', 'B · Basah', null]);
+    expect(tagged.map((u) => u.roomId)).toEqual(['r1', 'r2', 'r2', 'ru']);
+  });
+
+  it('carries the label, never the room code, and nothing internal', () => {
+    const tagged = tagLinesByRoom([line('Lantai', 'Keramik', 'r2', 'B')], ROOMS, GATES);
+    expect(Object.keys(tagged[0]).sort())
+      .toEqual(['area', 'date', 'gateLabel', 'note', 'roomId', 'roomLabel']);
+    expect(JSON.stringify(tagged)).not.toContain('R2'); // the room_code
+  });
+
+  it('composes the same gate chip the rest of the app does', () => {
+    const tagged = tagLinesByRoom([line('Lantai', 'Keramik', 'r2', 'B')], ROOMS, GATES);
+    expect(tagged[0].gateLabel).toBe(gateChipLabel(GATES[0]));
+  });
+
+  it('leaves no room id on the synthesized Area Umum bucket', () => {
+    const tagged = tagLinesByRoom([line('Umum', 'Catatan', null, null)], [ROOMS[0]], GATES);
+    expect(tagged[0].roomLabel).toBe('Area Umum');
+    expect(tagged[0].roomId).toBeNull();
+  });
+
+  it('groups back into exactly the blocks groupHighlightsByRoom would have built', () => {
+    const viaTags = groupUpdatesByRoom(tagLinesByRoom(LINES, ROOMS, GATES));
+    const direct = groupHighlightsByRoom(LINES, ROOMS, GATES);
+    expect(viaTags.map((g) => [g.roomLabel, g.gateLabel])).toEqual(direct.map((g) => [g.roomLabel, g.gateLabel]));
+    expect(viaTags.map((g) => g.updates.map((u) => u.note)))
+      .toEqual(direct.map((g) => g.updates.map((u) => u.note)));
+  });
+});
+
+describe('groupUpdatesByRoom', () => {
+  const tag = (note: string, roomId: string | null, roomLabel: string | null, gateLabel: string | null = null): TaggedUpdateLine =>
+    ({ date: '14 Jun', area: 'Area', note, roomId, roomLabel, gateLabel });
+
+  it('groups by the frozen labels alone, with no room lookup at all', () => {
+    const groups = groupUpdatesByRoom([
+      tag('a', 'r1', 'Ruang Keluarga · Lt. 1', 'D · Finishing'),
+      tag('b', 'ru', 'Area Umum'),
+      tag('c', 'r1', 'Ruang Keluarga · Lt. 1', 'D · Finishing'),
+    ]);
+    expect(groups.map((g) => g.roomLabel)).toEqual(['Ruang Keluarga · Lt. 1', 'Area Umum']);
+    expect(groups[0].updates.map((u) => u.note)).toEqual(['a', 'c']);
+    expect(groups[0].gateLabel).toBe('D · Finishing');
+    expect(groups[1].gateLabel).toBeNull();
+  });
+
+  it('forces Area Umum last however the lines arrive', () => {
+    const groups = groupUpdatesByRoom([
+      tag('a', 'ru', 'Area Umum'),
+      tag('b', 'r1', 'Ruang Keluarga · Lt. 1'),
+    ]);
+    expect(groups.map((g) => g.roomLabel)).toEqual(['Ruang Keluarga · Lt. 1', 'Area Umum']);
+  });
+
+  it('puts an untagged line under the SAME Area Umum head as a tagged one', () => {
+    const groups = groupUpdatesByRoom([tag('a', 'ru', 'Area Umum'), tag('b', null, null)]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].roomLabel).toBe('Area Umum');
+    expect(groups[0].updates.map((u) => u.note)).toEqual(['a', 'b']);
+  });
+
+  it('keeps two rooms that share a display label apart by id', () => {
+    const groups = groupUpdatesByRoom([tag('a', 'r1', 'Gudang'), tag('b', 'r9', 'Gudang')]);
+    expect(groups).toHaveLength(2);
+  });
+
+  it('takes the first chip a group carries, so a curator-added line does not blank it', () => {
+    const groups = groupUpdatesByRoom([
+      tag('a', 'r2', 'Kamar Mandi Utama · Lt. 2', 'B · Basah'),
+      tag('b', 'r2', 'Kamar Mandi Utama · Lt. 2', null),
+    ]);
+    expect(groups[0].gateLabel).toBe('B · Basah');
+    expect(groups[0].updates).toHaveLength(2);
+  });
+
+  it('groups into nothing when no line is tagged, so the caller keeps its flat list', () => {
+    expect(groupUpdatesByRoom([tag('a', null, null), tag('b', null, '  ')])).toEqual([]);
+    expect(groupUpdatesByRoom([])).toEqual([]);
+  });
+
+  it('never returns an empty group', () => {
+    const groups = groupUpdatesByRoom([tag('a', 'r1', 'Ruang Keluarga · Lt. 1')]);
+    expect(groups.every((g) => g.updates.length > 0)).toBe(true);
   });
 });
