@@ -111,6 +111,10 @@ describe('migration 100 - paste ergonomics', () => {
   it("sets lock_timeout = '5s' as the first statement and resets it once", () => {
     expect(CODE.trimStart()).toMatch(/^SET lock_timeout = '5s';\n/);
     expect(CODE.match(/^[ \t]*RESET\s+lock_timeout\s*;/gim) ?? []).toHaveLength(1);
+    // Exactly ONE SET: a second one later in the file (SET lock_timeout = '0',
+    // say) would sit behind a lock for ever while the first statement still
+    // reads as 5 s.
+    expect(CODE.match(/^[ \t]*SET\s+lock_timeout\b[^\n]*/gim) ?? []).toEqual(["SET lock_timeout = '5s';"]);
   });
 
   it('ends on a grid that shows the outcome without reading a notice', () => {
@@ -163,6 +167,14 @@ describe('migration 100 - who may execute what', () => {
     // function it has no reason to call.
     expect(CODE).toContain(`REVOKE ALL ON FUNCTION ${HELPER_SIG} FROM PUBLIC, anon, authenticated;`);
     expect(CODE).not.toMatch(/GRANT[^\n]*site_event_norm_quote/i);
+  });
+
+  it('grants nothing to anon or PUBLIC, anywhere in the file', () => {
+    // The assertions above prove the RIGHT grant exists; only an allowlist of
+    // grantees catches an EXTRA one appended further down (a GRANT ... TO anon
+    // after the correct line leaves every other guard satisfied).
+    const grantees = [...CODE.matchAll(/^[ \t]*GRANT\s+[^\n;]*?\sTO\s+([^\n;]+);/gim)].map((m) => m[1].trim());
+    expect(grantees).toEqual(['authenticated, service_role']);
   });
 
   it('keeps confirm_site_event SECURITY DEFINER with search_path pinned', () => {
@@ -458,6 +470,41 @@ describe('migration 100 - the VO evidence re-check', () => {
     expect(survivors).toBeLessThan(vo.indexOf('INSERT INTO site_changes'));
     // The aggregate still reads v_quotes, which is now the survivor list.
     expect(vo).toMatch(/INTO v_evidence\s+FROM jsonb_array_elements_text\(v_quotes\) AS q;/);
+  });
+
+  it('pins the whole re-check block, so nothing can be slipped inside it', () => {
+    // An allowlist, not a collection of substring guards. The behavioural
+    // assertions above each say WHY one line is there, but they cannot see an
+    // OR TRUE appended to the filter, an extra `v_kept := v_quotes;` between
+    // the filter and the refusal, or a dropped ORDER BY - all of which leave
+    // every one of them satisfied while the check stops checking. The
+    // "097 verbatim" guard cannot see them either: it peels this span off
+    // wholesale. So the span itself is pinned, character for character.
+    const vo = voBranch();
+    const from = vo.indexOf('v_excerpt :=');
+    const to = vo.indexOf('v_quotes := v_kept;');
+    expect(from).toBeGreaterThan(-1);
+    expect(to).toBeGreaterThan(from);
+    const span = norm(vo.slice(from, to + 'v_quotes := v_kept;'.length));
+    expect(span).toBe(
+      norm(`
+        v_excerpt := COALESCE(v_edited, v_ev.transcript_edited, v_ev.transcript);
+        v_hay_text := site_event_norm_quote(COALESCE(v_excerpt, ''));
+        v_hay_note := site_event_norm_quote(COALESCE(v_ev.raw_text, ''));
+        SELECT COALESCE(jsonb_agg(k.quote ORDER BY k.ord), '[]'::jsonb)
+          INTO v_kept
+        FROM (
+          SELECT e.quote, e.ord, site_event_norm_quote(e.quote) AS needle
+          FROM jsonb_array_elements_text(v_quotes) WITH ORDINALITY AS e(quote, ord)
+        ) AS k
+        WHERE char_length(k.needle) >= ${DRAFT_QUOTE_MIN_CHARS}
+          AND (position(k.needle IN v_hay_text) > 0 OR position(k.needle IN v_hay_note) > 0);
+        IF jsonb_array_length(v_kept) = 0 THEN
+          RAISE EXCEPTION 'SITE_EVENT_VO_NO_EVIDENCE: VO hanya bisa dikonfirmasi bila ada kutipan dasar (kutipan tidak lagi ada di transkrip)';
+        END IF;
+        v_quotes := v_kept;
+      `),
+    );
   });
 
   it('runs the re-check before anything is written', () => {
