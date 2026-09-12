@@ -14,6 +14,7 @@ import { signOut }    from '../../tools/auth';
 import { getRecentCriticalAnomalies } from '../../tools/audit';
 import { computeOverallProgress } from '../../tools/progressMath';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
+import DraftEventsCard from './siteEvent/DraftEventsCard';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -157,6 +158,9 @@ export default function BerandaScreen() {
             <Text style={styles.alertBtnText}>Scan Ruangan</Text>
           </TouchableOpacity>
         </Card>
+
+        {/* ── Draf kejadian menunggu konfirmasi ─────────────────────────── */}
+        <DraftEventsCard />
 
         {/* ── Control alerts ───────────────────────────────────────────── */}
         {hasAlerts && (

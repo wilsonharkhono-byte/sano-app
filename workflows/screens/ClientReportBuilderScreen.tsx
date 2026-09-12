@@ -377,7 +377,13 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
             >
               {photoList.map((ph, i) => (
                 <View key={`${ph.url}-${i}`} style={styles.photoRow}>
-                  <Image source={{ uri: ph.url }} style={styles.photoThumb} resizeMode="cover" />
+                  {ph.url ? (
+                    <Image source={{ uri: ph.url }} style={styles.photoThumb} resizeMode="cover" />
+                  ) : (
+                    <View style={[styles.photoThumb, styles.photoThumbFallback]}>
+                      <Ionicons name="image-outline" size={20} color={COLORS.textSec} />
+                    </View>
+                  )}
                   <View style={{ flex: 1 }}>
                     <View style={styles.photoHead}>
                       {i === 0 ? (
@@ -461,6 +467,7 @@ const styles = StyleSheet.create({
 
   photoRow: { flexDirection: 'row', gap: SPACE.md - 2, paddingVertical: SPACE.sm, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, alignItems: 'flex-start' },
   photoThumb: { width: 72, height: 72, borderRadius: RADIUS, backgroundColor: COLORS.surfaceAlt, borderWidth: 1, borderColor: COLORS.borderSub },
+  photoThumbFallback: { alignItems: 'center', justifyContent: 'center' },
   photoHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   heroBadge: { backgroundColor: COLORS.accentBg, borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
   heroBadgeText: { fontSize: 10, fontFamily: FONTS.bold, letterSpacing: 0.8, color: COLORS.accentDark },

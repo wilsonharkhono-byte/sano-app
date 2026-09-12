@@ -15,6 +15,7 @@ import type {
   UserRoleType,
   DefectStatusType,
 } from './constants';
+import type { AiConfidence, SiteEventDraft, SiteEventTypeCode } from './siteEventDraftValidate';
 
 // ─── Identity & Access ────────────────────────────────────────────────
 
@@ -106,6 +107,109 @@ export interface GateStepRef {
   active: boolean;
   datum_step_code: string | null;
   created_at: string;
+}
+
+// ─── Site events (097) ─────────────────────────────────────────────────
+
+/**
+ * The validated AI draft shape and its confidence enum live in the pure
+ * validator, because that file is copied into the Deno edge function and must
+ * not import anything. Re-exported here so app code imports types from one place.
+ */
+export type { AiConfidence, DraftDrop, SiteEventDraft } from './siteEventDraftValidate';
+
+export type SiteEventType = SiteEventTypeCode;
+
+/** pending_analysis → draft is the edge function's; everything after is a human's. */
+export type SiteEventStatus = 'pending_analysis' | 'draft' | 'open' | 'done' | 'discarded';
+
+/** 'rejected' means the model suggested a VO and a human declined it; never set without a suggestion. */
+export type VoFlag = 'none' | 'suggested' | 'confirmed' | 'rejected';
+
+export type SiteEventMediaKind = 'photo' | 'audio' | 'video';
+export type SiteEventMediaRole = 'context' | 'closeup' | 'closure' | 'audio';
+
+export interface SiteEvent {
+  id: string;
+  project_id: string;
+  room_id: string;
+  reporter_id: string;
+  status: SiteEventStatus;
+  event_type: SiteEventType | null;
+  gate_code: string | null;
+  step_code: string | null;
+  title: string | null;
+  summary: string | null;
+  raw_text: string | null;
+  /** Service role only (097 site_events_ai_columns_service_only). */
+  transcript: string | null;
+  /** The supervisor's correction; wins over transcript on re-analysis and in quote matching. */
+  transcript_edited: string | null;
+  /** Service role only. */
+  ai_draft: SiteEventDraft | null;
+  /** Service role only. */
+  ai_confidence: AiConfidence | null;
+  /** Service role only. */
+  ai_mismatch: boolean;
+  /** Service role only. */
+  ai_model: string | null;
+  /** False when the event was authored by hand (no ai_draft at confirm time). */
+  ai_used: boolean;
+  owner_id: string | null;
+  due_date: string | null;
+  downstream_impact: string | null;
+  is_blocking: boolean;
+  vo_flag: VoFlag;
+  site_change_id: string | null;
+  related_event_id: string | null;
+  captured_at: string;
+  created_at: string;
+  confirmed_at: string | null;
+  closed_at: string | null;
+  closed_by: string | null;
+  closure_note: string | null;
+  /** Service role only. */
+  last_error: string | null;
+  /** Service role only. Counts failed analysis attempts. */
+  analysis_attempts: number;
+}
+
+export interface SiteEventMedia {
+  id: string;
+  event_id: string;
+  kind: SiteEventMediaKind;
+  role: SiteEventMediaRole;
+  /** Path inside the private site-media bucket: site-events/{projectId}/{eventId}/{mediaId}.{ext} */
+  storage_path: string;
+  mime_type: string | null;
+  duration_s: number | null;
+  bytes: number | null;
+  sort_order: number;
+  captured_at: string | null;
+}
+
+/** One row of v_room_board (097). Plan 4 renders the board; plan 2 reads last_gate_code. */
+export interface RoomBoardRow {
+  room_id: string;
+  project_id: string;
+  room_code: string | null;
+  room_name: string;
+  floor: string | null;
+  sort_order: number;
+  area_type: AreaType;
+  active: boolean;
+  open_progres: number;
+  open_isu: number;
+  open_hambatan: number;
+  open_cacat: number;
+  open_butuh_keputusan: number;
+  open_info: number;
+  overdue_count: number;
+  last_event_at: string | null;
+  last_gate_code: string | null;
+  last_step_code: string | null;
+  is_quiet: boolean;
+  owner_initials: string[];
 }
 
 // ─── Baseline & Planning ──────────────────────────────────────────────

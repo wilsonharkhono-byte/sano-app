@@ -10,9 +10,9 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-10-room-site-events-design.md` (sections 1.1, 2, 3, 4.2, 4.3, 5, 6, 11, 12, 13, 14, 16, 18).
 
-**Branch and working tree:** `feat/room-site-events`, checked out in the git worktree `/Users/carissatjondro/Dropbox/AI/Claude Code/.claude/worktrees/room-site-events`. The main tree stays on `main`. Because that path contains `/.claude/worktrees/`, the repo's `testPathIgnorePatterns` would hide every test, so every `npx jest <path>` in this plan must be run as `npx jest <path> --testPathIgnorePatterns='/node_modules/' '__tests__/fixtures\.ts$' '__tests__/_serverGateHarness\.ts$' 'supabase/functions/' 'tmp/'`. Never set `ALLOW_PROD_DB_TESTS`. Never apply a migration to the live database; migrations are pasted by the user. Never call the live Supabase, OpenAI or Anthropic endpoints from a test or a verification step; deploying the function and setting secrets are user-run steps (task 15).
+**Branch and working tree:** `feat/site-events-capture` (cut from `main` after plan 1 merged as PR #61), checked out in the git worktree `/Users/carissatjondro/Dropbox/AI/Claude Code/.claude/worktrees/room-site-events`. The main tree stays on `main`. Because that path contains `/.claude/worktrees/`, the repo's `testPathIgnorePatterns` would hide every test, so every `npx jest <path>` in this plan must be run as `npx jest <path> --testPathIgnorePatterns='/node_modules/' '__tests__/fixtures\.ts$' '__tests__/_serverGateHarness\.ts$' 'supabase/functions/' 'tmp/'`. Never set `ALLOW_PROD_DB_TESTS`. Never apply a migration to the live database; migrations are pasted by the user. Never call the live Supabase, OpenAI or Anthropic endpoints from a test or a verification step; deploying the function and setting secrets are user-run steps (task 15).
 
-**Commit identity:** the repo's commits are authored by `Test User <test@example.com>`, which is already the configured git user here - a plain `git commit` is correct. End every commit message with the trailer line `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+**Commit identity:** the repo's commits are authored by `Test User <test@example.com>`, which is already the configured git user here - a plain `git commit` is correct. End every commit message with the trailer line `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 
 ---
 
@@ -145,6 +145,8 @@ const TRANSCRIPT = 'Pipa AC  menonjol\n di sisi jendela, owner minta dipindah ke
 const NOTE = 'Kusen jendela belum dipasang';
 const OPEN_EVENT_ID = '11111111-1111-4111-8111-111111111111';
 
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
 const ctx = (over: Partial<DraftValidationContext> = {}): DraftValidationContext => ({
   gateCodes: ['A', 'B', 'C', 'D'],
   steps: [{ code: 'A2', gate_code: 'A' }, { code: 'C1', gate_code: 'C' }],
@@ -264,12 +266,30 @@ describe('literal quote matching (rule 4)', () => {
     expect(r.dropped.map((d) => d.field)).toContain('evidence_quotes');
   });
 
-  it(`keeps at most ${DRAFT_QUOTES_MAX} quotes and removes duplicates`, () => {
-    const many = ['pipa ac', 'Pipa AC', 'menonjol', 'sisi jendela', 'owner minta', 'atas plafon', 'bobok dinding'];
+  it('removes duplicate quotes, treating case and whitespace as equivalent', () => {
+    const r = validateSiteEventDraft(raw({ evidence_quotes: ['pipa ac', 'Pipa AC', 'menonjol'] }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.evidence_quotes).toEqual(['pipa ac', 'menonjol']);
+  });
+
+  it(`keeps at most ${DRAFT_QUOTES_MAX} quotes, dropping the rest with a reason`, () => {
+    const many = ['pipa ac', 'menonjol', 'sisi jendela', 'owner minta', 'atas plafon', 'bobok dinding'];
     const r = validateSiteEventDraft(raw({ evidence_quotes: many }), ctx());
     if (!r.ok) throw new Error('expected ok');
     expect(r.draft.evidence_quotes).toEqual(['pipa ac', 'menonjol', 'sisi jendela', 'owner minta', 'atas plafon']);
     expect(r.dropped).toContainEqual(expect.objectContaining({ field: 'evidence_quotes', value: 'bobok dinding' }));
+  });
+
+  it('strips zero-width and directional characters before matching a quote', () => {
+    const transcriptWithInvisibles = 'Pipa AC men\u200Bonjol di sisi jendela';
+    expect(isLiteralQuote('pipa ac menonjol', [transcriptWithInvisibles, null])).toBe(true);
+  });
+
+  it('drops every quote when both transcript and note are empty, and downgrades VO', () => {
+    const r = validateSiteEventDraft(raw(), ctx({ transcript: '', rawText: '' }));
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.evidence_quotes).toEqual([]);
+    expect(r.draft.vo.flag).toBe('none');
   });
 });
 
@@ -282,6 +302,7 @@ describe('VO suggestion (rule 4, second half)', () => {
     if (!r.ok) throw new Error('expected ok');
     expect(r.draft.vo.flag).toBe('none');
     expect(r.draft.vo.evidence_quotes).toEqual([]);
+    expect(r.draft.vo.reason).toBe('');
     expect(r.dropped).toContainEqual({
       field: 'vo.flag',
       reason: 'usulan VO diturunkan ke none: tidak ada kutipan dasar yang lolos',
@@ -367,6 +388,35 @@ describe('codes come from the supplied lists only', () => {
   });
 });
 
+describe('case-insensitive enums and codes', () => {
+  it('case-folds event_type and confidence before checking the enum', () => {
+    const r = validateSiteEventDraft(raw({ event_type: 'Hambatan', confidence: 'HIGH' }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.event_type).toBe('hambatan');
+    expect(r.draft.confidence).toBe('high');
+  });
+
+  it('resolves gate_code case-insensitively to the canonical spelling in the active list', () => {
+    const r = validateSiteEventDraft(raw({ gate_code: 'a', step_code: null }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.gate_code).toBe('A');
+  });
+
+  it('resolves step_code case-insensitively once its gate has resolved', () => {
+    const r = validateSiteEventDraft(raw({ gate_code: 'a', step_code: 'a2' }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.gate_code).toBe('A');
+    expect(r.draft.step_code).toBe('A2');
+  });
+
+  it('treats an ambiguous case-insensitive gate match as not found', () => {
+    const r = validateSiteEventDraft(raw({ gate_code: 'a', step_code: null }), ctx({ gateCodes: ['A', 'a', 'B'] }));
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.gate_code).toBeNull();
+    expect(r.dropped).toContainEqual({ field: 'gate_code', reason: 'kode gerbang tidak ada di daftar aktif', value: 'a' });
+  });
+});
+
 describe('clamps and defaults', () => {
   it(`clamps title to ${DRAFT_TITLE_MAX} and summary to ${DRAFT_SUMMARY_MAX}, recording both`, () => {
     const r = validateSiteEventDraft(raw({ title: 'T'.repeat(120), summary: 'S'.repeat(400) }), ctx());
@@ -381,6 +431,30 @@ describe('clamps and defaults', () => {
     const r = validateSiteEventDraft(raw({ title: '  Pipa \n AC   menonjol ' }), ctx());
     if (!r.ok) throw new Error('expected ok');
     expect(r.draft.title).toBe('Pipa AC menonjol');
+  });
+
+  it('collapses whitespace in the title but keeps newlines in downstream_impact', () => {
+    const r = validateSiteEventDraft(
+      raw({ title: '  Pipa \n AC   menonjol ', downstream_impact: '  Plafon tertunda.\n\nCat ikut mundur.  ' }),
+      ctx(),
+    );
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.title).toBe('Pipa AC menonjol');
+    expect(r.draft.downstream_impact).toBe('Plafon tertunda.\n\nCat ikut mundur.');
+  });
+
+  it('clamps by code point, so an emoji is never split into a lone surrogate', () => {
+    const r = validateSiteEventDraft(raw({ title: 'T'.repeat(79) + '\u{1F600}' + 'X'.repeat(9) }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(Array.from(r.draft.title)).toHaveLength(DRAFT_TITLE_MAX);
+    expect(r.draft.title.endsWith('\u{1F600}')).toBe(true);
+    expect(LONE_SURROGATE.test(r.draft.title)).toBe(false);
+  });
+
+  it('truncates a drop preview by code point too', () => {
+    const r = validateSiteEventDraft(raw({ evidence_quotes: ['Q'.repeat(118) + '\u{1F600}' + 'Z'.repeat(9)] }), ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(LONE_SURROGATE.test(JSON.stringify(r.dropped))).toBe(false);
   });
 
   it(`caps a relative due suggestion at ${DRAFT_DUE_DAYS_MAX} days`, () => {
@@ -401,6 +475,26 @@ describe('clamps and defaults', () => {
     const r = validateSiteEventDraft(raw({ due_suggestion: { kind: 'relative', days: 0 } }), ctx());
     if (!r.ok) throw new Error('expected ok');
     expect(r.draft.due_suggestion).toEqual({ kind: 'none', days: 0 });
+  });
+
+  it('records a drop when a relative due suggestion rounds to less than 1 day', () => {
+    const negative = validateSiteEventDraft(raw({ due_suggestion: { kind: 'relative', days: -5 } }), ctx());
+    if (!negative.ok) throw new Error('expected ok');
+    expect(negative.draft.due_suggestion).toEqual({ kind: 'none', days: 0 });
+    expect(negative.dropped).toContainEqual({
+      field: 'due_suggestion',
+      reason: 'tenggat kurang dari 1 hari, dianggap tidak ada',
+      value: '-5',
+    });
+
+    const fractional = validateSiteEventDraft(raw({ due_suggestion: { kind: 'relative', days: 0.2 } }), ctx());
+    if (!fractional.ok) throw new Error('expected ok');
+    expect(fractional.draft.due_suggestion).toEqual({ kind: 'none', days: 0 });
+    expect(fractional.dropped).toContainEqual({
+      field: 'due_suggestion',
+      reason: 'tenggat kurang dari 1 hari, dianggap tidak ada',
+      value: '0.2',
+    });
   });
 
   it('treats a non-boolean is_blocking as false and records it', () => {
@@ -439,6 +533,16 @@ describe('unknown keys never survive (rule 5)', () => {
     if (!r.ok) throw new Error('expected ok');
     expect(Object.keys(r.draft.vo).sort()).toEqual(['evidence_quotes', 'flag', 'reason']);
   });
+
+  it('drops a __proto__ key that arrived via JSON.parse, without touching Object.prototype', () => {
+    const json = JSON.stringify(raw()).replace(/^\{/, '{"__proto__":{"polluted":true},');
+    const parsed = JSON.parse(json);
+    const r = validateSiteEventDraft(parsed, ctx());
+    if (!r.ok) throw new Error('expected ok');
+    expect(Object.keys(r.draft)).not.toContain('__proto__');
+    expect(r.dropped).toContainEqual({ field: '__proto__', reason: 'kunci tidak dikenal, dibuang', value: '{"polluted":true}' });
+    expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
+  });
 });
 
 describe('a failed transcription caps confidence', () => {
@@ -453,6 +557,13 @@ describe('a failed transcription caps confidence', () => {
     const r = validateSiteEventDraft(raw({ confidence: 'low' }), ctx({ transcriptionFailed: true }));
     if (!r.ok) throw new Error('expected ok');
     expect(r.draft.confidence).toBe('low');
+  });
+
+  it('leaves medium alone under a failed transcription and records no drop', () => {
+    const r = validateSiteEventDraft(raw({ confidence: 'medium' }), ctx({ transcriptionFailed: true }));
+    if (!r.ok) throw new Error('expected ok');
+    expect(r.draft.confidence).toBe('medium');
+    expect(r.dropped.map((d) => d.field)).not.toContain('confidence');
   });
 });
 
@@ -496,6 +607,8 @@ Create `tools/siteEventDraftValidate.ts`:
 //   - every enumerated field holds an allowed value, or the draft is rejected
 //     outright (event_type, confidence, an empty title) or reset to a safe
 //     default with the reason recorded (vo.flag, due_suggestion, mismatch);
+//   - event_type and confidence are matched case-insensitively; gate_code and
+//     step_code resolve case-insensitively to the supplied list's own casing;
 //   - gate_code, step_code and related_open_event_id come from the lists the
 //     edge function supplied, never from the model's imagination;
 //   - step_code survives only under the gate_code that survived with it, the
@@ -568,7 +681,12 @@ export interface DraftValidationContext {
 }
 
 export type DraftValidationResult =
-  | { ok: true; draft: SiteEventDraft; dropped: DraftDrop[] }
+  | {
+      ok: true;
+      draft: SiteEventDraft;
+      /** The same array as draft.dropped, not a copy — do not mutate it. */
+      dropped: DraftDrop[];
+    }
   | { ok: false; reason: string };
 
 const KNOWN_KEYS: ReadonlyArray<string> = [
@@ -578,7 +696,12 @@ const KNOWN_KEYS: ReadonlyArray<string> = [
 ];
 
 export function normalizeForQuoteMatch(value: string): string {
-  return value.toLowerCase().replace(/\s+/g, ' ').trim();
+  return value
+    .normalize('NFC')
+    .replace(/[\u200B-\u200D\u00AD\u2060\u200E\u200F]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export function isLiteralQuote(
@@ -606,11 +729,23 @@ function preview(value: unknown): string {
       text = String(value);
     }
   }
-  return text.length > 120 ? `${text.slice(0, 119)}…` : text;
+  const chars = Array.from(text);
+  return chars.length > 120 ? `${chars.slice(0, 119).join('')}…` : text;
 }
 
 function isPresent(value: unknown): boolean {
   return value !== null && value !== undefined && value !== '';
+}
+
+/**
+ * Resolves `candidate` to the canonical spelling in `options` ignoring case,
+ * but only when exactly one option matches ignoring case. A tie (two options
+ * differing only by case) is treated as not found rather than guessed at.
+ */
+function resolveCodeCaseInsensitive(candidate: string, options: ReadonlyArray<string>): string | null {
+  const needle = candidate.toLowerCase();
+  const matches = options.filter((option) => option.toLowerCase() === needle);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function clampText(
@@ -626,9 +761,10 @@ function clampText(
   }
   const text = collapse ? value.replace(/\s+/g, ' ').trim() : value.trim();
   if (!text) return null;
-  if (text.length > max) {
+  const chars = Array.from(text);
+  if (chars.length > max) {
     dropped.push({ field, reason: `dipotong ke ${max} karakter` });
-    return text.slice(0, max).trim();
+    return chars.slice(0, max).join('').trim();
   }
   return text;
 }
@@ -662,7 +798,7 @@ function filterQuotes(
   return kept;
 }
 
-function codeField(field: string, value: unknown, dropped: DraftDrop[]): string | null {
+function optionalString(field: string, value: unknown, dropped: DraftDrop[]): string | null {
   if (typeof value === 'string') return value.trim() || null;
   if (isPresent(value)) dropped.push({ field, reason: 'bukan teks, diabaikan', value: preview(value) });
   return null;
@@ -682,13 +818,15 @@ export function validateSiteEventDraft(
     }
   }
 
-  const eventType = raw.event_type;
+  const eventTypeRaw = raw.event_type;
+  const eventType = typeof eventTypeRaw === 'string' ? eventTypeRaw.trim().toLowerCase() : eventTypeRaw;
   if (typeof eventType !== 'string' || !(SITE_EVENT_TYPE_CODES as ReadonlyArray<string>).includes(eventType)) {
-    return { ok: false, reason: `event_type tidak valid: ${preview(eventType)}` };
+    return { ok: false, reason: `event_type tidak valid: ${preview(eventTypeRaw)}` };
   }
 
   const confidenceRaw = raw.confidence;
-  if (typeof confidenceRaw !== 'string' || !(AI_CONFIDENCE_LEVELS as ReadonlyArray<string>).includes(confidenceRaw)) {
+  const confidenceCandidate = typeof confidenceRaw === 'string' ? confidenceRaw.trim().toLowerCase() : confidenceRaw;
+  if (typeof confidenceCandidate !== 'string' || !(AI_CONFIDENCE_LEVELS as ReadonlyArray<string>).includes(confidenceCandidate)) {
     return { ok: false, reason: `confidence tidak valid: ${preview(confidenceRaw)}` };
   }
 
@@ -697,11 +835,13 @@ export function validateSiteEventDraft(
 
   const sources = [ctx.transcript, ctx.rawText];
 
-  // Gate: from the supplied active list, or nothing.
+  // Gate: from the supplied active list, or nothing. Matched case-insensitively,
+  // resolved to the list's own spelling.
   let gateCode: string | null = null;
-  const gateCandidate = codeField('gate_code', raw.gate_code, dropped);
+  const gateCandidate = optionalString('gate_code', raw.gate_code, dropped);
   if (gateCandidate) {
-    if (ctx.gateCodes.includes(gateCandidate)) gateCode = gateCandidate;
+    const resolved = resolveCodeCaseInsensitive(gateCandidate, ctx.gateCodes);
+    if (resolved) gateCode = resolved;
     else dropped.push({ field: 'gate_code', reason: 'kode gerbang tidak ada di daftar aktif', value: preview(gateCandidate) });
   }
 
@@ -709,9 +849,10 @@ export function validateSiteEventDraft(
   // keys (gate_code, step_code) to gate_step_refs (gate_code, code) and refuses
   // a step without a gate, so a pair that passes here is one the database takes.
   let stepCode: string | null = null;
-  const stepCandidate = codeField('step_code', raw.step_code, dropped);
+  const stepCandidate = optionalString('step_code', raw.step_code, dropped);
   if (stepCandidate) {
-    const step = ctx.steps.find((s) => s.code === stepCandidate);
+    const resolvedStepCode = resolveCodeCaseInsensitive(stepCandidate, ctx.steps.map((s) => s.code));
+    const step = resolvedStepCode ? ctx.steps.find((s) => s.code === resolvedStepCode) : undefined;
     if (!step) {
       dropped.push({ field: 'step_code', reason: 'kode langkah tidak ada di daftar aktif', value: preview(stepCandidate) });
     } else if (gateCode === null) {
@@ -719,7 +860,7 @@ export function validateSiteEventDraft(
     } else if (step.gate_code !== gateCode) {
       dropped.push({ field: 'step_code', reason: 'langkah bukan milik gerbang yang dipilih', value: preview(stepCandidate) });
     } else {
-      stepCode = stepCandidate;
+      stepCode = step.code;
     }
   }
 
@@ -742,6 +883,9 @@ export function validateSiteEventDraft(
       dueSuggestion = { kind: 'relative', days: DRAFT_DUE_DAYS_MAX };
     } else if (days >= 1) {
       dueSuggestion = { kind: 'relative', days };
+    } else {
+      dueSuggestion = { kind: 'none', days: 0 };
+      dropped.push({ field: 'due_suggestion', reason: 'tenggat kurang dari 1 hari, dianggap tidak ada', value: preview(due.days) });
     }
   } else if (!(isRecord(due) && due.kind === 'none') && isPresent(due)) {
     dropped.push({ field: 'due_suggestion', reason: 'format tenggat tidak valid, diabaikan', value: preview(due) });
@@ -757,7 +901,7 @@ export function validateSiteEventDraft(
   else if (voRaw && isPresent(voRaw.flag) && voRaw.flag !== 'none') {
     dropped.push({ field: 'vo.flag', reason: 'nilai flag VO tidak dikenal, dianggap none', value: preview(voRaw.flag) });
   }
-  const voReason = clampText('vo.reason', voRaw ? voRaw.reason : null, DRAFT_REASON_MAX, dropped, true) ?? '';
+  let voReason = clampText('vo.reason', voRaw ? voRaw.reason : null, DRAFT_REASON_MAX, dropped, true) ?? '';
   const voQuotes = filterQuotes('vo.evidence_quotes', voRaw ? voRaw.evidence_quotes : null, sources, dropped);
   if (voFlag === 'suggested' && voQuotes.length === 0) {
     voFlag = 'none';
@@ -766,6 +910,7 @@ export function validateSiteEventDraft(
       reason: 'usulan VO diturunkan ke none: tidak ada kutipan dasar yang lolos',
       value: preview(voReason),
     });
+    voReason = '';
   }
 
   let mismatch: SiteEventDraft['mismatch'] = { flag: false, reason: null };
@@ -782,7 +927,7 @@ export function validateSiteEventDraft(
   }
 
   let relatedOpenEventId: string | null = null;
-  const relatedCandidate = codeField('related_open_event_id', raw.related_open_event_id, dropped);
+  const relatedCandidate = optionalString('related_open_event_id', raw.related_open_event_id, dropped);
   if (relatedCandidate) {
     if (ctx.openEventIds.includes(relatedCandidate)) relatedOpenEventId = relatedCandidate;
     else {
@@ -796,7 +941,7 @@ export function validateSiteEventDraft(
 
   const evidenceQuotes = filterQuotes('evidence_quotes', raw.evidence_quotes, sources, dropped);
 
-  let confidence = confidenceRaw as AiConfidence;
+  let confidence = confidenceCandidate as AiConfidence;
   if (ctx.transcriptionFailed && confidence === 'high') {
     confidence = 'medium';
     dropped.push({ field: 'confidence', reason: 'transkripsi gagal, keyakinan diturunkan ke medium' });
@@ -830,7 +975,7 @@ export function validateSiteEventDraft(
 npx jest tools/__tests__/siteEventDraftValidate.test.ts --testPathIgnorePatterns='/node_modules/' '__tests__/fixtures\.ts$' '__tests__/_serverGateHarness\.ts$' 'supabase/functions/' 'tmp/'
 ```
 
-Expected: `Tests: 35 passed, 35 total`. If the "keeps at most 5 quotes" case fails on the duplicate, check that de-duplication runs before the cap: `'Pipa AC'` must be silently skipped as a duplicate of `'pipa ac'`, not counted.
+Expected: `Tests: 48 passed, 48 total`. If the "removes duplicate quotes" case fails, check that de-duplication runs before the cap: `'Pipa AC'` must be silently skipped as a duplicate of `'pipa ac'`, not counted.
 
 - [ ] **Step 5: Commit**
 
@@ -850,7 +995,7 @@ Every change is recorded in `dropped`, which is stored inside ai_draft.
 No imports on purpose: task 6 copies this file byte-for-byte into the Deno
 edge function and adds a jest guard against drift.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -1122,7 +1267,7 @@ than redeclared: the validator is copied into the Deno function and cannot
 import, so it owns the shape. ACTIONABLE_EVENT_TYPES documents the three places
 that enforce owner and due date together.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -1157,11 +1302,14 @@ import {
   confidenceUi,
   mapVoChangeType,
   canOfferManualAuthoring,
+  normalizeTitle,
+  voEvidenceText,
   VO_OWNER_REQUEST_KEYWORDS,
   VO_DESIGN_KEYWORDS,
   AI_QUOTA_MESSAGE,
   CONFIDENCE_BANNER_MEDIUM,
   CONFIDENCE_BANNER_LOW,
+  CONFIRM_ERRORS,
   type ConfirmInput,
 } from '../siteEventRules';
 import type { SiteEventDraft } from '../types';
@@ -1256,6 +1404,13 @@ describe('dates', () => {
   });
 });
 
+describe('normalizeTitle', () => {
+  it('collapses inner whitespace runs and trims the ends', () => {
+    expect(normalizeTitle('Keramik  lantai   selesai')).toBe('Keramik lantai selesai');
+    expect(normalizeTitle('  Pipa AC menonjol  ')).toBe('Pipa AC menonjol');
+  });
+});
+
 describe('validateConfirmInput', () => {
   it('accepts a minimal progres event with no owner and no due date', () => {
     expect(validateConfirmInput(input())).toEqual({ ok: true });
@@ -1300,7 +1455,8 @@ describe('validateConfirmInput', () => {
   });
 
   it('refuses a VO confirm with no surviving quote in the draft', () => {
-    const msg = 'VO hanya bisa dikonfirmasi bila AI menemukan kutipan dasar dari suara atau catatan.';
+    const msg = CONFIRM_ERRORS.voNoEvidence;
+    expect(msg).toBe('VO hanya bisa dikonfirmasi bila ada kutipan dasar.');
     expect(errorsOf(input({ voConfirm: true, draft: null }))).toContain(msg);
     expect(errorsOf(input({ voConfirm: true, draft: draft({ vo: { flag: 'none', reason: '', evidence_quotes: [] } }) }))).toContain(msg);
     expect(errorsOf(input({ voConfirm: true, draft: draft() }))).toEqual([]);
@@ -1314,6 +1470,13 @@ describe('validateConfirmInput', () => {
 
   it('reports every problem at once, not one per tap', () => {
     expect(errorsOf(input({ eventType: 'cacat', title: '', aiMismatch: true }))).toHaveLength(4);
+  });
+
+  it('reports exactly one error for exactly one violation', () => {
+    // Actionable type, owner set, but no due date: dueRequired should fire alone.
+    expect(errorsOf(input({ eventType: 'isu', ownerId: 'u1', dueDate: null }))).toEqual([
+      CONFIRM_ERRORS.dueRequired,
+    ]);
   });
 });
 
@@ -1347,6 +1510,23 @@ describe('confidenceUi - spec §1.1 table', () => {
       prefillTypeAndGate: false, markPeriksa: false, hintType: null, hintGate: null,
       voCheckbox: 'hidden', banner: null,
     });
+  });
+});
+
+describe('voEvidenceText', () => {
+  it('joins the evidence quotes with a space and normalizes them (lowercased, whitespace collapsed)', () => {
+    const d = draft({
+      vo: {
+        flag: 'suggested',
+        reason: 'Permintaan owner',
+        evidence_quotes: ['Owner  minta', 'pindah   pipa AC'],
+      },
+    });
+    expect(voEvidenceText(d)).toBe('owner minta pindah pipa ac');
+  });
+
+  it('is empty for a null draft', () => {
+    expect(voEvidenceText(null)).toBe('');
   });
 });
 
@@ -1421,12 +1601,21 @@ Create `tools/siteEventRules.ts`:
 // Spec: docs/superpowers/specs/2026-09-10-room-site-events-design.md §1.1
 // (confidence to UI table), §4.2 (confirm_site_event), §5.4 and §12.
 //
-// Three consumers must agree on these rules:
+// Three consumers must agree on these RULES:
 //   - the confirm screen, which pre-fills and blocks Konfirmasi with them;
 //   - confirm_site_event in migration 097, which re-checks them in SQL because
 //     a client can always skip its own validation;
 //   - tools/__tests__/migration097.test.ts, which builds the SQL keyword regex
 //     from the lists exported here, so a keyword added on one side only fails.
+// Agreement is on the RULES, not necessarily on every message's exact
+// wording: this module (the pre-flight) reports one error per FIELD, so the
+// supervisor sees which field to fix before tapping Konfirmasi; the RPC
+// reports one error per RULE CODE (SITE_EVENT_*), mapped to copy in
+// tools/siteEvents.ts. Where the same rule reads identically on both sides
+// — e.g. CONFIRM_ERRORS.voNoEvidence and the SITE_EVENT_VO_NO_EVIDENCE copy
+// — keep the two strings byte-identical, so a supervisor never sees two
+// different wordings for the same refusal depending on whether the client
+// or the server caught it.
 
 import { ACTIONABLE_EVENT_TYPES, SITE_EVENT_MANUAL_AFTER_ATTEMPTS } from './constants';
 import {
@@ -1436,6 +1625,7 @@ import {
   DRAFT_TITLE_MAX,
   normalizeForQuoteMatch,
 } from './siteEventDraftValidate';
+import { addCalendarDays, isRealCalendarDate } from './timeWindow';
 import type { AiConfidence, SiteEventDraft, SiteEventStatus, SiteEventType } from './types';
 
 /**
@@ -1456,18 +1646,22 @@ export function isActionableType(type: SiteEventType | null | undefined): boolea
 
 // ─── Dates ───────────────────────────────────────────────────────────────────
 
-/** A real calendar date written YYYY-MM-DD. Rejects 2026-02-30. */
+/**
+ * A real calendar date written YYYY-MM-DD. Rejects 2026-02-30. Thin wrapper
+ * over tools/timeWindow.ts's `isRealCalendarDate`, the single source of
+ * truth for date-only arithmetic — kept here under its established name so
+ * every existing call site (and the exported signature) stays unchanged.
+ */
 export function isIsoDate(value: string | null | undefined): value is string {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [y, m, d] = value.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+  return !!value && isRealCalendarDate(value);
 }
 
-/** Date-only arithmetic in UTC, so a device timezone can never shift the day. */
+/**
+ * Date-only arithmetic in UTC, so a device timezone can never shift the day.
+ * Thin wrapper over tools/timeWindow.ts's `addCalendarDays`.
+ */
 export function addDaysIso(isoDate: string, days: number): string {
-  const [y, m, d] = isoDate.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+  return addCalendarDays(isoDate, days);
 }
 
 /** Today on the phone's own calendar, YYYY-MM-DD (the DailyLogScreen convention). */
@@ -1531,7 +1725,9 @@ export const CONFIRM_ERRORS = {
   dueRequired: 'Tenggat wajib diisi untuk isu, hambatan, cacat dan butuh keputusan.',
   dueFormat: 'Format tenggat harus YYYY-MM-DD.',
   duePast: 'Tenggat tidak boleh sebelum hari ini.',
-  voNoEvidence: 'VO hanya bisa dikonfirmasi bila AI menemukan kutipan dasar dari suara atau catatan.',
+  // Byte-identical to the RPC's SITE_EVENT_VO_NO_EVIDENCE copy (Task 9's
+  // RPC_ERROR_COPY) — see the module header.
+  voNoEvidence: 'VO hanya bisa dikonfirmasi bila ada kutipan dasar.',
   mismatchAck: 'Tandai dulu bahwa Anda sudah memeriksa ketidakcocokan foto dan suara.',
 } as const;
 
@@ -1566,6 +1762,13 @@ export function validateConfirmInput(input: ConfirmInput): ConfirmValidation {
 
   if (input.dueDate) {
     if (!isIsoDate(input.dueDate)) errors.push(CONFIRM_ERRORS.dueFormat);
+    // `input.today` is the phone's LOCAL calendar day (todayIsoLocal), but
+    // confirm_site_event re-checks this same rule against Asia/Jakarta (WIB,
+    // UTC+7). A supervisor on WITA (UTC+8) or WIT (UTC+9) rolls over to a
+    // new local calendar day before Jakarta does, so for up to two hours
+    // after local midnight the client can consider a due date "past" that
+    // the RPC would still accept as "today" — the client is only ever
+    // stricter than the server here, never looser, so this fails closed.
     else if (isIsoDate(input.today) && input.dueDate < input.today) errors.push(CONFIRM_ERRORS.duePast);
   }
 
@@ -1595,6 +1798,11 @@ export interface ConfidenceUi {
   banner: string | null;
 }
 
+/** Not exported: exists only so `confidenceUi`'s switch fails to compile if `AiConfidence` grows a member this function hasn't handled. */
+function assertNever(x: never): never {
+  throw new Error(`confidenceUi: unhandled AiConfidence "${String(x)}"`);
+}
+
 /**
  * The §1.1 table. One addition: when the model did not suggest a VO (or the
  * validator downgraded it), the checkbox is hidden at every confidence level,
@@ -1606,22 +1814,25 @@ export function confidenceUi(confidence: AiConfidence | null, draft: SiteEventDr
     return { prefillTypeAndGate: false, markPeriksa: false, hintType: null, hintGate: null, voCheckbox: 'hidden', banner: null };
   }
   const suggested = draft.vo.flag === 'suggested' && draft.vo.evidence_quotes.length > 0;
-  if (confidence === 'high') {
-    return {
-      prefillTypeAndGate: true, markPeriksa: false, hintType: null, hintGate: null,
-      voCheckbox: suggested ? 'prechecked' : 'hidden', banner: null,
-    };
+  switch (confidence) {
+    case 'high':
+      return {
+        prefillTypeAndGate: true, markPeriksa: false, hintType: null, hintGate: null,
+        voCheckbox: suggested ? 'prechecked' : 'hidden', banner: null,
+      };
+    case 'medium':
+      return {
+        prefillTypeAndGate: true, markPeriksa: true, hintType: null, hintGate: null,
+        voCheckbox: suggested ? 'unchecked' : 'hidden', banner: CONFIDENCE_BANNER_MEDIUM,
+      };
+    case 'low':
+      return {
+        prefillTypeAndGate: false, markPeriksa: false, hintType: draft.event_type, hintGate: draft.gate_code,
+        voCheckbox: 'hidden', banner: CONFIDENCE_BANNER_LOW,
+      };
+    default:
+      return assertNever(confidence);
   }
-  if (confidence === 'medium') {
-    return {
-      prefillTypeAndGate: true, markPeriksa: true, hintType: null, hintGate: null,
-      voCheckbox: suggested ? 'unchecked' : 'hidden', banner: CONFIDENCE_BANNER_MEDIUM,
-    };
-  }
-  return {
-    prefillTypeAndGate: false, markPeriksa: false, hintType: draft.event_type, hintGate: draft.gate_code,
-    voCheckbox: 'hidden', banner: CONFIDENCE_BANNER_LOW,
-  };
 }
 
 // ─── VO → Catatan Perubahan change_type (spec §4.2 step 2) ───────────────────
@@ -1672,7 +1883,7 @@ export function canOfferManualAuthoring(ev: {
 npx jest tools/__tests__/siteEventRules.test.ts --testPathIgnorePatterns='/node_modules/' '__tests__/fixtures\.ts$' '__tests__/_serverGateHarness\.ts$' 'supabase/functions/' 'tmp/'
 ```
 
-Expected: `Tests: 31 passed, 31 total`. The "reports every problem at once" case expects exactly four errors for `cacat` with an empty title and an unacknowledged mismatch: owner, due date, title and mismatch.
+Expected: `Tests: 57 passed, 57 total`. The "reports every problem at once" case expects exactly four errors for `cacat` with an empty title and an unacknowledged mismatch: owner, due date, title and mismatch.
 
 - [ ] **Step 5: Commit**
 
@@ -1689,10 +1900,35 @@ the VO checkbox is hidden whenever there is nothing to confirm. mapVoChangeType
 uses the human-confirmed type and exports its keyword lists so migration 097's
 static test can hold the SQL to the same words.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
+
+**Follow-up landed: shared calendar-date primitive, error-text parity.** Code
+review on the Task 3 commit (`7ef22e6`) landed five further changes. (1)
+`tools/timeWindow.ts` gained two exported functions, `isRealCalendarDate(iso)`
+and `addCalendarDays(iso, days)`, as the single source of truth for date-only
+arithmetic; its private `nextCalendarDate` is now `addCalendarDays(date, 1)`,
+and `assertDateOnly` gained a comment clarifying it only checks shape (a
+caller wanting real-date validation should use `isRealCalendarDate`).
+`isIsoDate` and `addDaysIso` above are now thin wrappers over those two
+primitives — same exported names and signatures, so every call site is
+unchanged. (2) `CONFIRM_ERRORS.voNoEvidence` is now byte-identical to the
+RPC's `SITE_EVENT_VO_NO_EVIDENCE` copy in Task 9's `RPC_ERROR_COPY`
+(`'VO hanya bisa dikonfirmasi bila ada kutipan dasar.'`), and the module
+header now says the three consumers agree on the RULES, not necessarily on
+every message's wording — this module reports one error per field, the RPC
+one error per rule code. (3) `confidenceUi`'s branching is now a
+`switch (confidence)` with a local, non-exported `assertNever` default, so a
+new `AiConfidence` member fails to compile until handled. (4) The `duePast`
+check in `validateConfirmInput` gained a comment noting the client compares
+against the phone's local calendar day while `confirm_site_event` compares
+against Asia/Jakarta, so on WITA/WIT the client can be up to two hours
+stricter right after local midnight — it fails closed, never open. (5) Tests
+were added for all of the above, including `normalizeTitle` collapsing inner
+whitespace runs and a direct `voEvidenceText` test; the suite is now 57
+tests, all still passing.
 
 ---
 
@@ -3169,7 +3405,7 @@ confirm_site_event re-checks the form's rules, hands a confirmed VO to
 site_changes as a pending, unpriced row using the same change_type keywords as
 siteEventRules.ts, and notifies a different owner without ever rolling back.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -3423,7 +3659,7 @@ forward plus SITE_EVENT_ASSIGNED. The static test derives the expected list
 from 088's own text and fails if a later migration swapped it first, because a
 missing type does not error: the enqueue helpers swallow it as a warning.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -4397,7 +4633,7 @@ one forced tool call to claude-sonnet-5 with images before text and no
 sampling parameters. cost.ts records spend and returns null for an unpriced
 model rather than guessing. Deno tests cover all four modules.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -5190,6 +5426,8 @@ if (import.meta.main) {
 }
 ```
 
+The `writeRun(admin, buildRunRow({ ..., output: outcome.input, ... }))` call above stores the model's **raw** tool-call input — before `validateSiteEventDraft` touches it — as the audit row's `site_event_ai_runs.output` jsonb. `tools/siteEventDraftValidate.ts` only sanitises what becomes `ai_draft`; it never runs against this raw copy. A model can echo back an unpaired UTF-16 surrogate from the transcript (task 1's code-point clamps fix this for `ai_draft`, but this write bypasses the validator entirely), and Postgres's jsonb type rejects an unpaired surrogate outright, so the insert throws. The handler must sanitise `outcome.input` (replace any unpaired surrogate with U+FFFD) immediately before this jsonb write, not rely on the validator to have already done it.
+
 - [ ] **Step 5: Run the tests and a type check**
 
 ```bash
@@ -5218,7 +5456,7 @@ result. Every attempt writes a site_event_ai_runs row; every write to
 site_events is limited to analysis columns and guarded on the event still being
 pending or a draft, so a human confirm can never be overwritten.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -5488,7 +5726,7 @@ Perubahan and report renderers show them unchanged. Local URIs pass straight
 through for the capture preview. pickPhoto and readUploadBody expose the
 existing compression preset without uploading; pickAndUploadPhoto is untouched.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -6335,7 +6573,7 @@ confirmSiteEvent validates locally with siteEventRules before calling the RPC
 and maps every server prefix to Indonesian. Discard is a guarded status update,
 never a delete. expo-crypto supplies UUIDs because Hermes has no crypto global.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -6789,7 +7027,7 @@ release into a recording: a release during start-up becomes a stop, a blip under
 plugin for the iOS microphone string; this is a native module and needs the APK
 build.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -6884,7 +7122,7 @@ The route has the same name in all three navigators, so it resolves to itself;
 the entry and its test make that explicit instead of relying on the
 pass-through fallback.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -7832,7 +8070,7 @@ createSiteEventWithMedia. Ids are fixed before sending, so "Kirim ulang" after a
 failed upload reuses the same paths and row. The route unmounts on blur so a
 second report never inherits the first one's photos.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -8674,6 +8912,7 @@ export default function SiteEventConfirmScreen() {
   const { project: activeProject, boqItems } = useProject();
   const { show: toast } = useToast();
   const eventId = ((route.params ?? {}) as { eventId?: string }).eventId ?? '';
+  // `today` is the phone's LOCAL calendar day, not Asia/Jakarta — confirm_site_event checks the due date against WIB, so right after local midnight in WITA/WIT this screen can reject a same-day (Jakarta) due date the RPC would still accept, which fails closed rather than open (see validateConfirmInput's duePast comment in tools/siteEventRules.ts).
   const today = todayIsoLocal();
 
   const [event, setEvent] = useState<SiteEventWithMedia | null>(null);
@@ -9080,7 +9319,7 @@ mismatch disables Konfirmasi until acknowledged. While analysis is pending the
 screen offers Analisis ulang, and Isi manual after three failures or a spent
 quota. Buang is a status change; media stays.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -9724,7 +9963,7 @@ optional closure photo and note through close_site_event. Beranda's "Draf
 menunggu" card lists the reporter's pending and ready drafts and stays hidden
 when there are none.
 
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 MSG
 )"
 ```
@@ -9872,4 +10111,4 @@ Smaller additions consistent with the spec: `site_events.status` defaults to `pe
 - Edit `tools/siteEventDraftValidate.ts` only, then `cp` it; `tools/__tests__/siteEventDraftValidateTwin.test.ts` fails on any drift.
 - The three `update(...)` calls in `index.ts` spell out `.in('status', ['pending_analysis', 'draft'])` literally because the static test matches that text; keep them literal.
 - If the installed `expo-audio` is not 1.1.x, check `recorder.uri` and `recorderState.metering` against its own type declarations before changing the reducer.
-- Every commit ends with `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
+- Every commit ends with `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.

@@ -18,6 +18,9 @@ const ProgresScreen = lazyScreen(() => import('./screens/ProgresScreen'));
 const LaporanScreen = lazyScreen(() => import('./screens/LaporanScreen'));
 const RoomScanScreen = lazyScreen(() => import('./screens/RoomScanScreen'));
 const RoomScreen = lazyScreen(() => import('./screens/RoomScreen'));
+const SiteEventCaptureScreen = lazyScreen(() => import('./screens/SiteEventCaptureScreen'));
+const SiteEventConfirmScreen = lazyScreen(() => import('./screens/SiteEventConfirmScreen'));
+const SiteEventDetailScreen = lazyScreen(() => import('./screens/SiteEventDetailScreen'));
 
 export type TabParamList = {
   Beranda:    undefined;
@@ -28,6 +31,9 @@ export type TabParamList = {
   Notifikasi: undefined;
   RoomScan:   undefined;
   Room:       { projectCode: string; roomCode: string };
+  SiteEventCapture: { projectId: string; roomId: string };
+  SiteEventConfirm: { eventId: string };
+  SiteEventDetail: { eventId: string; projectId: string };
 };
 
 const linking = buildLinking<TabParamList>({
@@ -48,6 +54,9 @@ const ICON_MAP: Record<string, keyof typeof Ionicons.glyphMap> = {
   Notifikasi: 'notifications-outline',
   RoomScan:   'qr-code-outline',
   Room:       'business-outline',
+  SiteEventCapture: 'camera-outline',
+  SiteEventConfirm: 'create-outline',
+  SiteEventDetail: 'document-text-outline',
 };
 
 const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
@@ -59,6 +68,9 @@ const ICON_MAP_ACTIVE: Record<string, keyof typeof Ionicons.glyphMap> = {
   Notifikasi: 'notifications',
   RoomScan:   'qr-code',
   Room:       'business',
+  SiteEventCapture: 'camera',
+  SiteEventConfirm: 'create',
+  SiteEventDetail: 'document-text',
 };
 
 export default function AppNavigation() {
@@ -163,6 +175,36 @@ export default function AppNavigation() {
             tabBarAccessibilityLabel: 'Ruangan',
             tabBarButton: () => null,
             tabBarItemStyle: { display: 'none' },
+          }}
+        />
+        <Tab.Screen
+          name="SiteEventCapture"
+          component={SiteEventCaptureScreen}
+          options={{
+            tabBarAccessibilityLabel: 'Lapor kejadian',
+            tabBarButton: () => null,
+            tabBarItemStyle: { display: 'none' },
+            unmountOnBlur: true,
+          }}
+        />
+        <Tab.Screen
+          name="SiteEventConfirm"
+          component={SiteEventConfirmScreen}
+          options={{
+            tabBarAccessibilityLabel: 'Konfirmasi kejadian',
+            tabBarButton: () => null,
+            tabBarItemStyle: { display: 'none' },
+            unmountOnBlur: true,
+          }}
+        />
+        <Tab.Screen
+          name="SiteEventDetail"
+          component={SiteEventDetailScreen}
+          options={{
+            tabBarAccessibilityLabel: 'Detail kejadian',
+            tabBarButton: () => null,
+            tabBarItemStyle: { display: 'none' },
+            unmountOnBlur: true,
           }}
         />
       </Tab.Navigator>

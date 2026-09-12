@@ -254,3 +254,55 @@ export const AREA_TYPE_LABELS: Record<AreaType, string> = {
  */
 export const AREA_UMUM_CODE = 'UMUM';
 export const AREA_UMUM_NAME = 'Area Umum';
+
+// ── Site events (097) ───────────────────────────────────────────────────────
+// Type-only import, erased at compile time, like plan 1's AreaType import above.
+import type { SiteEventStatus, SiteEventType } from './types';
+
+export const SITE_EVENT_TYPES: ReadonlyArray<{ value: SiteEventType; label: string }> = [
+  { value: 'progres',         label: 'Progres' },
+  { value: 'isu',             label: 'Isu' },
+  { value: 'hambatan',        label: 'Hambatan' },
+  { value: 'cacat',           label: 'Cacat' },
+  { value: 'butuh_keputusan', label: 'Butuh keputusan' },
+  { value: 'info',            label: 'Info' },
+];
+
+export const SITE_EVENT_TYPE_LABELS: Record<SiteEventType, string> = {
+  progres:         'Progres',
+  isu:             'Isu',
+  hambatan:        'Hambatan',
+  cacat:           'Cacat',
+  butuh_keputusan: 'Butuh keputusan',
+  info:            'Info',
+};
+
+/**
+ * Types that must carry an owner and a due date before they can be opened.
+ * Enforced three times, deliberately: validateConfirmInput (the form),
+ * confirm_site_event (the RPC) and site_events_actionable_needs_owner (the
+ * trigger). Change all three together.
+ */
+export const ACTIONABLE_EVENT_TYPES: ReadonlyArray<SiteEventType> = [
+  'isu', 'hambatan', 'cacat', 'butuh_keputusan',
+];
+
+export const SITE_EVENT_STATUS_LABELS: Record<SiteEventStatus, string> = {
+  pending_analysis: 'Menunggu analisis',
+  draft:            'Draf siap dikonfirmasi',
+  open:             'Terbuka',
+  done:             'Selesai',
+  discarded:        'Dibuang',
+};
+
+/** Private bucket created by 097. Paths: site-events/{projectId}/{eventId}/{mediaId}.{ext} */
+export const SITE_MEDIA_BUCKET = 'site-media';
+
+/** Spec §5.2: voice notes stop recording at 90 seconds. */
+export const VOICE_NOTE_MAX_SECONDS = 90;
+
+/** Spec §5.2: one required context photo plus up to five close-ups. */
+export const SITE_EVENT_MAX_CLOSEUPS = 5;
+
+/** Spec §6 and §12: after three failed analyses the supervisor may author by hand. */
+export const SITE_EVENT_MANUAL_AFTER_ATTEMPTS = 3;

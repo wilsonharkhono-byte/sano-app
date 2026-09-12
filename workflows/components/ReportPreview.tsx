@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, Image } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { COLORS, TYPE } from '../theme';
 import type { ReportPayload } from '../../tools/reports';
 import { formatDriftPct } from '../../tools/planDrift';
@@ -41,7 +42,14 @@ function PhotoGrid({ photos }: { photos: Array<{ photo_url: string; storage_path
             padding: 6,
           }}
         >
-          <Image source={{ uri: photo.photo_url }} style={{ width: '100%', height: '100%' }} resizeMode="contain" />
+          {photo.photo_url ? (
+            <Image source={{ uri: photo.photo_url }} style={{ width: '100%', height: '100%' }} resizeMode="contain" />
+          ) : (
+            <View style={{ alignItems: 'center', justifyContent: 'center', gap: 4 }}>
+              <Ionicons name="image-outline" size={22} color={COLORS.textSec} />
+              <Text style={{ fontSize: TYPE.xs, color: COLORS.textSec }}>Memuat foto</Text>
+            </View>
+          )}
         </View>
       ))}
     </View>

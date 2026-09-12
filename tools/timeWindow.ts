@@ -29,25 +29,79 @@
 // 00:00:00 WIB has no such gap.
 
 const WIB_OFFSET = '+07:00';
+const WIB_OFFSET_MS = 7 * 60 * 60 * 1000;
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * Checks SHAPE only (`YYYY-MM-DD`), not that the date actually exists —
+ * `assertDateOnly('2026-02-30')` does NOT throw, because `Date.UTC` silently
+ * rolls an out-of-range day into the next month before anything reads it
+ * back. That's fine for this module's own functions, which only ever add
+ * whole days to a shape-valid string and re-derive Y/M/D from the result.
+ * A caller that needs to know the INPUT itself is a real calendar date
+ * (e.g. validating a date typed by a person) should use
+ * `isRealCalendarDate` below instead.
+ */
 function assertDateOnly(date: string): void {
   if (!DATE_ONLY_RE.test(date)) {
     throw new Error(`timeWindow: expected a YYYY-MM-DD calendar date, got "${date}"`);
   }
 }
 
-/** The next calendar date (YYYY-MM-DD), independent of any timezone. */
-function nextCalendarDate(date: string): string {
-  const [y, m, d] = date.split('-').map(Number);
+/**
+ * True when `iso` is shaped `YYYY-MM-DD` AND is a calendar date that really
+ * exists — the Y/M/D round-trips through `Date.UTC` unchanged. Rejects
+ * `2026-02-30` (April 31st, February 30th, month 13, etc.), unlike
+ * `assertDateOnly`, which only checks the shape.
+ */
+export function isRealCalendarDate(iso: string): boolean {
+  if (!DATE_ONLY_RE.test(iso)) return false;
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/**
+ * The calendar date it is RIGHT NOW in WIB (Asia/Jakarta), `YYYY-MM-DD`.
+ *
+ * Deliberately NOT the device's own calendar day. A phone on WITA (UTC+8) or
+ * WIT (UTC+9) rolls into a new local date one or two hours before Jakarta
+ * does, so "today" read off the device disagrees with every server-side rule
+ * that compares against `(now() AT TIME ZONE 'Asia/Jakarta')::date` — most
+ * visibly confirm_site_event's due-date check, which would then accept a date
+ * the screen had already called "past" (or the reverse, one date later).
+ *
+ * Same fixed-offset arithmetic as the rest of this module: shift the instant
+ * by +7 h and read the UTC Y/M/D fields off the result. WIB has no DST, so
+ * this is exact for every date. Do not re-implement it with
+ * `Intl.DateTimeFormat` (see the module header).
+ */
+export function todayIsoWIB(now: Date = new Date()): string {
+  const shifted = new Date(now.getTime() + WIB_OFFSET_MS);
+  const yyyy = shifted.getUTCFullYear();
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/**
+ * `iso` plus `days` calendar days (negative goes backward), independent of
+ * any timezone. Returns `YYYY-MM-DD`.
+ */
+export function addCalendarDays(iso: string, days: number): string {
+  const [y, m, d] = iso.split('-').map(Number);
   // UTC-anchored Date math avoids local-timezone DST edge cases entirely —
   // we only ever read back the Y/M/D fields, never an instant.
-  const dt = new Date(Date.UTC(y, m - 1, d));
-  dt.setUTCDate(dt.getUTCDate() + 1);
+  const dt = new Date(Date.UTC(y, m - 1, d + days));
   const yyyy = dt.getUTCFullYear();
   const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
   const dd = String(dt.getUTCDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
+}
+
+/** The next calendar date (YYYY-MM-DD), independent of any timezone. */
+function nextCalendarDate(date: string): string {
+  return addCalendarDays(date, 1);
 }
 
 /**

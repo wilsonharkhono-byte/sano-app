@@ -11,6 +11,7 @@ import { normalizeRoomCode } from '../../tools/roomCodes';
 import { AREA_TYPE_LABELS, PROJECT_PHASE_LABELS } from '../../tools/constants';
 import type { GateRef, Room } from '../../tools/types';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../theme';
+import OpenEventsList from './siteEvent/OpenEventsList';
 
 type Refusal = 'not-assigned' | 'not-found' | 'inactive';
 
@@ -21,8 +22,8 @@ const REFUSAL_COPY: Record<Refusal, string> = {
 };
 
 /**
- * Where a scanned label lands. Release 1 shows the room and stops there: event
- * capture is plan 2. Every failure is one of the three explicit refusals from
+ * Where a scanned label lands. The room's open events and the "Lapor" entry
+ * point (plan 2). Every failure is one of the three explicit refusals from
  * spec §8 - a blank screen would be the worst possible answer to a supervisor
  * standing in the room holding a phone.
  */
@@ -135,12 +136,20 @@ export default function RoomScreen() {
               )}
             </Card>
 
-            <Card>
-              <Text style={styles.emptyHead}>Belum ada kejadian di ruangan ini</Text>
-              <Text style={styles.emptyBody}>
-                Pelaporan kejadian - foto, suara dan catatan - menyusul pada pembaruan berikutnya.
-                Untuk sekarang gunakan Progres dan Catatan Perubahan seperti biasa.
-              </Text>
+            <Card title="Kejadian terbuka" subtitle="Periksa dulu agar hal yang sama tidak dilaporkan dua kali.">
+              <OpenEventsList
+                roomId={room.id}
+                limit={3}
+                onOpen={(event) => navigation.navigate('SiteEventDetail', { eventId: event.id, projectId: event.project_id })}
+              />
+              <TouchableOpacity
+                style={styles.primaryBtn}
+                onPress={() => navigation.navigate('SiteEventCapture', { projectId: room.project_id, roomId: room.id })}
+                accessibilityRole="button"
+                accessibilityLabel="Lapor kejadian di ruangan ini"
+              >
+                <Text style={styles.primaryText}>Lapor</Text>
+              </TouchableOpacity>
             </Card>
           </>
         )}
@@ -170,7 +179,5 @@ const styles = StyleSheet.create({
   refusalMeta: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs },
   primaryBtn: { backgroundColor: COLORS.primary, borderRadius: RADIUS, padding: SPACE.md, alignItems: 'center', marginTop: SPACE.base },
   primaryText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.textInverse, textTransform: 'uppercase', letterSpacing: 0.4 },
-  emptyHead: { fontSize: TYPE.base, fontFamily: FONTS.semibold, color: COLORS.text },
-  emptyBody: { fontSize: TYPE.sm, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs, lineHeight: 19 },
   empty: { fontSize: TYPE.base, fontFamily: FONTS.regular, color: COLORS.textSec, textAlign: 'center', paddingVertical: SPACE.md },
 });

@@ -1,4 +1,11 @@
-import { dayRangeWIB, wibStartOfDayIso, wibEndOfDayExclusiveIso } from '../timeWindow';
+import {
+  dayRangeWIB,
+  wibStartOfDayIso,
+  wibEndOfDayExclusiveIso,
+  isRealCalendarDate,
+  addCalendarDays,
+  todayIsoWIB,
+} from '../timeWindow';
 
 describe('wibStartOfDayIso', () => {
   it('00:00:00 WIB is 17:00:00 UTC the PREVIOUS calendar date (WIB = UTC+7)', () => {
@@ -69,5 +76,88 @@ describe('dayRangeWIB — multi-day ordering', () => {
   it('a caller who accidentally swaps from/to gets a negative (empty) window rather than a silently-huge one — documents current behavior, no clamping', () => {
     const { fromIso, toIso } = dayRangeWIB('2026-07-10', '2026-07-01');
     expect(fromIso > toIso).toBe(true);
+  });
+});
+
+describe('isRealCalendarDate', () => {
+  it('accepts a leap day in a leap year', () => {
+    expect(isRealCalendarDate('2024-02-29')).toBe(true);
+  });
+
+  it('rejects a leap day in a non-leap year', () => {
+    expect(isRealCalendarDate('2026-02-29')).toBe(false);
+  });
+
+  it('rejects the classic invalid date 2026-02-30', () => {
+    expect(isRealCalendarDate('2026-02-30')).toBe(false);
+  });
+
+  it('accepts month-end and year-end dates', () => {
+    expect(isRealCalendarDate('2026-01-31')).toBe(true);
+    expect(isRealCalendarDate('2026-12-31')).toBe(true);
+  });
+
+  it('rejects shapes that are not YYYY-MM-DD', () => {
+    expect(isRealCalendarDate('2026-9-1')).toBe(false);
+    expect(isRealCalendarDate('2026-07-10T00:00:00Z')).toBe(false);
+    expect(isRealCalendarDate('')).toBe(false);
+  });
+});
+
+describe('addCalendarDays', () => {
+  it('crosses a leap day', () => {
+    expect(addCalendarDays('2024-02-28', 1)).toBe('2024-02-29');
+    expect(addCalendarDays('2024-02-29', 1)).toBe('2024-03-01');
+  });
+
+  it('crosses a month end', () => {
+    expect(addCalendarDays('2026-01-31', 1)).toBe('2026-02-01');
+  });
+
+  it('crosses a year end', () => {
+    expect(addCalendarDays('2026-12-31', 1)).toBe('2027-01-01');
+  });
+
+  it('goes backward for negative days', () => {
+    expect(addCalendarDays('2026-01-01', -1)).toBe('2025-12-31');
+    expect(addCalendarDays('2026-03-01', -1)).toBe('2026-02-28');
+  });
+
+  it('is a no-op for zero days', () => {
+    expect(addCalendarDays('2026-06-15', 0)).toBe('2026-06-15');
+  });
+});
+
+/**
+ * The WIB "today" every site-event surface asks for. The instants below are the
+ * ones that catch a device-clock implementation: between 17:00 UTC and 24:00
+ * UTC, Jakarta is already on the NEXT calendar date, so a function that read
+ * the machine's own day would be a full date behind for a third of every day.
+ */
+describe('todayIsoWIB', () => {
+  it('is already tomorrow in Jakarta once UTC passes 17:00 (WIB = UTC+7)', () => {
+    expect(todayIsoWIB(new Date('2026-09-11T16:59:59.999Z'))).toBe('2026-09-11');
+    expect(todayIsoWIB(new Date('2026-09-11T17:00:00.000Z'))).toBe('2026-09-12');
+    expect(todayIsoWIB(new Date('2026-09-11T23:59:59.999Z'))).toBe('2026-09-12');
+  });
+
+  it('agrees with wibStartOfDayIso on both sides of the WIB midnight it names', () => {
+    const justBefore = new Date('2026-09-11T16:59:59.999Z');
+    const atMidnight = new Date(wibStartOfDayIso('2026-09-12'));
+    expect(atMidnight.toISOString()).toBe('2026-09-11T17:00:00.000Z');
+    expect(todayIsoWIB(justBefore)).toBe('2026-09-11');
+    expect(todayIsoWIB(atMidnight)).toBe('2026-09-12');
+  });
+
+  it('rolls the month and the year over at WIB midnight, not UTC midnight', () => {
+    expect(todayIsoWIB(new Date('2026-01-31T17:00:00.000Z'))).toBe('2026-02-01');
+    expect(todayIsoWIB(new Date('2026-12-31T16:00:00.000Z'))).toBe('2026-12-31');
+    expect(todayIsoWIB(new Date('2026-12-31T17:00:00.000Z'))).toBe('2027-01-01');
+  });
+
+  it('returns a real, shape-valid calendar date', () => {
+    const today = todayIsoWIB(new Date('2026-02-28T20:00:00.000Z'));
+    expect(today).toBe('2026-03-01');
+    expect(isRealCalendarDate(today)).toBe(true);
   });
 });
