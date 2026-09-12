@@ -1,7 +1,8 @@
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
 
 import {
-  boardSummary, filterBoard, floorOptions, lastUpdateLabel, openChips, openCount, ownerOptions,
+  boardSummary, filterBoard, floorGroupKey, floorOptions, isQuietRoom, lastUpdateLabel,
+  openChips, openCount, ownerOptions,
 } from '../roomBoard';
 import type { RoomBoardRow } from '../types';
 
@@ -31,6 +32,17 @@ describe('boardSummary', () => {
       row({ room_id: 'never', is_quiet: true, last_event_at: null }),
     ]);
     expect(s.quietRooms).toBe(1);
+  });
+});
+
+describe('isQuietRoom', () => {
+  it('does not treat a never-touched room as visibly quiet', () => {
+    expect(isQuietRoom(row({ room_id: 'a', is_quiet: true, last_event_at: null }))).toBe(false);
+    expect(isQuietRoom(row({ room_id: 'b', is_quiet: true, last_event_at: '2026-09-01T00:00:00Z' }))).toBe(true);
+  });
+
+  it('reads false once is_quiet itself is false, event or not', () => {
+    expect(isQuietRoom(row({ room_id: 'c', is_quiet: false, last_event_at: '2026-09-01T00:00:00Z' }))).toBe(false);
   });
 });
 
@@ -66,6 +78,39 @@ describe('option lists', () => {
     expect(floorOptions(rows)).toEqual(['1', '2']);
     expect(ownerOptions(rows)).toEqual(['AS', 'BW']);
   });
+
+  it('collapses floor labels that normalise to the same floor, keeping the first label seen', () => {
+    const rows = [
+      row({ room_id: 'a', floor: '2' }),
+      row({ room_id: 'b', floor: 'Lt. 2' }),
+      row({ room_id: 'c', floor: 'Lantai 2' }),
+    ];
+    expect(floorOptions(rows)).toEqual(['2']);
+  });
+});
+
+describe('floorGroupKey', () => {
+  it('groups "2", "Lt. 2" and "Lantai 2" as the same floor', () => {
+    expect(floorGroupKey('2')).toBe(floorGroupKey('Lt. 2'));
+    expect(floorGroupKey('2')).toBe(floorGroupKey('Lantai 2'));
+  });
+
+  it('keeps distinct floors, and the floorless bucket, apart', () => {
+    expect(floorGroupKey('2')).not.toBe(floorGroupKey('3'));
+    expect(floorGroupKey(null)).toBe(floorGroupKey(''));
+    expect(floorGroupKey(null)).not.toBe(floorGroupKey('Basement'));
+  });
+});
+
+describe('filterBoard floor normalisation', () => {
+  it('matches a floor filter against every spelling of that floor', () => {
+    const rows = [
+      row({ room_id: 'a', floor: '2' }),
+      row({ room_id: 'b', floor: 'Lt. 2' }),
+      row({ room_id: 'c', floor: '3' }),
+    ];
+    expect(filterBoard(rows, { floor: 'Lantai 2' }).map((r) => r.room_id)).toEqual(['a', 'b']);
+  });
 });
 
 describe('lastUpdateLabel', () => {
@@ -78,6 +123,16 @@ describe('lastUpdateLabel', () => {
     expect(lastUpdateLabel('2026-09-11T01:00:00Z', now)).toBe('Hari ini');
     expect(lastUpdateLabel('2026-09-10T01:00:00Z', now)).toBe('Kemarin');
     expect(lastUpdateLabel('2026-09-05T01:00:00Z', now)).toBe('6 hari lalu');
+  });
+
+  it('pins the is_quiet boundary: still "N hari lalu" at exactly 3 and 4 days', () => {
+    // now = 2026-09-11T08:00:00Z. v_room_board's is_quiet flips to true only
+    // strictly after 3 days (confirmed_at < now() - interval '3 days'), so a
+    // room can legitimately read "3 hari lalu" while already counted/faded as
+    // quiet for the rest of that day-bucket. lastUpdateLabel just reports the
+    // elapsed days; it never re-derives is_quiet itself.
+    expect(lastUpdateLabel('2026-09-08T08:00:00Z', now)).toBe('3 hari lalu'); // exactly 3 days
+    expect(lastUpdateLabel('2026-09-07T08:00:00Z', now)).toBe('4 hari lalu'); // exactly 4 days
   });
 });
 

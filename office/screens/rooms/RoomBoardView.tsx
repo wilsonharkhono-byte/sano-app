@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import {
+  View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView, RefreshControl,
+} from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Card from '../../../workflows/components/Card';
 import {
-  listRoomBoard, boardSummary, filterBoard, floorOptions, ownerOptions,
+  listRoomBoard, boardSummary, filterBoard, floorGroupKey, floorOptions, isQuietRoom, ownerOptions,
   lastUpdateLabel, openChips, type BoardFilters,
 } from '../../../tools/roomBoard';
 import { SITE_EVENT_TYPE_LABELS } from '../../../tools/constants';
@@ -21,6 +24,12 @@ import { COLORS, FONTS, RADIUS_SM, SPACE, TYPE } from '../../../workflows/theme'
  * late; a room with no events reads "Belum ada kejadian", never "selesai".
  * Rooms sort through tools/clientReportRooms.ts, the same comparator the
  * client report uses, so the board and the report agree (spec §9).
+ *
+ * Owns its own scroll container (ScrollView + pull-to-refresh) so every
+ * mount screen gets the same freshness behaviour for free: refetch on focus
+ * (a bottom-tab screen stays mounted across tab switches, so without this a
+ * confirmed site event elsewhere would not show up here until an app
+ * restart) plus a manual pull-to-refresh.
  */
 export default function RoomBoardView(props: {
   projectId: string | null;
@@ -34,31 +43,77 @@ export default function RoomBoardView(props: {
 
   const [rows, setRows] = useState<RoomBoardRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [filters, setFilters] = useState<BoardFilters>({});
 
-  const load = useCallback(async () => {
-    if (!projectId) { setRows([]); setLoading(false); return; }
-    setLoading(true);
-    setRows(await listRoomBoard(projectId));
+  const load = useCallback(async (opts: { silent?: boolean } = {}) => {
+    if (!projectId) {
+      setRows([]);
+      setLoadError(null);
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+    if (!opts.silent) setLoading(true);
+    const result = await listRoomBoard(projectId);
+    if ('error' in result) {
+      // A fetch failure is never "no rooms" (CLAUDE.md §12): stale rows are
+      // dropped so the error state below is the only thing shown, rather than
+      // a confident-looking (and possibly outdated) list next to a warning.
+      setLoadError(result.error);
+      setRows([]);
+    } else {
+      setLoadError(null);
+      setRows(result.rooms);
+    }
     setLoading(false);
+    setRefreshing(false);
   }, [projectId]);
 
   useEffect(() => { void load(); }, [load]);
 
-  const summary = useMemo(() => boardSummary(rows), [rows]);
-  const shown = useMemo(() => filterBoard(rows, filters), [rows, filters]);
-  const floors = useMemo(() => floorOptions(rows), [rows]);
-  const owners = useMemo(() => ownerOptions(rows), [rows]);
+  // Refetch whenever this screen regains focus. Bottom-tab navigators keep
+  // screens mounted across tab switches, so without this a supervisor who
+  // confirms a site event elsewhere and comes back to Papan Ruangan would see
+  // stale open-counts and overdue badges until a full app reload. Silent: no
+  // full-screen spinner on every tab switch (same convention as
+  // NotificationsScreen's focus refetch).
+  useFocusEffect(
+    useCallback(() => {
+      void load({ silent: true });
+    }, [load]),
+  );
 
-  // Floors in board order; the comparator already put Area Umum and the
-  // floorless rooms last, so first-appearance order is the right order.
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    void load({ silent: true });
+  }, [load]);
+
+  // v_room_board is read in full (active and inactive) so one query can both
+  // show the board and say how many rooms are hidden from it, rather than
+  // hiding inactive rooms silently with no way to tell "no hambatan" from
+  // "hambatan on a room that got deactivated".
+  const activeRows = useMemo(() => rows.filter((r) => r.active), [rows]);
+  const inactiveCount = rows.length - activeRows.length;
+
+  const summary = useMemo(() => boardSummary(activeRows), [activeRows]);
+  const shown = useMemo(() => filterBoard(activeRows, filters), [activeRows, filters]);
+  const floors = useMemo(() => floorOptions(activeRows), [activeRows]);
+  const owners = useMemo(() => ownerOptions(activeRows), [activeRows]);
+
+  // Floors in board order, grouped by the SAME normalised key filterBoard and
+  // floorOptions use (see roomBoard.ts's floorGroupKey) so "2", "Lt. 2" and
+  // "Lantai 2" render as one header instead of three. The comparator already
+  // sorts same-floor rows adjacent, so first-appearance order is the right
+  // order; the header shows the first raw label seen for the group.
   const byFloor = useMemo(() => {
-    const groups: Array<[string, RoomBoardRow[]]> = [];
+    const groups: Array<{ key: string; label: string; rows: RoomBoardRow[] }> = [];
     for (const r of shown) {
-      const key = r.floor || 'Tanpa lantai';
+      const key = floorGroupKey(r.floor);
       const last = groups[groups.length - 1];
-      if (last && last[0] === key) last[1].push(r);
-      else groups.push([key, [r]]);
+      if (last && last.key === key) last.rows.push(r);
+      else groups.push({ key, label: r.floor || 'Tanpa lantai', rows: [r] });
     }
     return groups;
   }, [shown]);
@@ -71,7 +126,13 @@ export default function RoomBoardView(props: {
   }
 
   return (
-    <>
+    <ScrollView
+      style={styles.scroll}
+      contentContainerStyle={styles.content}
+      refreshControl={(
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} colors={[COLORS.primary]} />
+      )}
+    >
       <Card title="Papan Ruangan" subtitle="Ringkasan kejadian per ruangan." rightAction={headerAction}>
         <View style={styles.strip}>
           <Stat label="Hambatan" value={summary.hambatan} color={COLORS.critical} />
@@ -122,22 +183,33 @@ export default function RoomBoardView(props: {
 
       {loading && <Card><ActivityIndicator color={COLORS.primary} /></Card>}
 
-      {!loading && shown.length === 0 && (
+      {!loading && loadError && (
+        <Card>
+          <Text style={styles.errorText}>
+            Papan Ruangan gagal dimuat. Periksa koneksi lalu coba lagi.
+          </Text>
+          <TouchableOpacity onPress={() => void load()} style={styles.retryBtn} accessibilityRole="button">
+            <Text style={styles.retryBtnText}>Coba lagi</Text>
+          </TouchableOpacity>
+        </Card>
+      )}
+
+      {!loading && !loadError && shown.length === 0 && (
         <Card>
           <Text style={styles.empty}>
-            {rows.length === 0
+            {activeRows.length === 0
               ? 'Belum ada ruangan di proyek ini. Buat ruangan di "Kelola ruangan".'
               : 'Tidak ada ruangan yang cocok dengan saringan ini.'}
           </Text>
         </Card>
       )}
 
-      {!loading && byFloor.map(([floor, group]) => (
-        <Card key={floor} title={floor}>
-          {group.map((r) => (
+      {!loading && !loadError && byFloor.map((g) => (
+        <Card key={g.key} title={g.label}>
+          {g.rows.map((r) => (
             <TouchableOpacity
               key={r.room_id}
-              style={[styles.roomRow, r.is_quiet && styles.quiet]}
+              style={[styles.roomRow, isQuietRoom(r) && styles.quiet]}
               onPress={() => onOpenRoom(r)}
               accessibilityRole="button"
               accessibilityLabel={`Buka ruangan ${r.room_name}`}
@@ -173,7 +245,11 @@ export default function RoomBoardView(props: {
           ))}
         </Card>
       ))}
-    </>
+
+      {!loading && !loadError && inactiveCount > 0 && (
+        <Text style={styles.inactiveNote}>{inactiveCount} ruangan nonaktif disembunyikan.</Text>
+      )}
+    </ScrollView>
   );
 }
 
@@ -200,7 +276,12 @@ function Pill(props: { label: string; on: boolean; onPress: () => void }) {
 }
 
 const styles = StyleSheet.create({
+  scroll: { flex: 1 },
+  content: { padding: SPACE.base, paddingBottom: SPACE.xxxl },
   empty: { fontSize: TYPE.sm, fontFamily: FONTS.regular, color: COLORS.textSec, lineHeight: 18 },
+  errorText: { fontSize: TYPE.sm, fontFamily: FONTS.regular, color: COLORS.critical, lineHeight: 18, marginBottom: SPACE.sm },
+  retryBtn: { alignSelf: 'flex-start', backgroundColor: COLORS.critical, borderRadius: RADIUS_SM, paddingVertical: SPACE.sm, paddingHorizontal: SPACE.base },
+  retryBtnText: { color: COLORS.textInverse, fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', letterSpacing: 0.3 },
   strip: { flexDirection: 'row', gap: SPACE.sm },
   stat: { flex: 1, alignItems: 'center', paddingVertical: SPACE.sm, backgroundColor: COLORS.surfaceSunken, borderRadius: RADIUS_SM },
   statValue: { fontSize: TYPE.xl, fontFamily: FONTS.bold },
@@ -224,4 +305,5 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 10, fontFamily: FONTS.semibold, color: COLORS.accentDark },
   noneText: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textMuted },
   owners: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.textSec, marginLeft: 'auto' },
+  inactiveNote: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textMuted, textAlign: 'center', marginTop: SPACE.sm },
 });
