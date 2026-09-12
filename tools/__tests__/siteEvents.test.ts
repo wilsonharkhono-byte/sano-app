@@ -561,7 +561,7 @@ describe('listRoomTimeline', () => {
     return c;
   }
 
-  it('flattens the joins, sorts media and never shows a discarded event', async () => {
+  it('flattens the joins, sorts media, scopes to the project and never shows a discarded event', async () => {
     const c = chain({ data: [{
       id: 'e1', room_id: 'r1', status: 'open', created_at: 'x',
       site_event_media: [{ id: 'm2', sort_order: 1 }, { id: 'm1', sort_order: 0 }],
@@ -569,17 +569,19 @@ describe('listRoomTimeline', () => {
     }], error: null });
     (supabase.from as jest.Mock).mockReturnValue(c);
 
-    const out = await listRoomTimeline('r1');
+    const out = await listRoomTimeline('r1', 'p1');
+    expect(c.eq).toHaveBeenCalledWith('room_id', 'r1');
+    expect(c.eq).toHaveBeenCalledWith('project_id', 'p1');
     expect(c.neq).toHaveBeenCalledWith('status', 'discarded');
-    expect(out[0].media.map((m) => m.id)).toEqual(['m1', 'm2']);
-    expect(out[0].owner_name).toBe('Andi Saputra');
-    expect(out[0].reporter_name).toBe('Budi');
-    expect('site_event_media' in out[0]).toBe(false);
+    expect(out.events![0].media.map((m) => m.id)).toEqual(['m1', 'm2']);
+    expect(out.events![0].owner_name).toBe('Andi Saputra');
+    expect(out.events![0].reporter_name).toBe('Budi');
+    expect('site_event_media' in out.events![0]).toBe(false);
   });
 
-  it('returns an empty list rather than throwing when the read fails', async () => {
+  it('reports a read failure instead of an empty room', async () => {
     (supabase.from as jest.Mock).mockReturnValue(chain({ data: null, error: { message: 'nope' } }));
-    expect(await listRoomTimeline('r1')).toEqual([]);
+    expect(await listRoomTimeline('r1', 'p1')).toEqual({ events: null, error: 'nope' });
   });
 });
 
@@ -587,12 +589,25 @@ describe('updateSiteEventAssignment', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('calls the 099 RPC with its three parameters', async () => {
-    (supabase.rpc as jest.Mock).mockResolvedValue({ data: { event_id: 'e1', owner_id: 'u2', due_date: '2026-09-20', changed: true, notified: true }, error: null });
+    (supabase.rpc as jest.Mock).mockResolvedValue({ data: { event_id: 'e1', status: 'open', owner_id: 'u2', due_date: '2026-09-20', changed: true, notified: true }, error: null });
     const out = await updateSiteEventAssignment('e1', 'u2', '2026-09-20');
     expect(supabase.rpc).toHaveBeenCalledWith('update_site_event_assignment', {
       p_event_id: 'e1', p_owner_id: 'u2', p_due_date: '2026-09-20',
     });
+    expect(out.result?.status).toBe('open');
     expect(out.result?.notified).toBe(true);
+  });
+
+  it('refuses to call an empty answer a save', async () => {
+    (supabase.rpc as jest.Mock).mockResolvedValue({ data: null, error: null });
+    expect((await updateSiteEventAssignment('e1', 'u2', '2026-09-20')).error)
+      .toBe('Perubahan tidak terkonfirmasi oleh server. Muat ulang lalu periksa.');
+  });
+
+  it('refuses a malformed row that is not a real jsonb object', async () => {
+    (supabase.rpc as jest.Mock).mockResolvedValue({ data: 'ok', error: null });
+    expect((await updateSiteEventAssignment('e1', 'u2', '2026-09-20')).error)
+      .toBe('Perubahan tidak terkonfirmasi oleh server. Muat ulang lalu periksa.');
   });
 
   it('turns each named refusal into an Indonesian sentence', async () => {

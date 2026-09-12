@@ -95,6 +95,13 @@ describe('validateAssignment', () => {
       .toBe('Tenggat tidak boleh sebelum hari ini.');
   });
 
+  it('refuses a due date that is not YYYY-MM-DD, in the same words the confirm screen uses', () => {
+    expect(validateAssignment(ev({ id: 'a' }), { ownerId: 'u', dueDate: '12/09/2026' }, TODAY))
+      .toBe('Format tenggat harus YYYY-MM-DD.');
+    expect(validateAssignment(ev({ id: 'a' }), { ownerId: 'u', dueDate: '2026-02-30' }, TODAY))
+      .toBe('Format tenggat harus YYYY-MM-DD.');
+  });
+
   it('keeps an already-late event reassignable without a new date', () => {
     const late = ev({ id: 'a', event_type: 'isu', due_date: '2026-09-01' });
     expect(validateAssignment(late, { ownerId: 'u2', dueDate: '2026-09-01' }, TODAY)).toBeNull();

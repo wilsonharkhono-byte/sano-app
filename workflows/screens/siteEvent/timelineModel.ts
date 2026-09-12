@@ -10,7 +10,7 @@
 // definition of "late" across the detail screen and the timeline.
 
 import { isOverdue } from './detailModel';
-import { isActionableType } from '../../../tools/siteEventRules';
+import { isActionableType, isIsoDate } from '../../../tools/siteEventRules';
 import type { SiteEvent } from '../../../tools/types';
 
 export { isOverdue };
@@ -77,6 +77,13 @@ export function validateAssignment(
 ): string | null {
   if (isActionableType(ev.event_type) && (!next.ownerId || !next.dueDate)) {
     return 'Kejadian ini wajib punya pemilik dan tenggat.';
+  }
+  // Checked before the past-date comparison below: a string < comparison on
+  // something like "besok" or "12/09/2026" can sort either side of `today`
+  // and would otherwise reach Postgres, which refuses in English. Same copy
+  // as the confirm screen's CONFIRM_ERRORS.dueFormat, so the two forms agree.
+  if (next.dueDate && !isIsoDate(next.dueDate)) {
+    return 'Format tenggat harus YYYY-MM-DD.';
   }
   if (next.dueDate && next.dueDate !== ev.due_date && next.dueDate < today) {
     return 'Tenggat tidak boleh sebelum hari ini.';

@@ -22,10 +22,12 @@ export default function AssignmentEditor(props: {
   team: TeamMember[];
   today: string;
   saving: boolean;
+  /** The server's refusal for THIS row, keyed by the caller so it never leaks onto a different one. */
+  serverError?: string | null;
   onCancel: () => void;
   onSave: (ownerId: string | null, dueDate: string | null) => void;
 }) {
-  const { event, team, today, saving, onCancel, onSave } = props;
+  const { event, team, today, saving, serverError, onCancel, onSave } = props;
   const [ownerId, setOwnerId] = useState<string | null>(event.owner_id);
   const [dueDate, setDueDate] = useState<string>(event.due_date ?? '');
   const [error, setError] = useState<string | null>(null);
@@ -46,7 +48,9 @@ export default function AssignmentEditor(props: {
       <OwnerField team={team} value={ownerId} onChange={setOwnerId} required={actionable} disabled={saving} />
       <Text style={styles.label}>Tenggat</Text>
       <DueDateField value={dueDate} onChange={setDueDate} today={today} required={actionable} disabled={saving} />
-      {error && <Text style={styles.error}>{error}</Text>}
+      {(error ?? serverError) && (
+        <Text style={styles.error} accessibilityLiveRegion="polite">{error ?? serverError}</Text>
+      )}
       <View style={styles.actions}>
         <TouchableOpacity style={styles.ghostBtn} onPress={onCancel} disabled={saving}>
           <Text style={styles.ghostText}>Batal</Text>

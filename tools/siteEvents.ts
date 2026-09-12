@@ -581,24 +581,42 @@ const TIMELINE_SELECT =
   'owner:profiles!site_events_owner_id_fkey(full_name), ' +
   'reporter:profiles!site_events_reporter_id_fkey(full_name)';
 
+/** Either the room's events, or a read failure — never a blip rendered as an empty room (CLAUDE.md §12). */
+export type RoomTimelineResult =
+  | { events: TimelineEventRow[]; error?: undefined }
+  | { events: null; error: string };
+
 /**
  * A room's events for the timeline. `discarded` is excluded because a discard
  * is a decision, not history a PM needs to scroll past; the rows and their
  * files are still there (spec §1.1 rule 3), just not on this list.
+ *
+ * Ordered on the same key `sortTimeline` re-derives the list by (confirmed_at,
+ * falling back to created_at for a draft nobody has confirmed yet), so the
+ * 50-row cap keeps the newest-by-that-key rows rather than the newest-inserted
+ * ones. `project_id` is filtered alongside `room_id`: RLS and globally unique
+ * room ids make it redundant today, but it keeps the intended scope readable
+ * at the call site.
  */
-export async function listRoomTimeline(roomId: string, limit = 50): Promise<TimelineEventRow[]> {
+export async function listRoomTimeline(
+  roomId: string,
+  projectId: string,
+  limit = 50,
+): Promise<RoomTimelineResult> {
   const { data, error } = await supabase
     .from('site_events')
     .select(TIMELINE_SELECT)
     .eq('room_id', roomId)
+    .eq('project_id', projectId)
     .neq('status', 'discarded')
+    .order('confirmed_at', { ascending: false, nullsFirst: true })
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error) {
     console.warn('listRoomTimeline failed:', error.message);
-    return [];
+    return { events: null, error: error.message };
   }
-  return ((data ?? []) as unknown as Array<SiteEvent & {
+  return { events: ((data ?? []) as unknown as Array<SiteEvent & {
     site_event_media?: SiteEventMedia[] | null;
     owner?: { full_name?: string } | null;
     reporter?: { full_name?: string } | null;
@@ -607,11 +625,12 @@ export async function listRoomTimeline(roomId: string, limit = 50): Promise<Time
     media: [...(site_event_media ?? [])].sort((a, b) => a.sort_order - b.sort_order),
     owner_name: owner?.full_name ?? null,
     reporter_name: reporter?.full_name ?? null,
-  }));
+  })) };
 }
 
 export interface AssignmentResult {
   event_id: string;
+  status: SiteEventStatus;
   owner_id: string | null;
   due_date: string | null;
   changed: boolean;
@@ -623,6 +642,10 @@ export interface AssignmentResult {
  * site_events_human_fields_rpc_only trigger, deliberately, so this RPC is the
  * only path. Its named refusals go through the same mapSiteEventRpcError
  * table as confirm and close, so the user reads one sentence.
+ *
+ * 099 always RETURNs a jsonb object; a null or shapeless row is a server
+ * response this client cannot read. Reporting that as a save (CLAUDE.md §12)
+ * would leave the old owner in place while the UI claims success.
  */
 export async function updateSiteEventAssignment(
   eventId: string,
@@ -635,5 +658,9 @@ export async function updateSiteEventAssignment(
     p_due_date: dueDate,
   });
   if (error) return { error: mapSiteEventRpcError(error.message) };
-  return { result: data as AssignmentResult };
+  const row = data as AssignmentResult | null;
+  if (!row || typeof row !== 'object' || typeof row.event_id !== 'string') {
+    return { error: 'Perubahan tidak terkonfirmasi oleh server. Muat ulang lalu periksa.' };
+  }
+  return { result: row };
 }

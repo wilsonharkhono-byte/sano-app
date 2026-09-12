@@ -14,8 +14,12 @@ import type { Room } from '../../tools/types';
 import { COLORS, FONTS, SPACE, TYPE } from '../../workflows/theme';
 
 /**
- * Where a scanned label lands for admin, estimator and principal: read-only.
- * Office roles author rooms in "Kelola ruangan"; this screen exists so a
+ * Where a scanned label lands for admin, estimator and principal. The room
+ * summary card itself is read-only — office roles author rooms in "Kelola
+ * ruangan" — but the mounted `RoomTimeline` below it is not: it writes
+ * `owner_id` and `due_date` through migration 099 for any office role or the
+ * reporter, principal included, even though the principal is read-only
+ * everywhere else by migration 090's seat rule. This screen exists so a
  * scanned QR does something sensible in every role rather than dead-ending.
  */
 export default function RoomDetailScreen() {

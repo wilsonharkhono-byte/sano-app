@@ -156,10 +156,10 @@ export default function RoomScreen() {
 
             <RoomTimeline
               roomId={room.id}
-              projectId={project!.id}
+              projectId={room.project_id}
               viewer={{ id: profile?.id ?? null, role: profile?.role ?? null }}
               today={todayIsoWIB()}
-              onOpenEvent={(eventId) => navigation.navigate('SiteEventDetail', { eventId, projectId: project!.id })}
+              onOpenEvent={(eventId) => navigation.navigate('SiteEventDetail', { eventId, projectId: room.project_id })}
               onOpenSiteChange={() => navigation.navigate('Progres')}
             />
           </>
