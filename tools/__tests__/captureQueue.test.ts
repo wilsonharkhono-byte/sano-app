@@ -1,6 +1,8 @@
 import {
+  CAPTURE_QUEUE_ENTRY_VERSION,
   MAX_CONSECUTIVE_FAILURES,
   IllegalQueueTransitionError,
+  assertTransition,
   attentionCount,
   backoffMs,
   beginAttempt,
@@ -18,8 +20,10 @@ import {
   recordFailure,
   retryEntry,
   toNewSiteEvent,
+  upgradeEntry,
   waitingCount,
   type CaptureQueueEntry,
+  type QueueState,
 } from '../captureQueue';
 import type { NewSiteEvent } from '../siteEvents';
 
@@ -41,7 +45,7 @@ describe('enqueueCapture', () => {
   it('starts queued, no progress, both media not yet uploaded', () => {
     const e = fresh();
     expect(e).toMatchObject({
-      id: 'e1', ownerId: 'u1', state: 'queued', eventInserted: false, analysisRequested: false,
+      id: 'e1', version: 1, ownerId: 'u1', state: 'queued', eventInserted: false, analysisRequested: false,
       localCleanedUp: false, attempts: 0, consecutiveFailures: 0, needsAttention: false, unrecoverable: false,
     });
     expect(e.media.map((m) => [m.id, m.uploaded, m.bytes])).toEqual([['m1', false, null], ['m2', false, null]]);
@@ -149,6 +153,50 @@ describe('failure accounting', () => {
   });
 });
 
+describe('failure classification', () => {
+  it('defaults to transient, keeping two-argument behaviour exactly as before', () => {
+    const e = recordFailure(fresh(), 'jaringan turun', NOW);
+    expect(e).toMatchObject({ consecutiveFailures: 1, needsAttention: false, lastFailureKind: 'transient' });
+  });
+
+  it('flags a permanent failure for attention immediately, without waiting for 5 strikes', () => {
+    const e = recordFailure(fresh(), 'Proyek tidak lagi ditugaskan.', NOW, 'permanent');
+    expect(e).toMatchObject({
+      state: 'failed', consecutiveFailures: 1, needsAttention: true, lastFailureKind: 'permanent',
+    });
+  });
+
+  it('never deletes the entry on a permanent failure - it stays put like any other', () => {
+    const e = recordFailure(fresh(), 'Akses ditolak.', NOW, 'permanent');
+    expect(e.id).toBe('e1');
+    expect(e.media).toHaveLength(2);
+    expect(nextStep(e)).toEqual({ kind: 'none' });
+  });
+
+  it('a subsequent success clears lastFailureKind along with the rest of the failure bookkeeping', () => {
+    let e = recordFailure(fresh(), 'timeout', NOW, 'permanent');
+    e = markUploaded(e, 'm1', 10, NOW);
+    expect(e.lastFailureKind).toBeUndefined();
+  });
+});
+
+describe('markUnrecoverable precondition', () => {
+  it('throws once the event is already inserted, instead of silently discarding a server-known event', () => {
+    let e = fresh();
+    e = markUploaded(e, 'm1', 10, NOW);
+    e = markUploaded(e, 'm2', 20, NOW);
+    e = markInserted(e, NOW);
+    expect(() => markUnrecoverable(e, 'Berkas lokal hilang.')).toThrow();
+  });
+
+  it('still works pre-insert, deriving state the same way the other mutators do', () => {
+    let e = fresh();
+    e = markUploaded(e, 'm1', 10, NOW);
+    const gone = markUnrecoverable(e, 'Berkas lokal hilang.');
+    expect(gone).toMatchObject({ state: 'uploading', unrecoverable: true, needsAttention: true, lastError: 'Berkas lokal hilang.' });
+  });
+});
+
 describe('illegal transitions', () => {
   it('refuses to go backwards from a further-along state', () => {
     let e = fresh();
@@ -158,6 +206,38 @@ describe('illegal transitions', () => {
     // Simulate a caller that forgot insert happened and re-asserts 'uploading' progress only.
     expect(() => markCleanedUp({ ...e, analysisRequested: false, localCleanedUp: false, eventInserted: false }, NOW))
       .toThrow(IllegalQueueTransitionError);
+  });
+});
+
+describe('assertTransition exhaustiveness', () => {
+  const QUEUE_STATES: QueueState[] = ['queued', 'uploading', 'analyzing', 'draft_ready', 'done', 'failed'];
+
+  // Hand-copied from ALLOWED_TRANSITIONS in captureQueue.ts, deliberately NOT
+  // imported from there - the point of this table is to catch a future,
+  // accidental loosening of the real one (e.g. `queued` growing a stray
+  // `'done'` entry). Importing the real table would make this test tautological.
+  const EXPECTED_TRANSITIONS: Record<QueueState, ReadonlyArray<QueueState>> = {
+    queued: ['uploading', 'failed'],
+    uploading: ['uploading', 'analyzing', 'failed'],
+    analyzing: ['analyzing', 'draft_ready', 'failed'],
+    draft_ready: ['draft_ready', 'done', 'failed'],
+    failed: ['queued', 'uploading', 'analyzing', 'draft_ready'],
+    done: [],
+  };
+
+  const allPairs: Array<[QueueState, QueueState]> = QUEUE_STATES.flatMap((from) =>
+    QUEUE_STATES.map((to): [QueueState, QueueState] => [from, to]),
+  );
+
+  it.each(allPairs)('from %s to %s', (from, to) => {
+    // A self-transition is always a no-op, regardless of the table (assertTransition
+    // returns early on from === to before consulting ALLOWED_TRANSITIONS at all).
+    const allowed = from === to || EXPECTED_TRANSITIONS[from].includes(to);
+    if (allowed) {
+      expect(() => assertTransition(from, to)).not.toThrow();
+    } else {
+      expect(() => assertTransition(from, to)).toThrow(IllegalQueueTransitionError);
+    }
   });
 });
 
@@ -217,6 +297,58 @@ describe('conversions', () => {
     e = markUploaded(e, 'm1', 111, NOW);
     e = markUploaded(e, 'm2', 222, NOW);
     expect(bytesById(e)).toEqual({ m1: 111, m2: 222 });
+  });
+
+  it('refuses to rebuild a NewSiteEvent once local files are already cleaned up', () => {
+    let e = fresh();
+    e = markUploaded(e, 'm1', 10, NOW);
+    e = markUploaded(e, 'm2', 20, NOW);
+    e = markInserted(e, NOW);
+    e = markAnalysisRequested(e, NOW);
+    e = markCleanedUp(e, NOW);
+    expect(() => toNewSiteEvent(e)).toThrow();
+  });
+});
+
+describe('versioning / upgradeEntry', () => {
+  it('exports the current version as 1', () => {
+    expect(CAPTURE_QUEUE_ENTRY_VERSION).toBe(1);
+  });
+
+  it('round-trips a well-formed v1 entry unchanged', () => {
+    const e = fresh();
+    expect(upgradeEntry(e)).toEqual(e);
+  });
+
+  it('treats a legacy entry with no version field as v1', () => {
+    const e = fresh();
+    const { version, ...legacy } = e;
+    expect(upgradeEntry(legacy)).toEqual({ ...legacy, version: 1 });
+  });
+
+  it('refuses a future/unrecognised version rather than guessing', () => {
+    const e = fresh();
+    expect(upgradeEntry({ ...e, version: 2 })).toBeNull();
+  });
+
+  it('refuses non-objects and objects missing a required field', () => {
+    expect(upgradeEntry(null)).toBeNull();
+    expect(upgradeEntry(undefined)).toBeNull();
+    expect(upgradeEntry('e1')).toBeNull();
+    expect(upgradeEntry({})).toBeNull();
+    const e = fresh();
+    const { id: _id, ...missingId } = e;
+    expect(upgradeEntry(missingId)).toBeNull();
+  });
+
+  it('refuses an entry whose media array is corrupted', () => {
+    const e = fresh();
+    expect(upgradeEntry({ ...e, media: [{ id: 'm1' }] })).toBeNull();
+  });
+
+  it('refuses an entry with an unrecognised state value', () => {
+    const e = fresh();
+    expect(upgradeEntry({ ...e, state: 'exploding' })).toBeNull();
   });
 });
 

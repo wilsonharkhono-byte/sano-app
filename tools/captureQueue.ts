@@ -39,6 +39,14 @@ export interface QueueMediaItem {
 }
 
 export interface CaptureQueueEntry {
+  /**
+   * Schema version this record was written under (see CAPTURE_QUEUE_ENTRY_VERSION
+   * and upgradeEntry below). This project ships JS-only fixes via OTA
+   * (`eas update --branch preview`), so a phone can load a new bundle while
+   * AsyncStorage still holds entries written by the old shape — this field is
+   * what lets the store detect that instead of crashing on a mismatched entry.
+   */
+  version: 1;
   /** Same id as the eventual site_events row (spec §7: "client uuid, same id as the event"). */
   id: string;
   /** The signed-in profile this entry belongs to. A shared phone must not mix supervisors (§7). */
@@ -69,6 +77,93 @@ export interface CaptureQueueEntry {
    * true, because upload always finishes before insert is attempted.
    */
   unrecoverable: boolean;
+  /**
+   * Classification of the most recent recordFailure call (see recordFailure's
+   * JSDoc for what counts as which). Absent on entries that have never failed
+   * and on legacy entries loaded before this field existed - callers should
+   * treat a missing value the same as 'transient'.
+   */
+  lastFailureKind?: 'transient' | 'permanent';
+}
+
+// ─── Versioning / safe reload ────────────────────────────────────────────────
+
+/** Bump this whenever CaptureQueueEntry's shape changes in a way an old reader can't safely load as-is. */
+export const CAPTURE_QUEUE_ENTRY_VERSION = 1 as const;
+
+/**
+ * Validates a value loaded from persistence into a CaptureQueueEntry, or
+ * returns null if it isn't one this code understands. A legacy entry with no
+ * `version` field (everything written before this field existed) is treated
+ * as version 1, since that was the only shape in use. Any other version, or
+ * anything missing a required field or holding the wrong type for one, is
+ * refused rather than guessed at - the store is expected to route a null
+ * back into "this entry can't be loaded" handling instead of crashing on it
+ * or silently working with a corrupted shape.
+ */
+export function upgradeEntry(raw: unknown): CaptureQueueEntry | null {
+  if (!isRecord(raw)) return null;
+  const version = raw.version ?? 1;
+  if (version !== 1) return null;
+  if (!isValidV1Entry(raw)) return null;
+  return { ...(raw as Omit<CaptureQueueEntry, 'version'>), version: 1 };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isStringOrNull(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+const QUEUE_STATES: ReadonlyArray<QueueState> = ['queued', 'uploading', 'analyzing', 'draft_ready', 'done', 'failed'];
+
+function isValidMediaItem(value: unknown): value is QueueMediaItem {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.localUri === 'string' &&
+    typeof value.role === 'string' &&
+    typeof value.kind === 'string' &&
+    typeof value.mimeType === 'string' &&
+    typeof value.ext === 'string' &&
+    (value.durationS === null || typeof value.durationS === 'number') &&
+    typeof value.sortOrder === 'number' &&
+    typeof value.capturedAt === 'string' &&
+    typeof value.uploaded === 'boolean' &&
+    (value.bytes === null || typeof value.bytes === 'number')
+  );
+}
+
+function isValidV1Entry(value: Record<string, unknown>): boolean {
+  return (
+    typeof value.id === 'string' &&
+    typeof value.ownerId === 'string' &&
+    typeof value.projectId === 'string' &&
+    typeof value.roomId === 'string' &&
+    typeof value.reporterId === 'string' &&
+    isStringOrNull(value.gateCode) &&
+    isStringOrNull(value.rawText) &&
+    typeof value.capturedAt === 'string' &&
+    Array.isArray(value.media) &&
+    value.media.every(isValidMediaItem) &&
+    Array.isArray(value.workGroupNames) &&
+    value.workGroupNames.every((n) => typeof n === 'string') &&
+    typeof value.state === 'string' &&
+    QUEUE_STATES.includes(value.state as QueueState) &&
+    typeof value.eventInserted === 'boolean' &&
+    typeof value.analysisRequested === 'boolean' &&
+    typeof value.localCleanedUp === 'boolean' &&
+    typeof value.createdAt === 'string' &&
+    typeof value.attempts === 'number' &&
+    typeof value.consecutiveFailures === 'number' &&
+    isStringOrNull(value.lastError) &&
+    isStringOrNull(value.lastAttemptAt) &&
+    typeof value.needsAttention === 'boolean' &&
+    typeof value.unrecoverable === 'boolean' &&
+    (value.lastFailureKind === undefined || value.lastFailureKind === 'transient' || value.lastFailureKind === 'permanent')
+  );
 }
 
 // ─── Building an entry ───────────────────────────────────────────────────────
@@ -86,6 +181,7 @@ export interface NewCaptureParams {
 export function enqueueCapture(params: NewCaptureParams): CaptureQueueEntry {
   const { event } = params;
   return {
+    version: CAPTURE_QUEUE_ENTRY_VERSION,
     id: event.id,
     ownerId: params.ownerId,
     projectId: event.projectId,
@@ -122,8 +218,18 @@ export function enqueueCapture(params: NewCaptureParams): CaptureQueueEntry {
   };
 }
 
-/** Back to the shape tools/siteEvents.ts's upload/insert functions take. Valid before cleanup only. */
+/**
+ * Back to the shape tools/siteEvents.ts's upload/insert functions take.
+ * Valid before cleanup only: throws if called once localCleanedUp is true,
+ * because at that point media[].localUri points at files the store has
+ * already deleted and there is nothing left to rebuild an upload/insert from.
+ */
 export function toNewSiteEvent(entry: CaptureQueueEntry): NewSiteEvent {
+  if (entry.localCleanedUp) {
+    throw new Error(
+      'captureQueue: toNewSiteEvent called on an entry whose local files were already cleaned up.',
+    );
+  }
   return {
     id: entry.id,
     projectId: entry.projectId,
@@ -190,7 +296,13 @@ export class IllegalQueueTransitionError extends Error {
   }
 }
 
-function assertTransition(from: QueueState, to: QueueState): void {
+/**
+ * Exported (in addition to being used internally by withProgress/retryEntry)
+ * so a test can pin ALLOWED_TRANSITIONS down exhaustively against a literal
+ * copy of the intended table, instead of only proving one hand-picked illegal
+ * case throws.
+ */
+export function assertTransition(from: QueueState, to: QueueState): void {
   if (from === to) return;
   if (!ALLOWED_TRANSITIONS[from].includes(to)) {
     throw new IllegalQueueTransitionError(from, to);
@@ -207,6 +319,7 @@ function withProgress(entry: CaptureQueueEntry, now: string, patch: Partial<Capt
     consecutiveFailures: 0,
     needsAttention: false,
     lastError: null,
+    lastFailureKind: undefined,
     lastAttemptAt: now,
   };
 }
@@ -237,7 +350,13 @@ export function nextStep(entry: CaptureQueueEntry): QueueAction {
 
 // ─── Attempt bookkeeping ──────────────────────────────────────────────────────
 
-/** Call before starting I/O for a step, so attempts/lastAttemptAt reflect reality even if the app is killed mid-step. */
+/**
+ * Call before starting I/O for a step, so attempts/lastAttemptAt reflect
+ * reality even if the app is killed mid-step. lastAttemptAt is deliberately
+ * written again by whichever mutator ends the attempt (markUploaded /
+ * markInserted / markAnalysisRequested / markCleanedUp / recordFailure) - the
+ * two writes bracket one attempt (start, then end) and neither is redundant.
+ */
 export function beginAttempt(entry: CaptureQueueEntry, now: string): CaptureQueueEntry {
   return { ...entry, attempts: entry.attempts + 1, lastAttemptAt: now };
 }
@@ -265,7 +384,31 @@ export function markCleanedUp(entry: CaptureQueueEntry, now: string): CaptureQue
   return withProgress(entry, now, { localCleanedUp: true });
 }
 
-export function recordFailure(entry: CaptureQueueEntry, error: string, now: string): CaptureQueueEntry {
+/**
+ * `kind` (default 'transient') classifies whether the failure is worth
+ * retrying on its own; existing two-argument call sites keep today's
+ * behaviour exactly.
+ *
+ * - 'transient': a network drop, timeout, or 5xx - the same request may
+ *   simply succeed on the next attempt. Backs off and retries as before,
+ *   flagging for attention only after MAX_CONSECUTIVE_FAILURES in a row.
+ * - 'permanent': a response that retrying cannot fix - an auth/RLS refusal
+ *   (e.g. a supervisor's project assignment was revoked mid-flight, per this
+ *   project's "Supervisor assignment gap" history), the project no longer
+ *   being assigned to this device, or any other 4xx that encodes a decision
+ *   rather than a transient hiccup. The worker should classify by the
+ *   server's response, not by guessing: 401/403/a resource-gone 404-class
+ *   refusal => 'permanent'; network errors, timeouts, and 5xx => 'transient'.
+ *   A permanent failure sets needsAttention immediately, without waiting for
+ *   five strikes, but - like every other failure - never deletes the entry;
+ *   the supervisor still has to act on it by hand ("Coba lagi" / discard).
+ */
+export function recordFailure(
+  entry: CaptureQueueEntry,
+  error: string,
+  now: string,
+  kind: 'transient' | 'permanent' = 'transient',
+): CaptureQueueEntry {
   assertTransition(entry.state, 'failed');
   const consecutiveFailures = entry.consecutiveFailures + 1;
   return {
@@ -273,8 +416,9 @@ export function recordFailure(entry: CaptureQueueEntry, error: string, now: stri
     state: 'failed',
     consecutiveFailures,
     lastError: error,
+    lastFailureKind: kind,
     lastAttemptAt: now,
-    needsAttention: consecutiveFailures >= MAX_CONSECUTIVE_FAILURES,
+    needsAttention: kind === 'permanent' || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES,
   };
 }
 
@@ -283,12 +427,37 @@ export function retryEntry(entry: CaptureQueueEntry, now: string): CaptureQueueE
   if (entry.unrecoverable) return entry;
   const state = deriveState(entry);
   assertTransition(entry.state, state);
-  return { ...entry, state, needsAttention: false, consecutiveFailures: 0, lastError: null, lastAttemptAt: now };
+  return {
+    ...entry,
+    state,
+    needsAttention: false,
+    consecutiveFailures: 0,
+    lastError: null,
+    lastFailureKind: undefined,
+    lastAttemptAt: now,
+  };
 }
 
-/** Set by captureQueueStore.ts's load-time recovery pass when a needed local file is gone. */
+/**
+ * Set by captureQueueStore.ts's load-time recovery pass when a needed local
+ * file is gone. Routed through the same precondition discipline as the other
+ * mutators: throws if eventInserted is already true (upload always finishes
+ * before insert is attempted, so a post-insert call here would mean marking
+ * an event the server already knows about as locally discardable - exactly
+ * the class of bug this module prefers to throw on rather than silently
+ * corrupt), and re-derives state via deriveState/assertTransition rather than
+ * trusting the caller's entry.state, even though the progress flags this
+ * function touches (none) mean the derived state is normally unchanged.
+ */
 export function markUnrecoverable(entry: CaptureQueueEntry, reason: string): CaptureQueueEntry {
-  return { ...entry, unrecoverable: true, needsAttention: true, lastError: reason };
+  if (entry.eventInserted) {
+    throw new Error(
+      'captureQueue: markUnrecoverable called on an entry whose event is already inserted; the server already knows about it, so it must not be marked locally discardable.',
+    );
+  }
+  const state = deriveState(entry);
+  assertTransition(entry.state, state);
+  return { ...entry, state, unrecoverable: true, needsAttention: true, lastError: reason };
 }
 
 // ─── Backoff ──────────────────────────────────────────────────────────────────
