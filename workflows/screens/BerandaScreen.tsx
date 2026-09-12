@@ -15,6 +15,7 @@ import { getRecentCriticalAnomalies } from '../../tools/audit';
 import { computeOverallProgress } from '../../tools/progressMath';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import DraftEventsCard from './siteEvent/DraftEventsCard';
+import CaptureQueueCard from './siteEvent/CaptureQueueCard';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -158,6 +159,9 @@ export default function BerandaScreen() {
             <Text style={styles.alertBtnText}>Scan Ruangan</Text>
           </TouchableOpacity>
         </Card>
+
+        {/* ── Kiriman offline yang masih di HP ──────────────────────────── */}
+        <CaptureQueueCard />
 
         {/* ── Draf kejadian menunggu konfirmasi ─────────────────────────── */}
         <DraftEventsCard />
