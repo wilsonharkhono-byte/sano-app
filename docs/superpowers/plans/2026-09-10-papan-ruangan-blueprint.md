@@ -1042,7 +1042,7 @@ with
     updates,
 ```
 
-Spreading conditionally rather than writing `phase: roomMode ? phase : undefined` matters: an explicit `undefined` survives `JSON.stringify` as a **missing** key in the snapshot but is a **present** key in memory, and `'phase' in draft` is the cheapest thing a reviewer can check. The flat `updates` list is kept alongside the groups on purpose. `ClientReportBuilderScreen` edits `draft.updates` directly (`workflows/screens/ClientReportBuilderScreen.tsx:117-127`), and the renderer's fallback needs it; dropping it would make a Finishing draft uneditable.
+Spreading conditionally rather than writing `phase: roomMode ? phase : undefined` matters: an explicit `undefined` survives `JSON.stringify` as a **missing** key in the snapshot but is a **present** key in memory, and `'phase' in draft` is the cheapest thing a reviewer can check. **Corrected after review (C1): there is no parallel `roomGroups` list on the draft.** Keeping one alongside `updates` left the renderer reading the groups while `ClientReportBuilderScreen` edited `updates`, so in a room phase a curator's rewording, deletion and added line never reached the client PDF — the last human gate before a client document, silently inert. Instead `assembleClientReportDraft` stamps each line of the one `updates` list with its room and gate **labels** (`tagLinesByRoom`) and `renderClientReportHtml` re-groups that list at print time (`groupUpdatesByRoom`), so every edit control works in Finishing untouched, the labels stay frozen against a later room rename, and a draft carrying no labels falls back to the flat list rather than losing lines.
 
 - [ ] **Step 6: Pass the phase from the builder screen**
 
@@ -1057,7 +1057,7 @@ In `workflows/screens/ClientReportBuilderScreen.tsx`, in `generate` (line 80), a
         phase: project.phase ?? 'STRUKTUR',
 ```
 
-Nothing else on that screen changes. View mode already re-renders the frozen snapshot through `exportPdf(viewing.snapshot)` (line 273) and never re-derives, which is exactly the behaviour the 2026-06-28 spec asks for: an issued report carries its own `phase` and `roomGroups` and prints the way it was sent, even if the project's phase has moved on since.
+Per the C1 correction above, the screen also gains a per-line room picker in a room phase (`listRooms` once per draft, `formatRoomLabel` for the label so it matches assembly's byte for byte); everything else on it is unchanged. View mode already re-renders the frozen snapshot through `exportPdf(viewing.snapshot)` (line 273) and never re-derives, which is exactly the behaviour the 2026-06-28 spec asks for: an issued report carries its own `phase` and its lines' frozen room labels, and prints the way it was sent, even if the project's phase has moved on since.
 
 - [ ] **Step 7: Extend the golden guard with the phase-equivalence cases**
 
