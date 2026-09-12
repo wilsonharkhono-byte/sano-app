@@ -11,6 +11,10 @@ export interface DailyLogHighlight {
   note: string;
   boq_item_id: string | null;
   sort_order: number;
+  /** 098. Set when the line was pulled from a room event, or picked by hand. */
+  room_id: string | null;
+  gate_code: string | null;
+  source_event_id: string | null;
 }
 
 export interface DailyLogPhoto {
@@ -19,6 +23,9 @@ export interface DailyLogPhoto {
   caption: string | null;
   is_featured: boolean;
   captured_at: string | null;
+  /** 098. The room the photo belongs to, and the site-event media row it came from. */
+  room_id: string | null;
+  source_media_id: string | null;
 }
 
 export interface DailySiteLog {
@@ -75,21 +82,31 @@ export async function getDailyLog(projectId: string, isoDate: string): Promise<D
 
   const { data: highlights, error: hlErr } = await supabase
     .from('daily_log_highlights')
-    .select('id, log_id, area, note, boq_item_id, sort_order')
+    .select('id, log_id, area, note, boq_item_id, sort_order, room_id, gate_code, source_event_id')
     .eq('log_id', log.id)
     .order('sort_order', { ascending: true });
   if (hlErr) throw hlErr;
 
   const { data: photos, error: phErr } = await supabase
     .from('daily_log_photos')
-    .select('id, log_id, storage_path, caption, is_featured, captured_at')
+    .select('id, log_id, storage_path, caption, is_featured, captured_at, room_id, source_media_id')
     .eq('log_id', log.id);
   if (phErr) throw phErr;
 
   return {
     ...log,
-    highlights: (highlights ?? []) as DailyLogHighlight[],
-    photos: (photos ?? []) as DailyLogPhoto[],
+    // 098. Normalise the nullable columns so a row written before the
+    // migration does not surface `undefined` to a caller that now expects
+    // `string | null`.
+    highlights: (highlights ?? []).map((h: any) => ({
+      ...h,
+      room_id: h.room_id ?? null, gate_code: h.gate_code ?? null,
+      source_event_id: h.source_event_id ?? null,
+    })) as DailyLogHighlight[],
+    photos: (photos ?? []).map((p: any) => ({
+      ...p,
+      room_id: p.room_id ?? null, source_media_id: p.source_media_id ?? null,
+    })) as DailyLogPhoto[],
   } as DailySiteLog;
 }
 
@@ -119,6 +136,11 @@ export async function upsertDailyLog(input: DailySiteLogInput): Promise<string> 
     input.highlights.map((h, i) => ({
       log_id: log.id, area: h.area, note: h.note,
       boq_item_id: h.boq_item_id, sort_order: h.sort_order ?? i,
+      // 098. Null for a line the curator typed; set for one pulled from a
+      // confirmed site event, which is what lets the Finishing-phase report
+      // group it and what stops "Tarik" proposing the same event twice.
+      room_id: h.room_id ?? null, gate_code: h.gate_code ?? null,
+      source_event_id: h.source_event_id ?? null,
     })),
   );
   if (insHlErr) throw insHlErr;
@@ -129,6 +151,7 @@ export async function upsertDailyLog(input: DailySiteLogInput): Promise<string> 
     input.photos.map((p) => ({
       log_id: log.id, storage_path: p.storage_path, caption: p.caption,
       is_featured: p.is_featured, captured_at: p.captured_at,
+      room_id: p.room_id ?? null, source_media_id: p.source_media_id ?? null,
     })),
   );
   if (insPhErr) throw insPhErr;
@@ -162,14 +185,14 @@ export async function aggregatePeriod(
 
   const { data: highlights, error: hlErr } = await supabase
     .from('daily_log_highlights')
-    .select('id, log_id, area, note, boq_item_id, sort_order')
+    .select('id, log_id, area, note, boq_item_id, sort_order, room_id, gate_code, source_event_id')
     .in('log_id', logIds)
     .order('sort_order', { ascending: true });
   if (hlErr) throw hlErr;
 
   const { data: photos, error: phErr } = await supabase
     .from('daily_log_photos')
-    .select('id, log_id, storage_path, caption, is_featured, captured_at')
+    .select('id, log_id, storage_path, caption, is_featured, captured_at, room_id, source_media_id')
     .in('log_id', logIds)
     .eq('is_featured', true);
   if (phErr) throw phErr;

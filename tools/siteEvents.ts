@@ -19,6 +19,8 @@ import { readUploadBody, resolvePhotoUrl, SITE_MEDIA_PATH_PREFIX } from './stora
 import { SITE_EVENT_MAX_CLOSEUPS, SITE_MEDIA_BUCKET } from './constants';
 import { normalizeTitle, validateConfirmInput, type ConfirmInput } from './siteEventRules';
 import { buildWorkGroups, type GroupableItem } from './boqWorkGroups';
+import { wibStartOfDayIso, wibEndOfDayExclusiveIso } from './timeWindow';
+import type { PullableEvent } from './dailyLogPull';
 import type {
   SiteEvent,
   SiteEventMedia,
@@ -506,4 +508,41 @@ export async function saveTranscriptEdit(eventId: string, text: string): Promise
 export async function signedMediaUrl(storagePath: string): Promise<string | null> {
   const url = await resolvePhotoUrl(`${SITE_MEDIA_PATH_PREFIX}${storagePath}`);
   return url ? url : null;
+}
+
+// ─── Daily Site Log pull-through (plan 4, spec §10.1) ────────────────────────
+
+const PULL_SELECT =
+  'id, event_type, title, summary, room_id, gate_code, confirmed_at, ' +
+  'site_event_media(id, kind, role, storage_path, sort_order)';
+
+/**
+ * The day's CONFIRMED events, for "Tarik dari kejadian ruangan". `draft` and
+ * `pending_analysis` are excluded because no human has read them yet, and
+ * `discarded` because a discarded event is a decision, not an oversight.
+ * `done` is included: an event opened and closed on the same day is still the
+ * day's news.
+ *
+ * The window is a WIB calendar day with an EXCLUSIVE end, per
+ * tools/timeWindow.ts - an inclusive '...T23:59:59' bound drops the last
+ * fraction of a second of the day.
+ */
+export async function listConfirmedEventsForDay(
+  projectId: string,
+  isoDate: string,
+): Promise<PullableEvent[]> {
+  const { data, error } = await supabase
+    .from('site_events')
+    .select(PULL_SELECT)
+    .eq('project_id', projectId)
+    .in('status', ['open', 'done'])
+    .gte('confirmed_at', wibStartOfDayIso(isoDate))
+    .lt('confirmed_at', wibEndOfDayExclusiveIso(isoDate))
+    .order('confirmed_at', { ascending: true });
+  if (error) {
+    console.warn('listConfirmedEventsForDay failed:', error.message);
+    return [];
+  }
+  return ((data ?? []) as unknown as Array<PullableEvent & { site_event_media?: PullableEvent['media'] | null }>)
+    .map(({ site_event_media, ...e }) => ({ ...e, media: site_event_media ?? [] }));
 }

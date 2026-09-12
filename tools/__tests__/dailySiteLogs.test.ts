@@ -82,8 +82,8 @@ describe('dailySiteLogs', () => {
     const id = await upsertDailyLog({
       project_id: 'proj-1', log_date: '2026-06-29', weather: 'Cerah',
       crew_total: 8, crew_breakdown: '3 tukang', safety_incidents: 0, author_id: 'u-1',
-      highlights: [{ area: 'Tangga', note: 'Finishing', boq_item_id: null, sort_order: 0 }],
-      photos: [{ storage_path: 'daily-log/x.jpg', caption: 'Foto', is_featured: true, captured_at: null }],
+      highlights: [{ area: 'Tangga', note: 'Finishing', boq_item_id: null, sort_order: 0, room_id: null, gate_code: null, source_event_id: null }],
+      photos: [{ storage_path: 'daily-log/x.jpg', caption: 'Foto', is_featured: true, captured_at: null, room_id: null, source_media_id: null }],
     });
 
     expect(id).toBe('log-9');
@@ -152,6 +152,7 @@ describe('dailySiteLogs', () => {
 describe('toggleFeaturedPhoto', () => {
   const photo = (path: string, featured: boolean): DailyLogPhoto => ({
     storage_path: path, caption: null, is_featured: featured, captured_at: null,
+    room_id: null, source_media_id: null,
   });
 
   it('flips only the targeted photo, leaving the rest untouched', () => {
@@ -173,5 +174,51 @@ describe('toggleFeaturedPhoto', () => {
     const photos = [photo('a.jpg', true)];
     const result = toggleFeaturedPhoto(photos, 0);
     expect(result[0].is_featured).toBe(false);
+  });
+});
+
+// Task 4 step 2: a select-only change would pass every existing assertion
+// above while silently dropping 098's room links on save — these pin the
+// actual insert payloads.
+describe('upsertDailyLog carries the 098 room links', () => {
+  function wire() {
+    const upsertChain = {
+      upsert: jest.fn().mockReturnThis(), select: jest.fn().mockReturnThis(),
+      single: jest.fn().mockResolvedValue({ data: { id: 'log-9' }, error: null }),
+    };
+    const delChain = { delete: jest.fn().mockReturnThis(), eq: jest.fn().mockResolvedValue({ error: null }) };
+    const hlIns = { insert: jest.fn().mockResolvedValue({ error: null }) };
+    const phIns = { insert: jest.fn().mockResolvedValue({ error: null }) };
+    (mockSupabase.from as jest.Mock)
+      .mockReturnValueOnce(upsertChain).mockReturnValueOnce(delChain)
+      .mockReturnValueOnce(hlIns).mockReturnValueOnce(delChain).mockReturnValueOnce(phIns);
+    return { hlIns, phIns };
+  }
+  const base = {
+    project_id: 'p', log_date: '2026-09-11', weather: null, crew_total: null,
+    crew_breakdown: null, safety_incidents: 0, author_id: 'u',
+  };
+
+  beforeEach(() => jest.clearAllMocks());
+
+  it('writes room_id, gate_code and source_event_id for a pulled line', async () => {
+    const { hlIns, phIns } = wire();
+    await upsertDailyLog({
+      ...base,
+      highlights: [{ area: 'Kamar Mandi Utama', note: 'Nat selesai', boq_item_id: null, sort_order: 0, room_id: 'r2', gate_code: 'B', source_event_id: 'e1' }],
+      photos: [{ storage_path: 'site-media:site-events/p/e1/m1.jpg', caption: null, is_featured: false, captured_at: null, room_id: 'r2', source_media_id: 'm1' }],
+    });
+    expect(hlIns.insert).toHaveBeenCalledWith([expect.objectContaining({ room_id: 'r2', gate_code: 'B', source_event_id: 'e1' })]);
+    expect(phIns.insert).toHaveBeenCalledWith([expect.objectContaining({ room_id: 'r2', source_media_id: 'm1' })]);
+  });
+
+  it('writes nulls for a line the curator typed by hand', async () => {
+    const { hlIns } = wire();
+    await upsertDailyLog({
+      ...base,
+      highlights: [{ area: 'Tangga', note: 'Finishing', boq_item_id: null, sort_order: 0, room_id: null, gate_code: null, source_event_id: null }],
+      photos: [],
+    });
+    expect(hlIns.insert).toHaveBeenCalledWith([expect.objectContaining({ room_id: null, gate_code: null, source_event_id: null })]);
   });
 });

@@ -154,7 +154,7 @@ export default function ProgresScreen() {
         crew_breakdown: existing?.crew_breakdown ?? null,
         safety_incidents: existing?.safety_incidents ?? 0,
         author_id: profile.id,
-        highlights: [...highlights, { area: item?.label ?? 'Progres', note, boq_item_id: boqId, sort_order: highlights.length }],
+        highlights: [...highlights, { area: item?.label ?? 'Progres', note, boq_item_id: boqId, sort_order: highlights.length, room_id: null, gate_code: null, source_event_id: null }],
         photos: existing?.photos ?? [],
       });
       toast('Ditambahkan ke Log Harian', 'ok');

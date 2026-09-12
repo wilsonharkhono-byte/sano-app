@@ -42,6 +42,7 @@ import {
   getSiteEvent,
   invokeSiteEventAnalysis,
   isDuplicateUploadError,
+  listConfirmedEventsForDay,
   listDraftEvents,
   listOpenEventsForRoom,
   mapSiteEventRpcError,
@@ -514,6 +515,38 @@ describe('getRoomLastGate', () => {
   it('returns null when the room has no confirmed gate yet', async () => {
     mocked.from.mockImplementationOnce(() => makeChain({ data: { last_gate_code: null }, error: null }));
     expect(await getRoomLastGate('room-1')).toBeNull();
+  });
+});
+
+describe('listConfirmedEventsForDay', () => {
+  function chain(result: { data: unknown; error: { message: string } | null }) {
+    const c: any = {};
+    for (const m of ['select', 'eq', 'in', 'gte', 'lt']) c[m] = jest.fn().mockReturnValue(c);
+    c.order = jest.fn().mockResolvedValue(result);
+    return c;
+  }
+
+  it('windows on the WIB day and takes confirmed statuses only', async () => {
+    const c = chain({ data: [{ id: 'e1', event_type: 'progres', title: 'T', summary: 'S', room_id: 'r1', gate_code: 'C', confirmed_at: '2026-09-11T02:00:00Z', site_event_media: [{ id: 'm1', kind: 'photo', role: 'context', storage_path: 'x.jpg', sort_order: 0 }] }], error: null });
+    (supabase.from as jest.Mock).mockReturnValue(c);
+
+    const out = await listConfirmedEventsForDay('p1', '2026-09-11');
+    expect(c.in).toHaveBeenCalledWith('status', ['open', 'done']);
+    expect(c.gte).toHaveBeenCalledWith('confirmed_at', '2026-09-10T17:00:00.000Z');
+    expect(c.lt).toHaveBeenCalledWith('confirmed_at', '2026-09-11T17:00:00.000Z');
+    expect(out).toHaveLength(1);
+    expect(out[0].media).toHaveLength(1);
+    expect('site_event_media' in out[0]).toBe(false);
+  });
+
+  it('returns an empty list rather than throwing when the read fails', async () => {
+    (supabase.from as jest.Mock).mockReturnValue(chain({ data: null, error: { message: 'nope' } }));
+    expect(await listConfirmedEventsForDay('p1', '2026-09-11')).toEqual([]);
+  });
+
+  it('gives an event with no media an empty array', async () => {
+    (supabase.from as jest.Mock).mockReturnValue(chain({ data: [{ id: 'e1', event_type: 'info', title: null, summary: 'S', room_id: 'r1', gate_code: null, confirmed_at: 'x', site_event_media: null }], error: null }));
+    expect((await listConfirmedEventsForDay('p1', '2026-09-11'))[0].media).toEqual([]);
   });
 });
 
