@@ -76,10 +76,14 @@ export function compareRoomsForDisplay(a: DisplayRoom, b: DisplayRoom): number {
   if (fa.num !== fb.num) return fa.num - fb.num;
   // Text only decides between two labels that carry NO number at all
   // ("Basement" vs "Mezanin"); once a floor number is read, "2", "Lt. 2" and
-  // "Lantai 2" are the same floor and sort_order takes over.
+  // "Lantai 2" are the same floor and sort_order takes over. Deliberately a
+  // bare `<` here, not localeCompare: floorRank.text is already lower-cased,
+  // so this is a plain UTF-16 code-unit compare with no Intl dependency -
+  // the safer choice for this one branch, unlike the name tiebreak below
+  // which needs locale-aware ordering for real Indonesian room names.
   if (fa.num === Number.MAX_SAFE_INTEGER && fa.text !== fb.text) return fa.text < fb.text ? -1 : 1;
   if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
-  return a.room_name.localeCompare(b.room_name, 'id-ID');
+  return a.room_name.localeCompare(b.room_name, 'id');
 }
 
 /** "Kamar Mandi Utama · Lt. 2". A floor already spelled "Lt. 2" is not prefixed twice. */
@@ -93,8 +97,11 @@ export function formatRoomLabel(room: DisplayRoom): string {
 /**
  * The group's gate chip: the gate most of its lines carry. Ties go to the gate
  * the office ordered first, so the chip never flickers between two equally
- * common gates. Lines with no gate, and codes no active gate matches, are
- * ignored rather than guessed at.
+ * common gates. Lines with no gate, and codes no gate in the given `gates`
+ * list matches, are ignored rather than guessed at. Matching is on code
+ * presence only, not `gate.active` - callers building a historical report
+ * pass every gate, active or not, so a code a room used before its gate was
+ * deactivated still resolves to a label instead of silently dropping out.
  */
 function pickGateLabel(lines: GroupableLine[], gates: GateRef[]): string | null {
   const byCode = new Map(gates.map((g) => [g.code, g]));
@@ -125,7 +132,9 @@ export function roomNameById(rooms: RoomLookupRow[]): Map<string, string> {
  * Group a period's lines by room, ordered by floor then sort_order, Area Umum
  * last. A line whose room_id is null - or points at a room this project no
  * longer lists - falls into Area Umum, so nothing is ever dropped from a client
- * report for lack of a room (spec §10.2).
+ * report for lack of a room (spec §10.2). Within a room, `updates` keeps the
+ * exact order `lines` arrived in - this function never re-sorts by date, so
+ * callers that need date order must sort `lines` before passing them in.
  */
 export function groupHighlightsByRoom(
   lines: GroupableLine[],

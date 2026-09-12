@@ -26,6 +26,46 @@ const ROOMS: RoomLookupRow[] = [
   room('ru', 'Area Umum', null, 9999, 'UMUM'),
 ];
 
+// Deterministic PRNG (mulberry32) so the shuffle-then-sort test below is
+// reproducible across runs and CI machines - no flakiness from Math.random.
+function mulberry32(seed: number): () => number {
+  let state = seed | 0;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffle<T>(items: T[], rand: () => number): T[] {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+// Numbered floors, floor labels with no digits at all ("Basement", "Mezanin",
+// "Dasar", "Atap" - the module's own example set), and a null floor together,
+// so the comparator's full bucket/floorRank/text-fallback path gets exercised
+// at once.
+const MIXED_FLOOR_ROOMS: RoomLookupRow[] = [
+  room('m1', 'Mezanin Room', 'Mezanin', 0),
+  room('m2', 'Basement Storage', 'Basement', 0),
+  room('m3', 'Dasar Room', 'Dasar', 0),
+  room('m4', 'Atap Room', 'Atap', 0),
+  room('m5', 'Kamar Mandi Utama', '2', 0),
+  room('m6', 'Ruang Keluarga', '1', 0),
+  room('m7', 'Gudang', null, 0),
+];
+// Numbered floors ascending (Ruang Keluarga, Kamar Mandi Utama), then the
+// no-digit floors text-sorted ("atap" < "basement" < "dasar" < "mezanin"),
+// then the floorless room last - exactly what floorRank's doc comment and
+// compareRoomsForDisplay's line-80 comment both promise.
+const MIXED_FLOOR_EXPECTED_IDS = ['m6', 'm5', 'm4', 'm2', 'm3', 'm1', 'm7'];
+
 const line = (area: string, note: string, room_id: string | null, gate_code: string | null): GroupableLine =>
   ({ date: '14 Jun', area, note, room_id, gate_code });
 
@@ -51,6 +91,19 @@ describe('compareRoomsForDisplay', () => {
     const sorted = [room('a', 'A', 'Lantai 2', 2), room('b', 'B', '2', 1), room('c', 'C', 'Lt. 2', 0)]
       .sort(compareRoomsForDisplay).map((r) => r.room_name);
     expect(sorted).toEqual(['C', 'B', 'A']);
+  });
+
+  it('ranks numbered floors first, then no-digit floor labels by text, then floorless', () => {
+    const sorted = [...MIXED_FLOOR_ROOMS].sort(compareRoomsForDisplay).map((r) => r.id);
+    expect(sorted).toEqual(MIXED_FLOOR_EXPECTED_IDS);
+  });
+
+  it('sorts the mixed-floor fixture the same way regardless of input order (shuffled, fixed seed)', () => {
+    const rand = mulberry32(20260910);
+    for (let i = 0; i < 25; i++) {
+      const shuffled = shuffle(MIXED_FLOOR_ROOMS, rand);
+      expect(shuffled.sort(compareRoomsForDisplay).map((r) => r.id)).toEqual(MIXED_FLOOR_EXPECTED_IDS);
+    }
   });
 });
 
