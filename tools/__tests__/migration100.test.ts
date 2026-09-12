@@ -142,7 +142,20 @@ describe('migration 100 - a second paste cannot fail', () => {
     expect(norm(CODE.slice(drop, create))).toContain(
       'DROP FUNCTION IF EXISTS confirm_site_event( UUID, TEXT, TEXT, TEXT, TEXT, TEXT, UUID, DATE, TEXT, BOOLEAN, BOOLEAN, UUID, TEXT );',
     );
-    expect(CODE.match(/\bDROP\s+FUNCTION\b/gi) ?? []).toHaveLength(1);
+  });
+
+  it('drops the helper by signature before re-creating it too, same reasoning', () => {
+    // CREATE OR REPLACE cannot change a parameter list either way; the helper
+    // gets no GRANT to carry, but a future signature change would otherwise
+    // leave an orphan overload behind instead of replacing it.
+    const drop = CODE.indexOf('DROP FUNCTION IF EXISTS site_event_norm_quote(');
+    const create = CODE.indexOf('CREATE OR REPLACE FUNCTION site_event_norm_quote(');
+    expect(drop).toBeGreaterThan(-1);
+    expect(drop).toBeLessThan(create);
+    expect(norm(CODE.slice(drop, create))).toContain('DROP FUNCTION IF EXISTS site_event_norm_quote(TEXT);');
+    // Exactly two DROP FUNCTIONs in the whole file: one per function, each
+    // ahead of its own CREATE OR REPLACE.
+    expect(CODE.match(/\bDROP\s+FUNCTION\b/gi) ?? []).toHaveLength(2);
   });
 
   it('runs no DDL on any table, view, policy, trigger, index or type', () => {
@@ -172,9 +185,23 @@ describe('migration 100 - who may execute what', () => {
   it('grants nothing to anon or PUBLIC, anywhere in the file', () => {
     // The assertions above prove the RIGHT grant exists; only an allowlist of
     // grantees catches an EXTRA one appended further down (a GRANT ... TO anon
-    // after the correct line leaves every other guard satisfied).
-    const grantees = [...CODE.matchAll(/^[ \t]*GRANT\s+[^\n;]*?\sTO\s+([^\n;]+);/gim)].map((m) => m[1].trim());
+    // after the correct line leaves every other guard satisfied). Whitespace
+    // is collapsed first (norm), not matched with an anchored `^...$` regex,
+    // because a human wrapping a 13-argument signature across lines - exactly
+    // what this file's own DROP FUNCTION does - would otherwise put a newline
+    // between GRANT and its TO clause and slip straight past a regex that
+    // cannot cross one.
+    const grantees = [...norm(CODE).matchAll(/GRANT\s+[^;]*?\sTO\s+([^;]+);/gi)].map((m) => m[1].trim());
     expect(grantees).toEqual(['authenticated, service_role']);
+  });
+
+  it('never re-configures a function after creating it', () => {
+    // Every security guard above (SECURITY DEFINER, search_path, the grants)
+    // reads the text of the CREATE statement. An ALTER FUNCTION appended
+    // afterwards - SECURITY INVOKER, RESET search_path, or anything else -
+    // would quietly change the running function while every one of those
+    // guards keeps reading the CREATE text and stays satisfied.
+    expect(CODE).not.toMatch(/\bALTER\s+FUNCTION\b/i);
   });
 
   it('keeps confirm_site_event SECURITY DEFINER with search_path pinned', () => {

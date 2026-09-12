@@ -57,12 +57,21 @@
 -- table (site_events), helpers (is_project_member, is_office_role) and
 -- notification type (098) do not exist yet.
 --
--- RE-PASTE SAFETY. Two CREATE OR REPLACE FUNCTIONs, one DROP FUNCTION IF
--- EXISTS by full signature (092's pattern, carried over from 097: CREATE OR
--- REPLACE cannot change a parameter list, so the day the signature moves the
--- old overload must not survive carrying the GRANT), one REVOKE and one GRANT
--- per function, and no DDL on any table, view, policy or trigger: a second
--- paste is a no-op. SET/RESET lock_timeout bracket every statement.
+-- PREREQUISITE. This Postgres must be >= 13: site_event_norm_quote() calls
+-- normalize(text, form), added in PG 13, for the NFC fold that has to match
+-- TypeScript's `.normalize('NFC')`. There is no SQL guard for this - an older
+-- Postgres fails loudly at paste time (check_function_bodies rejects the
+-- unknown function), which is the same failure mode as any other missing
+-- prerequisite below, so it is stated rather than defended against.
+--
+-- RE-PASTE SAFETY. Two CREATE OR REPLACE FUNCTIONs, each preceded by its own
+-- DROP FUNCTION IF EXISTS by full signature (092's pattern, carried over from
+-- 097: CREATE OR REPLACE cannot change a parameter list, so the day either
+-- signature moves the old overload must not survive carrying the GRANT - or,
+-- for the helper, survive as a second, ambiguous overload), one REVOKE and
+-- one GRANT for confirm_site_event, one REVOKE and no GRANT for the helper,
+-- and no DDL on any table, view, policy or trigger: a second paste is a
+-- no-op. SET/RESET lock_timeout bracket every statement.
 --
 -- WHAT A RE-PASTE OF AN EARLIER FILE UNDOES. 097 still carries its own
 -- confirm_site_event. Re-pasting 097 after this file REVERTS the re-check -
@@ -107,6 +116,8 @@ SET lock_timeout = '5s';
 --    needs NO grant at all - PUBLIC's default EXECUTE is revoked and nothing
 --    replaces it. A client cannot call it, and does not need to.
 -- ───────────────────────────────────────────────────────────────────────────
+
+DROP FUNCTION IF EXISTS site_event_norm_quote(TEXT);
 
 CREATE OR REPLACE FUNCTION site_event_norm_quote(p_text TEXT)
 RETURNS TEXT
@@ -465,7 +476,8 @@ WHERE proname IN ('confirm_site_event', 'site_event_norm_quote')
 ORDER BY proname;
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- SELF-CHECK (run after pasting; checks 1-4 write nothing)
+-- SELF-CHECK (run after pasting; checks 1-4 write nothing, check 5 ROLLBACKs
+-- everything it writes, so no check leaves anything behind)
 --
 -- 1. The grid above already answers the first check:
 --    EXPECTED: two rows. confirm_site_event with prosecdef = true,
@@ -516,9 +528,13 @@ ORDER BY proname;
 --    row.
 --
 -- 5. A quote that IS still there still confirms, and the row records the
---    survivors only. Same wrapper, but pass a transcript that contains one of
---    the draft's quotes verbatim; this one COMMITS, because check 6 reads the
---    row it writes:
+--    survivors only - checked, and then undone, in ONE transaction, so this
+--    check never commits a synthetic VO into live Catatan Perubahan. A
+--    statement can always see what an earlier statement in the SAME
+--    transaction wrote (that visibility is what "read your own writes" means;
+--    only a DIFFERENT session is kept out until COMMIT), so the
+--    site_change_id the first SELECT prints is there for the second SELECT to
+--    read, and the ROLLBACK at the end discards both:
 --      BEGIN;
 --        SET LOCAL ROLE authenticated;
 --        SELECT set_config('request.jwt.claims',
@@ -526,22 +542,28 @@ ORDER BY proname;
 --        SELECT confirm_site_event('<DRAFT_EVENT_UUID>', 'butuh_keputusan', NULL, NULL,
 --               'Uji VO', 'Uji VO', '<A_MEMBER_UUID>', current_date + 3, NULL,
 --               false, true, NULL, '<a transcript containing one quote verbatim>');
---      COMMIT;
---    EXPECTED: a JSON object with vo_flag = 'confirmed' and a non-null
---    site_change_id.
+--        -- EXPECTED: a JSON object with vo_flag = 'confirmed' and a non-null
+--        -- site_change_id. Copy that id into the next statement, still inside
+--        -- this same transaction.
+--        SELECT change_type, left(description, 400) FROM site_changes
+--        WHERE id = '<the site_change_id the previous SELECT just returned>';
+--        -- EXPECTED: one pending row whose "Kutipan transkrip" is the
+--        -- transcript passed above, and whose change_type was decided by the
+--        -- surviving quote.
+--      ROLLBACK;
+--    EXPECTED (of the whole block): after the ROLLBACK, nothing from this
+--    check exists - re-running the second SELECT outside the transaction
+--    returns zero rows, and the draft event is still 'pending_analysis' or
+--    'draft'. If a real, kept confirmation is what you actually want, replace
+--    ROLLBACK with COMMIT deliberately; there is no DELETE to undo it with
+--    afterwards (site_changes rows are never deleted by design - rule 3), so
+--    that is a decision to make on purpose, not a leftover from testing.
 --
--- 6. The Catatan Perubahan row quotes the transcript that was re-checked:
---      SELECT change_type, left(description, 400) FROM site_changes
---      WHERE id = '<the site_change_id from check 5>';
---    EXPECTED: one pending row whose "Kutipan transkrip" is the transcript
---    passed in check 5, and whose change_type was decided by the surviving
---    quote.
---
--- 7. A client cannot call the helper directly (it needs no grant, because the
+-- 6. A client cannot call the helper directly (it needs no grant, because the
 --    only caller runs as its owner):
 --      SELECT has_function_privilege('authenticated', 'site_event_norm_quote(text)', 'EXECUTE');
 --    EXPECTED: false.
 --
--- 8. Re-paste this whole file.
+-- 7. Re-paste this whole file.
 --    EXPECTED: no error, and checks 3 and 4 still behave the same way.
 -- ═══════════════════════════════════════════════════════════════════════════
