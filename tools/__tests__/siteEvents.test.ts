@@ -40,6 +40,7 @@ import {
   discardSiteEvent,
   getRoomLastGate,
   getSiteEvent,
+  insertSiteEvent,
   invokeSiteEventAnalysis,
   isDuplicateUploadError,
   listConfirmedEventsForDay,
@@ -53,6 +54,7 @@ import {
   signedMediaUrl,
   siteEventMediaPath,
   updateSiteEventAssignment,
+  uploadSiteEventMedia,
   validateNewSiteEvent,
   workGroupHints,
   type LocalSiteEventMedia,
@@ -657,5 +659,80 @@ describe('RPC_ERROR_COPY vs migrations 097, 099 and 100', () => {
     const covered = new Set(RPC_ERROR_COPY.map(([code]) => code));
     expect(raised.size).toBeGreaterThan(0);
     expect(covered).toEqual(raised);
+  });
+});
+
+/**
+ * The offline queue (plan 3) spends one of five attempts per failure and
+ * waits out a growing backoff between them, so it needs to know whether a
+ * refusal is a hiccup or a decision. `kind` rides alongside the existing
+ * `error` string; every caller that reads only `error` is unaffected.
+ *
+ * The asymmetry is deliberate and load-bearing: an unclassified refusal is
+ * 'transient', because a wrongly-permanent verdict tells a supervisor to
+ * re-file a report that would have gone through on its own.
+ */
+describe('error kind (transient vs permanent)', () => {
+  const oneFile = { id: EVENT, projectId: PROJECT, media: [media()] };
+
+  it.each([
+    ['storage 403 / RLS refusal', { status: 403, message: 'new row violates row-level security policy' }],
+    ['bucket missing (404)', { status: 404, message: 'Bucket not found' }],
+    ['oversize body (413)', { status: 413, message: 'The object exceeded the maximum allowed size' }],
+    ['statusCode as a string, as storage-js sometimes reports it', { statusCode: '403', message: 'Unauthorized' }],
+  ])('calls an upload %s permanent', async (_label, err) => {
+    uploadError = err;
+    const r = await uploadSiteEventMedia(oneFile);
+    expect(r.error).toBeTruthy();
+    expect(r.kind).toBe('permanent');
+  });
+
+  it.each([
+    ['a dropped network', new Error('Network request failed')],
+    ['a 5xx', { status: 503, message: 'Service Unavailable' }],
+    ['rate limiting', { status: 429, message: 'Too Many Requests' }],
+    ['an expired JWT, which supabase-js refreshes before the next attempt', { status: 401, message: 'jwt expired' }],
+  ])('calls an upload %s transient', async (_label, err) => {
+    uploadError = err;
+    const r = await uploadSiteEventMedia(oneFile);
+    expect(r.error).toBeTruthy();
+    expect(r.kind).toBe('transient');
+  });
+
+  it('reports no kind at all when the upload succeeded', async () => {
+    const r = await uploadSiteEventMedia(oneFile);
+    expect(r.error).toBeUndefined();
+    expect(r.kind).toBeUndefined();
+  });
+
+  const insertFailingWith = (table: string, error: unknown) => {
+    mocked.from.mockImplementation((t: string) => ({
+      upsert: jest.fn(async () => ({ error: t === table ? error : null })),
+    }));
+  };
+
+  it("calls Postgres 42501 on the event row permanent — that is RLS refusing this supervisor's project", async () => {
+    insertFailingWith('site_events', { code: '42501', message: 'new row violates row-level security policy for table "site_events"' });
+    const r = await insertSiteEvent(capture(), {});
+    expect(r.error).toMatch(/Gagal menyimpan/);
+    expect(r.kind).toBe('permanent');
+  });
+
+  it('calls the site_event_media SITE_EVENT_MEDIA_PATH trigger refusal permanent', async () => {
+    insertFailingWith('site_event_media', { code: 'P0001', message: 'SITE_EVENT_MEDIA_PATH: storage_path does not belong to this event' });
+    const r = await insertSiteEvent(capture(), {});
+    expect(r.error).toBe('Lokasi berkas media tidak sesuai kejadian.');
+    expect(r.kind).toBe('permanent');
+  });
+
+  it('calls an unrecognized insert failure transient, so the queue keeps trying', async () => {
+    insertFailingWith('site_events', { message: 'fetch failed' });
+    const r = await insertSiteEvent(capture(), {});
+    expect(r.kind).toBe('transient');
+  });
+
+  it('reports no kind at all when the insert succeeded', async () => {
+    const r = await insertSiteEvent(capture(), {});
+    expect(r).toEqual({});
   });
 });

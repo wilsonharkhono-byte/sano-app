@@ -12,6 +12,7 @@ import { registerForPushNotifications, attachNotificationTapListener } from '../
 // Role-aware deeplink→route resolution (fixes the supervisor Approvals
 // dead-end — see tools/notificationRouting.ts for the role×route matrix).
 import { resolveNotificationRoute } from '../tools/notificationRouting';
+import { startCaptureQueueWorker, stopCaptureQueueWorker } from '../tools/captureQueueWorker';
 
 // Module-scoped so all three role-based NavigationContainers share the same ref.
 // The push-notification tap listener navigates through this ref from outside the React tree.
@@ -132,6 +133,16 @@ export default function App() {
       subscription.unsubscribe();
     };
   }, []);
+
+  // Drain the offline capture queue for whichever user is signed in, and
+  // stop touching it the moment they sign out (tools/captureQueueWorker.ts).
+  useEffect(() => {
+    if (session?.user.id) {
+      startCaptureQueueWorker(session.user.id);
+    } else {
+      stopCaptureQueueWorker();
+    }
+  }, [session?.user.id]);
 
   // Wait for both session check and fonts
   if (sessionLoading || !fontsLoaded) {

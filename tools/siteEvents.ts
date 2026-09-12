@@ -181,9 +181,54 @@ export function workGroupHints(items: GroupableItem[]): string[] {
 
 // ─── The three pipeline steps ────────────────────────────────────────────────
 
+/**
+ * Whether a refusal is worth retrying. Purely additive: it appears only
+ * alongside an `error`, so every existing caller that reads `error` alone
+ * behaves exactly as before. Plan 3's offline queue reads it to choose
+ * between spending another of its five attempts and flagging the report for
+ * the supervisor at once (`recordFailure`'s `kind` in tools/captureQueue.ts).
+ *
+ * - `permanent`: a decision, not a hiccup - a storage 403 or any RLS refusal
+ *   (Postgres 42501 included), a missing bucket (404), an oversize body (413,
+ *   or readUploadBody's own 25 MB limit), the SITE_EVENT_MEDIA_PATH trigger.
+ *   Retrying these produces the same answer forever.
+ * - `transient`: a dropped network, a timeout, 5xx, 429 - and 401, because
+ *   supabase-js refreshes an expired token and the next attempt succeeds.
+ *
+ * Anything unrecognized is `transient`. That asymmetry is deliberate:
+ * retrying a refusal we failed to classify costs a little battery, while
+ * calling a recoverable one permanent pushes a supervisor to re-file a report
+ * that would have gone through on its own.
+ */
+export type SiteEventErrorKind = 'transient' | 'permanent';
+
+const PERMANENT_ERROR_MESSAGE_RE =
+  /row-level security|bucket not found|exceeded the maximum allowed size|payload too large|melebihi batas|SITE_EVENT_MEDIA_PATH/i;
+
+/** Storage 403 (RLS), 404 (no such bucket), 413 (over the bucket's file_size_limit). 401 is deliberately absent. */
+const PERMANENT_HTTP_STATUSES: ReadonlySet<number> = new Set([403, 404, 413]);
+
+/** storage-js puts the HTTP status in `status` or `statusCode`, and `statusCode` is sometimes a string. */
+function httpStatusOf(err: unknown): number | null {
+  if (!err || typeof err !== 'object') return null;
+  const e = err as { status?: unknown; statusCode?: unknown };
+  const raw = e.status ?? e.statusCode;
+  const n = typeof raw === 'string' ? Number(raw) : raw;
+  return typeof n === 'number' && Number.isFinite(n) ? n : null;
+}
+
+function classifyStorageOrPostgrestError(err: unknown): SiteEventErrorKind {
+  if (!err || typeof err !== 'object') return 'transient';
+  const e = err as { message?: unknown; code?: unknown };
+  if (e.code === '42501') return 'permanent'; // insufficient_privilege: the RLS policy refused the row
+  if (typeof e.message === 'string' && PERMANENT_ERROR_MESSAGE_RE.test(e.message)) return 'permanent';
+  const status = httpStatusOf(err);
+  return status !== null && PERMANENT_HTTP_STATUSES.has(status) ? 'permanent' : 'transient';
+}
+
 export async function uploadSiteEventMedia(
   input: MediaCarrier,
-): Promise<{ bytesById: Record<string, number | null>; error?: string }> {
+): Promise<{ bytesById: Record<string, number | null>; error?: string; kind?: SiteEventErrorKind }> {
   const bytesById: Record<string, number | null> = {};
   for (const m of input.media) {
     const label = m.kind === 'audio' ? 'suara' : 'foto';
@@ -193,14 +238,22 @@ export async function uploadSiteEventMedia(
       body = read.body;
       bytesById[m.id] = read.bytes;
     } catch (err) {
-      return { bytesById, error: `Berkas ${label} tidak bisa dibaca: ${(err as Error).message}` };
+      return {
+        bytesById,
+        error: `Berkas ${label} tidak bisa dibaca: ${(err as Error).message}`,
+        kind: classifyStorageOrPostgrestError(err),
+      };
     }
     const path = siteEventMediaPath(input.projectId, input.id, m.id, m.ext);
     const { error } = await supabase.storage
       .from(SITE_MEDIA_BUCKET)
       .upload(path, body, { contentType: m.mimeType, upsert: false });
     if (error && !isDuplicateUploadError(error)) {
-      return { bytesById, error: `Unggah ${label} gagal: ${error.message}` };
+      return {
+        bytesById,
+        error: `Unggah ${label} gagal: ${error.message}`,
+        kind: classifyStorageOrPostgrestError(error),
+      };
     }
   }
   return { bytesById };
@@ -209,18 +262,25 @@ export async function uploadSiteEventMedia(
 export async function insertSiteEvent(
   input: NewSiteEvent,
   bytesById: Record<string, number | null> = {},
-): Promise<{ error?: string }> {
+): Promise<{ error?: string; kind?: SiteEventErrorKind }> {
   const { error: eventError } = await supabase
     .from('site_events')
     .upsert(buildEventRow(input), { onConflict: 'id', ignoreDuplicates: true });
-  if (eventError) return { error: mapSiteEventRpcError(eventError.message) };
+  if (eventError) {
+    return { error: mapSiteEventRpcError(eventError.message), kind: classifyStorageOrPostgrestError(eventError) };
+  }
 
   const rows = buildMediaRows(input, bytesById);
   if (rows.length === 0) return {};
   const { error: mediaError } = await supabase
     .from('site_event_media')
     .upsert(rows, { onConflict: 'id', ignoreDuplicates: true });
-  if (mediaError) return { error: mapSiteEventRpcError(mediaError.message) };
+  if (mediaError) {
+    // The site_event_media trigger's SITE_EVENT_MEDIA_PATH refusal lands
+    // here; mapSiteEventRpcError has already turned it into supervisor copy,
+    // so the raw message is what the classifier reads.
+    return { error: mapSiteEventRpcError(mediaError.message), kind: classifyStorageOrPostgrestError(mediaError) };
+  }
   return {};
 }
 
