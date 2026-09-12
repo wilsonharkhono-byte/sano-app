@@ -9,9 +9,11 @@ import { listRooms } from '../../tools/rooms';
 import { listGateRefs, gateChipLabel } from '../../tools/gateRefs';
 import { normalizeRoomCode } from '../../tools/roomCodes';
 import { AREA_TYPE_LABELS, PROJECT_PHASE_LABELS } from '../../tools/constants';
+import { todayIsoWIB } from '../../tools/timeWindow';
 import type { GateRef, Room } from '../../tools/types';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../theme';
 import OpenEventsList from './siteEvent/OpenEventsList';
+import RoomTimeline from './siteEvent/RoomTimeline';
 
 type Refusal = 'not-assigned' | 'not-found' | 'inactive';
 
@@ -30,7 +32,7 @@ const REFUSAL_COPY: Record<Refusal, string> = {
 export default function RoomScreen() {
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
-  const { projects, project, setActiveProject } = useProject();
+  const { projects, project, setActiveProject, profile } = useProject();
   const params = (route.params ?? {}) as { projectCode?: string; roomCode?: string };
 
   const [room, setRoom] = useState<Room | null>(null);
@@ -151,6 +153,15 @@ export default function RoomScreen() {
                 <Text style={styles.primaryText}>Lapor</Text>
               </TouchableOpacity>
             </Card>
+
+            <RoomTimeline
+              roomId={room.id}
+              projectId={project!.id}
+              viewer={{ id: profile?.id ?? null, role: profile?.role ?? null }}
+              today={todayIsoWIB()}
+              onOpenEvent={(eventId) => navigation.navigate('SiteEventDetail', { eventId, projectId: project!.id })}
+              onOpenSiteChange={() => navigation.navigate('Progres')}
+            />
           </>
         )}
       </ScrollView>
