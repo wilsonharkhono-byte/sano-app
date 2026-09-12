@@ -194,7 +194,11 @@ const ORPHAN_SWEEP_GRACE_MS = 60_000;
  * entries. `nowMs` is a parameter only so tests can simulate the passage of
  * time without a real 60s sleep.
  */
-export async function sweepOrphanedFiles(userId: string, nowMs: number = Date.now()): Promise<void> {
+export async function sweepOrphanedFiles(
+  userId: string,
+  nowMs: number = Date.now(),
+  knownIds?: ReadonlyArray<string>,
+): Promise<void> {
   const dir = userQueueDirUri(userId);
   if (!dir) return;
   let names: string[];
@@ -203,7 +207,12 @@ export async function sweepOrphanedFiles(userId: string, nowMs: number = Date.no
   } catch {
     return; // nothing created for this user yet
   }
-  const liveIds = new Set(await scanEntryIds(userId));
+  // loadQueue has already scanned the keys it needs; re-scanning here would
+  // mean a second getAllKeys over the whole of AsyncStorage per load. A list
+  // handed in can only be staler than a fresh scan by the time it took to
+  // walk the directory, and a directory younger than the grace period is
+  // never touched anyway, so an entry created in that window is safe.
+  const liveIds = new Set(knownIds ?? (await scanEntryIds(userId)));
   for (const name of names) {
     if (liveIds.has(name)) continue;
     const entryDir = `${dir}${name}/`;
@@ -221,6 +230,9 @@ export async function sweepOrphanedFiles(userId: string, nowMs: number = Date.no
 // ─── Web backend (memory only) ─────────────────────────────────────────────────
 
 const webStore = new Map<string, Map<string, CaptureQueueEntry>>();
+
+/** Users whose media folder has already been swept in this app session (see loadQueue). */
+const sweptUsers = new Set<string>();
 
 function webUserMap(userId: string): Map<string, CaptureQueueEntry> {
   let map = webStore.get(userId);
@@ -332,12 +344,21 @@ export async function loadQueue(userId: string): Promise<CaptureQueueEntry[]> {
   if (Platform.OS === 'web') {
     return [...webUserMap(userId).values()];
   }
-  try {
-    await sweepOrphanedFiles(userId);
-  } catch (err) {
-    console.warn(`captureQueueStore: orphan sweep failed for user ${userId}`, err);
-  }
   const ids = await scanEntryIds(userId);
+  // Once per user per app session. The sweep reclaims what a crash left
+  // behind; one pass after launch finds all of it, and loadQueue runs on
+  // every queue write, so repeating the directory walk on each of them would
+  // cost a low-end phone a great deal to find nothing. Anything orphaned
+  // while the app keeps running (a cleanup delete that threw) is reclaimed by
+  // the next session's first load.
+  if (!sweptUsers.has(userId)) {
+    sweptUsers.add(userId); // claimed before the await, so two loads never sweep at once
+    try {
+      await sweepOrphanedFiles(userId, Date.now(), ids);
+    } catch (err) {
+      console.warn(`captureQueueStore: orphan sweep failed for user ${userId}`, err);
+    }
+  }
   const entries: CaptureQueueEntry[] = [];
   for (const id of ids) {
     let entry: CaptureQueueEntry | null;
@@ -419,8 +440,14 @@ async function readEntryForUser(userId: string, entryId: string): Promise<Captur
   }
 }
 
-/** Test-only escape hatch: nothing else in the app needs to reach into the map directly. */
+/**
+ * Test-only escape hatch: nothing else in the app needs to reach into these
+ * directly. Also clears the once-per-session orphan-sweep record, so each
+ * test starts from a fresh "app launch" rather than inheriting whether an
+ * earlier test in the same file already swept that user.
+ */
 export function __clearWebStoreForTests(): void {
   webStore.clear();
   listeners.clear();
+  sweptUsers.clear();
 }

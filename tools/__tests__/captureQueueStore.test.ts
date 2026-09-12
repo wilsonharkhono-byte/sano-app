@@ -404,3 +404,46 @@ describe('web backend', () => {
     expect(await loadQueue(USER)).toEqual([]);
   });
 });
+
+/**
+ * loadQueue runs on every queue write (saveEntry and removeEntry notify
+ * subscribers through it), and the worker writes twice per step. On a phone
+ * with a day's reports queued, the difference between one scan per load and
+ * several is thousands of AsyncStorage and filesystem round trips to deliver
+ * one report.
+ */
+describe('scan cost', () => {
+  it('reads the key list once per loadQueue', async () => {
+    await enqueueNewCapture({ userId: USER, event: event(), workGroupNames: [], nowIso: '2026-09-11T02:00:01.000Z' });
+    (AsyncStorage.getAllKeys as jest.Mock).mockClear();
+
+    await loadQueue(USER);
+    expect((AsyncStorage.getAllKeys as jest.Mock).mock.calls.length).toBe(1);
+  });
+
+  it('sweeps the media folder once per app session, not on every load', async () => {
+    await enqueueNewCapture({ userId: USER, event: event(), workGroupNames: [], nowIso: '2026-09-11T02:00:01.000Z' });
+    (FileSystem.readDirectoryAsync as jest.Mock).mockClear();
+
+    await loadQueue(USER);
+    await loadQueue(USER);
+    await loadQueue(USER);
+    expect((FileSystem.readDirectoryAsync as jest.Mock).mock.calls.length).toBe(1);
+
+    // A fresh session sweeps again: a directory orphaned by a delete that
+    // failed while the app was running is reclaimed at the next launch.
+    __clearWebStoreForTests();
+    await loadQueue(USER);
+    expect((FileSystem.readDirectoryAsync as jest.Mock).mock.calls.length).toBe(2);
+  });
+
+  it('still reaps a genuine orphan on that one pass', async () => {
+    const dir = `file:///doc/capture-queue/${USER}/orphan2/`;
+    await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+    fsDirMtimes.set(dir, Date.now() - 10 * 60_000); // well past the grace period
+    calls.length = 0;
+
+    await loadQueue(USER);
+    expect(calls).toContain(`delete:${dir}`);
+  });
+});

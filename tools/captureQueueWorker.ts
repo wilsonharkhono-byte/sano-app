@@ -8,6 +8,12 @@
 // order, so a supervisor who reported three things in a row sees them land in
 // the order they happened.
 //
+// Per-entry lock (inFlight): single-flight keeps two PASSES apart; this keeps
+// a drain step and a "Coba lagi" tap apart on the same ENTRY. Without it a
+// tap's pre-tap snapshot could be written back after the drain delivered and
+// purged that entry, and the app would then tell a supervisor to re-file a
+// report that already landed.
+//
 // The invoke step is deliberately hands-off: the worker calls
 // invokeSiteEventAnalysis exactly once per drain-worthy pass through this
 // entry and moves on regardless of the outcome (ok, daily-cap deferral, or a
@@ -55,13 +61,43 @@ import {
   type QueueAction,
 } from './captureQueue';
 import { deleteLocalMedia, loadQueue, removeEntry, saveEntry } from './captureQueueStore';
-import { insertSiteEvent, invokeSiteEventAnalysis, uploadSiteEventMedia } from './siteEvents';
+import {
+  insertSiteEvent,
+  invokeSiteEventAnalysis,
+  uploadSiteEventMedia,
+  type SiteEventErrorKind,
+} from './siteEvents';
 
 let currentUserId: string | null = null;
 let draining = false;
 let drainAgainRequested = false;
 let appStateSub: { remove: () => void } | null = null;
 let networkSub: { remove: () => void } | null = null;
+
+/**
+ * The entries a drain step or a "Coba lagi" is currently mid-write on.
+ *
+ * saveEntry is a blind whole-record overwrite, so without this a double-tapped
+ * "Coba lagi" could write its pre-tap snapshot back AFTER the drain delivered
+ * the report and purged it - resurrecting an entry whose local files are
+ * already gone. The next load would find them missing, flag the entry
+ * unrecoverable, and tell the supervisor "Laporan tidak bisa dikirim; buang
+ * dan laporkan ulang" about a report that DID land. The re-file would carry a
+ * fresh id, so the app's own advice would be what put two records of one
+ * observation on the server. Both writers take this lock, and retryQueueEntry
+ * re-reads the entry inside it, so a stale snapshot is never written.
+ */
+const inFlight = new Set<string>();
+
+/**
+ * The last network state we were told about. `lastConnected` is the edge
+ * detector for the network trigger (only false/unknown → true starts a pass);
+ * `lastInternetReachable === false` means the device is attached to something
+ * that is not carrying traffic - a captive-portal Wi-Fi, a dead cell - where
+ * every attempt fails for a reason that has nothing to do with the report.
+ */
+let lastConnected: boolean | null = null;
+let lastInternetReachable: boolean | null = null;
 
 /** App.tsx calls this once a session exists, with the signed-in profile's id. Idempotent for the same user. */
 export function startCaptureQueueWorker(userId: string): void {
@@ -76,6 +112,13 @@ export function startCaptureQueueWorker(userId: string): void {
 /** App.tsx calls this on sign-out. Any drain already running finishes its current step, then stops. */
 export function stopCaptureQueueWorker(): void {
   currentUserId = null;
+  // A request left over from the signed-out user must not decide whether the
+  // NEXT user's queue gets drained (drain's finally re-arms on it), and the
+  // network edge detector has to start from "unknown" so the first connected
+  // event after a handover still counts as an edge.
+  drainAgainRequested = false;
+  lastConnected = null;
+  lastInternetReachable = null;
   appStateSub?.remove();
   appStateSub = null;
   networkSub?.remove();
@@ -92,12 +135,25 @@ export function triggerDrain(): void {
  * flag and failure count, then asks for an immediate drain. A no-op when the
  * entry is gone (already delivered by another drain) or unrecoverable, since
  * retrying a missing local file would only fail again the same way.
+ *
+ * The entry is re-read INSIDE the lock, so the second of two rapid taps
+ * either finds the lock held (the drain owns the entry; asking for a drain is
+ * all that is left to do) or takes it and finds the entry already delivered
+ * and gone. Neither writes the snapshot it read before the drain ran.
  */
 export async function retryQueueEntry(userId: string, entryId: string): Promise<void> {
-  const entries = await loadQueue(userId);
-  const entry = entries.find((e) => e.id === entryId);
-  if (!entry) return;
-  await saveEntry(retryEntry(entry, new Date().toISOString()));
+  if (inFlight.has(entryId)) {
+    triggerDrain();
+    return;
+  }
+  inFlight.add(entryId);
+  try {
+    const entry = (await loadQueue(userId)).find((e) => e.id === entryId);
+    if (!entry) return; // delivered and purged while we waited: nothing to resurrect
+    await saveEntry(retryEntry(entry, new Date().toISOString()));
+  } finally {
+    inFlight.delete(entryId);
+  }
   triggerDrain();
 }
 
@@ -105,17 +161,58 @@ function handleAppStateChange(state: AppStateStatus): void {
   if (state === 'active') triggerDrain();
 }
 
-function handleNetworkChange(state: { isConnected?: boolean | null }): void {
-  if (state.isConnected) triggerDrain();
+/**
+ * Edge-triggered, not level-triggered. Android fires this listener on every
+ * transport and signal change, and each event that lands between passes costs
+ * a full loadQueue (an orphan sweep, a getAllKeys, a read per entry, a stat
+ * per pending file) - a repeated, wholly wasted disk scan while a supervisor
+ * walks a site. Only false-or-unknown → true starts a pass.
+ *
+ * `isInternetReachable === false` is the captive-portal case: attached to a
+ * network that carries nothing. Starting a pass there would fail every step
+ * for a reason that has nothing to do with the report. Only `=== false`
+ * counts as a negative answer, since the field is optional.
+ */
+function handleNetworkChange(state: { isConnected?: boolean | null; isInternetReachable?: boolean | null }): void {
+  const connected = state.isConnected === true;
+  const wasConnected = lastConnected;
+  lastConnected = connected;
+  lastInternetReachable = state.isInternetReachable ?? null;
+  if (!connected || wasConnected === true) return;
+  if (state.isInternetReachable === false) return;
+  triggerDrain();
 }
 
 /**
- * expo-network's listener API is confirmed only once task 3 step 1 installs
- * the package and inspects its own type declarations (the repo pins the SDK
- * 54 version but did not have the module installed while this plan was
- * written). Guarded so a name mismatch degrades to "no network-regained
- * trigger" instead of a crash; the foreground and post-capture triggers
- * still cover the same ground on a short delay.
+ * One native call per pass, never trusted enough to stop the queue: a probe
+ * that throws or is unavailable answers "usable" and the pass runs, because
+ * a failed probe is not evidence of no signal.
+ *
+ * Deliberately does NOT write lastConnected: that variable is the listener's
+ * own edge detector, and priming it from a probe would swallow the very next
+ * connected event - the one that means "signal is back, drain now".
+ */
+async function hasUsableConnection(): Promise<boolean> {
+  try {
+    const state = await Network.getNetworkStateAsync();
+    return state.isConnected !== false && state.isInternetReachable !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** True only when the device has told us, positively, that nothing is getting through. */
+function deviceSaysOffline(): boolean {
+  return lastConnected === false || lastInternetReachable === false;
+}
+
+/**
+ * Kept as belt-and-braces rather than removed now that expo-network is
+ * installed and `addNetworkStateListener` is confirmed present
+ * (node_modules/expo-network/build/Network.d.ts): the package is an OTA-able
+ * dependency, and a missing export should degrade to "no network-regained
+ * trigger" - the foreground and post-capture triggers still cover the same
+ * ground on a short delay - rather than crash the app at sign-in.
  */
 function attachNetworkListener(): { remove: () => void } | null {
   const addListener = (Network as { addNetworkStateListener?: typeof Network.addNetworkStateListener })
@@ -138,6 +235,9 @@ async function drain(): Promise<void> {
   try {
     do {
       drainAgainRequested = false;
+      // Asked before any entry is touched, so a pass started while the device
+      // is offline burns none of the five attempts an entry gets.
+      if (!(await hasUsableConnection())) return;
       const now = Date.now();
       const entries = await loadQueue(userId);
       const runnable = entries
@@ -150,28 +250,72 @@ async function drain(): Promise<void> {
     } while (drainAgainRequested && currentUserId === userId);
   } finally {
     draining = false;
+    // A shared-phone handover (A signs out, B signs in) leaves B's coalesced
+    // request behind: the loop above exits on `currentUserId !== userId`, or
+    // returns outright from inside the for, without ever serving it. Re-arm
+    // here so B's queue - reports carried over from B's last shift - drains
+    // now rather than waiting for a network event or B's next capture.
+    if (drainAgainRequested && currentUserId) {
+      drainAgainRequested = false;
+      void drain();
+    }
   }
 }
 
 async function processEntry(userId: string, start: CaptureQueueEntry): Promise<void> {
-  let entry = start;
-  while (currentUserId === userId) {
-    const step = nextStep(entry);
-    if (step.kind === 'none') break;
-    const startedAt = new Date().toISOString();
-    entry = beginAttempt(entry, startedAt);
-    await saveEntry(entry);
-    try {
-      entry = await runStep(userId, entry, step);
-    } catch (err) {
-      entry = recordFailure(entry, describeStepError(step, err), new Date().toISOString());
+  if (inFlight.has(start.id)) return; // a "Coba lagi" is mid-write for this entry; next pass
+  inFlight.add(start.id);
+  try {
+    let entry = start;
+    while (currentUserId === userId) {
+      const step = nextStep(entry);
+      if (step.kind === 'none') break;
+      const startedAt = new Date().toISOString();
+      entry = beginAttempt(entry, startedAt);
       await saveEntry(entry);
-      return;
+      try {
+        entry = await runStep(userId, entry, step);
+      } catch (err) {
+        entry = recordStepFailure(entry, step, err);
+        await saveEntry(entry);
+        return;
+      }
+      await saveEntry(entry);
     }
-    await saveEntry(entry);
+    if (entry.state === 'done') {
+      await removeEntry(userId, entry.id);
+    }
+  } finally {
+    inFlight.delete(start.id);
   }
-  if (entry.state === 'done') {
-    await removeEntry(userId, entry.id);
+}
+
+/**
+ * A step that failed while the device itself says nothing is getting through
+ * is evidence about the signal, not about the report. It is still recorded -
+ * the supervisor should see what happened, and the backoff clock should still
+ * move - but it does not count toward the five strikes that put a report on
+ * the "Perlu perhatian" list, so walking through a dead spot five times never
+ * asks a supervisor to act on a report with nothing wrong with it.
+ *
+ * A permanent refusal is exempt from the exemption: it reached the server and
+ * came back with a decision, so the offline reading cannot explain it.
+ */
+function recordStepFailure(entry: CaptureQueueEntry, step: QueueAction, err: unknown): CaptureQueueEntry {
+  const kind = err instanceof StepFailure ? err.kind : 'transient';
+  const failed = recordFailure(entry, describeStepError(step, err), new Date().toISOString(), kind);
+  if (kind === 'permanent' || !deviceSaysOffline()) return failed;
+  return { ...failed, consecutiveFailures: entry.consecutiveFailures, needsAttention: entry.needsAttention };
+}
+
+/** Carries tools/siteEvents.ts's `kind` from the step that failed to the machine's failure accounting. */
+class StepFailure extends Error {
+  readonly kind: SiteEventErrorKind;
+
+  constructor(message: string, kind: SiteEventErrorKind | undefined) {
+    super(message);
+    this.name = 'StepFailure';
+    this.kind = kind ?? 'transient';
   }
 }
 
@@ -182,12 +326,12 @@ async function runStep(userId: string, entry: CaptureQueueEntry, step: QueueActi
       const item = entry.media.find((m) => m.id === step.mediaId);
       if (!item) return markUploaded(entry, step.mediaId, null, now); // defensive; nextStep only asks for media that exists
       const result = await uploadSiteEventMedia({ id: entry.id, projectId: entry.projectId, media: [toLocalMedia(item)] });
-      if (result.error) throw new Error(result.error);
+      if (result.error) throw new StepFailure(result.error, result.kind);
       return markUploaded(entry, item.id, result.bytesById[item.id] ?? null, now);
     }
     case 'insert': {
       const result = await insertSiteEvent(toNewSiteEvent(entry), bytesById(entry));
-      if (result.error) throw new Error(result.error);
+      if (result.error) throw new StepFailure(result.error, result.kind);
       return markInserted(entry, now);
     }
     case 'invoke': {
@@ -202,7 +346,18 @@ async function runStep(userId: string, entry: CaptureQueueEntry, step: QueueActi
       return markAnalysisRequested(entry, now);
     }
     case 'cleanup': {
-      await deleteLocalMedia(userId, entry.id);
+      try {
+        await deleteLocalMedia(userId, entry.id);
+      } catch (err) {
+        // The event is already on the server by the time cleanup runs. A
+        // locked file or an unmounted SD card must not re-label a delivered
+        // report as "menunggu sinyal" - which is what recording this as a
+        // step failure would do, and there would be no way out of it:
+        // discardEntryLocally refuses an entry whose event is inserted, and
+        // "Coba lagi" would only re-run the same failing delete. The store's
+        // orphan sweep collects the directory on a later loadQueue instead.
+        console.warn('[captureQueueWorker] local cleanup failed for', entry.id, (err as Error).message);
+      }
       return markCleanedUp(entry, now);
     }
     case 'none':
