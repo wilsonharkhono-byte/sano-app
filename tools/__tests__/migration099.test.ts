@@ -83,6 +83,13 @@ describe('migration 099 - the RPC is the only door through 097 D5', () => {
     expect(CODE).toMatch(/SET search_path = public/);
   });
 
+  it('refuses a session with no auth.uid() unless it is the service role', () => {
+    // Inverting this single comparison is a total bypass: every later guard is
+    // conditioned on v_uid IS NOT NULL, so a NULL-uid caller would skip them
+    // all. migration097.test.ts pins the identical line for close_site_event.
+    expect(CODE).toMatch(/IF v_uid IS NULL AND COALESCE\(auth\.role\(\), ''\) <> 'service_role' THEN/);
+  });
+
   it('revokes from PUBLIC and anon, then grants only to authenticated and service_role', () => {
     const revoke = CODE.indexOf('REVOKE ALL ON FUNCTION update_site_event_assignment');
     const grant = CODE.indexOf('GRANT EXECUTE ON FUNCTION update_site_event_assignment');
@@ -97,10 +104,14 @@ describe('migration 099 - the RPC is the only door through 097 D5', () => {
   });
 
   it('refuses to move an owner or due date on anything but an open event', () => {
-    // Written as the exact guard, not just "the SITE_EVENT_NOT_OPEN code exists
-    // somewhere": that weaker check would still pass a widened status set (e.g.
-    // 'open' or 'done') that lets a closed event be reassigned.
+    // Written as the exact guard, not just "the error code exists somewhere":
+    // that weaker check would still pass a widened status set (e.g. 'open' or
+    // 'done') that lets a closed event be reassigned. The code is its own
+    // SITE_EVENT_ASSIGN_NOT_OPEN, distinct from close_site_event's
+    // SITE_EVENT_NOT_OPEN, because the two map to different client copy
+    // ("only open events can be marked done" is the wrong sentence here).
     expect(CODE).toMatch(/IF v_ev\.status <> 'open' THEN/);
+    expect(CODE).toMatch(/SITE_EVENT_ASSIGN_NOT_OPEN:/);
   });
 
   it('raises one named refusal per rule the D5 trigger cannot enforce here', () => {
@@ -110,7 +121,7 @@ describe('migration 099 - the RPC is the only door through 097 D5', () => {
       'SITE_EVENT_AUTH',           // no session
       'SITE_EVENT_AUTH',           // not a member and not office
       'SITE_EVENT_ASSIGN_ROLE',    // not the reporter and not office
-      'SITE_EVENT_NOT_OPEN',
+      'SITE_EVENT_ASSIGN_NOT_OPEN',
       'SITE_EVENT_OWNER_NOT_MEMBER',
       'SITE_EVENT_OWNER_REQUIRED',
       'SITE_EVENT_DUE',
@@ -119,6 +130,16 @@ describe('migration 099 - the RPC is the only door through 097 D5', () => {
 
   it('refuses a caller who is neither an office role nor the reporter', () => {
     expect(CODE).toMatch(/NOT \(is_office_role\(\) OR v_ev\.reporter_id = v_uid\)/);
+  });
+
+  it('scopes the membership check to the LOCKED ROW project, never a parameter', () => {
+    // is_project_member(p_owner_id) would ask whether the caller belongs to a
+    // project named by the OWNER id - i.e. never - and OR TRUE would fail
+    // open. migration097.test.ts pins the identical expression for confirm
+    // and close.
+    expect(CODE).toMatch(
+      /IF v_uid IS NOT NULL AND NOT \(is_project_member\(v_ev\.project_id\) OR is_office_role\(\)\) THEN\s+RAISE EXCEPTION 'SITE_EVENT_AUTH:/,
+    );
   });
 
   it('never lets the current owner reassign their own event', () => {
@@ -141,12 +162,23 @@ describe('migration 099 - the RPC is the only door through 097 D5', () => {
     expect(CODE).toMatch(/v_today\s+DATE := \(now\(\) AT TIME ZONE 'Asia\/Jakarta'\)::date;/);
   });
 
-  it('writes only owner_id and due_date, never another human field', () => {
+  it('writes the two assignment columns and nothing else, exactly', () => {
+    // An allowlist, not a denylist: a SECURITY DEFINER function is exempt
+    // from site_events_human_fields_rpc_only, so a column added here has no
+    // runtime guard behind it. project_id in particular would silently move
+    // the event to another project - a denylist of named columns would not
+    // notice that addition. migration097.test.ts does the same .toBe() check
+    // for close_site_event's SET list.
     const update = CODE.slice(CODE.indexOf('UPDATE site_events'), CODE.indexOf('WHERE id = p_event_id;'));
-    expect(update).toMatch(/SET owner_id = p_owner_id, due_date = p_due_date/);
-    for (const col of ['event_type', 'gate_code', 'step_code', 'title', 'summary', 'is_blocking', 'vo_flag', 'status']) {
-      expect(update).not.toContain(col);
-    }
+    expect(update.replace(/\s+/g, ' ').trim()).toBe(
+      'UPDATE site_events SET owner_id = p_owner_id, due_date = p_due_date',
+    );
+  });
+
+  it('returns status alongside the two changed fields, matching confirm/close', () => {
+    expect(CODE).toMatch(
+      /RETURN jsonb_build_object\(\s*'event_id', p_event_id,\s*'status', 'open',\s*'owner_id', p_owner_id,\s*'due_date', p_due_date,\s*'changed', v_changed,\s*'notified', v_notified\s*\);/,
+    );
   });
 });
 
@@ -190,11 +222,16 @@ describe('migration 099 - the notification', () => {
     expect(readback).toMatch(/n\.created_at >= now\(\)/);
   });
 
-  it('uses the 092 enqueue helper with its full ten-argument shape', () => {
-    const call = CODE.slice(CODE.indexOf('PERFORM enqueue_notification_user('));
-    const args = call.slice(0, call.indexOf(');') + 2);
-    expect((args.match(/,/g) ?? []).length).toBeGreaterThanOrEqual(7);
-    expect(args).toMatch(/ARRAY\[v_uid\]/);
+  it('enqueues to the NEW owner, positionally, with the actor excluded', () => {
+    // enqueue_notification_user takes ten parameters; this is a nine-argument
+    // call (p_skip_roles left to default, same as 097). Pinning the second
+    // argument positionally as p_owner_id catches the recipient silently
+    // becoming v_ev.owner_id (the OLD owner) - a bug the read-back alone would
+    // not surface: it filters on p_owner_id too, so the RPC would just report
+    // notified: false while a wrong notification landed.
+    const blk = CODE.slice(CODE.indexOf('IF p_owner_id IS NOT NULL'), CODE.indexOf('RETURN jsonb_build_object'));
+    expect(blk).toMatch(/THEN\s+BEGIN\s+[\s\S]*?PERFORM enqueue_notification_user\(\s*v_ev\.project_id,\s*p_owner_id,\s*'SITE_EVENT_ASSIGNED'/);
+    expect(blk).toMatch(/p_event_id,\s+ARRAY\[v_uid\]\s*\);/);
   });
 });
 

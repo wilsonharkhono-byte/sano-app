@@ -79,7 +79,7 @@ BEGIN
   END IF;
 
   IF v_ev.status <> 'open' THEN
-    RAISE EXCEPTION 'SITE_EVENT_NOT_OPEN: hanya kejadian terbuka yang bisa diubah pemiliknya (status sekarang %)', v_ev.status;
+    RAISE EXCEPTION 'SITE_EVENT_ASSIGN_NOT_OPEN: hanya kejadian terbuka yang bisa diubah pemilik atau tenggatnya.';
   END IF;
 
   -- Spec §2 decision 5 and enqueue_notification_user (092:100): an owner who is
@@ -157,6 +157,7 @@ BEGIN
 
   RETURN jsonb_build_object(
     'event_id', p_event_id,
+    'status', 'open',
     'owner_id', p_owner_id,
     'due_date', p_due_date,
     'changed', v_changed,
@@ -189,21 +190,42 @@ WHERE proname = 'update_site_event_assignment';
 --      SELECT update_site_event_assignment('<event id>', NULL, NULL);
 --    EXPECTED: ERROR starting SITE_EVENT_AUTH.
 --
--- 4. An actionable event cannot lose its owner:
---      SELECT update_site_event_assignment('<an open isu/hambatan/cacat id>', NULL, NULL);
+-- 4. An actionable event cannot lose its owner. Run every check below inside
+--    a session that HAS an identity - the SQL editor is `postgres` with no
+--    JWT, so an un-wrapped call refuses at the first guard with
+--    SITE_EVENT_AUTH before it ever reaches the rule under test:
+--      BEGIN;
+--        SET LOCAL ROLE authenticated;
+--        SELECT set_config('request.jwt.claims',
+--               '{"sub":"<REPORTER_OR_OFFICE_UUID>","role":"authenticated"}', true);
+--        SELECT update_site_event_assignment('<an open isu/hambatan/cacat id>', NULL, NULL);
+--      ROLLBACK;
 --    EXPECTED: ERROR starting SITE_EVENT_OWNER_REQUIRED.
 --
 -- 5. An outsider cannot be made the owner:
---      SELECT update_site_event_assignment('<event id>', '<a profile NOT on the project>', current_date + 3);
+--      BEGIN;
+--        SET LOCAL ROLE authenticated;
+--        SELECT set_config('request.jwt.claims',
+--               '{"sub":"<REPORTER_OR_OFFICE_UUID>","role":"authenticated"}', true);
+--        SELECT update_site_event_assignment('<event id>', '<a profile NOT on the project>', current_date + 3);
+--      ROLLBACK;
 --    EXPECTED: ERROR starting SITE_EVENT_OWNER_NOT_MEMBER.
 --
--- 6. A real reassignment lands, and 097's guard did not block it:
---      SELECT update_site_event_assignment('<event id>', '<a team member>', current_date + 3);
+-- 6. A real reassignment lands, and 097's guard did not block it. This one
+--    COMMITS rather than rolling back: step 7 reads the notification row
+--    this call enqueues, so the write has to still be there afterwards.
+--      BEGIN;
+--        SET LOCAL ROLE authenticated;
+--        SELECT set_config('request.jwt.claims',
+--               '{"sub":"<REPORTER_OR_OFFICE_UUID>","role":"authenticated"}', true);
+--        SELECT update_site_event_assignment('<event id>', '<a team member>', current_date + 3);
+--      COMMIT;
 --    EXPECTED: a JSON object with changed = true. Then:
 --      SELECT owner_id, due_date FROM site_events WHERE id = '<event id>';
 --    EXPECTED: the new pair.
 --
--- 7. The new owner was told:
+-- 7. The new owner was told. Plain read, no role wrapper needed - the SQL
+--    editor's `postgres` session bypasses RLS on notifications:
 --      SELECT type, title FROM notifications
 --      WHERE related_entity_id = '<event id>' AND type = 'SITE_EVENT_ASSIGNED';
 --    EXPECTED: at least one row. NO row means 098 was never pasted.
