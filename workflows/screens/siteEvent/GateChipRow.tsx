@@ -45,7 +45,7 @@ export function GateChipRow({ gates, value, onChange, markPeriksa = false, hintC
               style={[s.gateRow, selected && s.gateRowActive, hinted && s.gateRowHint]}
               onPress={() => onChange(selected ? null : g.code)}
               disabled={disabled}
-              accessibilityRole="radio"
+              accessibilityRole="button"
               accessibilityState={{ selected, disabled }}
               accessibilityLabel={`Gerbang ${label}${description ? `. ${description}` : ''}${hinted ? '. Saran AI' : ''}`}
             >

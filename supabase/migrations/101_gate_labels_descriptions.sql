@@ -75,7 +75,7 @@ WHERE code = 'B';
 UPDATE gate_refs SET
   name_id     = 'Plafon + benangan',
   short_label = 'Plafon + benangan',
-  description = 'Rangka dan penutup plafon termasuk drop ceiling dan shaft, serta benangan - garis sudut plesteran dan acian yang rapi pada pertemuan dinding, plafon dan kusen.'
+  description = 'Rangka dan penutup plafon termasuk drop ceiling dan shaft, serta benangan: garis sudut plesteran dan acian yang rapi pada pertemuan dinding, plafon dan kusen.'
 WHERE code = 'C';
 
 UPDATE gate_refs SET

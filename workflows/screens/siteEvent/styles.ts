@@ -56,8 +56,10 @@ export const formStyles = StyleSheet.create({
   // rendered as an unconditional sibling of the navigator, not route-scoped:
   // workflows/App.tsx renders it once for the whole app). The FAB floats at
   // bottom: max(insets.bottom + 78, 92) with height 52, so its top edge sits
-  // at least 144dp above the screen bottom, more with a large safe-area
-  // inset — 200 clears every device with margin to spare.
+  // at least 144dp above the screen bottom — and a LARGER safe-area inset
+  // pushes the FAB further up, shrinking the margin below this fixed 200
+  // padding (not growing it). 200 still clears every real-world inset (they
+  // rarely exceed ~40dp) with margin to spare.
   contentFabClear: { paddingBottom: 200 },
   periksa: {
     alignSelf: 'flex-start', marginTop: SPACE.xs, paddingVertical: 2, paddingHorizontal: SPACE.sm,
