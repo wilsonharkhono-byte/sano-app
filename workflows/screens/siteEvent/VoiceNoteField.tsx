@@ -111,6 +111,11 @@ export default function VoiceNoteField({ value, onChange, onBusyChange, disabled
           ) : null}
         </View>
       ) : null}
+      {rec.state.error && rec.state.errorDetail ? (
+        <Text style={styles.errorDetail} selectable>
+          Detail teknis: {rec.state.errorDetail}
+        </Text>
+      ) : null}
       <Text style={s.hint}>Opsional. Maksimal {VOICE_NOTE_MAX_SECONDS} detik, berhenti otomatis.</Text>
     </View>
   );
@@ -136,4 +141,5 @@ const styles = StyleSheet.create({
   errorRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: SPACE.sm, marginTop: 4 },
   errorTextFlex: { flexShrink: 1 },
   settingsLink: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.primary, textDecorationLine: 'underline' },
+  errorDetail: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, lineHeight: 16, marginTop: 2 },
 });
