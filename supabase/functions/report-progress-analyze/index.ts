@@ -4,17 +4,23 @@
 // daily cap and Claude call shape. The function never writes progress: it
 // writes client_report_lines.ai_* (a suggestion the supervisor confirms) and
 // one progress_ai_runs row per call.
+//
+// Serialization: client_progress_reports.link_claimed_at is a lease (LINK_CLAIM
+// TTL) taken before any provider spend and released on every exit, so two
+// callers — a double-tap, or a forced re-run racing a first run — cannot both
+// reach Claude for the same report. The line rows are upserted idempotently
+// (unique report_id + line_index) and ai_* is only ever written on lines still
+// SUGGESTED, so a supervisor's decision always wins.
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { validateReportLineLinks } from './validate.ts';
-import {
-  buildClaudeRequest, buildSystemPrompt, buildUserPrompt, readClaudeResponse,
-  type ClaudeImage, type LinkPromptContext, type RecentLink,
-} from './prompt.ts';
+import { buildClaudeRequest, buildSystemPrompt, buildUserPrompt, readClaudeResponse, type ClaudeImage, type LinkPromptContext } from './prompt.ts';
 import { claudeCostUsd, type ClaudeUsage } from './cost.ts';
 import {
+  linesFromSnapshot, photoRefsFromSnapshot, promptLinesFromFrozen, recentFromRows, storageTarget, type FrozenLine,
+} from './context.ts';
+import {
   AI_QUOTA_MESSAGE, TIMEOUT_ERROR, bytesToBase64, fetchWithTimeout, isTimeoutError, isUuid, isoDaysBefore,
-  jakartaTodayLabel, parseDailyCap, photoPathFromSignedUrl, sanitizeJsonForPostgres, sha256Hex,
-  startOfJakartaDayUtcIso, truncate,
+  jakartaTodayLabel, parseDailyCap, sanitizeJsonForPostgres, sha256Hex, startOfJakartaDayUtcIso, truncate,
 } from './util.ts';
 
 const MODEL = Deno.env.get('REPORT_PROGRESS_MODEL') ?? 'claude-opus-5';
@@ -24,15 +30,16 @@ if (DAILY_CAP_SETTING.invalid) {
 }
 const DAILY_CAP = DAILY_CAP_SETTING.cap;
 
-const PHOTOS_BUCKET = 'photos';
-const SITE_MEDIA_BUCKET = 'site-media';
-const SITE_MEDIA_PREFIX = `${SITE_MEDIA_BUCKET}:`;
 /** Hero + up to seven thumbs; a daily report carries 5–10 photos in practice. */
 const MAX_LINK_PHOTOS = 8;
 /** Messages API limit: 5 MB per image after base64; 3.5 MB raw is ~4.7 MB encoded. */
 const MAX_IMAGE_BYTES = 3_500_000;
+/** The whole request must stay under the API's 32 MB; 20 MB raw ≈ 27 MB encoded leaves room for the text. */
+const MAX_TOTAL_IMAGE_BYTES = 20_000_000;
 const CONTINUITY_DAYS = 14;
 const MAX_RECENT_LINKS = 60;
+/** A lease older than this is presumed abandoned (a killed isolate) and may be taken over. */
+const LINK_CLAIM_TTL_MS = 2 * 60 * 1000;
 
 const DEADLINE_MS = 110_000;
 const CLAUDE_BUDGET_MS = 90_000;
@@ -80,8 +87,6 @@ interface BoqRow {
   unit: string;
   planned: number;
 }
-
-interface LineRow { id: string; line_index: number; status: string }
 
 interface RunRow {
   project_id: string;
@@ -133,13 +138,6 @@ async function postWithRetry(
   }
 }
 
-/** Mirrors tools/storage.ts storageTargetForPath for the two buckets a report can reference. */
-function storageTarget(path: string): { bucket: string; path: string } {
-  return path.startsWith(SITE_MEDIA_PREFIX)
-    ? { bucket: SITE_MEDIA_BUCKET, path: path.slice(SITE_MEDIA_PREFIX.length) }
-    : { bucket: PHOTOS_BUCKET, path };
-}
-
 export async function handle(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS_HEADERS });
   if (req.method !== 'POST') return json({ ok: false, code: 'METHOD', error: 'Gunakan POST.' }, 405);
@@ -154,12 +152,13 @@ export async function handle(req: Request): Promise<Response> {
   const authHeader = req.headers.get('Authorization');
   if (!authHeader) return json({ ok: false, code: 'AUTH', error: 'Tidak ada otorisasi.' }, 401);
 
-  let body: { stage?: unknown; report_id?: unknown; force?: unknown };
+  let body: unknown;
   try {
     body = await req.json();
   } catch {
     return json({ ok: false, code: 'BAD_REQUEST', error: 'Body harus JSON.' }, 400);
   }
+  if (!isRecord(body)) return json({ ok: false, code: 'BAD_REQUEST', error: 'Body harus objek JSON.' }, 400);
   if (body.stage !== 'link') return json({ ok: false, code: 'BAD_REQUEST', error: 'stage harus "link".' }, 400);
   if (!isUuid(body.report_id)) return json({ ok: false, code: 'BAD_REQUEST', error: 'report_id tidak valid.' }, 400);
   const reportId = body.report_id;
@@ -207,15 +206,8 @@ async function linkReport(admin: SupabaseClient, reportId: string, force: boolea
     .single<ReportRow>();
   if (reportError || !report) return json({ ok: false, code: 'NOT_FOUND', error: 'Laporan tidak ditemukan.' }, 404);
 
-  const snapshot = (isRecord(report.snapshot) ? report.snapshot : {}) as { updates?: unknown; hero?: unknown; thumbs?: unknown };
-  const updates = Array.isArray(snapshot.updates) ? snapshot.updates : [];
-  const lines = updates.map((u, index) => {
-    const r = (isRecord(u) ? u : {}) as { area?: unknown; note?: unknown };
-    const area = typeof r.area === 'string' ? r.area : '';
-    const note = typeof r.note === 'string' ? r.note : '';
-    return { index, area, note, text: `${area} :: ${note}` };
-  });
-  if (lines.length === 0) return json({ ok: true, code: 'NO_LINES', lines: 0 });
+  const snapshotLines = linesFromSnapshot(report.snapshot);
+  if (snapshotLines.length === 0) return json({ ok: true, code: 'NO_LINES', lines: 0 });
 
   const [projectRes, rowsRes] = await Promise.all([
     admin.from('projects').select('name').eq('id', report.project_id).single(),
@@ -223,12 +215,15 @@ async function linkReport(admin: SupabaseClient, reportId: string, force: boolea
       .eq('project_id', report.project_id).is('superseded_at', null).gt('planned', 0).order('sort_order'),
   ]);
   if (projectRes.error || !projectRes.data) return json({ ok: false, code: 'CONTEXT', error: 'Proyek tidak bisa dimuat.' }, 500);
+  // A failed query must not read as "the project has no BoQ" — that message tells
+  // the supervisor the estimator has not published, which would be false.
+  if (rowsRes.error) return json({ ok: false, code: 'CONTEXT', error: 'Baris BoQ tidak bisa dimuat. Coba lagi.' }, 500);
   const rows = (rowsRes.data ?? []) as BoqRow[];
   if (rows.length === 0) {
     return json({ ok: false, code: 'NO_BOQ', error: 'Proyek belum punya baris BoQ terbit; tautan tidak bisa dibuat.' });
   }
 
-  // ── Cost guard: per-project daily cap on link calls, read BEFORE the claim.
+  // ── Cost guard: per-project daily cap on link calls, read BEFORE the lease.
   const { count, error: capError } = await admin
     .from('progress_ai_runs')
     .select('id', { count: 'exact', head: true })
@@ -238,81 +233,102 @@ async function linkReport(admin: SupabaseClient, reportId: string, force: boolea
   if (capError) return json({ ok: false, code: 'CAP_CHECK_FAILED', error: 'Kuota AI tidak bisa diperiksa. Coba lagi sebentar.' });
   if ((count ?? 0) >= DAILY_CAP) return json({ ok: false, code: 'DAILY_CAP', error: AI_QUOTA_MESSAGE });
 
-  // ── Claim: the line rows themselves. unique (report_id, line_index) makes the
-  //    insert idempotent; a concurrent second call inserts nothing and stops
-  //    here unless it asked to force a re-run over the still-SUGGESTED rows.
+  // ── Lease: one linker per report. A conditional UPDATE only succeeds for one
+  //    caller; a lease older than the TTL belongs to a killed isolate and may
+  //    be taken over. Released on every exit below.
+  const staleBefore = new Date(Date.now() - LINK_CLAIM_TTL_MS).toISOString();
+  const { data: leased, error: leaseError } = await admin
+    .from('client_progress_reports')
+    .update({ link_claimed_at: new Date().toISOString() })
+    .eq('id', report.id)
+    .or(`link_claimed_at.is.null,link_claimed_at.lt.${staleBefore}`)
+    .select('id');
+  if (leaseError || !leased || leased.length === 0) {
+    return json({ ok: false, code: 'LINK_IN_PROGRESS', error: 'Tautan AI sedang berjalan untuk laporan ini. Tunggu sebentar lalu muat ulang.' }, 409);
+  }
+
+  try {
+    return await linkLeased(admin, report, rows, snapshotLines, force, remainingMs);
+  } finally {
+    const { error } = await admin.from('client_progress_reports').update({ link_claimed_at: null }).eq('id', report.id);
+    if (error) console.error(`report-progress-analyze: lease release failed for report ${report.id}:`, error.message);
+  }
+}
+
+async function linkLeased(
+  admin: SupabaseClient,
+  report: ReportRow,
+  rows: BoqRow[],
+  snapshotLines: ReturnType<typeof linesFromSnapshot>,
+  force: boolean,
+  remainingMs: () => number,
+): Promise<Response> {
+  // ── Line rows: idempotent on (report_id, line_index). New rows get their text
+  //    frozen now; existing rows keep theirs (spec §5.1).
   const { data: inserted, error: insertError } = await admin
     .from('client_report_lines')
     .upsert(
-      lines.map((l) => ({ report_id: report.id, line_index: l.index, line_text: sanitizeJsonForPostgres(l.text) })),
+      snapshotLines.map((l) => ({ report_id: report.id, line_index: l.index, line_text: sanitizeJsonForPostgres(l.text) })),
       { onConflict: 'report_id,line_index', ignoreDuplicates: true },
     )
-    .select('id, line_index, status');
+    .select('id');
   if (insertError) {
     return json({ ok: false, code: 'CLAIM_FAILED', error: truncate(`Baris tautan tidak bisa dibuat: ${insertError.message}`, 300) }, 500);
   }
   const { data: existing, error: existingError } = await admin
-    .from('client_report_lines').select('id, line_index, status').eq('report_id', report.id).order('line_index');
+    .from('client_report_lines').select('id, line_index, status, line_text').eq('report_id', report.id).order('line_index');
   if (existingError || !existing) return json({ ok: false, code: 'CONTEXT', error: 'Baris tautan tidak bisa dibaca.' }, 500);
-  const existingLines = existing as LineRow[];
+  const existingLines = existing as FrozenLine[];
   if ((inserted?.length ?? 0) === 0 && !force) return json({ ok: true, code: 'ALREADY_LINKED', lines: existingLines.length });
   const targets = existingLines.filter((l) => l.status === 'SUGGESTED');
   if (targets.length === 0) return json({ ok: true, code: 'NOTHING_TO_SUGGEST', lines: existingLines.length });
 
-  // ── Continuity: the last 14 days of links the supervisor confirmed.
+  // ── Continuity: the last 14 days of links the supervisor confirmed, newest first.
   const cutoff = isoDaysBefore(report.period_end, CONTINUITY_DAYS);
-  const { data: recentRows } = await admin
+  const { data: recentRows, error: recentError } = await admin
     .from('client_report_lines')
     .select('line_text, stage, activity_state, boq_items!client_report_lines_boq_item_id_fkey(code), client_progress_reports!inner(project_id, period_end)')
     .eq('status', 'CONFIRMED')
     .eq('client_progress_reports.project_id', report.project_id)
     .gte('client_progress_reports.period_end', cutoff)
     .neq('report_id', report.id)
+    .order('confirmed_at', { ascending: false })
     .limit(200);
-  const recent: RecentLink[] = ((recentRows ?? []) as Array<Record<string, unknown>>)
-    .map((r) => {
-      const boq = r.boq_items as { code?: string } | Array<{ code?: string }> | null;
-      const code = Array.isArray(boq) ? boq[0]?.code : boq?.code;
-      const rep = r.client_progress_reports as { period_end?: string } | Array<{ period_end?: string }> | null;
-      const periodEnd = Array.isArray(rep) ? rep[0]?.period_end : rep?.period_end;
-      return code && periodEnd
-        ? { period_end: periodEnd, code, stage: (r.stage as string | null) ?? null, activity_state: String(r.activity_state ?? 'LANJUT'), text: String(r.line_text ?? '') }
-        : null;
-    })
-    .filter((r): r is RecentLink => r !== null)
-    .sort((a, b) => (a.period_end < b.period_end ? 1 : a.period_end > b.period_end ? -1 : 0))
-    .slice(0, MAX_RECENT_LINKS);
+  const recent = recentFromRows(recentRows ?? [], MAX_RECENT_LINKS);
 
-  // ── Photos, as stored: hero first, then thumbs; over-sized ones are skipped and counted.
-  const photoRefs = [snapshot.hero, ...(Array.isArray(snapshot.thumbs) ? snapshot.thumbs : [])]
-    .filter(isRecord)
-    .map((p) => (typeof p.path === 'string' && p.path ? p.path : photoPathFromSignedUrl(typeof p.url === 'string' ? p.url : null)))
-    .filter((p): p is string => typeof p === 'string' && p.length > 0)
-    .slice(0, MAX_LINK_PHOTOS);
+  // ── Photos: only this project's own folders (context.ts), hero first; each
+  //    ≤ 3.5 MB, all together ≤ 20 MB raw; over-sized or unreadable ones are
+  //    skipped and counted, never sent.
+  const { refs: photoRefs, outOfScope: photosOutOfScope } = photoRefsFromSnapshot(report.snapshot, report.project_id, MAX_LINK_PHOTOS);
+  const downloads = await Promise.all(photoRefs.map(async (ref) => {
+    const target = storageTarget(ref);
+    const { data: blob, error } = await admin.storage.from(target.bucket).download(target.path);
+    return error || !blob ? null : blob;
+  }));
   const images: ClaudeImage[] = [];
   let photoFailures = 0;
   let photosTooLarge = 0;
-  for (const ref of photoRefs) {
-    const target = storageTarget(ref);
-    const { data: blob, error } = await admin.storage.from(target.bucket).download(target.path);
-    if (error || !blob) {
+  let totalBytes = 0;
+  for (const blob of downloads) {
+    if (!blob) {
       photoFailures += 1;
       continue;
     }
-    if (blob.size > MAX_IMAGE_BYTES) {
+    if (blob.size > MAX_IMAGE_BYTES || totalBytes + blob.size > MAX_TOTAL_IMAGE_BYTES) {
       photosTooLarge += 1;
       continue;
     }
+    totalBytes += blob.size;
     images.push({ mediaType: blob.type || 'image/jpeg', data: bytesToBase64(new Uint8Array(await blob.arrayBuffer())) });
   }
 
   const ctx: LinkPromptContext = {
-    projectName: String(projectRes.data.name ?? ''),
+    projectName: String((await admin.from('projects').select('name').eq('id', report.project_id).single()).data?.name ?? ''),
     todayLabel: jakartaTodayLabel(new Date().toISOString()),
     reportLabel: `#${report.report_no}${(report.revision ?? 1) > 1 ? ` R${report.revision}` : ''}`,
     periodLabel: report.period_start === report.period_end ? report.period_start : `${report.period_start} – ${report.period_end}`,
     rows,
-    lines: lines.map(({ index, area, note }) => ({ index, area, note })),
+    lines: promptLinesFromFrozen(existingLines),
     recent,
     photoCount: images.length,
   };
@@ -320,11 +336,13 @@ async function linkReport(admin: SupabaseClient, reportId: string, force: boolea
   const userText = buildUserPrompt(ctx);
   const promptHash = await sha256Hex(`${system}\n${userText}`);
   const inputSummary: Record<string, unknown> = {
-    line_count: lines.length,
+    line_count: existingLines.length,
     target_count: targets.length,
     row_count: rows.length,
     recent_count: recent.length,
+    recent_error: recentError ? true : false,
     photo_count: images.length,
+    photos_out_of_scope: photosOutOfScope,
     photos_unreadable: photoFailures,
     photos_too_large: photosTooLarge,
     provider_attempts: 0,
@@ -392,15 +410,17 @@ async function linkReport(admin: SupabaseClient, reportId: string, force: boolea
       { stop_reason: outcome.stopReason, content_types: outcome.contentTypes }, usage);
   }
 
+  // Quotes validate against the FROZEN line text, the same text the prompt showed.
   const result = validateReportLineLinks(outcome.input, {
-    lines: lines.map(({ index, text }) => ({ index, text })),
+    lines: existingLines.map((l) => ({ index: l.line_index, text: l.line_text })),
     boqCodes: rows.map((r) => r.code),
   });
   if (!result.ok) {
     return await fail('rejected', truncate(`Hasil AI tidak valid: ${result.reason}`, 300), outcome.input, usage);
   }
 
-  // ── Audit row first (so the lines can point at it), then the suggestions.
+  // ── Audit row first; no suggestion is written without a run row to point at
+  //    ("show your work" is the contract, and the row is what the cap counts).
   const runId = await writeRun(admin, {
     project_id: report.project_id, report_id: report.id, claim_id: null, stage: 'link', model: MODEL,
     prompt_hash: promptHash, input_summary: { ...inputSummary, dropped: result.dropped.length },
@@ -408,6 +428,9 @@ async function linkReport(admin: SupabaseClient, reportId: string, force: boolea
     tokens_in: toInt(usage?.input_tokens), tokens_out: toInt(usage?.output_tokens),
     cost_usd: claudeCostUsd(MODEL, usage), latency_ms: Date.now() - started, status: 'ok', error: null,
   });
+  if (!runId) {
+    return json({ ok: false, code: 'SAVE_FAILED', error: 'Catatan audit AI tidak tersimpan; saran tidak ditulis. Coba lagi.', lines: existingLines.length }, 500);
+  }
 
   const codeToId = new Map(rows.map((r) => [r.code, r.id] as const));
   const targetIndexes = new Set(targets.map((t) => t.line_index));
@@ -433,7 +456,7 @@ async function linkReport(admin: SupabaseClient, reportId: string, force: boolea
     if (error) writeErrors.push(error.message);
     else if (updated && updated.length > 0) written += 1;
   }
-  if (writeErrors.length > 0 && runId) {
+  if (writeErrors.length > 0) {
     await admin.from('progress_ai_runs').update({ status: 'error', error: truncate(`saran tidak tersimpan: ${writeErrors.join('; ')}`, 500) }).eq('id', runId);
   }
 

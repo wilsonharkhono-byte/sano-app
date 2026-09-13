@@ -81,6 +81,18 @@ CREATE INDEX IF NOT EXISTS idx_progress_ai_runs_report
   ON progress_ai_runs(report_id);
 
 -- ───────────────────────────────────────────────────────────────────────────
+-- 1b. Lease column: one linker per report. The edge function takes it with a
+--     conditional UPDATE before any provider spend and clears it on exit; a
+--     value older than two minutes is an abandoned lease and may be taken over.
+--     Member-writable like the rest of the row (051), which can only ever
+--     delay a link by that TTL.
+-- ───────────────────────────────────────────────────────────────────────────
+
+ALTER TABLE client_progress_reports ADD COLUMN IF NOT EXISTS link_claimed_at TIMESTAMPTZ;
+COMMENT ON COLUMN client_progress_reports.link_claimed_at IS
+  'report-progress-analyze lease: set while a link run is in flight, NULL otherwise; stale after 2 minutes.';
+
+-- ───────────────────────────────────────────────────────────────────────────
 -- 2. client_report_lines — one row per snapshot.updates[] line
 -- ───────────────────────────────────────────────────────────────────────────
 
@@ -133,6 +145,26 @@ BEGIN
     NEW.updated_at := now();
   END IF;
 
+  -- Every role, every path: a line may only point at a row of the report's
+  -- own project. The FK alone would let a member confirm a line to another
+  -- project's row, and Plan B groups CONFIRMED lines by boq_item_id.
+  IF NEW.boq_item_id IS NOT NULL AND NOT EXISTS (
+       SELECT 1 FROM boq_items b
+       JOIN client_progress_reports r ON r.id = NEW.report_id
+       WHERE b.id = NEW.boq_item_id AND b.project_id = r.project_id
+     ) THEN
+    RAISE EXCEPTION 'CLIENT_REPORT_LINES_ROW_PROJECT: baris BoQ bukan milik proyek laporan ini'
+      USING ERRCODE = 'check_violation';
+  END IF;
+  IF NEW.ai_boq_item_id IS NOT NULL AND NOT EXISTS (
+       SELECT 1 FROM boq_items b
+       JOIN client_progress_reports r ON r.id = NEW.report_id
+       WHERE b.id = NEW.ai_boq_item_id AND b.project_id = r.project_id
+     ) THEN
+    RAISE EXCEPTION 'CLIENT_REPORT_LINES_ROW_PROJECT: saran baris BoQ bukan milik proyek laporan ini'
+      USING ERRCODE = 'check_violation';
+  END IF;
+
   IF COALESCE(auth.role(), '') = 'service_role'
      OR current_user NOT IN ('authenticated', 'anon') THEN
     RETURN NEW;
@@ -141,6 +173,12 @@ BEGIN
   IF TG_OP = 'INSERT' THEN
     RAISE EXCEPTION 'CLIENT_REPORT_LINES_SERVICE_ONLY: baris tautan hanya dibuat oleh fungsi analisis'
       USING ERRCODE = 'insufficient_privilege';
+  END IF;
+
+  -- A decision is signed by whoever makes it, whatever the client sent.
+  IF NEW.status IN ('CONFIRMED', 'DISMISSED') THEN
+    NEW.confirmed_by := auth.uid();
+    NEW.confirmed_at := COALESCE(NEW.confirmed_at, now());
   END IF;
 
   IF NEW.report_id IS DISTINCT FROM OLD.report_id
@@ -263,9 +301,18 @@ SELECT to_regclass('public.progress_ai_runs') AS runs, to_regclass('public.clien
 --      FROM pg_proc WHERE proname = 'confirm_report_lines_bulk';
 --    EXPECTED: one row, prosecdef = false, anon_exec = false.
 --
--- 5. A run row must point at exactly one target:
+-- 5. A run row must point at exactly one target, and the lease column exists:
 --      SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'progress_ai_runs_one_target';
---    EXPECTED: CHECK ((report_id IS NULL) <> (claim_id IS NULL)).
+--      SELECT column_name FROM information_schema.columns
+--      WHERE table_name = 'client_progress_reports' AND column_name = 'link_claimed_at';
+--    EXPECTED: CHECK ((report_id IS NULL) <> (claim_id IS NULL)); one row, link_claimed_at.
+--
+-- 5b. A line cannot point at another project's row, whoever writes it (rolled back):
+--      BEGIN;
+--        UPDATE client_report_lines SET boq_item_id = '<A_BOQ_ROW_OF_ANOTHER_PROJECT>'
+--        WHERE id = '<ANY_LINE_UUID>';
+--      ROLLBACK;
+--    EXPECTED: ERROR  CLIENT_REPORT_LINES_ROW_PROJECT: ... (even as postgres).
 --
 -- 6. A client cannot insert a line, and cannot touch an ai_* column on one the
 --    function created (everything rolled back):
