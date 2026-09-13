@@ -1,8 +1,10 @@
 import React from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { gateChipLabel, stepChipLabel } from '../../../tools/gateRefs';
 import type { GateRef, GateStepRef } from '../../../tools/types';
 import { formStyles as s } from './styles';
+import { COLORS } from '../../theme';
 
 interface GateProps {
   gates: GateRef[];
@@ -10,35 +12,63 @@ interface GateProps {
   onChange: (code: string | null) => void;
   /** Medium confidence: the AI picked this, a human should look (spec §1.1). */
   markPeriksa?: boolean;
-  /** Low confidence: the AI's guess, shown as a grey chip the supervisor may tap. */
+  /** Low confidence: the AI's guess, shown as a dashed "Saran" row the supervisor may tap. */
   hintCode?: string | null;
   disabled?: boolean;
 }
 
-/** Gate chips. Tapping the selected chip clears it: a gate is optional. */
+/**
+ * Gates as a vertical, selectable list — one row per active gate, tall enough
+ * (48pt) for a title plus a two-line description, because each gate now names
+ * two trades ("Waterproofing + kamar mandi") and a bare chip label no longer
+ * carries enough meaning on its own. The description is the same text
+ * supabase/functions/site-event-analyze/prompt.ts feeds the AI classifier, so
+ * a supervisor reading it here sees exactly what the model was told.
+ * Tapping the selected row clears it: a gate is optional.
+ */
 export function GateChipRow({ gates, value, onChange, markPeriksa = false, hintCode = null, disabled = false }: GateProps) {
-  if (gates.length === 0) {
+  const active = gates.filter((g) => g.active);
+  if (active.length === 0) {
     return <Text style={s.empty}>Data gerbang belum tersedia. Hubungi kantor.</Text>;
   }
   return (
     <View>
-      <View style={s.chipRow}>
-        {gates.map((g) => {
-          const active = g.code === value;
+      <View style={s.gateList}>
+        {active.map((g) => {
+          const selected = g.code === value;
           const hinted = !value && hintCode === g.code;
+          const label = gateChipLabel(g);
+          const description = g.description ?? '';
           return (
             <TouchableOpacity
               key={g.code}
-              style={[s.chip, active && s.chipActive, hinted && s.chipHint]}
-              onPress={() => onChange(active ? null : g.code)}
+              style={[s.gateRow, selected && s.gateRowActive, hinted && s.gateRowHint]}
+              onPress={() => onChange(selected ? null : g.code)}
               disabled={disabled}
-              accessibilityRole="button"
-              accessibilityState={{ selected: active, disabled }}
-              accessibilityLabel={`Gerbang ${gateChipLabel(g)}${hinted ? ', saran AI' : ''}`}
+              accessibilityRole="radio"
+              accessibilityState={{ selected, disabled }}
+              accessibilityLabel={`Gerbang ${label}${description ? `. ${description}` : ''}${hinted ? '. Saran AI' : ''}`}
             >
-              <Text style={[s.chipText, active && s.chipTextActive, hinted && s.chipTextHint]}>
-                {hinted ? `Saran AI: ${gateChipLabel(g)}` : gateChipLabel(g)}
-              </Text>
+              <View style={s.gateRowText}>
+                <Text style={[s.gateTitle, selected && s.gateTitleActive]}>{label}</Text>
+                {description ? (
+                  <Text
+                    style={[s.gateSubtitle, selected && s.gateSubtitleActive]}
+                    numberOfLines={2}
+                    ellipsizeMode="tail"
+                  >
+                    {description}
+                  </Text>
+                ) : null}
+              </View>
+              {hinted ? (
+                <View style={s.saranBadge}>
+                  <Text style={s.saranText}>Saran</Text>
+                </View>
+              ) : null}
+              {selected ? (
+                <Ionicons name="checkmark-circle" size={20} color={COLORS.textInverse} style={s.gateCheck} />
+              ) : null}
             </TouchableOpacity>
           );
         })}

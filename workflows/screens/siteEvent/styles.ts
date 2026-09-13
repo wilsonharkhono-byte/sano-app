@@ -29,6 +29,36 @@ export const formStyles = StyleSheet.create({
   chipText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.text },
   chipTextActive: { color: COLORS.textInverse },
   chipTextHint: { color: COLORS.textSec },
+  // Gate picker: a vertical list, one row per active gate (GateChipRow). A
+  // gate now carries a full description, so it no longer fits a horizontal
+  // chip — StepChipRow and EventTypeChipRow still use the chip* styles above.
+  gateList: { gap: SPACE.sm },
+  gateRow: {
+    flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, minHeight: 48,
+    borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
+    paddingVertical: SPACE.sm + 2, paddingHorizontal: SPACE.md, backgroundColor: COLORS.surface,
+  },
+  gateRowActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  gateRowHint: { borderStyle: 'dashed', borderColor: COLORS.textMuted, backgroundColor: COLORS.surfaceAlt },
+  gateRowText: { flex: 1 },
+  gateTitle: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
+  gateTitleActive: { color: COLORS.textInverse },
+  gateSubtitle: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 2, lineHeight: 15 },
+  gateSubtitleActive: { color: COLORS.textInverseSec },
+  gateCheck: { marginLeft: SPACE.xs },
+  saranBadge: {
+    paddingVertical: 2, paddingHorizontal: SPACE.sm, borderRadius: RADIUS,
+    backgroundColor: COLORS.infoBg, marginLeft: SPACE.xs,
+  },
+  saranText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.info },
+  // Extra bottom clearance for the two screens whose primary button would
+  // otherwise sit under GlobalAIChatLauncher's floating sparkle button (it is
+  // rendered as an unconditional sibling of the navigator, not route-scoped:
+  // workflows/App.tsx renders it once for the whole app). The FAB floats at
+  // bottom: max(insets.bottom + 78, 92) with height 52, so its top edge sits
+  // at least 144dp above the screen bottom, more with a large safe-area
+  // inset — 200 clears every device with margin to spare.
+  contentFabClear: { paddingBottom: 200 },
   periksa: {
     alignSelf: 'flex-start', marginTop: SPACE.xs, paddingVertical: 2, paddingHorizontal: SPACE.sm,
     borderRadius: RADIUS, backgroundColor: COLORS.warningBg,

@@ -202,7 +202,7 @@ export default function SiteEventCaptureScreen() {
       <Header />
       <ScrollView
         style={s.scroll}
-        contentContainerStyle={s.content}
+        contentContainerStyle={[s.content, s.contentFabClear]}
         keyboardShouldPersistTaps="handled"
         scrollEnabled={!voiceBusy}
       >
