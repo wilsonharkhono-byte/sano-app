@@ -20,6 +20,8 @@ import {
 } from '../../tools/clientReport';
 import { exportClientReportPdf } from '../../tools/clientReportHtml';
 import { withFreshPhotoUrls } from '../../tools/clientReportPhotos';
+import ReportLinesCard from './clientReport/ReportLinesCard';
+import { invokeReportLink, listUnlinkedReports } from '../../tools/clientReportLines';
 import { formatRoomLabel } from '../../tools/clientReportRooms';
 import { listRooms } from '../../tools/rooms';
 import { AREA_UMUM_CODE, AREA_UMUM_NAME } from '../../tools/constants';
@@ -69,9 +71,15 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
   const [history, setHistory] = useState<IssuedClientReport[]>([]);
   const [viewing, setViewing] = useState<{ meta: IssuedClientReport; snapshot: ClientReportDraft } | null>(null);
 
+  // Office roles may link reports issued before Plan A (spec §8, back-linking).
+  const isOffice = profile?.role === 'admin' || profile?.role === 'estimator' || profile?.role === 'principal';
+  const [unlinked, setUnlinked] = useState<Array<{ id: string; report_no: number; revision: number }>>([]);
+  const [backlinking, setBacklinking] = useState<{ done: number; total: number } | null>(null);
+
   const loadHistory = useCallback(async () => {
     if (!project) return;
     try { setHistory(await listClientReports(project.id)); } catch { /* list is non-critical */ }
+    try { setUnlinked(await listUnlinkedReports(project.id)); } catch { setUnlinked([]); }
   }, [project?.id]);
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
@@ -261,16 +269,50 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
       // and toasting the stale pre-retry value tells the user the wrong
       // report number was issued. Same return covers both the new-issue and
       // "Buat Revisi" paths.
-      const { reportNo, revision } = await issueClientReport(draft, project.id, profile.id);
-      const rev = revision > 1 ? ` (R${revision})` : '';
-      toast(`Laporan #${String(reportNo).padStart(2, '0')}${rev} diterbitkan`, 'ok');
+      const issued = await issueClientReport(draft, project.id, profile.id);
+      const rev = issued.revision > 1 ? ` (R${issued.revision})` : '';
+      toast(`Laporan #${String(issued.reportNo).padStart(2, '0')}${rev} diterbitkan`, 'ok');
+      const issuedDraft = draft;
       setDraft(null);
       await loadHistory();
+      // Spec §6.1: suggest links right after issue. Never blocks the report —
+      // a failure here leaves the report issued and the card offers a retry.
+      const link = await invokeReportLink(issued.id);
+      if (link.ok) {
+        toast(link.code === 'LINKED' ? `AI menyarankan ${link.suggested ?? 0} tautan — silakan konfirmasi` : 'Laporan terbit; tidak ada baris untuk ditautkan', 'ok');
+      } else {
+        toast(link.error ?? 'Tautan AI belum bisa dibuat; jalankan dari Riwayat Laporan', 'critical');
+      }
+      setViewing({
+        meta: {
+          id: issued.id, report_no: issued.reportNo, revision: issued.revision, kind: issuedDraft.kind,
+          period_start: issuedDraft.periodStart, period_end: issuedDraft.periodEnd,
+          issued_at: new Date().toISOString(), issued_by_name: profile.full_name ?? null,
+        },
+        snapshot: issuedDraft,
+      });
     } catch (err: any) {
       toast(err.message ?? 'Gagal menerbitkan', 'critical');
     } finally {
       setBusy(false);
     }
+  };
+
+  // Sequential on purpose: each call is one model round-trip and the daily
+  // cap counts them; a parallel burst would race the cap and the claim.
+  const backlink = async () => {
+    if (!project || unlinked.length === 0) return;
+    setBacklinking({ done: 0, total: unlinked.length });
+    let ok = 0;
+    for (let i = 0; i < unlinked.length; i += 1) {
+      const res = await invokeReportLink(unlinked[i].id);
+      if (res.ok) ok += 1;
+      else if (res.code === 'DAILY_CAP') { toast(res.error ?? 'Kuota AI habis', 'critical'); break; }
+      setBacklinking({ done: i + 1, total: unlinked.length });
+    }
+    setBacklinking(null);
+    toast(`${ok} laporan lama ditautkan`, 'ok');
+    await loadHistory();
   };
 
   return (
@@ -294,6 +336,18 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
         {/* Riwayat Laporan — issued reports stay accessible, frozen as sent. */}
         <Card title="Riwayat Laporan" subtitle="Laporan terbit tersimpan permanen. Ketuk untuk melihat atau membuat revisi.">
           {history.length === 0 && <Text style={styles.hint}>Belum ada laporan terbit.</Text>}
+          {isOffice && unlinked.length > 0 && (
+            <TouchableOpacity
+              style={[styles.secondaryBtn, { alignSelf: 'flex-start', marginBottom: SPACE.sm }, backlinking && { opacity: 0.6 }]}
+              disabled={!!backlinking}
+              onPress={backlink}
+            >
+              <Ionicons name="sparkles-outline" size={16} color={COLORS.primary} />
+              <Text style={styles.secondaryText}>
+                {backlinking ? `Menautkan ${backlinking.done}/${backlinking.total}…` : `Tautkan laporan lama (${unlinked.length})`}
+              </Text>
+            </TouchableOpacity>
+          )}
           {history.map((r) => (
             <TouchableOpacity key={r.id} style={styles.histRow} onPress={() => openReport(r)}>
               <Ionicons name="document-text-outline" size={18} color={COLORS.primary} />
@@ -310,6 +364,7 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
 
         {/* View mode: re-render the frozen snapshot; never editable in place. */}
         {viewing && (
+          <>
           <Card
             title={`Laporan ${reportLabel(viewing.meta)}`}
             subtitle={`Terbit ${fmtIssuedAt(viewing.meta.issued_at)}${viewing.meta.issued_by_name ? ` oleh ${viewing.meta.issued_by_name}` : ''}. Isi terkunci sesuai yang dikirim ke klien.`}
@@ -342,6 +397,8 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
               </TouchableOpacity>
             </View>
           </Card>
+          <ReportLinesCard reportId={viewing.meta.id} boqItems={boqItems} toast={toast} />
+          </>
         )}
 
         {draft && (
