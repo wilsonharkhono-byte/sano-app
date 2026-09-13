@@ -46,6 +46,7 @@ import {
   VOICE_BIT_RATE,
   VOICE_ERRORS,
   VOICE_MIN_MS,
+  VOICE_STOP_TIMEOUT_MS,
   buildVoiceRecordingOptions,
   formatVoiceDuration,
   pickWebMimeType,
@@ -262,6 +263,8 @@ describe('useVoiceRecorder (hook)', () => {
 
     expect(result.current.state.phase).toBe('error');
     expect(result.current.state.error).toBe('Rekaman gagal disimpan: waktu habis. Coba lagi.');
+    expect(result.current.state.errorDetail).toBeTruthy();
+    expect(result.current.state.errorDetail).toBe(`recorder.stop() did not settle within ${VOICE_STOP_TIMEOUT_MS} ms`);
   });
 
   it('lands in error with canAskAgain === false on a permanent permission denial', async () => {
@@ -382,6 +385,53 @@ describe('useVoiceRecorder (hook)', () => {
     expect(result.current.state).toMatchObject({ phase: 'error', error: VOICE_ERRORS.tooShort, uri: null });
   });
 
+  it('calls native stop() exactly once when unmounted while stopping is still waiting out VOICE_MIN_MS', async () => {
+    const recorder = makeRecorder();
+    mockUseAudioRecorder.mockReturnValue(recorder);
+    mockRequestPermission.mockResolvedValue({ granted: true, canAskAgain: true });
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    const { result, unmount } = renderHook(() => useVoiceRecorder());
+
+    await act(async () => {
+      result.current.start();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.state.phase).toBe('recording');
+
+    // Release well before VOICE_MIN_MS has elapsed since record() began, so
+    // the stopping effect takes the releasedEarly branch and schedules the
+    // padded holdId timer instead of calling native stop() right away.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(300);
+    });
+    await act(async () => {
+      result.current.stop();
+    });
+    expect(result.current.state.phase).toBe('stopping');
+
+    // Unmount now, before the holdId timer fires: the unmount-cleanup effect
+    // must be the one and only caller of native stop() here.
+    unmount();
+
+    expect(recorder.stop).toHaveBeenCalledTimes(1);
+    expect(mockSetAudioMode).toHaveBeenCalledWith({ allowsRecording: false });
+
+    // The stopping effect's own cleanup must have cleared its holdId/timeoutId
+    // on unmount, so advancing past the minimum afterwards fires nothing.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(VOICE_MIN_MS);
+    });
+
+    expect(recorder.stop).toHaveBeenCalledTimes(1);
+    const unmountedWarnings = consoleError.mock.calls.filter(
+      ([msg]) => typeof msg === 'string' && /unmounted/i.test(msg),
+    );
+    expect(unmountedWarnings).toHaveLength(0);
+
+    consoleError.mockRestore();
+  });
+
   it('maps a native stop() rejection on a take shorter than the minimum to too short, not a save failure', async () => {
     const recorder = makeRecorder(stopFailed);
     mockUseAudioRecorder.mockReturnValue(recorder);
@@ -433,6 +483,33 @@ describe('useVoiceRecorder (hook)', () => {
     expect(recorder.stop).toHaveBeenCalledTimes(1);
     expect(result.current.state).toMatchObject({ phase: 'error', error: 'Rekaman gagal disimpan.' });
     expect(result.current.state.errorDetail).toContain('stop failed.');
+  });
+
+  it('formats a CodedError-shaped stop() rejection as "code: message" in errorDetail', async () => {
+    const codedStopFailed = () =>
+      Promise.reject(Object.assign(new Error('stop failed'), { code: 'ERR_RECORDING' }));
+    const recorder = makeRecorder(codedStopFailed);
+    mockUseAudioRecorder.mockReturnValue(recorder);
+    mockRequestPermission.mockResolvedValue({ granted: true, canAskAgain: true });
+
+    const { result } = renderHook(() => useVoiceRecorder());
+
+    await act(async () => {
+      result.current.start();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(VOICE_MIN_MS + 4000);
+    });
+    await act(async () => {
+      result.current.stop();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+
+    // Past the minimum, so this is the genuine-failure branch, not tooShort.
+    expect(recorder.stop).toHaveBeenCalledTimes(1);
+    expect(result.current.state).toMatchObject({ phase: 'error', error: 'Rekaman gagal disimpan.' });
+    expect(result.current.state.errorDetail).toBe('ERR_RECORDING: stop failed');
   });
 
   it('carries the raw native error as errorDetail when the recorder fails to start', async () => {
