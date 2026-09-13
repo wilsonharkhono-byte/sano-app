@@ -19,6 +19,7 @@ jest.mock('expo-audio', () => ({
       web: { mimeType: 'audio/webm', bitsPerSecond: 128000 },
     },
   },
+  getRecordingPermissionsAsync: jest.fn(),
   requestRecordingPermissionsAsync: jest.fn(),
   setAudioModeAsync: jest.fn(),
   useAudioRecorder: jest.fn(),
@@ -29,12 +30,22 @@ jest.mock('react-native', () => ({
   AppState: { addEventListener: jest.fn(() => ({ remove: jest.fn() })) },
 }));
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { act, renderHook } from '@testing-library/react-native';
-import { requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder, useAudioRecorderState } from 'expo-audio';
+import { AppState } from 'react-native';
+import {
+  getRecordingPermissionsAsync,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  useAudioRecorder,
+  useAudioRecorderState,
+} from 'expo-audio';
 import {
   INITIAL_VOICE_STATE,
   VOICE_BIT_RATE,
   VOICE_ERRORS,
+  VOICE_MIN_MS,
   buildVoiceRecordingOptions,
   formatVoiceDuration,
   pickWebMimeType,
@@ -180,6 +191,7 @@ describe('useVoiceRecorder (hook)', () => {
   const mockUseAudioRecorderState = useAudioRecorderState as jest.Mock;
   const mockRequestPermission = requestRecordingPermissionsAsync as jest.Mock;
   const mockSetAudioMode = setAudioModeAsync as jest.Mock;
+  const mockGetPermission = getRecordingPermissionsAsync as jest.Mock;
 
   function makeRecorder(stopImpl: () => Promise<void> = () => Promise.resolve()) {
     return {
@@ -194,6 +206,9 @@ describe('useVoiceRecorder (hook)', () => {
     jest.useFakeTimers();
     mockUseAudioRecorderState.mockReturnValue({ durationMillis: 0, metering: null });
     mockSetAudioMode.mockResolvedValue(undefined);
+    // Not yet granted by default, so the tests below that predate the
+    // already-granted check still walk the request path they were written for.
+    mockGetPermission.mockResolvedValue({ granted: false, canAskAgain: true, status: 'undetermined' });
   });
 
   afterEach(() => {
@@ -263,5 +278,195 @@ describe('useVoiceRecorder (hook)', () => {
 
     expect(result.current.state.phase).toBe('error');
     expect(result.current.state.canAskAgain).toBe(false);
+  });
+
+  /** Calls every AppState 'change' listener the hook registered. */
+  function emitAppState(next: 'active' | 'background') {
+    for (const [, listener] of (AppState.addEventListener as jest.Mock).mock.calls) {
+      (listener as (state: string) => void)(next);
+    }
+  }
+
+  /**
+   * What requestRecordingPermissionsAsync does on Android: expo-modules-core's
+   * PermissionsService hands every request to Activity.requestPermissions (no
+   * already-granted short-circuit), which starts the system permission
+   * activity. SANO's activity pauses and resumes around it, so AppState
+   * reports 'background' then 'active' before the promise resolves (RN
+   * delivers the result only once resumed).
+   */
+  function requestThatPausesTheActivity() {
+    return async () => {
+      emitAppState('background');
+      emitAppState('active');
+      return { granted: true, canAskAgain: true, status: 'granted' };
+    };
+  }
+
+  /** MediaRecorder.stop() throws when no audio frames arrived yet, e.g. right after start(). */
+  const stopFailed = () =>
+    Promise.reject(new Error("Call to function 'AudioRecorder.stop' has been rejected.\n→ Caused by: stop failed."));
+
+  it('does not re-request an already granted mic, so the permission activity cannot end the take before it starts', async () => {
+    const recorder = makeRecorder(stopFailed);
+    mockUseAudioRecorder.mockReturnValue(recorder);
+    mockGetPermission.mockResolvedValue({ granted: true, canAskAgain: true, status: 'granted' });
+    mockRequestPermission.mockImplementation(requestThatPausesTheActivity());
+
+    const { result } = renderHook(() => useVoiceRecorder());
+
+    await act(async () => {
+      result.current.start();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+
+    expect(mockRequestPermission).not.toHaveBeenCalled();
+    expect(recorder.record).toHaveBeenCalledTimes(1);
+    expect(recorder.stop).not.toHaveBeenCalled();
+    expect(result.current.state).toMatchObject({ phase: 'recording', error: null });
+  });
+
+  it('first-time grant: the permission dialog ends the take as too short, and native stop waits for the minimum', async () => {
+    const recorder = makeRecorder(stopFailed);
+    mockUseAudioRecorder.mockReturnValue(recorder);
+    mockRequestPermission.mockImplementation(requestThatPausesTheActivity());
+
+    const { result } = renderHook(() => useVoiceRecorder());
+
+    await act(async () => {
+      result.current.start();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(recorder.record).toHaveBeenCalledTimes(1);
+    expect(recorder.stop).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(VOICE_MIN_MS);
+    });
+
+    expect(recorder.stop).toHaveBeenCalledTimes(1);
+    expect(result.current.state).toMatchObject({ phase: 'error', error: VOICE_ERRORS.tooShort, uri: null });
+  });
+
+  it('never calls native stop() before the minimum when the finger lifts while the recorder is still starting', async () => {
+    const recorder = makeRecorder();
+    mockUseAudioRecorder.mockReturnValue(recorder);
+    mockRequestPermission.mockResolvedValue({ granted: true, canAskAgain: true });
+
+    const { result } = renderHook(() => useVoiceRecorder());
+
+    // Press in, then lift before permission and prepare have resolved.
+    act(() => {
+      result.current.start();
+    });
+    act(() => {
+      result.current.stop();
+    });
+    expect(result.current.state).toMatchObject({ phase: 'starting', stopRequested: true });
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(recorder.record).toHaveBeenCalledTimes(1);
+    expect(recorder.stop).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(VOICE_MIN_MS - 1);
+    });
+    expect(recorder.stop).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(1);
+    });
+    expect(recorder.stop).toHaveBeenCalledTimes(1);
+    expect(result.current.state).toMatchObject({ phase: 'error', error: VOICE_ERRORS.tooShort, uri: null });
+  });
+
+  it('maps a native stop() rejection on a take shorter than the minimum to too short, not a save failure', async () => {
+    const recorder = makeRecorder(stopFailed);
+    mockUseAudioRecorder.mockReturnValue(recorder);
+    mockRequestPermission.mockResolvedValue({ granted: true, canAskAgain: true });
+
+    const { result } = renderHook(() => useVoiceRecorder());
+
+    await act(async () => {
+      result.current.start();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.state.phase).toBe('recording');
+
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(300);
+    });
+    await act(async () => {
+      result.current.stop();
+    });
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(VOICE_MIN_MS);
+    });
+
+    expect(recorder.stop).toHaveBeenCalledTimes(1);
+    expect(result.current.state).toMatchObject({ phase: 'error', error: VOICE_ERRORS.tooShort });
+    expect(result.current.state.errorDetail).toBeUndefined();
+  });
+
+  it('keeps the Indonesian message on a genuine stop failure and carries the raw native error as errorDetail', async () => {
+    const recorder = makeRecorder(stopFailed);
+    mockUseAudioRecorder.mockReturnValue(recorder);
+    mockRequestPermission.mockResolvedValue({ granted: true, canAskAgain: true });
+
+    const { result } = renderHook(() => useVoiceRecorder());
+
+    await act(async () => {
+      result.current.start();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(VOICE_MIN_MS + 4000);
+    });
+    await act(async () => {
+      result.current.stop();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+
+    // A take past the minimum stops at once; only the failure is reported.
+    expect(recorder.stop).toHaveBeenCalledTimes(1);
+    expect(result.current.state).toMatchObject({ phase: 'error', error: 'Rekaman gagal disimpan.' });
+    expect(result.current.state.errorDetail).toContain('stop failed.');
+  });
+
+  it('carries the raw native error as errorDetail when the recorder fails to start', async () => {
+    const recorder = makeRecorder();
+    recorder.prepareToRecordAsync.mockRejectedValue(new Error('Failed to prepare the AudioRecorder'));
+    mockUseAudioRecorder.mockReturnValue(recorder);
+    mockRequestPermission.mockResolvedValue({ granted: true, canAskAgain: true });
+
+    const { result } = renderHook(() => useVoiceRecorder());
+
+    await act(async () => {
+      result.current.start();
+      await jest.advanceTimersByTimeAsync(0);
+    });
+
+    expect(result.current.state).toMatchObject({ phase: 'error', error: 'Rekaman gagal dimulai.' });
+    expect(result.current.state.errorDetail).toContain('Failed to prepare the AudioRecorder');
+  });
+});
+
+/**
+ * VoiceNoteField is not rendered in jest (see siteEventCaptureScreenQueueWiring
+ * for why screens get static guards), so the field-diagnosis line is pinned
+ * here: the next field report must carry the native cause, not only
+ * "Rekaman gagal disimpan."
+ */
+describe('VoiceNoteField: field diagnosis', () => {
+  const FIELD = fs.readFileSync(path.join(__dirname, '../../workflows/screens/siteEvent/VoiceNoteField.tsx'), 'utf8');
+
+  it('shows the raw native error under the Indonesian message, labelled "Detail teknis:"', () => {
+    const messageIndex = FIELD.indexOf('{rec.state.error}');
+    const detailIndex = FIELD.indexOf('Detail teknis:');
+    expect(messageIndex).toBeGreaterThan(-1);
+    expect(detailIndex).toBeGreaterThan(messageIndex);
+    expect(FIELD).toMatch(/rec\.state\.errorDetail/);
   });
 });
