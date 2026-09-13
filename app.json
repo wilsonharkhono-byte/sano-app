@@ -2,7 +2,7 @@
   "expo": {
     "name": "SANO",
     "slug": "san-contractor-supervisor",
-    "version": "3.0.1",
+    "version": "3.1.0",
     "scheme": "sano",
     "icon": "./assets/icon.png",
     "orientation": "portrait",
