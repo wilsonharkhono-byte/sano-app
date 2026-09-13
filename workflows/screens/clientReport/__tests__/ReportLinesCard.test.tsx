@@ -1,0 +1,77 @@
+// workflows/screens/clientReport/__tests__/ReportLinesCard.test.tsx
+import React from 'react';
+import { render, fireEvent, waitFor } from '@testing-library/react-native';
+
+jest.mock('../../../../tools/clientReportLines', () => {
+  const actual = jest.requireActual('../../../../tools/clientReportLines');
+  return {
+    ...actual,
+    listReportLines: jest.fn(),
+    confirmSuggestedLines: jest.fn(async () => 1),
+    confirmReportLine: jest.fn(async () => undefined),
+    dismissReportLine: jest.fn(async () => undefined),
+    reopenReportLine: jest.fn(async () => undefined),
+    invokeReportLink: jest.fn(async () => ({ ok: true, code: 'LINKED', suggested: 1 })),
+  };
+});
+// tools/clientReportLines imports tools/supabase; keep the polyfill out of jest.
+jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
+// SelectSheet opens a Modal + FlatList; a stub carrying the value is enough here.
+jest.mock('../../../components/SelectSheet', () => {
+  const ReactLocal = require('react');
+  const { Text } = require('react-native');
+  return {
+    __esModule: true,
+    default: (props: { value: string; accessibilityLabel?: string }) =>
+      ReactLocal.createElement(Text, { testID: props.accessibilityLabel }, props.value),
+  };
+});
+
+import { listReportLines, confirmSuggestedLines, dismissReportLine, type ClientReportLine } from '../../../../tools/clientReportLines';
+import ReportLinesCard from '../ReportLinesCard';
+import type { BoqItem } from '../../../../tools/types';
+
+const boq = [{ id: 'b1', code: 'T1-002', label: 'Lantai 1 ; Pile Cap, Sloof, Plat Lantai', planned: 216.25, unit: 'm³' }] as unknown as BoqItem[];
+const line = (over: Partial<ClientReportLine> = {}): ClientReportLine => ({
+  id: 'l1', report_id: 'r1', line_index: 0, line_text: 'Bekisting Pile Cap :: Melanjutkan bekisting pile cap.',
+  boq_item_id: null, stage: null, activity_state: null, status: 'SUGGESTED', confirmed_by: null, confirmed_at: null,
+  ai_boq_item_id: 'b1', ai_stage: 'BEKISTING', ai_activity_state: 'LANJUT', ai_confidence: 'high', ai_quote: 'Melanjutkan bekisting',
+  ai_model: 'claude-opus-5', ai_run_id: 'run1', ...over,
+});
+
+describe('ReportLinesCard', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (listReportLines as jest.Mock).mockResolvedValue([
+      line(),
+      line({ id: 'l2', line_index: 1, status: 'CONFIRMED', boq_item_id: 'b1', stage: 'PEMBESIAN', activity_state: 'LANJUT', line_text: 'Pembesian :: Pasang begel' }),
+    ]);
+  });
+
+  it('shows the count, each line with its suggestion or decision, and the quote', async () => {
+    const { findByText, getByText } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} />);
+    expect(await findByText('Tautan Progres (1/2)')).toBeTruthy();
+    expect(getByText('Saran: T1-002 · Bekisting · Lanjut (yakin)')).toBeTruthy();
+    expect(getByText('T1-002 · Pembesian · Lanjut')).toBeTruthy();
+    expect(getByText('“Melanjutkan bekisting”')).toBeTruthy();
+  });
+
+  it('confirms every ready suggestion through the bulk RPC and reloads', async () => {
+    const { findByText } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} />);
+    fireEvent.press(await findByText('Konfirmasi 1 saran'));
+    await waitFor(() => expect(confirmSuggestedLines).toHaveBeenCalledWith('r1'));
+    expect(listReportLines).toHaveBeenCalledTimes(2);
+  });
+
+  it('dismisses a line as unrelated', async () => {
+    const { findAllByText } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} />);
+    fireEvent.press((await findAllByText('Tidak terkait'))[0]);
+    await waitFor(() => expect(dismissReportLine).toHaveBeenCalledWith('l1'));
+  });
+
+  it('offers to run the AI when no lines exist yet', async () => {
+    (listReportLines as jest.Mock).mockResolvedValue([]);
+    const { findByText } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} />);
+    expect(await findByText('Buat tautan (AI)')).toBeTruthy();
+  });
+});
