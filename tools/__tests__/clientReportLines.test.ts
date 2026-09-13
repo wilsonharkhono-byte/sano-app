@@ -4,13 +4,13 @@ jest.mock('../supabase', () => ({
     from: jest.fn(),
     rpc: jest.fn(),
     functions: { invoke: jest.fn() },
-    auth: { getUser: jest.fn(async () => ({ data: { user: { id: 'u1' } } })) },
+    auth: { getSession: jest.fn(async () => ({ data: { session: { user: { id: 'u1' } } } })) },
   },
 }));
 import { supabase } from '../supabase';
 import {
-  confirmReportLine, confirmSuggestedLines, invokeReportLink, listUnlinkedReports, summarizeLines, suggestionLabel,
-  type ClientReportLine,
+  backlinkReports, confirmReportLine, confirmSuggestedLines, dismissReportLine, invokeReportLink, listUnlinkedReports,
+  summarizeLines, suggestionLabel, type ClientReportLine,
 } from '../clientReportLines';
 
 const line = (over: Partial<ClientReportLine> = {}): ClientReportLine => ({
@@ -20,6 +20,12 @@ const line = (over: Partial<ClientReportLine> = {}): ClientReportLine => ({
   ai_model: 'claude-opus-5', ai_run_id: 'run1', ...over,
 });
 const codeOf = (id: string | null) => (id === 'b1' ? 'T1-002' : null);
+
+const updateChain = (rows: Array<{ id: string }>) => ({
+  update: jest.fn().mockReturnThis(),
+  eq: jest.fn().mockReturnThis(),
+  select: jest.fn().mockResolvedValue({ data: rows, error: null }),
+});
 
 describe('summarizeLines', () => {
   it('counts statuses, ready suggestions, and lines the AI never reached', () => {
@@ -66,6 +72,36 @@ describe('invokeReportLink', () => {
   });
 });
 
+describe('backlinkReports', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('links sequentially, counts outcomes, and reports progress', async () => {
+    const order: string[] = [];
+    (supabase.functions.invoke as jest.Mock).mockImplementation(async (_fn: string, { body }: { body: { report_id: string } }) => {
+      order.push(body.report_id);
+      return body.report_id === 'r2' ? { data: { ok: false, code: 'LINK_ERROR', error: 'model' }, error: null } : { data: { ok: true, code: 'LINKED' }, error: null };
+    });
+    const progress: number[] = [];
+    const res = await backlinkReports(['r1', 'r2', 'r3'], { onProgress: (done) => progress.push(done) });
+    expect(order).toEqual(['r1', 'r2', 'r3']);
+    expect(res).toEqual({ ok: 2, failed: 1, stoppedBy: null, firstError: 'model' });
+    expect(progress).toEqual([1, 2, 3]);
+  });
+
+  it('stops on a run-level error such as DAILY_CAP or AUTH, and on cancel', async () => {
+    (supabase.functions.invoke as jest.Mock).mockResolvedValue({ data: { ok: false, code: 'DAILY_CAP', error: 'habis' }, error: null });
+    expect(await backlinkReports(['r1', 'r2'])).toEqual({ ok: 0, failed: 1, stoppedBy: 'DAILY_CAP', firstError: 'habis' });
+    expect(supabase.functions.invoke).toHaveBeenCalledTimes(1);
+
+    (supabase.functions.invoke as jest.Mock).mockClear();
+    let calls = 0;
+    (supabase.functions.invoke as jest.Mock).mockImplementation(async () => { calls += 1; return { data: { ok: true, code: 'LINKED' }, error: null }; });
+    const res = await backlinkReports(['r1', 'r2', 'r3'], { shouldStop: () => calls >= 1 });
+    expect(res.stoppedBy).toBe('CANCELLED');
+    expect(res.ok).toBe(1);
+  });
+});
+
 describe('writes', () => {
   beforeEach(() => jest.clearAllMocks());
 
@@ -76,7 +112,7 @@ describe('writes', () => {
   });
 
   it('confirmReportLine writes only the human fields', async () => {
-    const chain = { update: jest.fn().mockReturnThis(), eq: jest.fn().mockResolvedValue({ error: null }) };
+    const chain = updateChain([{ id: 'l1' }]);
     (supabase.from as jest.Mock).mockReturnValue(chain);
     await confirmReportLine('l1', { boqItemId: 'b1', stage: 'BEKISTING', activityState: 'LANJUT' });
     const written = chain.update.mock.calls[0][0];
@@ -86,16 +122,30 @@ describe('writes', () => {
     expect(chain.eq).toHaveBeenCalledWith('id', 'l1');
   });
 
-  it('listUnlinkedReports keeps only reports with zero lines', async () => {
+  it('fails loudly when RLS matched no row instead of pretending success', async () => {
+    (supabase.from as jest.Mock).mockReturnValue(updateChain([]));
+    await expect(dismissReportLine('l1')).rejects.toThrow('tidak ditugaskan');
+  });
+
+  it('dismissReportLine clears the row, stage and state', async () => {
+    const chain = updateChain([{ id: 'l1' }]);
+    (supabase.from as jest.Mock).mockReturnValue(chain);
+    await dismissReportLine('l1');
+    expect(chain.update.mock.calls[0][0]).toMatchObject({ boq_item_id: null, stage: null, activity_state: null, status: 'DISMISSED' });
+  });
+
+  it('listUnlinkedReports keeps only reports with at least one update and zero lines', async () => {
     const chain = {
       select: jest.fn().mockReturnThis(), eq: jest.fn().mockReturnThis(), order: jest.fn().mockResolvedValue({
         data: [
-          { id: 'r1', report_no: 1, revision: 1, client_report_lines: [] },
-          { id: 'r2', report_no: 2, revision: 1, client_report_lines: [{ id: 'x' }] },
+          { id: 'r1', report_no: 1, revision: 1, updates: [{ area: 'a', note: 'b' }], client_report_lines: [{ count: 0 }] },
+          { id: 'r2', report_no: 2, revision: 1, updates: [{ area: 'a', note: 'b' }], client_report_lines: [{ count: 3 }] },
+          { id: 'r3', report_no: 3, revision: 1, updates: [], client_report_lines: [{ count: 0 }] },
         ], error: null,
       }),
     };
     (supabase.from as jest.Mock).mockReturnValue(chain);
     expect(await listUnlinkedReports('p1')).toEqual([{ id: 'r1', report_no: 1, revision: 1 }]);
+    expect(chain.select).toHaveBeenCalledWith('id, report_no, revision, updates:snapshot->updates, client_report_lines(count)');
   });
 });

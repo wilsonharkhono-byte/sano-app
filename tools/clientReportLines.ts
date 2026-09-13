@@ -41,6 +41,9 @@ export interface LinkResponse {
   dropped?: number;
 }
 
+/** RLS filtering the row to nothing must read as a refusal, never as success. */
+const NOT_VISIBLE_MESSAGE = 'Baris tidak ditemukan atau Anda tidak ditugaskan ke proyek ini.';
+
 export async function listReportLines(reportId: string): Promise<ClientReportLine[]> {
   const { data, error } = await supabase
     .from('client_report_lines')
@@ -51,9 +54,16 @@ export async function listReportLines(reportId: string): Promise<ClientReportLin
   return (data ?? []) as ClientReportLine[];
 }
 
+/** Local session read, no round trip; the trigger re-stamps confirmed_by from auth.uid() anyway. */
 async function currentUserId(): Promise<string | null> {
-  const { data } = await supabase.auth.getUser();
-  return data.user?.id ?? null;
+  const { data } = await supabase.auth.getSession();
+  return data.session?.user.id ?? null;
+}
+
+async function updateLine(lineId: string, patch: Record<string, unknown>): Promise<void> {
+  const { data, error } = await supabase.from('client_report_lines').update(patch).eq('id', lineId).select('id');
+  if (error) throw error;
+  if (!data || data.length === 0) throw new Error(NOT_VISIBLE_MESSAGE);
 }
 
 /** The supervisor's decision: a row, a stage (optional), a state. Only human fields are written. */
@@ -61,34 +71,25 @@ export async function confirmReportLine(
   lineId: string,
   input: { boqItemId: string; stage: ReportLineStage | null; activityState: ActivityState },
 ): Promise<void> {
-  const { error } = await supabase
-    .from('client_report_lines')
-    .update({
-      boq_item_id: input.boqItemId,
-      stage: input.stage,
-      activity_state: input.activityState,
-      status: 'CONFIRMED',
-      confirmed_by: await currentUserId(),
-      confirmed_at: new Date().toISOString(),
-    })
-    .eq('id', lineId);
-  if (error) throw error;
+  await updateLine(lineId, {
+    boq_item_id: input.boqItemId,
+    stage: input.stage,
+    activity_state: input.activityState,
+    status: 'CONFIRMED',
+    confirmed_by: await currentUserId(),
+    confirmed_at: new Date().toISOString(),
+  });
 }
 
 export async function dismissReportLine(lineId: string): Promise<void> {
-  const { error } = await supabase
-    .from('client_report_lines')
-    .update({ boq_item_id: null, status: 'DISMISSED', confirmed_by: await currentUserId(), confirmed_at: new Date().toISOString() })
-    .eq('id', lineId);
-  if (error) throw error;
+  await updateLine(lineId, {
+    boq_item_id: null, stage: null, activity_state: null, status: 'DISMISSED',
+    confirmed_by: await currentUserId(), confirmed_at: new Date().toISOString(),
+  });
 }
 
 export async function reopenReportLine(lineId: string): Promise<void> {
-  const { error } = await supabase
-    .from('client_report_lines')
-    .update({ boq_item_id: null, status: 'SUGGESTED', confirmed_by: null, confirmed_at: null })
-    .eq('id', lineId);
-  if (error) throw error;
+  await updateLine(lineId, { boq_item_id: null, stage: null, activity_state: null, status: 'SUGGESTED', confirmed_by: null, confirmed_at: null });
 }
 
 /** "Konfirmasi semua saran" — migration 101 confirm_report_lines_bulk; returns the count confirmed. */
@@ -118,17 +119,62 @@ export async function invokeReportLink(reportId: string, opts: { force?: boolean
   return data ?? { ok: false, code: 'EMPTY', error: 'Server tidak mengembalikan jawaban.' };
 }
 
-/** Issued reports that have no line rows yet (never linked). Used by the office back-link button. */
+/**
+ * Issued reports that have at least one update line and no line rows yet.
+ * Used by the office back-link button. A report with zero updates can never
+ * be linked, so it is not "unlinked".
+ */
 export async function listUnlinkedReports(projectId: string): Promise<Array<{ id: string; report_no: number; revision: number }>> {
   const { data, error } = await supabase
     .from('client_progress_reports')
-    .select('id, report_no, revision, client_report_lines(id)')
+    .select('id, report_no, revision, updates:snapshot->updates, client_report_lines(count)')
     .eq('project_id', projectId)
     .order('report_no');
   if (error) throw error;
-  return ((data ?? []) as Array<{ id: string; report_no: number; revision: number | null; client_report_lines: unknown }>)
-    .filter((r) => !Array.isArray(r.client_report_lines) || r.client_report_lines.length === 0)
+  type Row = { id: string; report_no: number; revision: number | null; updates: unknown; client_report_lines: unknown };
+  const lineCount = (v: unknown): number => {
+    if (!Array.isArray(v)) return 0;
+    const first = v[0] as { count?: unknown } | undefined;
+    return typeof first?.count === 'number' ? first.count : v.length;
+  };
+  return ((data ?? []) as Row[])
+    .filter((r) => Array.isArray(r.updates) && r.updates.length > 0 && lineCount(r.client_report_lines) === 0)
     .map((r) => ({ id: r.id, report_no: r.report_no, revision: r.revision ?? 1 }));
+}
+
+/** Codes that mean the whole run should stop, not just this report. */
+const BACKLINK_STOP_CODES: ReadonlySet<string> = new Set(['DAILY_CAP', 'AUTH', 'CONFIG', 'CAP_CHECK_FAILED', 'INVOKE_FAILED', 'NO_BOQ', 'FORBIDDEN']);
+
+export interface BacklinkResult {
+  ok: number;
+  failed: number;
+  /** The code that stopped the run early, or null when every report was attempted. */
+  stoppedBy: string | null;
+  firstError: string | null;
+}
+
+/**
+ * Link old reports one at a time (spec §8): each call is one model round-trip
+ * and the daily cap counts them, so a parallel burst would race both the cap
+ * and the lease. Stops on the first error that is not specific to one report.
+ */
+export async function backlinkReports(
+  reportIds: string[],
+  opts: { onProgress?: (done: number, total: number) => void; shouldStop?: () => boolean } = {},
+): Promise<BacklinkResult> {
+  const result: BacklinkResult = { ok: 0, failed: 0, stoppedBy: null, firstError: null };
+  for (let i = 0; i < reportIds.length; i += 1) {
+    if (opts.shouldStop?.()) { result.stoppedBy = 'CANCELLED'; break; }
+    const res = await invokeReportLink(reportIds[i]);
+    if (res.ok) result.ok += 1;
+    else {
+      result.failed += 1;
+      if (!result.firstError) result.firstError = res.error ?? res.code ?? null;
+      if (res.code && BACKLINK_STOP_CODES.has(res.code)) { result.stoppedBy = res.code; break; }
+    }
+    opts.onProgress?.(i + 1, reportIds.length);
+  }
+  return result;
 }
 
 // ─── Pure helpers (jest) ──────────────────────────────────────────────────

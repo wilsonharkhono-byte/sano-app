@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
@@ -21,7 +21,7 @@ import {
 import { exportClientReportPdf } from '../../tools/clientReportHtml';
 import { withFreshPhotoUrls } from '../../tools/clientReportPhotos';
 import ReportLinesCard from './clientReport/ReportLinesCard';
-import { invokeReportLink, listUnlinkedReports } from '../../tools/clientReportLines';
+import { backlinkReports, invokeReportLink, listUnlinkedReports } from '../../tools/clientReportLines';
 import { formatRoomLabel } from '../../tools/clientReportRooms';
 import { listRooms } from '../../tools/rooms';
 import { AREA_UMUM_CODE, AREA_UMUM_NAME } from '../../tools/constants';
@@ -71,16 +71,25 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
   const [history, setHistory] = useState<IssuedClientReport[]>([]);
   const [viewing, setViewing] = useState<{ meta: IssuedClientReport; snapshot: ClientReportDraft } | null>(null);
 
-  // Office roles may link reports issued before Plan A (spec §8, back-linking).
-  const isOffice = profile?.role === 'admin' || profile?.role === 'estimator' || profile?.role === 'principal';
+  // Admin and estimator may link reports issued before Plan A (spec §8,
+  // back-linking); the principal reads results and never triggers AI spend.
+  const canBacklink = profile?.role === 'admin' || profile?.role === 'estimator';
   const [unlinked, setUnlinked] = useState<Array<{ id: string; report_no: number; revision: number }>>([]);
   const [backlinking, setBacklinking] = useState<{ done: number; total: number } | null>(null);
+  const cancelBacklink = useRef(false);
+  // The AI link run started right after issuing; the card shows a banner
+  // meanwhile and reloads when the token moves.
+  const [linking, setLinking] = useState(false);
+  const [linesToken, setLinesToken] = useState(0);
+
+  useEffect(() => () => { cancelBacklink.current = true; }, []);
 
   const loadHistory = useCallback(async () => {
     if (!project) return;
     try { setHistory(await listClientReports(project.id)); } catch { /* list is non-critical */ }
+    if (!canBacklink) return;
     try { setUnlinked(await listUnlinkedReports(project.id)); } catch { setUnlinked([]); }
-  }, [project?.id]);
+  }, [project?.id, canBacklink]);
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
@@ -272,17 +281,10 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
       const issued = await issueClientReport(draft, project.id, profile.id);
       const rev = issued.revision > 1 ? ` (R${issued.revision})` : '';
       toast(`Laporan #${String(issued.reportNo).padStart(2, '0')}${rev} diterbitkan`, 'ok');
-      const issuedDraft = draft;
+      // issueClientReport may have bumped the number after a numbering race;
+      // the stored snapshot carries the real one, so the view must too.
+      const issuedDraft: ClientReportDraft = { ...draft, reportNo: issued.reportNo, revision: issued.revision };
       setDraft(null);
-      await loadHistory();
-      // Spec §6.1: suggest links right after issue. Never blocks the report —
-      // a failure here leaves the report issued and the card offers a retry.
-      const link = await invokeReportLink(issued.id);
-      if (link.ok) {
-        toast(link.code === 'LINKED' ? `AI menyarankan ${link.suggested ?? 0} tautan — silakan konfirmasi` : 'Laporan terbit; tidak ada baris untuk ditautkan', 'ok');
-      } else {
-        toast(link.error ?? 'Tautan AI belum bisa dibuat; jalankan dari Riwayat Laporan', 'critical');
-      }
       setViewing({
         meta: {
           id: issued.id, report_no: issued.reportNo, revision: issued.revision, kind: issuedDraft.kind,
@@ -291,6 +293,23 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
         },
         snapshot: issuedDraft,
       });
+      setBusy(false);
+      await loadHistory();
+      // Spec §6.1: suggest links right after issue. Never blocks the report —
+      // the card shows a banner while this runs and offers a retry if it fails.
+      setLinking(true);
+      try {
+        const link = await invokeReportLink(issued.id);
+        if (link.ok) {
+          toast(link.code === 'LINKED' ? `AI menyarankan ${link.suggested ?? 0} tautan — silakan konfirmasi` : 'Laporan terbit; tidak ada baris untuk ditautkan', 'ok');
+        } else {
+          toast(link.error ?? 'Tautan AI belum bisa dibuat; jalankan dari kartu Tautan Progres', 'critical');
+        }
+      } finally {
+        setLinking(false);
+        setLinesToken((t) => t + 1);
+        await loadHistory();
+      }
     } catch (err: any) {
       toast(err.message ?? 'Gagal menerbitkan', 'critical');
     } finally {
@@ -298,21 +317,26 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
     }
   };
 
-  // Sequential on purpose: each call is one model round-trip and the daily
-  // cap counts them; a parallel burst would race the cap and the claim.
+  // The loop itself lives in tools/clientReportLines.ts (sequential,
+  // cap-aware, stops on run-level errors); this only drives the button.
   const backlink = async () => {
     if (!project || unlinked.length === 0) return;
-    setBacklinking({ done: 0, total: unlinked.length });
-    let ok = 0;
-    for (let i = 0; i < unlinked.length; i += 1) {
-      const res = await invokeReportLink(unlinked[i].id);
-      if (res.ok) ok += 1;
-      else if (res.code === 'DAILY_CAP') { toast(res.error ?? 'Kuota AI habis', 'critical'); break; }
-      setBacklinking({ done: i + 1, total: unlinked.length });
+    cancelBacklink.current = false;
+    const total = unlinked.length;
+    setBacklinking({ done: 0, total });
+    try {
+      const res = await backlinkReports(unlinked.map((u) => u.id), {
+        onProgress: (done) => setBacklinking({ done, total }),
+        shouldStop: () => cancelBacklink.current,
+      });
+      const summary = `${res.ok}/${total} laporan lama ditautkan`;
+      if (res.stoppedBy && res.stoppedBy !== 'CANCELLED') toast(`${summary} — berhenti: ${res.firstError ?? res.stoppedBy}`, 'critical');
+      else if (res.failed > 0) toast(`${summary} — ${res.failed} gagal: ${res.firstError ?? ''}`, 'critical');
+      else toast(summary, 'ok');
+    } finally {
+      setBacklinking(null);
+      await loadHistory();
     }
-    setBacklinking(null);
-    toast(`${ok} laporan lama ditautkan`, 'ok');
-    await loadHistory();
   };
 
   return (
@@ -336,7 +360,7 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
         {/* Riwayat Laporan — issued reports stay accessible, frozen as sent. */}
         <Card title="Riwayat Laporan" subtitle="Laporan terbit tersimpan permanen. Ketuk untuk melihat atau membuat revisi.">
           {history.length === 0 && <Text style={styles.hint}>Belum ada laporan terbit.</Text>}
-          {isOffice && unlinked.length > 0 && (
+          {canBacklink && unlinked.length > 0 && (
             <TouchableOpacity
               style={[styles.secondaryBtn, { alignSelf: 'flex-start', marginBottom: SPACE.sm }, backlinking && { opacity: 0.6 }]}
               disabled={!!backlinking}
@@ -397,7 +421,7 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
               </TouchableOpacity>
             </View>
           </Card>
-          <ReportLinesCard reportId={viewing.meta.id} boqItems={boqItems} toast={toast} />
+          <ReportLinesCard key={viewing.meta.id} reportId={viewing.meta.id} boqItems={boqItems} toast={toast} linking={linking} reloadToken={linesToken} />
           </>
         )}
 

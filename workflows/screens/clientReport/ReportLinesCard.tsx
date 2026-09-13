@@ -2,7 +2,8 @@
 // The "Tautan Progres" card under an issued client report (spec §6.1). Every
 // line shows the AI's suggestion or the supervisor's decision; confirming is
 // a tap, changing opens an inline picker under the row, and nothing here
-// writes a number.
+// writes a number. Mount it with `key={reportId}` so a different report never
+// inherits this instance's state.
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,28 +22,46 @@ interface Props {
   reportId: string;
   boqItems: BoqItem[];
   toast: (message: string, kind: 'ok' | 'critical') => void;
+  /** True while the parent is waiting for the AI link run it started after issuing. */
+  linking?: boolean;
+  /** Bump to make the card reload its lines (e.g. when that run finishes). */
+  reloadToken?: number;
 }
 
 interface EditDraft { boqItemId: string; stage: string; state: ActivityState }
 
 const STATUS_LABELS: Record<ClientReportLine['status'], string> = { SUGGESTED: 'Saran', CONFIRMED: 'Terkonfirmasi', DISMISSED: 'Tidak terkait' };
+const HIT_SLOP = { top: 8, bottom: 8, left: 8, right: 8 };
 
-export default function ReportLinesCard({ reportId, boqItems, toast }: Props) {
+export default function ReportLinesCard({ reportId, boqItems, toast, linking = false, reloadToken = 0 }: Props) {
   const [lines, setLines] = useState<ClientReportLine[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState<EditDraft>({ boqItemId: '', stage: '', state: 'LANJUT' });
 
-  const load = useCallback(async () => {
+  // Every (re)load starts from a clean slate and ignores a response that
+  // arrives after the report or token changed under it.
+  useEffect(() => {
+    let cancelled = false;
+    setLines(null);
+    setEditing(null);
+    listReportLines(reportId)
+      .then((rows) => { if (!cancelled) setLines(rows); })
+      .catch((err: any) => {
+        if (cancelled) return;
+        toast(err.message ?? 'Gagal memuat tautan', 'critical');
+        setLines([]);
+      });
+    return () => { cancelled = true; };
+  }, [reportId, reloadToken, toast]);
+
+  const reload = useCallback(async () => {
     try {
       setLines(await listReportLines(reportId));
     } catch (err: any) {
       toast(err.message ?? 'Gagal memuat tautan', 'critical');
-      setLines([]);
     }
   }, [reportId, toast]);
-
-  useEffect(() => { load(); }, [load]);
 
   const rowOptions = useMemo(
     () => boqItems.map((b) => ({ value: b.id, code: b.code, label: b.label, meta: `${b.planned} ${b.unit}` })),
@@ -56,7 +75,7 @@ export default function ReportLinesCard({ reportId, boqItems, toast }: Props) {
     setBusy(true);
     try {
       await work();
-      await load();
+      await reload();
     } catch (err: any) {
       toast(err.message ?? 'Gagal menyimpan', 'critical');
     } finally {
@@ -105,12 +124,19 @@ export default function ReportLinesCard({ reportId, boqItems, toast }: Props) {
       title={`Tautan Progres (${summary.confirmed}/${summary.total})`}
       subtitle="Setiap baris update dikaitkan ke baris BoQ dan tahap. Saran AI perlu dikonfirmasi; angka progres tidak ditulis di sini."
     >
-      {lines === null && <ActivityIndicator color={COLORS.primary} />}
+      {linking && (
+        <View style={styles.banner}>
+          <ActivityIndicator color={COLORS.primary} />
+          <Text style={styles.bannerText}>AI sedang menautkan baris laporan…</Text>
+        </View>
+      )}
 
-      {lines && lines.length === 0 && (
+      {lines === null && !linking && <ActivityIndicator color={COLORS.primary} />}
+
+      {lines && lines.length === 0 && !linking && (
         <View>
           <Text style={styles.hint}>Belum ada tautan untuk laporan ini.</Text>
-          <TouchableOpacity style={[styles.primaryBtn, busy && styles.disabled]} disabled={busy} onPress={() => runAi(false)}>
+          <TouchableOpacity style={[styles.primaryBtn, busy && styles.disabled]} disabled={busy} onPress={() => runAi(false)} accessibilityRole="button">
             <Ionicons name="sparkles-outline" size={16} color={COLORS.textInverse} />
             <Text style={styles.primaryText}>Buat tautan (AI)</Text>
           </TouchableOpacity>
@@ -121,13 +147,13 @@ export default function ReportLinesCard({ reportId, boqItems, toast }: Props) {
         <>
           <View style={styles.topRow}>
             {summary.suggestedReady > 0 && (
-              <TouchableOpacity style={[styles.primaryBtn, busy && styles.disabled]} disabled={busy} onPress={confirmAll}>
+              <TouchableOpacity style={[styles.primaryBtn, busy && styles.disabled]} disabled={busy} onPress={confirmAll} accessibilityRole="button">
                 <Ionicons name="checkmark-done-outline" size={16} color={COLORS.textInverse} />
                 <Text style={styles.primaryText}>Konfirmasi {summary.suggestedReady} saran</Text>
               </TouchableOpacity>
             )}
-            {summary.aiMissing > 0 && (
-              <TouchableOpacity style={[styles.secondaryBtn, busy && styles.disabled]} disabled={busy} onPress={() => runAi(true)}>
+            {summary.aiMissing > 0 && !linking && (
+              <TouchableOpacity style={[styles.secondaryBtn, busy && styles.disabled]} disabled={busy} onPress={() => runAi(true)} accessibilityRole="button">
                 <Ionicons name="sparkles-outline" size={16} color={COLORS.primary} />
                 <Text style={styles.secondaryText}>Jalankan AI</Text>
               </TouchableOpacity>
@@ -136,7 +162,7 @@ export default function ReportLinesCard({ reportId, boqItems, toast }: Props) {
 
           {lines.map((line) => (
             <View key={line.id} style={styles.line} testID={`report-line-${line.line_index}`}>
-              <Text style={styles.lineText} numberOfLines={3}>{line.line_text}</Text>
+              <Text style={styles.lineText}>{line.line_text}</Text>
               <View style={styles.chipRow}>
                 <View style={[styles.chip, line.status === 'CONFIRMED' && styles.chipOk, line.status === 'DISMISSED' && styles.chipMuted]}>
                   <Text style={styles.chipText}>{STATUS_LABELS[line.status]}</Text>
@@ -171,16 +197,16 @@ export default function ReportLinesCard({ reportId, boqItems, toast }: Props) {
                   <Text style={styles.label}>Status pekerjaan</Text>
                   <View style={styles.stateRow}>
                     {ACTIVITY_STATE_ORDER.map((s) => (
-                      <TouchableOpacity key={s} style={[styles.stateChip, draft.state === s && styles.stateChipOn]} onPress={() => setDraft((d) => ({ ...d, state: s }))}>
+                      <TouchableOpacity key={s} style={[styles.stateChip, draft.state === s && styles.stateChipOn]} onPress={() => setDraft((d) => ({ ...d, state: s }))} accessibilityRole="button">
                         <Text style={[styles.stateText, draft.state === s && styles.stateTextOn]}>{ACTIVITY_STATE_LABELS[s]}</Text>
                       </TouchableOpacity>
                     ))}
                   </View>
                   <View style={styles.btnRow}>
-                    <TouchableOpacity style={[styles.primaryBtn, busy && styles.disabled]} disabled={busy} onPress={() => saveEdit(line)}>
+                    <TouchableOpacity style={[styles.primaryBtn, busy && styles.disabled]} disabled={busy} onPress={() => saveEdit(line)} accessibilityRole="button">
                       <Text style={styles.primaryText}>Simpan</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity style={styles.textBtn} onPress={() => setEditing(null)}>
+                    <TouchableOpacity style={styles.textBtn} onPress={() => setEditing(null)} hitSlop={HIT_SLOP} accessibilityRole="button">
                       <Text style={styles.textBtnLabel}>Batal</Text>
                     </TouchableOpacity>
                   </View>
@@ -188,21 +214,21 @@ export default function ReportLinesCard({ reportId, boqItems, toast }: Props) {
               ) : (
                 <View style={styles.btnRow}>
                   {line.status === 'SUGGESTED' && line.ai_boq_item_id ? (
-                    <TouchableOpacity style={styles.textBtn} disabled={busy} onPress={() => acceptSuggestion(line)}>
+                    <TouchableOpacity style={styles.textBtn} disabled={busy} onPress={() => acceptSuggestion(line)} hitSlop={HIT_SLOP} accessibilityRole="button">
                       <Text style={styles.textBtnLabel}>Konfirmasi</Text>
                     </TouchableOpacity>
                   ) : null}
                   {line.status !== 'DISMISSED' ? (
-                    <TouchableOpacity style={styles.textBtn} disabled={busy} onPress={() => startEdit(line)}>
+                    <TouchableOpacity style={styles.textBtn} disabled={busy} onPress={() => startEdit(line)} hitSlop={HIT_SLOP} accessibilityRole="button">
                       <Text style={styles.textBtnLabel}>{line.status === 'CONFIRMED' ? 'Ubah' : 'Pilih baris'}</Text>
                     </TouchableOpacity>
                   ) : null}
                   {line.status !== 'DISMISSED' ? (
-                    <TouchableOpacity style={styles.textBtn} disabled={busy} onPress={() => dismiss(line)}>
+                    <TouchableOpacity style={styles.textBtn} disabled={busy} onPress={() => dismiss(line)} hitSlop={HIT_SLOP} accessibilityRole="button">
                       <Text style={[styles.textBtnLabel, styles.muted]}>Tidak terkait</Text>
                     </TouchableOpacity>
                   ) : (
-                    <TouchableOpacity style={styles.textBtn} disabled={busy} onPress={() => reopen(line)}>
+                    <TouchableOpacity style={styles.textBtn} disabled={busy} onPress={() => reopen(line)} hitSlop={HIT_SLOP} accessibilityRole="button">
                       <Text style={styles.textBtnLabel}>Buka lagi</Text>
                     </TouchableOpacity>
                   )}
@@ -217,6 +243,8 @@ export default function ReportLinesCard({ reportId, boqItems, toast }: Props) {
 }
 
 const styles = StyleSheet.create({
+  banner: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, backgroundColor: COLORS.accentBg, borderRadius: RADIUS, padding: SPACE.md, marginBottom: SPACE.sm },
+  bannerText: { flex: 1, fontSize: TYPE.sm, fontFamily: FONTS.medium, color: COLORS.text, lineHeight: 19 },
   hint: { fontSize: TYPE.sm, fontFamily: FONTS.regular, color: COLORS.textSec, marginBottom: SPACE.sm, lineHeight: 19 },
   topRow: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.sm, marginBottom: SPACE.sm },
   primaryBtn: { flexDirection: 'row', alignItems: 'center', gap: SPACE.xs + 2, backgroundColor: COLORS.primary, borderRadius: RADIUS, paddingVertical: SPACE.sm + 2, paddingHorizontal: SPACE.base, alignSelf: 'flex-start' },
@@ -233,8 +261,8 @@ const styles = StyleSheet.create({
   chipText: { fontSize: TYPE.xs - 1, fontFamily: FONTS.bold, letterSpacing: 0.4, textTransform: 'uppercase', color: COLORS.text },
   linkText: { flex: 1, fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text, lineHeight: 19 },
   quote: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, lineHeight: 18 },
-  btnRow: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.md, alignItems: 'center' },
-  textBtn: { paddingVertical: SPACE.xs },
+  btnRow: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.base, alignItems: 'center' },
+  textBtn: { paddingVertical: SPACE.sm },
   textBtnLabel: { fontSize: TYPE.xs, fontFamily: FONTS.bold, textTransform: 'uppercase', letterSpacing: 0.4, color: COLORS.primary },
   muted: { color: COLORS.textSec },
   editBox: { backgroundColor: COLORS.surfaceAlt, borderRadius: RADIUS, padding: SPACE.md, gap: SPACE.xs },

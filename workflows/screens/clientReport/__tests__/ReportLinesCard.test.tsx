@@ -27,7 +27,9 @@ jest.mock('../../../components/SelectSheet', () => {
   };
 });
 
-import { listReportLines, confirmSuggestedLines, dismissReportLine, type ClientReportLine } from '../../../../tools/clientReportLines';
+import {
+  listReportLines, confirmSuggestedLines, confirmReportLine, dismissReportLine, type ClientReportLine,
+} from '../../../../tools/clientReportLines';
 import ReportLinesCard from '../ReportLinesCard';
 import type { BoqItem } from '../../../../tools/types';
 
@@ -69,9 +71,39 @@ describe('ReportLinesCard', () => {
     await waitFor(() => expect(dismissReportLine).toHaveBeenCalledWith('l1'));
   });
 
-  it('offers to run the AI when no lines exist yet', async () => {
+  it('seeds the inline editor from the suggestion and saves the decision', async () => {
+    const { findByText, getByTestId, getByText } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} />);
+    fireEvent.press(await findByText('Pilih baris'));
+    expect(getByTestId('Baris BoQ untuk update 1').props.children).toBe('b1');
+    expect(getByTestId('Tahap untuk update 1').props.children).toBe('BEKISTING');
+    fireEvent.press(getByText('Selesai'));
+    fireEvent.press(getByText('Simpan'));
+    await waitFor(() => expect(confirmReportLine).toHaveBeenCalledWith('l1', { boqItemId: 'b1', stage: 'BEKISTING', activityState: 'SELESAI' }));
+  });
+
+  it('reports a failed action through the toast and keeps the card usable', async () => {
+    (dismissReportLine as jest.Mock).mockRejectedValueOnce(new Error('Baris tidak ditemukan atau Anda tidak ditugaskan ke proyek ini.'));
+    const toast = jest.fn();
+    const { findAllByText } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={toast} />);
+    fireEvent.press((await findAllByText('Tidak terkait'))[0]);
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Baris tidak ditemukan atau Anda tidak ditugaskan ke proyek ini.', 'critical'));
+    fireEvent.press((await findAllByText('Tidak terkait'))[0]);
+    await waitFor(() => expect(dismissReportLine).toHaveBeenCalledTimes(2));
+  });
+
+  it('offers to run the AI when no lines exist yet, but shows the banner instead while linking', async () => {
     (listReportLines as jest.Mock).mockResolvedValue([]);
-    const { findByText } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} />);
+    const { findByText, queryByText, rerender } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} />);
     expect(await findByText('Buat tautan (AI)')).toBeTruthy();
+    rerender(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} linking />);
+    expect(await findByText('AI sedang menautkan baris laporan…')).toBeTruthy();
+    expect(queryByText('Buat tautan (AI)')).toBeNull();
+  });
+
+  it('reloads when the reload token changes', async () => {
+    const { findByText, rerender } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} reloadToken={0} />);
+    await findByText('Tautan Progres (1/2)');
+    rerender(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} reloadToken={1} />);
+    await waitFor(() => expect(listReportLines).toHaveBeenCalledTimes(2));
   });
 });
