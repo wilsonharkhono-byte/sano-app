@@ -129,7 +129,7 @@ describe('validateReportLineLinks', () => {
 
 describe('quote matching', () => {
   it('normalizes quotes, dashes, zero-width characters, whitespace and case', () => {
-    expect(normalizeForQuoteMatch('Pile​ Cap  – “Sloof”')).toBe('pile cap - "sloof"');
+    expect(normalizeForQuoteMatch('Pile\u200B Cap  – “Sloof”')).toBe('pile cap - "sloof"');
     expect(isLiteralQuote('galian PILE cap', 'Pekerjaan galian pile cap dilanjutkan')).toBe(true);
   });
   it(`refuses quotes shorter than ${LINK_QUOTE_MIN_CHARS} characters`, () => {
@@ -228,7 +228,7 @@ export type LinkValidationResult =
 export function normalizeForQuoteMatch(value: string): string {
   return value
     .normalize('NFC')
-    .replace(/[​-‍­⁠‎‏]/g, '')
+    .replace(/[\u200B-\u200D\u00AD\u2060\u200E\u200F]/g, '')
     .replace(/[‘’ʼ]/g, "'")
     .replace(/[“”]/g, '"')
     .replace(/[‐-―]/g, '-')
@@ -356,6 +356,8 @@ Expected: PASS, 12 tests.
 git add tools/reportLineDraftValidate.ts tools/__tests__/reportLineDraftValidate.test.ts
 git commit -m "feat(progress): report-line link vocabulary and validator (pure, source of truth)"
 ```
+
+> **Review outcome (2026-09-13).** Spec review: compliant. Quality review asked for four follow-ups, applied in the commit after 33284c7 and NOT reflected in the code blocks above: (1) the zero-width character class and the test fixture use `\u` escapes, never raw invisible bytes; (2) `resolveCode` returns a match only when exactly one code matches case-insensitively (a case-only tie is refused, not guessed); (3) forcing confidence to `low` for a row-less link records a `confidence` drop; (4) a kept quote is whitespace-collapsed before it is stored. Later tasks that copy this file (Task 4) copy the committed file, not the block above.
 
 ---
 
@@ -862,7 +864,7 @@ function sanitizeSurrogates(text: string): string {
     const code = text.charCodeAt(i);
     if (code === 0) {
       // jsonb rejects U+0000 outright (22P05) and TEXT refuses it too.
-      out += '�';
+      out += '\uFFFD';
       changed = true;
     } else if (code >= 0xd800 && code <= 0xdbff) {
       // High surrogate: valid only when immediately followed by a low surrogate.
@@ -871,12 +873,12 @@ function sanitizeSurrogates(text: string): string {
         out += text[i] + text[i + 1];
         i += 1;
       } else {
-        out += '�';
+        out += '\uFFFD';
         changed = true;
       }
     } else if (code >= 0xdc00 && code <= 0xdfff) {
       // Low surrogate with no preceding high surrogate: always unpaired here.
-      out += '�';
+      out += '\uFFFD';
       changed = true;
     } else {
       out += text[i];
@@ -931,8 +933,8 @@ Deno.test('photoPathFromSignedUrl recovers bare photos paths and prefixed privat
 
 Deno.test('sanitizeJsonForPostgres replaces unpaired surrogates and NUL, leaves valid text alone', () => {
   assertEquals(
-    sanitizeJsonForPostgres({ a: 'ok \u{1F600}', b: 'bad \ud83d end', c: 'nul ' }),
-    { a: 'ok \u{1F600}', b: 'bad � end', c: 'nul�' },
+    sanitizeJsonForPostgres({ a: 'ok \u{1F600}', b: 'bad \ud83d end', c: 'nul\u0000' }),
+    { a: 'ok \u{1F600}', b: 'bad \uFFFD end', c: 'nul\uFFFD' },
   );
 });
 

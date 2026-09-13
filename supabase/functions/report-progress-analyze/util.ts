@@ -133,7 +133,7 @@ function sanitizeSurrogates(text: string): string {
     const code = text.charCodeAt(i);
     if (code === 0) {
       // jsonb rejects U+0000 outright (22P05) and TEXT refuses it too.
-      out += '�';
+      out += '\uFFFD';
       changed = true;
     } else if (code >= 0xd800 && code <= 0xdbff) {
       // High surrogate: valid only when immediately followed by a low surrogate.
@@ -142,12 +142,12 @@ function sanitizeSurrogates(text: string): string {
         out += text[i] + text[i + 1];
         i += 1;
       } else {
-        out += '�';
+        out += '\uFFFD';
         changed = true;
       }
     } else if (code >= 0xdc00 && code <= 0xdfff) {
       // Low surrogate with no preceding high surrogate: always unpaired here.
-      out += '�';
+      out += '\uFFFD';
       changed = true;
     } else {
       out += text[i];

@@ -71,7 +71,7 @@ export type LinkValidationResult =
 export function normalizeForQuoteMatch(value: string): string {
   return value
     .normalize('NFC')
-    .replace(/[​-‍­⁠‎‏]/g, '')
+    .replace(/[\u200B-\u200D\u00AD\u2060\u200E\u200F]/g, '')
     .replace(/[‘’ʼ]/g, "'")
     .replace(/[“”]/g, '"')
     .replace(/[‐-―]/g, '-')
@@ -95,10 +95,11 @@ function preview(value: unknown): string {
   return Array.from(text).slice(0, 60).join('');
 }
 
+/** Exactly one case-insensitive match resolves; a case-only tie is refused, never guessed. */
 function resolveCode(candidate: string, codes: string[]): string | null {
   const wanted = candidate.trim().toLowerCase();
-  for (const code of codes) if (code.toLowerCase() === wanted) return code;
-  return null;
+  const matches = codes.filter((code) => code.toLowerCase() === wanted);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function inList(list: readonly string[], value: unknown): value is string {
@@ -147,7 +148,10 @@ export function validateReportLineLinks(raw: unknown, ctx: LinkValidationContext
     }
     // Rule: no row, no confidence. A confident "unlinked" line would hide from
     // the supervisor exactly the lines that most need a human decision.
-    if (code === null) confidence = 'low';
+    if (code === null && confidence !== 'low') {
+      dropped.push({ line_index: idx, field: 'confidence', reason: 'tanpa baris BoQ, keyakinan diturunkan ke low' });
+      confidence = 'low';
+    }
 
     let stage: ReportLineStage | null = null;
     if (inList(REPORT_LINE_STAGES, item.stage)) {
@@ -165,7 +169,7 @@ export function validateReportLineLinks(raw: unknown, ctx: LinkValidationContext
 
     let quote: string | null = null;
     if (typeof item.quote === 'string' && item.quote.trim()) {
-      const trimmed = Array.from(item.quote.trim()).slice(0, LINK_QUOTE_MAX_CHARS).join('');
+      const trimmed = Array.from(item.quote.replace(/\s+/g, ' ').trim()).slice(0, LINK_QUOTE_MAX_CHARS).join('');
       if (isLiteralQuote(trimmed, line.text)) quote = trimmed;
       else dropped.push({ line_index: idx, field: 'quote', reason: 'kutipan tidak persis ada di baris', value: preview(item.quote) });
     }
