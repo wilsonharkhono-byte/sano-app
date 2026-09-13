@@ -260,3 +260,18 @@ Preconditions: Gading Serpong needs a published BoQ (the estimator prepares a `S
 
 - Whether the estimator wants the weight columns on the `SANO Input Tier 1` sheet or a separate `SANO Input Bobot` sheet — the parser supports both header locations cheaply; default is the same sheet.
 - Whether `PROGRESS_CLAIM_SUBMITTED` should also reach the principal as an FYI. Default: no; the Home card shows status.
+
+## 16. Amendment 2026-09-13 — Tambah progres becomes the stage claim entry
+
+Decided with the owner after the Plan A plan was written.
+
+**Finding.** The supervisor's Progres tab ("Tambah progres", `workflows/screens/ProgresScreen.tsx`) is a quantity-per-row form that writes `progress_entries` directly, unreviewed. Nobody used it: zero entries on both live projects. On Citraland its picker works (16 simplified rows, one work group each via `buildWorkGroups`; supervisor Hendy is assigned). On Gading Serpong it is empty because no BoQ has been published for that project at all — a precondition, not a code defect.
+
+**Decision.** The Progres tab's Tambah progres becomes the per-work-area stage claim entry of §6.2:
+
+- The supervisor picks a work area, sees each weight-bearing stage with its last verified percent, sets today's claimed percent, and attaches photos. That saves into the CURRENT week's `progress_claims` row (status DRAFT, created on first use for the week) as the line for that row: `claimed_pct` per stage, photo references appended to `evidence.photo_refs`. Re-opening the same work area the same week edits the same line.
+- The daily Blueprint links (§6.1) and the weekly AI prefill land in the same draft as suggestions and evidence; the supervisor's own figures are never overwritten by the model — the prefill only fills stages the supervisor has not touched this week and marks its proposals as AI.
+- The quantity form and its direct `progress_entries` write are removed. The only writer of progress remains `verify_progress_claim` (§6.2 step 5). Rows with `{"SINGLE": 1}` weights (non-concrete rows on full-RAB projects) show one percent instead of three stages.
+- Kirim (submit) stays a weekly action, reachable from the Progres tab's claim overview and from Laporan; the overview lists every work area with verified, claimed-this-week, and the count of linked lines and photos behind it.
+
+**Plan impact.** Plan B's claim form is built once and mounted in two places (Progres tab per work area, Laporan for the weekly overview and Kirim); the Progres screen's `progress` sub-module is replaced rather than extended. Plan A is unchanged.
