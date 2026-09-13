@@ -300,7 +300,7 @@ export default function SiteEventConfirmScreen() {
   return (
     <View style={s.flex}>
       <Header />
-      <ScrollView style={s.scroll} contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
+      <ScrollView style={s.scroll} contentContainerStyle={[s.content, s.contentFabClear]} keyboardShouldPersistTaps="handled">
         <TouchableOpacity style={s.backBtn} onPress={() => navigation.navigate('Beranda')} accessibilityRole="button">
           <Ionicons name="chevron-back" size={18} color={COLORS.text} />
           <Text style={s.backText}>Beranda</Text>
