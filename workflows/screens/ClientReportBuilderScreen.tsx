@@ -19,6 +19,7 @@ import {
   type IssuedClientReport,
 } from '../../tools/clientReport';
 import { exportClientReportPdf } from '../../tools/clientReportHtml';
+import { withFreshPhotoUrls } from '../../tools/clientReportPhotos';
 import { formatRoomLabel } from '../../tools/clientReportRooms';
 import { listRooms } from '../../tools/rooms';
 import { AREA_UMUM_CODE, AREA_UMUM_NAME } from '../../tools/constants';
@@ -192,7 +193,8 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
       const path = await pickAndUploadPhoto(`client-report/${project.id}`);
       if (!path) return;
       const url = await resolvePhotoUrl(path);
-      setPhotoList([...photoList, { url, caption: '', date: todayShort() }]);
+      // `path` is what survives the 7-day signed URL (spec §5.2).
+      setPhotoList([...photoList, { url, path, caption: '', date: todayShort() }]);
       toast('Foto ditambahkan', 'ok');
     } catch (err: any) {
       toast(err.message ?? 'Gagal menambah foto', 'critical');
@@ -211,8 +213,11 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
   // ── View / revise issued reports ─────────────────────────────────────────
   const openReport = async (meta: IssuedClientReport) => {
     try {
-      const snapshot = await getClientReportSnapshot(meta.id);
-      if (!snapshot) { toast('Snapshot laporan tidak ditemukan', 'critical'); return; }
+      const raw = await getClientReportSnapshot(meta.id);
+      if (!raw) { toast('Snapshot laporan tidak ditemukan', 'critical'); return; }
+      // Stored URLs expire after 7 days; re-sign from the storage path
+      // (recovered from the URL on snapshots frozen before Plan A).
+      const snapshot = await withFreshPhotoUrls(raw);
       setViewing({ meta, snapshot });
       setDraft(null);
     } catch (err: any) {
@@ -240,7 +245,7 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
 
   const exportPdf = async (d: ClientReportDraft) => {
     try {
-      await exportClientReportPdf(d);
+      await exportClientReportPdf(await withFreshPhotoUrls(d));
     } catch (err: any) {
       toast(err.message ?? 'Gagal mencetak', 'critical');
     }

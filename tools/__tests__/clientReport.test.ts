@@ -502,6 +502,8 @@ describe('assembleClientReportDraft', () => {
     expect(draft.hero?.url).toBe('https://cdn/a.jpg');
     expect(draft.thumbs).toHaveLength(1);
     expect(draft.thumbs[0].url).toBe('https://cdn/b.jpg');
+    expect(draft.hero?.path).toBe('a.jpg');
+    expect(draft.thumbs[0].path).toBe('b.jpg');
     expect(draft.weather).toBe('Cerah');
     expect(draft.subtitle).toBe(''); // curator-typed, blank by default
   });

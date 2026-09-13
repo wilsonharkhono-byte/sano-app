@@ -281,6 +281,7 @@ export async function assembleClientReportDraft(params: AssembleParams): Promise
   const photos = await Promise.all(
     agg.featuredPhotos.map(async (p: { storage_path: string; caption: string | null; log_date: string; room_id?: string | null }) => ({
       url: await resolvePhotoUrl(p.storage_path),
+      path: p.storage_path,
       caption: p.caption ?? '',
       date: fmtCaptionDate(p.log_date),
       ...(roomMode && p.room_id && roomNames.has(p.room_id) ? { room: roomNames.get(p.room_id)! } : {}),
