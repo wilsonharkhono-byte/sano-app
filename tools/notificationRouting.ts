@@ -41,6 +41,13 @@ const BASE_ROUTE_MAP: Record<string, string> = {
   // registered under this exact name in all three navigators, so it maps to
   // itself; listed so the deeplink is declared rather than implied.
   SiteEventDetail: 'SiteEventDetail',
+  // PROGRESS_CLAIM_SUBMITTED (migration 104 submit_progress_claim) reaches the
+  // estimators: the Verifikasi Klaim section of the office Reports tab, which
+  // reads deeplink_params.initialSection = 'klaim'.
+  ProgressClaimVerify: 'Reports',
+  // PROGRESS_CLAIM_RETURNED / PROGRESS_CLAIM_VERIFIED (104) reach whoever
+  // submitted: the supervisor's Progres tab, which reads module = 'progress'.
+  ProgressClaim: 'Progres',
 };
 
 /** Every deeplink_screen a server-side notification is known to use. */
@@ -55,5 +62,10 @@ export function resolveNotificationRoute(
   // Permintaan tab. Keyed on the resolved route (not notification type) so
   // any current or future type that deeplinks to Approvals is covered.
   if (role === 'supervisor' && target === 'Approvals') return 'Permintaan';
+  // The supervisor navigator registers Progres and Laporan; the office and
+  // principal navigators register Reports instead. Both claim deeplinks carry
+  // initialSection = 'klaim', which Laporan and Reports both read.
+  if (role === 'supervisor' && target === 'Reports') return 'Laporan';
+  if (role !== 'supervisor' && target === 'Progres') return 'Reports';
   return target;
 }

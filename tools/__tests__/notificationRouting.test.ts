@@ -83,3 +83,24 @@ describe('resolveNotificationRoute - SiteEventDetail', () => {
     }
   });
 });
+
+// ── Progress claims (2026-09-14 report-driven progress, migration 104) ─────
+describe('resolveNotificationRoute - progress claims', () => {
+  it('declares both claim deeplinks', () => {
+    expect(KNOWN_DEEPLINK_SCREENS).toEqual(expect.arrayContaining(['ProgressClaimVerify', 'ProgressClaim']));
+  });
+
+  it('sends a submitted claim to Reports for office roles and to Laporan for a supervisor', () => {
+    for (const role of ['estimator', 'admin', 'principal', undefined, null]) {
+      expect(resolveNotificationRoute('ProgressClaimVerify', role)).toBe('Reports');
+    }
+    expect(resolveNotificationRoute('ProgressClaimVerify', 'supervisor')).toBe('Laporan');
+  });
+
+  it('sends a returned or verified claim to Progres for a supervisor and to Reports elsewhere', () => {
+    expect(resolveNotificationRoute('ProgressClaim', 'supervisor')).toBe('Progres');
+    for (const role of ['estimator', 'admin', 'principal', undefined, null]) {
+      expect(resolveNotificationRoute('ProgressClaim', role)).toBe('Reports');
+    }
+  });
+});
