@@ -328,26 +328,33 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
 
   // 4. No progress claimed in 7 days (active project). Since migration 104 a
   // progress entry appears only when an estimator verifies a weekly claim, so
-  // site activity is claim lines created, a draft or returned claim edited, or
-  // a claim submitted in the window. Verification also touches lines and
-  // claims, so a VERIFIED claim counts only through its submitted_at. A read
-  // error (for example 104 not pasted yet) raises no anomaly rather than a
-  // false one.
-  const [recentLines, recentClaims] = await Promise.all([
+  // site activity is a claim line created, a line edited while its claim is
+  // still open, or a claim submitted in the window. Returning or verifying a
+  // claim stamps it too, so neither counts on its own: a verified claim counts
+  // through its submitted_at, a returned one through the lines the site edits
+  // afterwards. A read error (for example 104 not pasted yet) raises no
+  // anomaly rather than a false one.
+  const claimActivity = await Promise.all([
     supabase
       .from('progress_claim_lines')
       .select('id', { count: 'exact', head: true })
       .eq('project_id', projectId)
       .gte('created_at', sevenDaysAgo),
     supabase
+      .from('progress_claim_lines')
+      .select('id, progress_claims!inner(status)', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .gte('updated_at', sevenDaysAgo)
+      .in('progress_claims.status', ['DRAFT', 'SUBMITTED', 'RETURNED']),
+    supabase
       .from('progress_claims')
       .select('id', { count: 'exact', head: true })
       .eq('project_id', projectId)
-      .or(`submitted_at.gte.${sevenDaysAgo},and(status.in.(DRAFT,RETURNED),updated_at.gte.${sevenDaysAgo})`),
+      .gte('submitted_at', sevenDaysAgo),
   ]);
-  const claimActivityReadable = !recentLines.error && !recentClaims.error;
+  const claimActivityReadable = claimActivity.every((r) => !r.error);
 
-  if (claimActivityReadable && (recentLines.count ?? 0) === 0 && (recentClaims.count ?? 0) === 0) {
+  if (claimActivityReadable && claimActivity.every((r) => (r.count ?? 0) === 0)) {
     anomalies.push({
       type: 'no_progress',
       found: true,
