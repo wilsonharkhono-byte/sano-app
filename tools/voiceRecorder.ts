@@ -12,6 +12,7 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { AppState, Platform } from 'react-native';
 import {
   RecordingPresets,
+  getRecordingPermissionsAsync,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
   useAudioRecorder,
@@ -89,6 +90,13 @@ export interface VoiceState {
    * failure.
    */
   canAskAgain?: boolean;
+  /**
+   * Only set with a genuine start/stop failure: the raw native error, shown
+   * under the Indonesian message as "Detail teknis:" so the next field report
+   * carries the real cause. Undefined for the friendly outcomes (too short,
+   * empty, permission denied).
+   */
+  errorDetail?: string;
 }
 
 export const INITIAL_VOICE_STATE: VoiceState = {
@@ -101,7 +109,7 @@ export type VoiceAction =
   | { type: 'requestStop' }
   | { type: 'tick'; durationMs: number }
   | { type: 'stopped'; uri: string | null; durationMs: number }
-  | { type: 'fail'; error: string; canAskAgain?: boolean }
+  | { type: 'fail'; error: string; canAskAgain?: boolean; errorDetail?: string }
   | { type: 'reset' };
 
 export const VOICE_ERRORS = {
@@ -141,7 +149,13 @@ export function voiceReducer(state: VoiceState, action: VoiceAction): VoiceState
         stopRequested: false,
       };
     case 'fail':
-      return { ...INITIAL_VOICE_STATE, phase: 'error', error: action.error, canAskAgain: action.canAskAgain };
+      return {
+        ...INITIAL_VOICE_STATE,
+        phase: 'error',
+        error: action.error,
+        canAskAgain: action.canAskAgain,
+        errorDetail: action.errorDetail,
+      };
     case 'reset':
       if (state.phase === 'starting' || state.phase === 'stopping') return state;
       return INITIAL_VOICE_STATE;
@@ -163,6 +177,14 @@ function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** The raw native error for the "Detail teknis" line: code when it adds something, capped to stay readable. */
+function errDetail(err: unknown): string {
+  const code = (err as { code?: unknown } | null)?.code;
+  const message = errMessage(err);
+  const detail = typeof code === 'string' && code && !message.includes(code) ? `${code}: ${message}` : message;
+  return detail.length > 300 ? `${detail.slice(0, 299)}…` : detail;
+}
+
 /** How long we wait for `recorder.stop()` before giving up on a hung take. */
 export const VOICE_STOP_TIMEOUT_MS = 8000;
 
@@ -170,7 +192,11 @@ export interface VoiceRecorderApi {
   state: VoiceState;
   /** Press in. */
   start: () => void;
-  /** Release. Safe to call while the recorder is still starting. */
+  /**
+   * Release. Safe to call while the recorder is still starting. A release
+   * sooner than VOICE_MIN_MS after recording began keeps the recorder running
+   * until the minimum has passed, then ends the take as tooShort.
+   */
   stop: () => void;
   /**
    * Discard the take so the supervisor can record again.
@@ -196,6 +222,10 @@ export function useVoiceRecorder(): VoiceRecorderApi {
   const recorderState = useAudioRecorderState(recorder, 200);
   const [state, dispatch] = useReducer(voiceReducer, INITIAL_VOICE_STATE);
   const durationRef = useRef(0);
+  /** Date.now() right after record() returned; the minimum-hold clock. */
+  const recordStartedAtRef = useRef(0);
+  /** Whether this stopping phase has called native stop() yet (false while it waits out VOICE_MIN_MS). */
+  const stopSentRef = useRef(false);
 
   // Mirrors state.phase for the effects below that only run at mount/unmount
   // (empty deps) and so can't close over a fresh `state.phase` themselves.
@@ -218,7 +248,15 @@ export function useVoiceRecorder(): VoiceRecorderApi {
     durationRef.current = 0;
     void (async () => {
       try {
-        const permission = await requestRecordingPermissionsAsync();
+        // Only ask when the mic isn't granted yet. On Android the request always
+        // goes through Activity.requestPermissions (expo-modules-core
+        // PermissionsService.delegateRequestToActivity has no already-granted
+        // short-circuit), which starts the system permission activity even for
+        // a granted mic. SANO's activity pauses and resumes around it, AppState
+        // reports 'background', and the listener below turned that into a stop
+        // before record() had run: native stop() then failed on every take.
+        const current = await getRecordingPermissionsAsync().catch(() => null);
+        const permission = current?.granted ? current : await requestRecordingPermissionsAsync();
         if (!permission.granted) {
           dispatch({
             type: 'fail',
@@ -230,38 +268,62 @@ export function useVoiceRecorder(): VoiceRecorderApi {
         await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
         await recorder.prepareToRecordAsync();
         recorder.record();
+        recordStartedAtRef.current = Date.now();
         dispatch({ type: 'started' });
       } catch (err) {
         console.warn('[voiceRecorder]', errMessage(err));
-        dispatch({ type: 'fail', error: 'Rekaman gagal dimulai.' });
+        dispatch({ type: 'fail', error: 'Rekaman gagal dimulai.', errorDetail: errDetail(err) });
       }
     })();
   }, [state.phase, recorder]);
 
-  // stopping: finalize the file. Races recorder.stop() against a timeout so a
-  // native promise that never settles can't leave the UI stuck on "stopping"
-  // forever (reset()/start() are both no-ops in that phase).
+  // stopping: finalize the file. Native stop() is never called sooner than
+  // VOICE_MIN_MS after record() began: Android's MediaRecorder.stop() throws
+  // when no audio frames have arrived yet, which surfaced as the generic
+  // "Rekaman gagal disimpan." A take released before the minimum keeps
+  // recording until it has passed, then stops and reports tooShort, even if
+  // that stop rejects.
+  //
+  // Races the stop against a timeout so a native promise that never settles
+  // can't leave the UI stuck on "stopping" forever (reset()/start() are both
+  // no-ops in that phase). The timer starts with the phase, so the
+  // minimum-hold wait counts against it.
   useEffect(() => {
     if (state.phase !== 'stopping') return;
     let timedOut = false;
+    const heldMs = Date.now() - recordStartedAtRef.current;
+    const releasedEarly = heldMs < VOICE_MIN_MS;
+    stopSentRef.current = false;
     const timeoutId = setTimeout(() => {
       timedOut = true;
-      dispatch({ type: 'fail', error: 'Rekaman gagal disimpan: waktu habis. Coba lagi.' });
+      dispatch({
+        type: 'fail',
+        error: 'Rekaman gagal disimpan: waktu habis. Coba lagi.',
+        errorDetail: `recorder.stop() did not settle within ${VOICE_STOP_TIMEOUT_MS} ms`,
+      });
     }, VOICE_STOP_TIMEOUT_MS);
-    void (async () => {
+    const finalize = async () => {
+      stopSentRef.current = true;
       try {
         await recorder.stop();
         if (timedOut) return; // already failed the take; ignore the late resolution
         clearTimeout(timeoutId);
-        dispatch({ type: 'stopped', uri: recorder.uri ?? null, durationMs: durationRef.current });
+        if (releasedEarly) dispatch({ type: 'fail', error: VOICE_ERRORS.tooShort });
+        else dispatch({ type: 'stopped', uri: recorder.uri ?? null, durationMs: durationRef.current });
       } catch (err) {
         if (timedOut) return;
         clearTimeout(timeoutId);
         console.warn('[voiceRecorder]', errMessage(err));
-        dispatch({ type: 'fail', error: 'Rekaman gagal disimpan.' });
+        if (releasedEarly) dispatch({ type: 'fail', error: VOICE_ERRORS.tooShort });
+        else dispatch({ type: 'fail', error: 'Rekaman gagal disimpan.', errorDetail: errDetail(err) });
       }
-    })();
-    return () => clearTimeout(timeoutId);
+    };
+    const holdId = releasedEarly ? setTimeout(() => void finalize(), VOICE_MIN_MS - heldMs) : null;
+    if (!releasedEarly) void finalize();
+    return () => {
+      clearTimeout(timeoutId);
+      if (holdId !== null) clearTimeout(holdId);
+    };
   }, [state.phase, recorder]);
 
   // Restore the audio session once a take lands (successfully or not), so the
@@ -273,7 +335,10 @@ export function useVoiceRecorder(): VoiceRecorderApi {
 
   // Backgrounding mid-recording behaves like lifting the finger: request a
   // stop so the file finalizes cleanly instead of continuing to record (or
-  // getting killed) while SANO isn't in the foreground.
+  // getting killed) while SANO isn't in the foreground. On Android any activity
+  // started over SANO (the system permission prompt included) also reports
+  // 'background', which is why the starting effect only requests the mic
+  // permission when it isn't already granted.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       if (next !== 'active' && (phaseRef.current === 'recording' || phaseRef.current === 'starting')) {
@@ -283,14 +348,16 @@ export function useVoiceRecorder(): VoiceRecorderApi {
     return () => sub.remove();
   }, []);
 
-  // Unmount while recording/starting: Android's MediaRecorder.release() (what
-  // useAudioRecorder's teardown calls) without a prior stop() leaves a
-  // truncated .m4a, so stop explicitly first. Also always restore the audio
-  // session here, regardless of phase, so an abandoned screen never leaves it
-  // open.
+  // Unmount while recording/starting, or while stopping is still waiting out
+  // VOICE_MIN_MS (the stopping effect's cleanup has just cleared that timer):
+  // Android's MediaRecorder.release() (what useAudioRecorder's teardown calls)
+  // without a prior stop() leaves a truncated .m4a, so stop explicitly first.
+  // Also always restore the audio session here, regardless of phase, so an
+  // abandoned screen never leaves it open.
   useEffect(() => {
     return () => {
-      if (phaseRef.current === 'recording' || phaseRef.current === 'starting') {
+      const phase = phaseRef.current;
+      if (phase === 'recording' || phase === 'starting' || (phase === 'stopping' && !stopSentRef.current)) {
         recorder.stop().catch(() => {});
       }
       setAudioModeAsync({ allowsRecording: false }).catch(() => {});
