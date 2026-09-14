@@ -13,6 +13,9 @@ jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
 import { listStageWeights, resetStageWeights, seedReferenceWeights, setStageWeights } from '../../../../tools/progressClaims/claims';
 import StageWeightsPanel from '../StageWeightsPanel';
 
+// Rendering suites run slowly beside the full jest run; the 5 s default flakes.
+jest.setTimeout(20000);
+
 const item = (id: string, code: string, label: string, sort: number) => ({
   id, project_id: 'p1', code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
 });

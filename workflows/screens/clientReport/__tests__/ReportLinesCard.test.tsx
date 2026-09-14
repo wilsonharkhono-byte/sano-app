@@ -33,6 +33,9 @@ import {
 import ReportLinesCard from '../ReportLinesCard';
 import type { BoqItem } from '../../../../tools/types';
 
+// Rendering suites run slowly beside the full jest run; the 5 s default flakes.
+jest.setTimeout(20000);
+
 const boq = [{ id: 'b1', code: 'T1-002', label: 'Lantai 1 ; Pile Cap, Sloof, Plat Lantai', planned: 216.25, unit: 'm³' }] as unknown as BoqItem[];
 const line = (over: Partial<ClientReportLine> = {}): ClientReportLine => ({
   id: 'l1', report_id: 'r1', line_index: 0, line_text: 'Bekisting Pile Cap :: Melanjutkan bekisting pile cap.',

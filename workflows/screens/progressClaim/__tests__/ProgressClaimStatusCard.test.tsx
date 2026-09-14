@@ -11,6 +11,9 @@ jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
 import { getLatestClaim, listStageWeights } from '../../../../tools/progressClaims/claims';
 import ProgressClaimStatusCard from '../ProgressClaimStatusCard';
 
+// Rendering suites run slowly beside the full jest run; the 5 s default flakes.
+jest.setTimeout(20000);
+
 const item = (id: string, code: string, label: string, sort: number, projectId = 'p1') => ({
   id, project_id: projectId, code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
 });

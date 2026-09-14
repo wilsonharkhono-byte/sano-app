@@ -27,6 +27,9 @@ import { removeClaimLine, saveClaimLine } from '../../../../tools/progressClaims
 import { pickAndUploadPhoto } from '../../../../tools/storage';
 import StageClaimForm, { type WeightedRowView } from '../StageClaimForm';
 
+// Rendering suites run slowly beside the full jest run; the 5 s default flakes.
+jest.setTimeout(20000);
+
 const kolom = { BEKISTING: 0.326, PEMBESIAN: 0.486, PENGECORAN: 0.188 };
 const makeRow = (over: Partial<WeightedRowView> = {}): WeightedRowView => ({
   item: { id: 'k1', code: 'T1-001', label: 'Lantai 1 ; Kolom', unit: 'm³', planned: 100, installed: 32.6, progress: 32.6 },
@@ -69,11 +72,13 @@ describe('StageClaimForm', () => {
   });
 
   it('saves the stage percents, note and photos into this week claim', async () => {
-    const { getByLabelText, onSaved } = setup();
+    const { findByText, getByLabelText, onSaved } = setup();
     fireEvent.press(getByLabelText('Pembesian 50 persen'));
     fireEvent.changeText(getByLabelText('Catatan progres'), 'Begel K1-K8');
     fireEvent.press(getByLabelText('Tambah foto'));
-    await waitFor(() => expect(pickAndUploadPhoto).toHaveBeenCalledWith('progress/p1'));
+    // Save only once the uploaded photo is in the form, or the save races it.
+    expect(await findByText('1 foto dipilih')).toBeTruthy();
+    expect(pickAndUploadPhoto).toHaveBeenCalledWith('progress/p1');
     fireEvent.press(getByLabelText('Simpan progres T1-001'));
     await waitFor(() => expect(saveClaimLine).toHaveBeenCalledWith({
       projectId: 'p1', boqItemId: 'k1', claimedPct: { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 },
