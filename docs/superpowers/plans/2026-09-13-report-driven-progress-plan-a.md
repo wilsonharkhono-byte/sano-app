@@ -3088,10 +3088,10 @@ Report these exact steps in the completion message:
 2. Deploy the function:
 
 ```bash
-supabase functions deploy report-progress-analyze --project-ref ufntlqvacjhmddwltcxf
+supabase functions deploy report-progress-analyze --project-ref ufntlqvacjhmddwltcxf --use-api
 ```
 
-   `ANTHROPIC_API_KEY` is already set project-wide. Optional secrets: `REPORT_PROGRESS_MODEL` (default `claude-opus-5`), `REPORT_PROGRESS_DAILY_CAP` (default 60).
+   Run it from a checkout that contains `supabase/functions/report-progress-analyze/` (this worktree before merge). Do steps 1 and 2 BEFORE merging to main: Vercel deploys main, and the app reads `client_report_lines` and calls the function on every report open and issue. `ANTHROPIC_API_KEY` is already set project-wide. Optional secrets: `REPORT_PROGRESS_MODEL` (default `claude-opus-5`), `REPORT_PROGRESS_DAILY_CAP` (default 60).
 3. Web (Vercel deploys `main`; until merge, run `npm run web` locally): log in as an office role, open Citraland → Laporan → Laporan Progres Klien (Blueprint) → Riwayat Laporan → **Tautkan laporan lama (19)**. Expected: a progress toast, then each report opened from the list shows the "Tautan Progres" card with suggestions; `progress_ai_runs` has one `ok` row per report with `cost_usd` around 0.10 and `tokens_in` roughly 10–20k.
 4. Issue one new daily report from a supervisor account and confirm the card appears with suggestions within ~20 s of "Terbitkan & Simpan".
 5. Open a report older than 7 days: photos now load (the fix from Task 8).
