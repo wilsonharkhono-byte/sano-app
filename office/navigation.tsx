@@ -35,7 +35,7 @@ export type OfficeTabParamList = {
   Rooms: undefined;
   Mandor: undefined;
   Opname: undefined;
-  Reports: undefined;
+  Reports: { initialSection?: string; projectId?: string; claimId?: string } | undefined;
   Notifikasi: undefined;
   RoomDetail: { projectCode: string; roomCode: string };
   SiteEventDetail: { eventId: string; projectId: string };

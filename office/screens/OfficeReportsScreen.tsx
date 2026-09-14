@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Modal, useWindowDimensions } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,6 +22,8 @@ import type { MandorAttendance, KasbonAging } from '../../tools/types';
 import { generateReport, recordReportExport, type ReportPayload, type ReportType, type ReportFilters } from '../../tools/reports';
 import { ReportPreview } from '../../workflows/components/ReportPreview';
 import ClientReportBuilderScreen from '../../workflows/screens/ClientReportBuilderScreen';
+import ProgressClaimVerifyPanel from './progressClaim/ProgressClaimVerifyPanel';
+import { countSubmittedClaims } from '../../tools/progressClaims/claims';
 import { getMaterialDrift } from '../../tools/envelopes';
 import { aggregateDriftRollup, formatRollupTile, type DriftRollup } from '../../tools/planDrift';
 import { computeOverallProgress } from '../../tools/progressMath';
@@ -32,12 +34,12 @@ function formatTs(v: string) {
   return new Date(v).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-type Section = 'overview' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'client-report';
+type Section = 'overview' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'client-report' | 'klaim';
 
 export default function OfficeReportsScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
-  const { project, profile, boqItems, purchaseOrders, defects, milestones } = useProject();
+  const { project, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
   const { show: toast } = useToast();
   const [activeSection, setActiveSection] = useState<Section>(route.params?.initialSection ?? 'overview');
   const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
@@ -46,6 +48,26 @@ export default function OfficeReportsScreen() {
     const nextSection = route.params?.initialSection as Section | undefined;
     if (nextSection) setActiveSection(nextSection);
   }, [route.params?.initialSection]);
+
+  // A claim notification (migration 104) names its project; open it once per navigation.
+  const appliedProjectParam = useRef<unknown>(null);
+  useEffect(() => {
+    const params = route.params as { projectId?: string } | undefined;
+    if (!params?.projectId || appliedProjectParam.current === params) return;
+    appliedProjectParam.current = params;
+    if (params.projectId !== project?.id) setActiveProject(params.projectId);
+  }, [route.params, project?.id, setActiveProject]);
+
+  // Claims waiting for verification on the active project, for the Klaim tab badge.
+  const [pendingClaims, setPendingClaims] = useState(0);
+  useEffect(() => {
+    if (!project) return;
+    let alive = true;
+    countSubmittedClaims(project.id)
+      .then((n) => { if (alive) setPendingClaims(n); })
+      .catch(() => { if (alive) setPendingClaims(0); });
+    return () => { alive = false; };
+  }, [project, activeSection]);
   const { width } = useWindowDimensions();
   const isTablet  = width >= BREAKPOINTS.tablet;
   const isDesktop = width >= BREAKPOINTS.desktop;
@@ -161,9 +183,10 @@ export default function OfficeReportsScreen() {
     return <ClientReportBuilderScreen onBack={() => setActiveSection('overview')} />;
   }
 
-  const sectionTabs: Array<{ key: Section; label: string; icon: string }> = [
+  const sectionTabs: Array<{ key: Section; label: string; icon: string; badge?: number }> = [
     { key: 'overview', label: 'Ringkasan', icon: 'stats-chart' },
     { key: 'jadwal', label: 'Jadwal', icon: 'calendar' },
+    { key: 'klaim', label: 'Klaim', icon: 'clipboard', badge: pendingClaims },
   ];
 
   return (
@@ -182,6 +205,11 @@ export default function OfficeReportsScreen() {
           >
             <Ionicons name={tab.icon as any} size={16} color={activeSection === tab.key ? COLORS.primary : COLORS.textSec} />
             <Text style={[styles.tabText, activeSection === tab.key && styles.tabTextActive]}>{tab.label}</Text>
+            {tab.badge ? (
+              <View style={styles.tabBadge} accessibilityLabel={`${tab.badge} klaim menunggu verifikasi`}>
+                <Text style={styles.tabBadgeText}>{tab.badge}</Text>
+              </View>
+            ) : null}
           </TouchableOpacity>
         ))}
       </View>
@@ -196,6 +224,19 @@ export default function OfficeReportsScreen() {
             }}
             onOpenAiDraft={() => setActiveSection('jadwal-ai-draft')}
             onOpenAiReview={() => setActiveSection('jadwal-ai-review')}
+          />
+        )}
+
+        {activeSection === 'klaim' && project && (
+          <ProgressClaimVerifyPanel
+            projectId={project.id}
+            profile={profile ? { id: profile.id, role: profile.role } : null}
+            boqItems={boqItems}
+            toast={toast}
+            onVerified={() => { void refresh(); }}
+            onChanged={() => {
+              countSubmittedClaims(project.id).then(setPendingClaims).catch(() => undefined);
+            }}
           />
         )}
 
@@ -720,6 +761,8 @@ const styles = StyleSheet.create({
   },
   tabText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', color: COLORS.textSec },
   tabTextActive: { color: COLORS.primary },
+  tabBadge: { minWidth: 18, height: 18, paddingHorizontal: 4, borderRadius: 9, backgroundColor: COLORS.critical, alignItems: 'center', justifyContent: 'center' },
+  tabBadgeText: { fontSize: TYPE.xs, lineHeight: Math.round(TYPE.xs * 1.45), fontFamily: FONTS.bold, color: COLORS.textInverse },
   sectionHead: {
     fontSize: TYPE.sm,
     fontFamily: FONTS.bold,

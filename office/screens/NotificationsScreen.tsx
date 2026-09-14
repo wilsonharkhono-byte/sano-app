@@ -8,6 +8,9 @@ const NOTIFICATION_ROUTE_MAP: Record<string, string> = {
   ApprovalsScreen: 'Approvals',
   POScreen: 'Procurement',
   ReceiptScreen: 'Terima',
+  // Migration 104 claim notifications; both open the Klaim section of Reports.
+  ProgressClaimVerify: 'Reports',
+  ProgressClaim: 'Reports',
 };
 
 interface Props {

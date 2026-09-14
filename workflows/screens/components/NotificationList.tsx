@@ -37,6 +37,9 @@ const TYPE_STYLES: Record<string, TypeStyle> = {
   REQUEST_APPROVED_FOR_PO: { icon: 'cart',             color: COLORS.ok,       bg: COLORS.okBg },
   PLAN_REVISED:            { icon: 'refresh-circle',   color: COLORS.info,     bg: COLORS.infoBg },
   PLAN_CEILING_RAISE:      { icon: 'trending-up',      color: COLORS.warning,  bg: COLORS.warningBg },
+  PROGRESS_CLAIM_SUBMITTED: { icon: 'clipboard',             color: COLORS.info,    bg: COLORS.infoBg },
+  PROGRESS_CLAIM_RETURNED:  { icon: 'arrow-undo-circle',     color: COLORS.warning, bg: COLORS.warningBg },
+  PROGRESS_CLAIM_VERIFIED:  { icon: 'checkmark-done-circle', color: COLORS.ok,      bg: COLORS.okBg },
   CRITICAL:                { icon: 'warning',          color: COLORS.critical, bg: COLORS.criticalBg },
   WARNING:                 { icon: 'warning',          color: COLORS.warning,  bg: COLORS.warningBg },
 };
