@@ -25,9 +25,17 @@ export function canVerifyClaim(role: string | null | undefined): boolean {
   return role === 'estimator' || role === 'admin';
 }
 
-/** Separation of duties: whoever submitted a claim never verifies it, whatever their role. */
-export function canVerifyClaimAs(role: string | null | undefined, uid: string | null | undefined, submittedBy: string | null | undefined): boolean {
-  return canVerifyClaim(role) && !!uid && uid !== submittedBy;
+/**
+ * Separation of duties: whoever submitted a claim, or filled any of its lines,
+ * never verifies it, whatever their role. verify_progress_claim refuses it too.
+ */
+export function canVerifyClaimAs(
+  role: string | null | undefined,
+  uid: string | null | undefined,
+  submittedBy: string | null | undefined,
+  lineAuthors: ReadonlyArray<string | null | undefined> = [],
+): boolean {
+  return canVerifyClaim(role) && !!uid && uid !== submittedBy && !lineAuthors.includes(uid);
 }
 
 export function canEditStageWeights(role: string | null | undefined): boolean {
@@ -93,10 +101,11 @@ export const CLAIM_RPC_ERROR_COPY: ReadonlyArray<[string, string]> = [
   ['CLAIM_EVIDENCE', 'Lampiran foto tidak valid. Ambil ulang fotonya dari aplikasi.'],
   ['CLAIM_RETURN_NOTE', 'Tulis alasan pengembalian klaim.'],
   ['CLAIM_LINES', 'Daftar baris verifikasi tidak cocok dengan klaim. Muat ulang halaman.'],
-  ['CLAIM_SELF_VERIFY', 'Klaim yang Anda kirim harus diverifikasi estimator atau admin lain.'],
+  ['CLAIM_SELF_VERIFY', 'Klaim yang Anda kirim atau isi sendiri harus diverifikasi estimator atau admin lain.'],
   ['WEIGHTS_INVALID', 'Bobot tahapan tidak valid. Jumlah ketiga tahap harus 100%.'],
   ['WEIGHTS_CLASS', 'Kelas referensi bobot tidak dikenal.'],
-  ['WEIGHTS_SHAPE_LOCKED', 'Baris ini sudah punya klaim, jadi jenis bobotnya (satu tahap atau tiga tahap) tidak bisa diubah. Ubah nilainya saja.'],
+  ['WEIGHTS_SHAPE_LOCKED', 'Baris ini sudah punya klaim terverifikasi, jadi jenis bobotnya (satu tahap atau tiga tahap) tidak bisa diubah. Ubah nilainya saja.'],
+  ['PROGRESS_SINGLE_WRITER', 'Progres BoQ hanya berubah lewat verifikasi klaim progres.'],
 ];
 
 export function mapClaimRpcError(message: string | null | undefined): string {

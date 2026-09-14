@@ -67,7 +67,7 @@ describe('migration 104 - header states why, paste order and what a re-paste und
 
   it('names what a later re-paste of 098, 059 or 002 undoes', () => {
     expect(SQL).toMatch(/WHAT A LATER RE-PASTE OF AN OLDER FILE UNDOES/);
-    for (const f of ['098', '059', '002']) expect(SQL).toMatch(new RegExp(`--\\s+\\* ${f}:`));
+    for (const f of ['098', '059', '002', '036']) expect(SQL).toMatch(new RegExp(`--\\s+\\* ${f}:`));
   });
 
   it('says what makes a second paste safe and names this suite', () => {
@@ -77,7 +77,7 @@ describe('migration 104 - header states why, paste order and what a re-paste und
 
   it('carries a self-check a human can run after pasting', () => {
     expect(SQL).toMatch(/SELF-CHECK \(run after pasting; writes nothing\)/);
-    expect(SQL.match(/EXPECTED:/g) ?? []).toHaveLength(8);
+    expect(SQL.match(/EXPECTED:/g) ?? []).toHaveLength(12);
   });
 });
 
@@ -144,14 +144,43 @@ describe('migration 104 - the tables are read-only to the app', () => {
       ['progress_claims_select', 'progress_claims', 'SELECT'],
       ['progress_claim_lines_select', 'progress_claim_lines', 'SELECT'],
     ]);
-    expect(CODE.match(/\bCREATE POLICY\b/g) ?? []).toHaveLength(2);
+    expect(CODE.match(/\bCREATE POLICY\b/g) ?? []).toHaveLength(4);
   });
 });
 
 describe('migration 104 - the direct supervisor paths into progress close', () => {
-  it('drops the progress_entries insert policy of 002 and the boq_items progress policy of 059', () => {
+  it('drops the supervisor insert policies of 002 and the boq_items progress policy of 059', () => {
     expect(CODE).toContain('DROP POLICY IF EXISTS "progress_entries_assigned_insert" ON progress_entries;');
+    expect(CODE).toContain('DROP POLICY IF EXISTS "progress_photos_assigned_insert" ON progress_photos;');
     expect(CODE).toContain('DROP POLICY IF EXISTS "boq_items_assigned_progress_update" ON boq_items;');
+  });
+
+  it('turns 036 office access to progress entries and photos into read-only policies', () => {
+    for (const t of ['progress_entries', 'progress_photos']) {
+      expect(CODE).toContain(`DROP POLICY IF EXISTS ${t}_office_all ON ${t};`);
+      expect(CODE).toMatch(new RegExp(`CREATE POLICY ${t}_office_read ON ${t}\\s+FOR SELECT TO authenticated\\s+USING \\(is_office_role\\(\\)\\);`));
+    }
+  });
+
+  it('revokes sync_boq_progress from every client role', () => {
+    expect(CODE).toContain("IF to_regprocedure('public.sync_boq_progress(uuid)') IS NOT NULL THEN");
+    expect(CODE).toContain("EXECUTE 'REVOKE ALL ON FUNCTION public.sync_boq_progress(uuid) FROM PUBLIC, anon, authenticated';");
+  });
+
+  it('refuses any other change to installed or progress with a trigger only verification unlocks', () => {
+    const guard = fnBody('boq_items_progress_single_writer');
+    expect(guard).toContain("IF auth.uid() IS NULL OR current_setting('sano.progress_writer', true) IS NOT DISTINCT FROM 'verify' THEN");
+    expect(guard).toContain('NEW.installed IS DISTINCT FROM OLD.installed OR NEW.progress IS DISTINCT FROM OLD.progress');
+    expect(guard).toMatch(/RAISE EXCEPTION 'PROGRESS_SINGLE_WRITER:/);
+    expect(CODE).toMatch(/DROP TRIGGER IF EXISTS boq_items_progress_single_writer_trg ON boq_items;\s+CREATE TRIGGER boq_items_progress_single_writer_trg\s+BEFORE INSERT OR UPDATE ON boq_items/);
+    const verify = fnBody('verify_progress_claim');
+    const unlock = verify.indexOf("PERFORM set_config('sano.progress_writer', 'verify', true);");
+    expect(unlock).toBeGreaterThan(-1);
+    expect(verify.indexOf('FOR v_line IN SELECT * FROM progress_claim_lines')).toBeGreaterThan(unlock);
+    expect(verify.indexOf("PERFORM set_config('sano.progress_writer', '', true);")).toBeGreaterThan(verify.indexOf('END LOOP;'));
+    const names = [...CODE.matchAll(/CREATE OR REPLACE FUNCTION (\w+)\(/g)].map((m) => m[1]);
+    expect(names.filter((n) => fnBody(n).includes("'sano.progress_writer', 'verify'"))).toEqual(['verify_progress_claim']);
+    expect(CODE_103).not.toContain('sano.progress_writer');
   });
 
   it('lets a correction entry be negative but never zero', () => {
@@ -208,9 +237,12 @@ describe('migration 104 - each RPC', () => {
     expect(body).toContain('jsonb_array_length(v_refs) > 12');
   });
 
-  it('needs a reason for any figure below the verified one, at save and at verify', () => {
+  it('needs a reason for any lower figure: a dropped stage at save, and a dropped stage or quantity at verify', () => {
     expect(fnBody('save_progress_claim_line')).toMatch(/IF v_reason IS NULL AND EXISTS \(/);
-    expect(fnBody('verify_progress_claim')).toMatch(/IF v_regressed AND v_reason IS NULL THEN\s+RAISE EXCEPTION 'CLAIM_REGRESS_REASON:/);
+    const verify = fnBody('verify_progress_claim');
+    expect(verify).toContain('v_needs_reason := v_regressed OR v_delta < 0;');
+    expect(verify.indexOf('v_delta := v_after - v_before;')).toBeLessThan(verify.indexOf('v_needs_reason := v_regressed OR v_delta < 0;'));
+    expect(verify).toMatch(/IF v_needs_reason AND v_reason IS NULL THEN\s+RAISE EXCEPTION 'CLAIM_REGRESS_REASON:/);
   });
 
   it('needs a note to return a claim', () => {
@@ -221,8 +253,8 @@ describe('migration 104 - each RPC', () => {
 describe('migration 104 - verification', () => {
   const body = fnBody('verify_progress_claim');
 
-  it('never lets the submitter verify', () => {
-    expect(body).toMatch(/IF v_claim\.submitted_by = v_uid THEN\s+RAISE EXCEPTION 'CLAIM_SELF_VERIFY:/);
+  it('never lets the submitter, or anyone who filled a line, verify', () => {
+    expect(body).toMatch(/IF v_claim\.submitted_by = v_uid OR EXISTS \(\s+SELECT 1 FROM progress_claim_lines l\s+WHERE l\.claim_id = p_claim_id AND \(l\.created_by = v_uid OR l\.updated_by = v_uid\)\s+\) THEN\s+RAISE EXCEPTION 'CLAIM_SELF_VERIFY:/);
   });
 
   it('verifies every line of the claim exactly once', () => {
@@ -253,6 +285,14 @@ describe('migration 104 - verification', () => {
     expect(body).toMatch(/installed_before\s+= v_before/);
     expect(body).toMatch(/delta_quantity\s+= v_delta/);
     expect(body).toMatch(/progress_entry_id = v_entry_id/);
+  });
+
+  it('keeps installed as it stood and logs a mismatch with the entries instead of overwriting it silently', () => {
+    expect(CODE).toContain('  installed_cached_before NUMERIC,');
+    expect(CODE).toContain('ALTER TABLE progress_claim_lines ADD COLUMN IF NOT EXISTS installed_cached_before NUMERIC;');
+    expect(body).toContain('v_cached_before := v_item.installed;');
+    expect(body).toMatch(/IF abs\(COALESCE\(v_cached_before, 0\) - v_before\) > 0\.0001 THEN\s+INSERT INTO activity_log/);
+    expect(body).toMatch(/installed_cached_before = v_cached_before/);
   });
 
   it('uses the same percent math as tools/progressClaims/stageMath.ts', () => {
@@ -301,6 +341,13 @@ describe('migration 104 - notifications', () => {
     expect(body).toMatch(/v_uid,\s+-- p_exclude_user_id/);
   });
 
+  it('tells the principals when nobody assigned can verify, and reports both counts', () => {
+    const body = fnBody('submit_progress_claim');
+    expect(body).toMatch(/IF v_verifiers = 0 THEN\s+PERFORM enqueue_notification\(/);
+    expect(body).toMatch(/v_uid,\s+'principal'\s+\);/);
+    expect(body).toMatch(/'notified', v_notified, 'verifiers_notified', v_verifiers/);
+  });
+
   it('tells the submitter on return and verify, never the actor', () => {
     for (const fn of ['return_progress_claim', 'verify_progress_claim']) {
       expect(fnBody(fn)).toMatch(/v_claim\.submitted_by,[\s\S]*ARRAY\[v_uid\],\s+NULL\s+\);/);
@@ -320,8 +367,26 @@ describe('migration 104 - weights stay consistent with claims', () => {
   it('refuses to switch a claimed row between one and three stages', () => {
     const body = fnBody('boq_stage_weights_shape_lock');
     expect(body).toContain("(NEW.weights ? 'SINGLE') IS DISTINCT FROM (OLD.weights ? 'SINGLE')");
+    expect(body).toMatch(/JOIN progress_claims c ON c\.id = l\.claim_id\s+WHERE l\.boq_item_id = NEW\.boq_item_id AND c\.status = 'VERIFIED'/);
     expect(body).toMatch(/RAISE EXCEPTION 'WEIGHTS_SHAPE_LOCKED:/);
     expect(CODE).toMatch(/CREATE TRIGGER boq_stage_weights_shape_lock_trg\s+BEFORE UPDATE OF weights ON boq_stage_weights/);
+  });
+});
+
+describe('migration 104 - read views', () => {
+  it.each(['progress_claim_latest_verified', 'progress_entry_totals'])("%s applies the caller's RLS and anon cannot read it", (view) => {
+    expect(CODE).toMatch(new RegExp(`CREATE OR REPLACE VIEW ${view} WITH \\(security_invoker = on\\) AS`));
+    expect(CODE).toMatch(new RegExp(`REVOKE ALL ON [^;]*\\b${view}\\b[^;]* FROM PUBLIC, anon;`));
+    expect(CODE).toMatch(new RegExp(`GRANT SELECT ON [^;]*\\b${view}\\b[^;]* TO authenticated, service_role;`));
+  });
+
+  it('keeps one row per BoQ item, the newest verification first', () => {
+    expect(CODE).toMatch(/SELECT DISTINCT ON \(l\.boq_item_id\)/);
+    expect(CODE).toMatch(/ORDER BY l\.boq_item_id, c\.verified_at DESC, l\.updated_at DESC;/);
+  });
+
+  it('never creates a view without OR REPLACE', () => {
+    expect(CODE).not.toMatch(/\bCREATE\s+VIEW\b/i);
   });
 });
 
@@ -336,6 +401,7 @@ describe('migration 104 - privileges', () => {
   it('keeps the internal lookup and the trigger function away from clients', () => {
     expect(CODE).toContain('REVOKE ALL ON FUNCTION latest_verified_stage_pct(UUID) FROM PUBLIC, anon, authenticated;');
     expect(CODE).toContain('REVOKE ALL ON FUNCTION boq_stage_weights_shape_lock() FROM PUBLIC, anon, authenticated;');
+    expect(CODE).toContain('REVOKE ALL ON FUNCTION boq_items_progress_single_writer() FROM PUBLIC, anon, authenticated;');
     expect(CODE).not.toMatch(/GRANT EXECUTE ON FUNCTION latest_verified_stage_pct\(UUID\) TO [^;]*authenticated/);
   });
 });

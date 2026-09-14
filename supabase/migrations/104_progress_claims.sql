@@ -22,14 +22,24 @@
 --     reason. The entries of a claimed row therefore always sum to
 --     boq_items.installed, and every reader of either agrees (spec §18).
 --   * Three notification types: PROGRESS_CLAIM_SUBMITTED to the project's
---     estimators (its admins when it has none), PROGRESS_CLAIM_RETURNED and
---     PROGRESS_CLAIM_VERIFIED to the submitter.
---   * The direct supervisor paths into progress close: the progress_entries
---     insert policy (002) and the boq_items progress update policy (059) are
---     dropped, and progress_entries.quantity may now be negative but never 0.
---     Office roles keep 036's access, which publishing a BoQ needs.
+--     estimators other than the submitter (its admins when it has none, and
+--     its principals when it has neither, so someone can assign a verifier),
+--     PROGRESS_CLAIM_RETURNED and PROGRESS_CLAIM_VERIFIED to the submitter.
+--   * Progress gets exactly one writer. The supervisor insert policies on
+--     progress_entries and progress_photos (002) and the supervisor progress
+--     policy on boq_items (059) are dropped; 036's office FOR ALL policies on
+--     progress_entries and progress_photos become read-only; 002's
+--     sync_boq_progress() is revoked; and a trigger refuses any change to
+--     boq_items.installed or progress unless verify_progress_claim marked its
+--     own transaction. Office roles still edit every other boq_items column,
+--     which publishing a BoQ needs. progress_entries.quantity may now be
+--     negative but never 0.
 --   * A row's weights cannot switch between one stage and three once the row
---     has a claim line, because its stored percents would stop matching.
+--     has a VERIFIED claim line. An open line is re-checked against the
+--     current weights at submit and verify instead, so an estimator can still
+--     correct a shape a supervisor seeded.
+--   * Two read views with one row per BoQ item (latest verified percents,
+--     entry totals), so the claim screens never meet PostgREST's row cap.
 --
 -- PASTE ORDER. After 103 (progress_actor_role, boq_stage_weights) and 102
 -- (progress_ai_runs). It re-creates the notifications type CHECK as 098's
@@ -40,8 +50,10 @@
 --     is dropped with only a WARNING (self-check 4 shows it).
 --   * 059: supervisors can write boq_items.installed and progress directly
 --     again (self-check 3 shows it).
---   * 002: supervisors can insert progress_entries directly again
---     (self-check 3 shows it).
+--   * 002: supervisors can insert progress_entries and progress_photos
+--     directly again (self-check 3 shows it).
+--   * 036: office roles regain full write access to progress_entries and
+--     progress_photos (self-check 3 shows it).
 --
 -- RE-PASTE SAFETY. CREATE TABLE / INDEX IF NOT EXISTS, CREATE OR REPLACE
 -- FUNCTION, DROP POLICY / TRIGGER IF EXISTS before CREATE, and constraint swaps
@@ -121,6 +133,7 @@ CREATE TABLE IF NOT EXISTS progress_claim_lines (
   row_pct_prev      NUMERIC,
   row_pct_new       NUMERIC,
   installed_before  NUMERIC,
+  installed_cached_before NUMERIC,
   delta_quantity    NUMERIC,
   regress_reason    TEXT,
   note              TEXT,
@@ -141,6 +154,8 @@ CREATE TABLE IF NOT EXISTS progress_claim_lines (
 );
 CREATE INDEX IF NOT EXISTS idx_progress_claim_lines_row ON progress_claim_lines (boq_item_id);
 CREATE INDEX IF NOT EXISTS idx_progress_claim_lines_project ON progress_claim_lines (project_id);
+-- A database that ran an earlier draft of this file lacks the column.
+ALTER TABLE progress_claim_lines ADD COLUMN IF NOT EXISTS installed_cached_before NUMERIC;
 
 -- 102 left progress_ai_runs.claim_id without a foreign key: this table did not exist yet.
 DO $$
@@ -218,7 +233,7 @@ AS $$
 $$;
 
 -- ───────────────────────────────────────────────────────────────────────────
--- 3. A claimed row keeps its weight shape
+-- 3. A verified row keeps its weight shape
 -- ───────────────────────────────────────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION boq_stage_weights_shape_lock()
@@ -226,8 +241,12 @@ RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
 AS $$
 BEGIN
   IF (NEW.weights ? 'SINGLE') IS DISTINCT FROM (OLD.weights ? 'SINGLE')
-     AND EXISTS (SELECT 1 FROM progress_claim_lines l WHERE l.boq_item_id = NEW.boq_item_id) THEN
-    RAISE EXCEPTION 'WEIGHTS_SHAPE_LOCKED: baris % sudah punya klaim progres', NEW.boq_item_id;
+     AND EXISTS (
+       SELECT 1 FROM progress_claim_lines l
+       JOIN progress_claims c ON c.id = l.claim_id
+       WHERE l.boq_item_id = NEW.boq_item_id AND c.status = 'VERIFIED'
+     ) THEN
+    RAISE EXCEPTION 'WEIGHTS_SHAPE_LOCKED: baris % sudah punya klaim progres terverifikasi', NEW.boq_item_id;
   END IF;
   RETURN NEW;
 END;
@@ -256,11 +275,87 @@ CREATE POLICY progress_claim_lines_select ON progress_claim_lines
   USING (is_project_member(project_id) OR is_office_role());
 
 -- ───────────────────────────────────────────────────────────────────────────
--- 5. Close the direct supervisor paths into progress
+-- 4b. Read views, one row per BoQ item
 -- ───────────────────────────────────────────────────────────────────────────
 
+-- security_invoker = on, or a view reads with its owner's rights and skips the
+-- caller's RLS (061's lesson).
+CREATE OR REPLACE VIEW progress_claim_latest_verified WITH (security_invoker = on) AS
+SELECT DISTINCT ON (l.boq_item_id)
+  l.project_id, l.boq_item_id, l.verified_pct, c.verified_at
+FROM progress_claim_lines l
+JOIN progress_claims c ON c.id = l.claim_id
+WHERE c.status = 'VERIFIED' AND l.verified_pct IS NOT NULL
+ORDER BY l.boq_item_id, c.verified_at DESC, l.updated_at DESC;
+
+CREATE OR REPLACE VIEW progress_entry_totals WITH (security_invoker = on) AS
+SELECT project_id, boq_item_id, sum(quantity) AS installed_total, count(*) AS entry_count
+FROM progress_entries
+GROUP BY project_id, boq_item_id;
+
+REVOKE ALL ON progress_claim_latest_verified, progress_entry_totals FROM PUBLIC, anon;
+GRANT SELECT ON progress_claim_latest_verified, progress_entry_totals TO authenticated, service_role;
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- 5. Progress has one writer: verify_progress_claim
+-- ───────────────────────────────────────────────────────────────────────────
+
+-- Supervisors: no direct insert into progress_entries or progress_photos (002)
+-- and no direct update of boq_items.installed or progress (059).
 DROP POLICY IF EXISTS "progress_entries_assigned_insert" ON progress_entries;
+DROP POLICY IF EXISTS "progress_photos_assigned_insert" ON progress_photos;
 DROP POLICY IF EXISTS "boq_items_assigned_progress_update" ON boq_items;
+
+-- Office roles: 036 gave them FOR ALL on both tables; they only read them.
+DROP POLICY IF EXISTS progress_entries_office_all ON progress_entries;
+DROP POLICY IF EXISTS progress_entries_office_read ON progress_entries;
+CREATE POLICY progress_entries_office_read ON progress_entries
+  FOR SELECT TO authenticated
+  USING (is_office_role());
+
+DROP POLICY IF EXISTS progress_photos_office_all ON progress_photos;
+DROP POLICY IF EXISTS progress_photos_office_read ON progress_photos;
+CREATE POLICY progress_photos_office_read ON progress_photos
+  FOR SELECT TO authenticated
+  USING (is_office_role());
+
+-- 002's sync_boq_progress() rewrote installed and progress from the entries
+-- for any caller, rounding progress to whole percents.
+DO $$
+BEGIN
+  IF to_regprocedure('public.sync_boq_progress(uuid)') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON FUNCTION public.sync_boq_progress(uuid) FROM PUBLIC, anon, authenticated';
+  END IF;
+END $$;
+
+-- Office roles still edit boq_items (publishing writes label, planned,
+-- superseded_at and more), so the last door is a trigger: installed and
+-- progress change only inside verify_progress_claim, which sets
+-- sano.progress_writer = 'verify' for its own transaction. PostgREST gives a
+-- client no way to set that setting. A session without a JWT (the Dashboard
+-- SQL editor, the service role) stays trusted, the same exception 059 makes.
+CREATE OR REPLACE FUNCTION boq_items_progress_single_writer()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL OR current_setting('sano.progress_writer', true) IS NOT DISTINCT FROM 'verify' THEN
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF COALESCE(NEW.installed, 0) <> 0 OR COALESCE(NEW.progress, 0) <> 0 THEN
+      RAISE EXCEPTION 'PROGRESS_SINGLE_WRITER: baris BoQ baru dimulai dari progres 0';
+    END IF;
+  ELSIF NEW.installed IS DISTINCT FROM OLD.installed OR NEW.progress IS DISTINCT FROM OLD.progress THEN
+    RAISE EXCEPTION 'PROGRESS_SINGLE_WRITER: progres baris % hanya berubah lewat verifikasi klaim progres', OLD.code;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS boq_items_progress_single_writer_trg ON boq_items;
+CREATE TRIGGER boq_items_progress_single_writer_trg
+  BEFORE INSERT OR UPDATE ON boq_items
+  FOR EACH ROW EXECUTE FUNCTION boq_items_progress_single_writer();
 
 DO $$
 DECLARE c record;
@@ -476,6 +571,7 @@ DECLARE
   v_project  TEXT;
   v_target   TEXT;
   v_notified INTEGER := 0;
+  v_verifiers INTEGER := 0;
 BEGIN
   SELECT * INTO v_claim FROM progress_claims WHERE id = p_claim_id FOR UPDATE;
   IF NOT FOUND THEN
@@ -536,13 +632,35 @@ BEGIN
       v_uid,     -- p_exclude_user_id: the submitter is never told about their own claim
       v_target   -- p_target_role (066): estimators, or admins when the project has none
     );
+    SELECT count(*) INTO v_verifiers FROM notifications n
+    WHERE n.related_entity_id = p_claim_id AND n.type = 'PROGRESS_CLAIM_SUBMITTED' AND n.created_at >= now();
+    -- Nobody assigned can verify. Notifications are readable only by project
+    -- members (092), so an unassigned estimator would never see one; tell the
+    -- principals instead (093 makes them members of every project), who can
+    -- assign an estimator.
+    IF v_verifiers = 0 THEN
+      PERFORM enqueue_notification(
+        v_claim.project_id,
+        'PROGRESS_CLAIM_SUBMITTED',
+        'Klaim progres belum punya verifikator',
+        format('%s: belum ada estimator atau admin di proyek ini untuk memverifikasi klaim minggu %s. Tugaskan estimator.', COALESCE(v_project, 'Proyek'), to_char(v_claim.week_start, 'DD/MM/YYYY')),
+        'ProgressClaimVerify',
+        jsonb_build_object('projectId', v_claim.project_id, 'claimId', p_claim_id, 'initialSection', 'klaim'),
+        p_claim_id,
+        v_uid,
+        'principal'
+      );
+    END IF;
     SELECT count(*) INTO v_notified FROM notifications n
     WHERE n.related_entity_id = p_claim_id AND n.type = 'PROGRESS_CLAIM_SUBMITTED' AND n.created_at >= now();
   EXCEPTION WHEN OTHERS THEN
     RAISE WARNING 'submit_progress_claim: notification failed: %', SQLERRM;
   END;
 
-  RETURN jsonb_build_object('claim_id', p_claim_id, 'status', 'SUBMITTED', 'lines', v_lines, 'notified', v_notified);
+  RETURN jsonb_build_object(
+    'claim_id', p_claim_id, 'status', 'SUBMITTED', 'lines', v_lines,
+    'notified', v_notified, 'verifiers_notified', v_verifiers
+  );
 END;
 $$;
 
@@ -627,6 +745,8 @@ DECLARE
   v_entries   INTEGER := 0;
   v_regress   INTEGER := 0;
   v_notified  INTEGER := 0;
+  v_needs_reason  BOOLEAN;
+  v_cached_before NUMERIC;
 BEGIN
   SELECT * INTO v_claim FROM progress_claims WHERE id = p_claim_id FOR UPDATE;
   IF NOT FOUND THEN
@@ -636,8 +756,11 @@ BEGIN
   IF v_claim.status <> 'SUBMITTED' THEN
     RAISE EXCEPTION 'CLAIM_STATE: klaim berstatus %', v_claim.status;
   END IF;
-  IF v_claim.submitted_by = v_uid THEN
-    RAISE EXCEPTION 'CLAIM_SELF_VERIFY: klaim ini Anda kirim sendiri';
+  IF v_claim.submitted_by = v_uid OR EXISTS (
+       SELECT 1 FROM progress_claim_lines l
+       WHERE l.claim_id = p_claim_id AND (l.created_by = v_uid OR l.updated_by = v_uid)
+     ) THEN
+    RAISE EXCEPTION 'CLAIM_SELF_VERIFY: klaim ini berisi angka yang Anda kirim atau isi sendiri';
   END IF;
 
   IF p_lines IS NULL OR jsonb_typeof(p_lines) <> 'array' THEN
@@ -657,6 +780,9 @@ BEGIN
   END IF;
 
   v_week := to_char(v_claim.week_start, 'DD/MM/YYYY');
+
+  -- Unlocks boq_items_progress_single_writer for this transaction only.
+  PERFORM set_config('sano.progress_writer', 'verify', true);
 
   FOR v_line IN SELECT * FROM progress_claim_lines WHERE claim_id = p_claim_id ORDER BY created_at, id LOOP
     SELECT e INTO v_input FROM jsonb_array_elements(p_lines) AS e WHERE e ->> 'line_id' = v_line.id::text;
@@ -682,17 +808,35 @@ BEGIN
       SELECT 1 FROM jsonb_each(v_prev) AS e(k, v)
       WHERE (v #>> '{}')::numeric > COALESCE((v_pct ->> k)::numeric, 0)
     );
-    v_reason := COALESCE(NULLIF(btrim(COALESCE(v_input ->> 'regress_reason', '')), ''), v_line.regress_reason);
-    IF v_regressed AND v_reason IS NULL THEN
-      RAISE EXCEPTION 'CLAIM_REGRESS_REASON: baris % turun dari progres terverifikasi', v_item.code;
-    END IF;
 
     v_frac_prev := stage_row_fraction(v_weights, v_prev);
     v_frac_new  := stage_row_fraction(v_weights, v_pct);
     SELECT COALESCE(sum(quantity), 0) INTO v_before FROM progress_entries WHERE boq_item_id = v_item.id;
+    v_cached_before := v_item.installed;
     v_after := round(v_item.planned * v_frac_new, 4);
     v_delta := v_after - v_before;
     v_entry_id := NULL;
+
+    -- A lower figure needs a reason, whether a stage percent dropped or the
+    -- quantity fell because the weights or the planned volume changed since
+    -- the last verification.
+    v_needs_reason := v_regressed OR v_delta < 0;
+    v_reason := COALESCE(NULLIF(btrim(COALESCE(v_input ->> 'regress_reason', '')), ''), v_line.regress_reason);
+    IF v_needs_reason AND v_reason IS NULL THEN
+      RAISE EXCEPTION 'CLAIM_REGRESS_REASON: baris % turun dari progres terverifikasi', v_item.code;
+    END IF;
+
+    -- installed set outside the entries (legacy data): the entries win, and
+    -- the difference is logged so it is never overwritten silently.
+    IF abs(COALESCE(v_cached_before, 0) - v_before) > 0.0001 THEN
+      INSERT INTO activity_log (project_id, user_id, type, label, flag)
+      VALUES (
+        v_claim.project_id, v_uid, 'progres',
+        format('%s: terpasang tercatat %s berbeda dari riwayat progres %s; verifikasi mengikuti riwayat',
+               v_item.code, trim_scale(COALESCE(v_cached_before, 0)), trim_scale(v_before)),
+        'WARNING'
+      );
+    END IF;
 
     IF v_delta <> 0 THEN
       INSERT INTO progress_entries (project_id, boq_item_id, reported_by, quantity, unit, work_status, note)
@@ -720,7 +864,7 @@ BEGIN
         CASE WHEN v_delta < 0 THEN 'WARNING' ELSE 'OK' END
       );
     END IF;
-    IF v_regressed OR v_delta < 0 THEN
+    IF v_needs_reason THEN
       v_regress := v_regress + 1;
     END IF;
 
@@ -733,6 +877,7 @@ BEGIN
         row_pct_prev      = v_frac_prev,
         row_pct_new       = v_frac_new,
         installed_before  = v_before,
+        installed_cached_before = v_cached_before,
         delta_quantity    = v_delta,
         regress_reason    = v_reason,
         progress_entry_id = v_entry_id,
@@ -740,6 +885,7 @@ BEGIN
         updated_at        = now()
     WHERE id = v_line.id;
   END LOOP;
+  PERFORM set_config('sano.progress_writer', '', true);
 
   UPDATE progress_claims
   SET status = 'VERIFIED', verified_by = v_uid, verified_at = now(),
@@ -792,6 +938,7 @@ REVOKE ALL ON FUNCTION latest_verified_stage_pct(UUID) FROM PUBLIC, anon, authen
 GRANT EXECUTE ON FUNCTION latest_verified_stage_pct(UUID) TO service_role;
 
 REVOKE ALL ON FUNCTION boq_stage_weights_shape_lock() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION boq_items_progress_single_writer() FROM PUBLIC, anon, authenticated;
 
 REVOKE ALL ON FUNCTION save_progress_claim_line(UUID, UUID, JSONB, TEXT, JSONB, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION save_progress_claim_line(UUID, UUID, JSONB, TEXT, JSONB, TEXT) TO authenticated, service_role;
@@ -821,15 +968,25 @@ RESET lock_timeout;
 --    progress_claim_lines_claim_row, progress_claim_lines_pkey,
 --    progress_claims_one_open, progress_claims_pkey.
 --
--- 2. Both tables are read-only to the app:
+-- 2. The claim tables are read-only to the app, and the views apply the
+--    caller's RLS:
 --      SELECT tablename, policyname, cmd FROM pg_policies
 --      WHERE tablename IN ('progress_claims', 'progress_claim_lines');
 --    EXPECTED: two rows, both SELECT.
+--      SELECT relname, reloptions FROM pg_class
+--      WHERE relname IN ('progress_claim_latest_verified', 'progress_entry_totals') ORDER BY 1;
+--    EXPECTED: two rows, each with {security_invoker=on}.
 --
--- 3. The direct supervisor progress writes are gone:
---      SELECT policyname FROM pg_policies
---      WHERE policyname IN ('progress_entries_assigned_insert', 'boq_items_assigned_progress_update');
---    EXPECTED: no rows. A row means 002 or 059 was re-pasted: re-paste 104.
+-- 3. Progress has one writer:
+--      SELECT tablename, policyname, cmd FROM pg_policies
+--      WHERE tablename IN ('progress_entries', 'progress_photos') ORDER BY 1, 2;
+--    EXPECTED: SELECT rows only. An INSERT or ALL row means 002 or 036 was
+--    re-pasted: re-paste 104.
+--      SELECT count(*) FROM pg_policies WHERE policyname = 'boq_items_assigned_progress_update';
+--    EXPECTED: 0. A 1 means 059 was re-pasted: re-paste 104.
+--      SELECT has_function_privilege('authenticated', 'sync_boq_progress(uuid)', 'EXECUTE'),
+--             (SELECT count(*) FROM pg_trigger WHERE tgname = 'boq_items_progress_single_writer_trg');
+--    EXPECTED: f, 1.
 --
 -- 4. The type list is 098's thirteen plus three:
 --      SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'notifications_type_check';
@@ -856,7 +1013,16 @@ RESET lock_timeout;
 --      ROLLBACK;
 --    EXPECTED: ERROR starting CLAIM_ROLE.
 --
--- 8. Re-paste this whole file.
+-- 8. An office role cannot set installed outside verification (rolled back):
+--      BEGIN;
+--        SET LOCAL ROLE authenticated;
+--        SELECT set_config('request.jwt.claims',
+--               '{"sub":"<AN_ESTIMATOR_UUID>","role":"authenticated"}', true);
+--        UPDATE boq_items SET installed = installed + 1 WHERE id = '<ANY_BOQ_ROW_UUID>';
+--      ROLLBACK;
+--    EXPECTED: ERROR starting PROGRESS_SINGLE_WRITER.
+--
+-- 9. Re-paste this whole file.
 --    EXPECTED: no error, and checks 1-6 unchanged.
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -864,5 +1030,6 @@ SELECT proname, prosecdef, has_function_privilege('anon', oid, 'EXECUTE') AS ano
 FROM pg_proc
 WHERE proname IN ('stage_pct_valid', 'stage_pct_round', 'stage_row_fraction', 'zero_stage_pct',
                   'latest_verified_stage_pct', 'save_progress_claim_line', 'remove_progress_claim_line',
-                  'submit_progress_claim', 'return_progress_claim', 'verify_progress_claim')
+                  'submit_progress_claim', 'return_progress_claim', 'verify_progress_claim',
+                  'boq_items_progress_single_writer')
 ORDER BY proname;

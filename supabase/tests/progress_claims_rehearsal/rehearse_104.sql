@@ -148,3 +148,128 @@ SELECT rehearsal.expect('104 notifications: sixteen types with the three claim t
 SELECT rehearsal.expect('104 policies: the supervisor progress write policies are gone', (SELECT count(*) = 0 FROM pg_policies WHERE policyname IN ('progress_entries_assigned_insert', 'boq_items_assigned_progress_update')));
 SELECT rehearsal.expect('104 privileges: anon runs none of the 104 functions', NOT bool_or(has_function_privilege('anon', oid, 'EXECUTE'))) FROM pg_proc WHERE proname IN ('stage_pct_valid', 'stage_pct_round', 'stage_row_fraction', 'zero_stage_pct', 'latest_verified_stage_pct', 'save_progress_claim_line', 'remove_progress_claim_line', 'submit_progress_claim', 'return_progress_claim', 'verify_progress_claim');
 SELECT rehearsal.expect('104 privileges: authenticated cannot call latest_verified_stage_pct', NOT has_function_privilege('authenticated', 'latest_verified_stage_pct(uuid)', 'EXECUTE'));
+
+-- F. Review fixes: one writer of progress, re-weighting between verifications,
+--    a verifier-less project, line authors, legacy installed, the read views.
+
+-- F1. Nobody but verification writes progress, and publishing still works
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('pri') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect_error('104 the principal cannot insert a progress entry', format('INSERT INTO progress_entries (project_id, boq_item_id, reported_by, quantity, unit, work_status) VALUES (%L, %L, %L, 50, %L, %L)', rehearsal.p(), rehearsal.row(2), rehearsal.u('pri'), 'm3', 'IN_PROGRESS'), 'new row violates row-level security');
+SELECT rehearsal.expect_error('104 the principal cannot set installed', format('UPDATE boq_items SET installed = 9.5, progress = 95 WHERE id = %L', rehearsal.row(2)), 'PROGRESS_SINGLE_WRITER:');
+ROLLBACK;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect_error('104 an estimator cannot call sync_boq_progress', format('SELECT sync_boq_progress(%L)', rehearsal.p()), 'permission denied');
+SELECT rehearsal.expect_error('104 an estimator cannot insert a progress photo', format('INSERT INTO progress_photos (progress_entry_id, storage_path) SELECT id, %L FROM progress_entries WHERE project_id = %L LIMIT 1', 'progress/x.jpg', rehearsal.p()), 'new row violates row-level security');
+SELECT rehearsal.expect_error('104 a new BoQ row cannot start with progress', format('INSERT INTO boq_items (project_id, code, label, unit, planned, installed) VALUES (%L, %L, %L, %L, 10, 5)', rehearsal.p(), 'T1-099', 'Uji', 'm3'), 'PROGRESS_SINGLE_WRITER:');
+WITH u AS (UPDATE boq_items SET label = label || ' (uji)' WHERE id = rehearsal.row(2) RETURNING 1)
+SELECT rehearsal.expect('104 an estimator still edits other BoQ columns, as publishing needs', count(*) = 1) FROM u;
+ROLLBACK;
+
+-- F2. Claim 3: re-weighting, an estimator reshaping a supervisor seed, a line author, legacy installed
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 an estimator re-weights a verified row without changing its shape', (set_boq_stage_weights(rehearsal.row(1), '{"BEKISTING":0.2,"PEMBESIAN":0.5,"PENGECORAN":0.3}') ->> 'source') = 'manual');
+COMMIT;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 a supervisor seeds a one-stage class on a row without weights', seed_reference_stage_weights(rehearsal.p(), jsonb_build_array(jsonb_build_object('boq_item_id', rehearsal.row(6), 'reference_class', 'LAINNYA'))) = 1);
+SELECT save_progress_claim_line(rehearsal.p(), rehearsal.row(6), '{"SINGLE":100}') ->> 'claim_id' AS claim3 \gset
+SELECT rehearsal.expect('104 the same stage percents on the re-weighted row save without a reason', (save_progress_claim_line(rehearsal.p(), rehearsal.row(1), '{"BEKISTING":100,"PEMBESIAN":40,"PENGECORAN":0}') ->> 'claim_id') = :'claim3');
+COMMIT;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 an estimator reshapes a row whose only claim line is still open', (reset_boq_stage_weights(rehearsal.row(6), 'PILECAP_SLOOF_PLAT_DASAR') ->> 'source') = 'reference');
+SELECT rehearsal.expect('104 an estimator may also fill a line', (save_progress_claim_line(rehearsal.p(), rehearsal.row(3), '{"SINGLE":50}') ->> 'claim_id') = :'claim3');
+COMMIT;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect_error('104 submit re-checks an open line against reshaped weights', format('SELECT submit_progress_claim(%L)', :'claim3'), 'CLAIM_PCT:');
+SELECT rehearsal.expect('104 the supervisor re-enters the reshaped row', (save_progress_claim_line(rehearsal.p(), rehearsal.row(6), '{"BEKISTING":100,"PEMBESIAN":50,"PENGECORAN":0}') ->> 'claim_id') = :'claim3');
+COMMIT;
+
+UPDATE boq_items SET installed = 4 WHERE id = rehearsal.row(3);
+SELECT rehearsal.expect('104 a session without a JWT (the SQL editor) may still set installed', (SELECT installed = 4 FROM boq_items WHERE id = rehearsal.row(3)));
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 claim 3 submits and reaches both estimators', (submit_progress_claim(:'claim3') ->> 'verifiers_notified')::int = 2);
+COMMIT;
+
+SELECT id AS c3_row1 FROM progress_claim_lines WHERE claim_id = :'claim3' AND boq_item_id = rehearsal.row(1) \gset
+SELECT id AS c3_row3 FROM progress_claim_lines WHERE claim_id = :'claim3' AND boq_item_id = rehearsal.row(3) \gset
+SELECT id AS c3_row6 FROM progress_claim_lines WHERE claim_id = :'claim3' AND boq_item_id = rehearsal.row(6) \gset
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect_error('104 an estimator who filled a line cannot verify the claim', format('SELECT verify_progress_claim(%L, %L)', :'claim3', jsonb_build_array(
+  jsonb_build_object('line_id', :'c3_row1', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":40,"PENGECORAN":0}'::jsonb),
+  jsonb_build_object('line_id', :'c3_row3', 'verified_pct', '{"SINGLE":50}'::jsonb),
+  jsonb_build_object('line_id', :'c3_row6', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":50,"PENGECORAN":0}'::jsonb))), 'CLAIM_SELF_VERIFY:');
+ROLLBACK;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est2') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect_error('104 a quantity drop from re-weighting needs a reason even when no percent dropped', format('SELECT verify_progress_claim(%L, %L)', :'claim3', jsonb_build_array(
+  jsonb_build_object('line_id', :'c3_row1', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":40,"PENGECORAN":0}'::jsonb),
+  jsonb_build_object('line_id', :'c3_row3', 'verified_pct', '{"SINGLE":50}'::jsonb),
+  jsonb_build_object('line_id', :'c3_row6', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":50,"PENGECORAN":0}'::jsonb))), 'CLAIM_REGRESS_REASON:');
+SELECT verify_progress_claim(:'claim3', jsonb_build_array(
+  jsonb_build_object('line_id', :'c3_row1', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":40,"PENGECORAN":0}'::jsonb, 'regress_reason', 'Bobot kolom diubah estimator'),
+  jsonb_build_object('line_id', :'c3_row3', 'verified_pct', '{"SINGLE":50}'::jsonb),
+  jsonb_build_object('line_id', :'c3_row6', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":50,"PENGECORAN":0}'::jsonb))) AS verify3 \gset
+COMMIT;
+
+SELECT rehearsal.expect('104 re-weighting writes a -12.04 correction that carries its reason', (SELECT count(*) = 1 AND bool_and(note LIKE '%Bobot kolom diubah estimator%') FROM progress_entries WHERE boq_item_id = rehearsal.row(1) AND quantity = -12.04));
+SELECT rehearsal.expect('104 kolom installed 40 = 100 x (0.2 + 0.5 x 0.4)', (SELECT installed = 40 FROM boq_items WHERE id = rehearsal.row(1)));
+SELECT rehearsal.expect('104 the reshaped pile cap row installed 11.07 = 30 x (0.131 + 0.476 x 0.5)', (SELECT installed = 11.07 FROM boq_items WHERE id = rehearsal.row(6)));
+SELECT rehearsal.expect('104 legacy installed 4 gives way to the entries and the difference is logged',
+  (SELECT installed = 5 FROM boq_items WHERE id = rehearsal.row(3))
+  AND (SELECT count(*) = 1 FROM activity_log WHERE project_id = rehearsal.p() AND flag = 'WARNING' AND label LIKE 'T1-003: terpasang tercatat 4 berbeda dari riwayat progres 0%')
+  AND (SELECT installed_cached_before = 4 AND installed_before = 0 FROM progress_claim_lines WHERE id = :'c3_row3'));
+SELECT rehearsal.expect('104 after claim 3 every claimed row still sums its entries to installed', (SELECT bool_and(b.installed = COALESCE((SELECT sum(quantity) FROM progress_entries e WHERE e.boq_item_id = b.id), 0)) FROM boq_items b WHERE b.id IN (SELECT boq_item_id FROM progress_claim_lines WHERE project_id = rehearsal.p())));
+
+-- F3. No estimator or admin assigned: the principal hears about the claim
+BEGIN;
+DELETE FROM project_assignments WHERE project_id = rehearsal.p() AND user_id IN (rehearsal.u('est'), rehearsal.u('est2'));
+SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT save_progress_claim_line(rehearsal.p(), rehearsal.row(2), '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}') ->> 'claim_id' AS claim4 \gset
+SELECT submit_progress_claim(:'claim4') AS submit4 \gset
+RESET ROLE;
+SELECT rehearsal.expect('104 with no verifier assigned the principal is told instead',
+  (:'submit4'::jsonb ->> 'verifiers_notified')::int = 0
+  AND (:'submit4'::jsonb ->> 'notified')::int = 1
+  AND (SELECT count(*) = 1 FROM notifications WHERE related_entity_id = :'claim4' AND type = 'PROGRESS_CLAIM_SUBMITTED' AND recipient_user_id = rehearsal.u('pri')));
+ROLLBACK;
+
+-- F4. Removing the last line, an admin verifying, the principal reading, estimator seeding, the views
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT save_progress_claim_line(rehearsal.p(), rehearsal.row(2), '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}') AS save5 \gset
+SELECT rehearsal.expect('104 removing the last line leaves an empty claim', (remove_progress_claim_line((:'save5'::jsonb ->> 'line_id')::uuid) ->> 'lines_left')::int = 0);
+SELECT rehearsal.expect_error('104 an empty claim cannot be submitted', format('SELECT submit_progress_claim(%L)', :'save5'::jsonb ->> 'claim_id'), 'CLAIM_EMPTY:');
+SELECT rehearsal.expect('104 the emptied claim takes a line again', (save_progress_claim_line(rehearsal.p(), rehearsal.row(2), '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}') ->> 'claim_id') = (:'save5'::jsonb ->> 'claim_id'));
+SELECT rehearsal.expect('104 and submits', (submit_progress_claim((:'save5'::jsonb ->> 'claim_id')::uuid) ->> 'status') = 'SUBMITTED');
+COMMIT;
+
+SELECT id AS c5_line FROM progress_claim_lines WHERE claim_id = (:'save5'::jsonb ->> 'claim_id')::uuid \gset
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('adm') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 an unassigned admin verifies as an office role', (verify_progress_claim((:'save5'::jsonb ->> 'claim_id')::uuid, jsonb_build_array(jsonb_build_object('line_id', :'c5_line', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}'::jsonb))) ->> 'status') = 'VERIFIED');
+COMMIT;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('pri') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 the principal reads claim lines', (SELECT count(*) > 0 FROM progress_claim_lines WHERE project_id = rehearsal.p()));
+SELECT rehearsal.expect('104 the latest verified view has one row per verified BoQ row', (SELECT count(*) = 4 FROM progress_claim_latest_verified WHERE project_id = rehearsal.p()));
+ROLLBACK;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 the entry totals view equals installed for every claimed row', (SELECT bool_and(t.installed_total = b.installed) FROM progress_entry_totals t JOIN boq_items b ON b.id = t.boq_item_id WHERE t.project_id = rehearsal.p()));
+SELECT rehearsal.expect('104 the latest verified view shows row 2 at its newest figure', (SELECT verified_pct = '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}'::jsonb FROM progress_claim_latest_verified WHERE boq_item_id = rehearsal.row(2)));
+ROLLBACK;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('out') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 an outsider reads nothing through the views', (SELECT count(*) FROM progress_claim_latest_verified) = 0 AND (SELECT count(*) FROM progress_entry_totals) = 0);
+ROLLBACK;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 an estimator seeds reference weights too', seed_reference_stage_weights(rehearsal.p(), jsonb_build_array(jsonb_build_object('boq_item_id', rehearsal.row(5), 'reference_class', 'DINDING'))) = 1);
+ROLLBACK;
+
+SELECT rehearsal.expect('104 privileges: anon cannot read the views', NOT has_table_privilege('anon', 'progress_claim_latest_verified', 'SELECT') AND NOT has_table_privilege('anon', 'progress_entry_totals', 'SELECT'));
+SELECT rehearsal.expect('104 privileges: the views run with the caller rights', (SELECT bool_and(reloptions @> ARRAY['security_invoker=on']) FROM pg_class WHERE relname IN ('progress_claim_latest_verified', 'progress_entry_totals')));

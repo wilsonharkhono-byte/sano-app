@@ -28,6 +28,8 @@ describe('roles and states', () => {
     expect(canVerifyClaimAs('estimator', 'u-est', 'u-est')).toBe(false);
     expect(canVerifyClaimAs('admin', null, 'u-sup')).toBe(false);
     expect(canVerifyClaimAs('supervisor', 'u-sup2', 'u-sup')).toBe(false);
+    expect(canVerifyClaimAs('estimator', 'u-est', 'u-sup', ['u-sup', 'u-est'])).toBe(false);
+    expect(canVerifyClaimAs('estimator', 'u-est2', 'u-sup', ['u-sup', 'u-est'])).toBe(true);
   });
 
   it('allows editing a draft or returned claim only', () => {
