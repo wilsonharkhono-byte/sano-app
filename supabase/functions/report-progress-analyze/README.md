@@ -59,7 +59,7 @@ caller JWT → the report read through the caller's RLS → `is_project_member` 
 
 ## Deploy
 
-Paste migration 101 first: the function inserts into the tables it creates and
+Paste migration 102 (`supabase/migrations/102_client_report_lines.sql`) first: the function inserts into the tables it creates and
 takes the lease column it adds. Then, from a checkout that contains this folder:
 
     supabase functions deploy report-progress-analyze --project-ref ufntlqvacjhmddwltcxf --use-api
@@ -74,5 +74,5 @@ platform injects them.
 
 **Deploy before merging to main.** The app on main (Vercel web, and any APK or
 EAS update built from it) reads `client_report_lines` on every report open and
-calls this function after every issue; without 101 and this function live,
+calls this function after every issue; without 102 and this function live,
 those show red error toasts, though viewing, printing and revising still work.

@@ -242,7 +242,7 @@ async function linkReport(admin: SupabaseClient, reportId: string, force: boolea
     .eq('id', report.id)
     .or(leaseFreeFilter(now))
     .select('id');
-  // A failed statement is not a busy lease (e.g. migration 101 not pasted yet).
+  // A failed statement is not a busy lease (e.g. migration 102 not pasted yet).
   if (leaseError) {
     return json({ ok: false, code: 'CONTEXT', error: truncate(`Kunci tautan tidak bisa diambil: ${leaseError.message}`, 300) }, 500);
   }

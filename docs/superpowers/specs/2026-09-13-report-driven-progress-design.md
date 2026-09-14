@@ -63,9 +63,9 @@ Upah S and alat T are one borongan line in every RAB seen and are apportioned ac
 
 ## 5. Data model
 
-Migration numbers are provisional (main is at 100).
+Migration numbers are provisional (main was at 100; renumbered 2026-09-14 after main's PR #67 took 101 for gate labels).
 
-### 5.1 `client_report_lines` — migration 101
+### 5.1 `client_report_lines` — migration 102
 
 One row per `(report_id, line_index)` of an issued report; the snapshot stays frozen.
 
@@ -84,7 +84,7 @@ ai_confidence text check (in ('high','medium','low')), ai_quote text, ai_model t
 unique (report_id, line_index)
 ```
 
-`progress_ai_runs` — also migration 101, the audit ledger for both stages, same shape as `site_event_ai_runs`: `stage in ('link','prefill')`, `model, prompt_hash, input_summary, output, tokens_in, tokens_out, cost_usd, latency_ms, status, error, created_at`, keyed by `report_id` or `claim_id` (exactly one non-null; `claim_id` is a plain uuid until 103 adds the FK).
+`progress_ai_runs` — also migration 102, the audit ledger for both stages, same shape as `site_event_ai_runs`: `stage in ('link','prefill')`, `model, prompt_hash, input_summary, output, tokens_in, tokens_out, cost_usd, latency_ms, status, error, created_at`, keyed by `report_id` or `claim_id` (exactly one non-null; `claim_id` is a plain uuid until 104 adds the FK).
 
 A re-issued report (`revision + 1`) copies CONFIRMED lines forward by `line_index` where `line_text` is unchanged; changed lines re-enter SUGGESTED via a fresh link run.
 
@@ -92,7 +92,7 @@ A re-issued report (`revision + 1`) copies CONFIRMED lines forward by `line_inde
 
 `ClientReportPhoto` gains `path?: string | null` (the Storage object path, `site-media:`-prefixed when pulled from a site event). Builder-uploaded photos store both `url` and `path`. Rendering (`tools/clientReportHtml.ts`, `ReportPreview.tsx`, the viewer) resolves `path` through `resolvePhotoUrl` at render time and falls back to `url`. For the 35 already-issued snapshots, a pure helper `photoPathFromSignedUrl(url)` (`/storage/v1/object/sign/photos/<path>?token=…` → `<path>`; returns null if the shape differs) recovers the path lazily; no backfill write. This closes the 7-day expiry defect: today every issued report older than a week re-renders without photos.
 
-### 5.3 `boq_stage_weights` — migration 102
+### 5.3 `boq_stage_weights` — migration 103
 
 ```
 project_id uuid not null, boq_item_id uuid not null references boq_items(id)
@@ -106,7 +106,7 @@ primary key (project_id, boq_item_id)
 
 Rows without an entry are treated as `SINGLE` (one stage, 100 %). Derivation rules in §7.
 
-### 5.4 `progress_claims` / `progress_claim_lines` — migration 103
+### 5.4 `progress_claims` / `progress_claim_lines` — migration 104
 
 ```
 progress_claims
@@ -130,9 +130,9 @@ progress_claim_lines
 
 `progress_claim_lines.ai_run_id` and `client_report_lines.ai_run_id` reference `progress_ai_runs` (§5.1).
 
-### 5.5 Notifications — migration 103
+### 5.5 Notifications — migration 104
 
-`notifications_type_check` re-created with three new types: `PROGRESS_CLAIM_SUBMITTED` (to the project's estimators; admins as fallback when none), `PROGRESS_CLAIM_VERIFIED` and `PROGRESS_CLAIM_RETURNED` (to `submitted_by`). Fan-out follows migration 092's targeted pattern. **Paste-order caveat:** 103 must be pasted after 098; re-pasting 098 later would drop these types — 103's self-check block asserts the 16-type list.
+`notifications_type_check` re-created with three new types: `PROGRESS_CLAIM_SUBMITTED` (to the project's estimators; admins as fallback when none), `PROGRESS_CLAIM_VERIFIED` and `PROGRESS_CLAIM_RETURNED` (to `submitted_by`). Fan-out follows migration 092's targeted pattern. **Paste-order caveat:** 104 must be pasted after 098; re-pasting 098 later would drop these types — 104's self-check block asserts the 16-type list.
 
 ## 6. Flows
 
@@ -243,15 +243,15 @@ Supervisor (`workflows/`): builder gets the chip row per line after issue (`Clie
 
 - Pure modules with jest: `stageMath.ts` (row percent, delta, regression), `flags.ts`, `photoPathFromSignedUrl`, the element classifier, the reference-profile derivation (golden per RAB), the `SANO Input` weight columns parser.
 - Edge function: validator tests (`validate.test.ts` twin: literal quotes, clamping, unknown keys), prompt snapshot, cost table.
-- Migrations: self-check blocks (constraint lists, RPC existence) in the 101–103 files, following the 088/092 pattern; a 31-mutation style guard harness for `verify_progress_claim` (no write without SUBMITTED, no negative delta without reason, transaction atomicity).
+- Migrations: self-check blocks (constraint lists, RPC existence) in the 102–104 files, following the 088/092 pattern; a 31-mutation style guard harness for `verify_progress_claim` (no write without SUBMITTED, no negative delta without reason, transaction atomicity).
 - Integration (skippable without creds): issue a report on a disposable project → link → confirm → prefill → submit → verify → `computeOverallProgress` moves by the expected amount.
 
 ## 14. Rollout and preconditions
 
 Three plans, in order, each its own worktree and PR:
 
-- **Plan A — daily linking and photo paths.** Migration 101, `report-progress-analyze` with `link` only, builder chips, photo `path`, back-linking script. Value on day one: photos stop expiring; every report line is attributed to a work area.
-- **Plan B — weekly claim and verification.** Migrations 102–103, weights derivation for both publish paths, `prefill`, the two screens, RPCs, notifications, `derivation.ts` rule. Value: progress is finally non-zero and verified.
+- **Plan A — daily linking and photo paths.** Migration 102, `report-progress-analyze` with `link` only, builder chips, photo `path`, back-linking script. Value on day one: photos stop expiring; every report line is attributed to a work area.
+- **Plan B — weekly claim and verification.** Migrations 103–104, weights derivation for both publish paths, `prefill`, the two screens, RPCs, notifications, `derivation.ts` rule. Value: progress is finally non-zero and verified.
 - **Plan C — evidence cross-checks.** `flags.ts`, material and opname joins, principal card details.
 
 Preconditions: Gading Serpong needs a published BoQ (the estimator prepares a `SANO Input` workbook, ideally with the three weight columns). Citraland's rows carry no weights today; the estimator either re-publishes with the columns or accepts the reference profile and adjusts in-app. Material corroboration on Citraland is site-mix (cement/sand/aggregate), so `MATERIAL_SHORT` uses the cement proxy there, and only once ordering runs through the app.

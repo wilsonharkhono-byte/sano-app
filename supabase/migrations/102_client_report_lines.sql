@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 101_client_report_lines.sql
+-- 102_client_report_lines.sql
 --
 -- WHY. Issued client reports (client_progress_reports.snapshot) are the only
 -- consistent site record on the live projects, and today nothing links a
@@ -11,7 +11,7 @@
 --   * confirm_report_lines_bulk(report_id) — "Konfirmasi semua saran"
 -- The snapshot itself stays frozen. Nothing here writes progress.
 --
--- PASTE ORDER. After 100. Needs client_progress_reports (050), boq_items,
+-- PASTE ORDER. After 101 (gate labels). Needs client_progress_reports (050), boq_items,
 -- projects, profiles. Re-pasting 098 later does not affect this file.
 --
 -- RE-PASTE SAFETY. Idempotent: IF NOT EXISTS, CREATE OR REPLACE, DROP IF

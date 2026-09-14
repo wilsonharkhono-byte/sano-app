@@ -1,6 +1,6 @@
 // tools/clientReportLines.ts
 // SANO — client_report_lines: the link of each issued-report line to a BoQ
-// row and stage (migration 101, spec §5.1). The edge function writes ai_*;
+// row and stage (migration 102, spec §5.1). The edge function writes ai_*;
 // people write the decision. Nothing here writes progress.
 import { supabase } from './supabase';
 import { activityStateLabel, stageLabel } from './progressClaims/stages';
@@ -92,7 +92,7 @@ export async function reopenReportLine(lineId: string): Promise<void> {
   await updateLine(lineId, { boq_item_id: null, stage: null, activity_state: null, status: 'SUGGESTED', confirmed_by: null, confirmed_at: null });
 }
 
-/** "Konfirmasi semua saran" — migration 101 confirm_report_lines_bulk; returns the count confirmed. */
+/** "Konfirmasi semua saran" — migration 102 confirm_report_lines_bulk; returns the count confirmed. */
 export async function confirmSuggestedLines(reportId: string): Promise<number> {
   const { data, error } = await supabase.rpc('confirm_report_lines_bulk', { p_report_id: reportId });
   if (error) throw error;

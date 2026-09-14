@@ -4,11 +4,13 @@
 
 **Goal:** Every line of an issued client report gets an AI-suggested, supervisor-confirmed link to a published BoQ work-area row and a stage, persisted outside the frozen snapshot; issued reports stop losing their photos after 7 days.
 
-**Architecture:** A pure validator (`tools/reportLineDraftValidate.ts`, byte-copied into a new Deno edge function `report-progress-analyze` exactly as `site-event-analyze` does) defines the stage vocabulary and refuses any link whose quote is not a literal substring of the line. The function's `link` stage reads the issued report through the caller's RLS, then with the service role loads the project's live rows and the last 14 days of confirmed links, sends the day's lines and photos to Claude as one forced tool call, validates, and writes `ai_*` columns on `client_report_lines` (migration 101) plus one `progress_ai_runs` audit row. The app never writes `ai_*` (trigger); supervisors confirm or dismiss through RLS-scoped updates and one invoker-rights RPC. Photo storage paths are recovered from the existing signed URLs by a pure helper and stored alongside new photos, so renderers re-sign at render time.
+**Architecture:** A pure validator (`tools/reportLineDraftValidate.ts`, byte-copied into a new Deno edge function `report-progress-analyze` exactly as `site-event-analyze` does) defines the stage vocabulary and refuses any link whose quote is not a literal substring of the line. The function's `link` stage reads the issued report through the caller's RLS, then with the service role loads the project's live rows and the last 14 days of confirmed links, sends the day's lines and photos to Claude as one forced tool call, validates, and writes `ai_*` columns on `client_report_lines` (migration 102) plus one `progress_ai_runs` audit row. The app never writes `ai_*` (trigger); supervisors confirm or dismiss through RLS-scoped updates and one invoker-rights RPC. Photo storage paths are recovered from the existing signed URLs by a pure helper and stored alongside new photos, so renderers re-sign at render time.
 
 **Tech Stack:** Expo SDK 54 / React Native, TypeScript, Supabase (Postgres RLS, Storage, Edge Functions on Deno), Anthropic Messages API (`claude-opus-5`, forced tool call, no `temperature`), jest (ts-jest) for app code, `deno test` for the function.
 
 **Spec:** `docs/superpowers/specs/2026-09-13-report-driven-progress-design.md` (§4 vocabulary, §5.1–5.2 data model, §6.1 daily flow, §8 AI service, §14 rollout). Plan B (weekly claim) and Plan C (cross-checks) come later and reuse the vocabulary, the function, and the audit table created here.
+
+**Migration number:** renumbered 101 → 102 on 2026-09-14, because main (PR #67) took 101 for gate labels. Commit messages before that date still say 101.
 
 **Worktree / branch:** `feat/report-driven-progress` (already holds the spec commit c500ad6). Run everything from the worktree root. Inside a worktree `package.json`'s `testPathIgnorePatterns` matches the worktree path, so ALWAYS run jest as `npx jest <paths> --testPathIgnorePatterns='/node_modules/'`.
 
@@ -26,7 +28,7 @@
 | `tools/clientReportLines.ts` (create) | Data access for `client_report_lines`: list, confirm, dismiss, reopen, bulk-confirm RPC, invoke the function, list unlinked reports; pure `summarizeLines` / `suggestionLabel`. |
 | `workflows/screens/clientReport/ReportLinesCard.tsx` (create) | The "Tautan Progres" card: chips per line, inline picker, confirm-all, run/retry AI. |
 | `workflows/screens/ClientReportBuilderScreen.tsx` (modify) | Store photo path on add; re-sign on open; after issue → link + open; office-only back-link button. |
-| `supabase/migrations/101_client_report_lines.sql` (create) | `progress_ai_runs`, `client_report_lines`, guard trigger, RLS, `confirm_report_lines_bulk`, self-check. |
+| `supabase/migrations/102_client_report_lines.sql` (create) | `progress_ai_runs`, `client_report_lines`, guard trigger, RLS, `confirm_report_lines_bulk`, self-check. |
 | `supabase/functions/report-progress-analyze/{index,prompt,validate,cost,util}.ts`, `deno.json`, `README.md`, `*.test.ts` (create) | The edge function, `link` stage only. `validate.ts` and `cost.ts` are byte copies (twin-tested). |
 | `tools/__tests__/reportLineDraftValidate.test.ts`, `progressClaimsStages.test.ts`, `clientReportPhotos.test.ts`, `clientReportLines.test.ts`, `reportProgressTwins.test.ts` (create); `workflows/screens/clientReport/__tests__/ReportLinesCard.test.tsx` (create) | jest coverage. |
 
@@ -987,7 +989,7 @@ caller JWT → the report read through the caller's RLS → `is_project_member` 
     supabase functions deploy report-progress-analyze --project-ref ufntlqvacjhmddwltcxf
 
 `ANTHROPIC_API_KEY` is already set for site-event-analyze; secrets are project-wide.
-Migration 101 must be pasted first (the function inserts into the tables it creates).
+Migration 102 must be pasted first (the function inserts into the tables it creates).
 ```
 
 - [ ] **Step 7: Run the Deno and jest checks**
@@ -1827,10 +1829,10 @@ git commit -m "feat(report-progress-analyze): link stage — trust order, cap, c
 
 ---
 
-### Task 7: Migration 101 — `progress_ai_runs`, `client_report_lines`, guard, RLS, bulk-confirm RPC
+### Task 7: Migration 102 — `progress_ai_runs`, `client_report_lines`, guard, RLS, bulk-confirm RPC
 
 **Files:**
-- Create: `supabase/migrations/101_client_report_lines.sql`
+- Create: `supabase/migrations/102_client_report_lines.sql`
 
 House style (097/100): WHY / PASTE ORDER / RE-PASTE SAFETY header, `SET lock_timeout = '5s'`, helpers inlined with `CREATE OR REPLACE`, `DROP … IF EXISTS` before each create, `RESET lock_timeout;`, boxed commented SELF-CHECK ending with a re-paste check. Migrations are pasted into the Dashboard SQL editor by the user, never pushed.
 
@@ -1838,7 +1840,7 @@ House style (097/100): WHY / PASTE ORDER / RE-PASTE SAFETY header, `SET lock_tim
 
 ```sql
 -- ═══════════════════════════════════════════════════════════════════════════
--- 101_client_report_lines.sql
+-- 102_client_report_lines.sql
 --
 -- WHY. Issued client reports (client_progress_reports.snapshot) are the only
 -- consistent site record on the live projects, and today nothing links a
@@ -1850,7 +1852,7 @@ House style (097/100): WHY / PASTE ORDER / RE-PASTE SAFETY header, `SET lock_tim
 --   * confirm_report_lines_bulk(report_id) — "Konfirmasi semua saran"
 -- The snapshot itself stays frozen. Nothing here writes progress.
 --
--- PASTE ORDER. After 100. Needs client_progress_reports (050), boq_items,
+-- PASTE ORDER. After 101 (gate labels). Needs client_progress_reports (050), boq_items,
 -- projects, profiles. Re-pasting 098 later does not affect this file.
 --
 -- RE-PASTE SAFETY. Idempotent: IF NOT EXISTS, CREATE OR REPLACE, DROP IF
@@ -2129,17 +2131,17 @@ SELECT to_regclass('public.progress_ai_runs') AS runs, to_regclass('public.clien
 
 - [ ] **Step 2: Static checks a reviewer can run without a database**
 
-Run: `grep -c "DROP POLICY IF EXISTS" supabase/migrations/101_client_report_lines.sql && grep -c "CREATE POLICY" supabase/migrations/101_client_report_lines.sql`
+Run: `grep -c "DROP POLICY IF EXISTS" supabase/migrations/102_client_report_lines.sql && grep -c "CREATE POLICY" supabase/migrations/102_client_report_lines.sql`
 Expected: `3` and `3` (every policy is dropped before it is created).
 
-Run: `grep -n "SECURITY DEFINER" supabase/migrations/101_client_report_lines.sql`
+Run: `grep -n "SECURITY DEFINER" supabase/migrations/102_client_report_lines.sql`
 Expected: exactly the two inlined helpers (lines inside section 0); `confirm_report_lines_bulk` must NOT appear.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add supabase/migrations/101_client_report_lines.sql
-git commit -m "feat(db): 101 client_report_lines + progress_ai_runs — guard trigger, RLS, bulk confirm RPC"
+git add supabase/migrations/102_client_report_lines.sql
+git commit -m "feat(db): 102 client_report_lines + progress_ai_runs — guard trigger, RLS, bulk confirm RPC"
 ```
 
 > The user pastes migrations into the Dashboard SQL editor themselves (see memory: migration history divergence). Task 12 lists it as a precondition for the end-to-end check; do not attempt `supabase db push`.
@@ -2376,7 +2378,7 @@ Expected: FAIL — `Cannot find module '../clientReportLines'`.
 ```ts
 // tools/clientReportLines.ts
 // SANO — client_report_lines: the link of each issued-report line to a BoQ
-// row and stage (migration 101, spec §5.1). The edge function writes ai_*;
+// row and stage (migration 102, spec §5.1). The edge function writes ai_*;
 // people write the decision. Nothing here writes progress.
 import { supabase } from './supabase';
 import { activityStateLabel, stageLabel } from './progressClaims/stages';
@@ -2467,7 +2469,7 @@ export async function reopenReportLine(lineId: string): Promise<void> {
   if (error) throw error;
 }
 
-/** "Konfirmasi semua saran" — migration 101 confirm_report_lines_bulk; returns the count confirmed. */
+/** "Konfirmasi semua saran" — migration 102 confirm_report_lines_bulk; returns the count confirmed. */
 export async function confirmSuggestedLines(reportId: string): Promise<number> {
   const { data, error } = await supabase.rpc('confirm_report_lines_bulk', { p_report_id: reportId });
   if (error) throw error;
@@ -3082,7 +3084,7 @@ Expected: tsc clean; jest all suites pass (the two suites that need `.env` are s
 
 Report these exact steps in the completion message:
 
-1. Paste `supabase/migrations/101_client_report_lines.sql` into the Dashboard SQL editor; run its self-checks 1–5.
+1. Paste `supabase/migrations/102_client_report_lines.sql` into the Dashboard SQL editor; run its self-checks 1–5.
 2. Deploy the function:
 
 ```bash
