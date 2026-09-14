@@ -5,15 +5,16 @@
 // Verifikasi writes progress through verify_progress_claim; Kembalikan sends
 // the claim back with a note. The principal reads the same view. Whoever
 // submitted the claim or filled one of its lines never verifies it (the RPC
-// refuses that as well).
+// refuses that as well). The preview reads the claim's BoQ rows fresh, because
+// verification computes from the live planned volume.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Card from '../../../workflows/components/Card';
 import Badge from '../../../workflows/components/Badge';
 import StoragePhoto from '../../../workflows/components/StoragePhoto';
-import { canVerifyClaim, canVerifyClaimAs } from '../../../tools/progressClaims/claimRules';
+import { canVerifyClaim, canVerifyClaimAs, regressReasonRowCode } from '../../../tools/progressClaims/claimRules';
 import {
-  getLatestClaim, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
+  getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
   type ProgressClaim, type ProgressClaimLine, type VerifyLineInput,
 } from '../../../tools/progressClaims/claims';
 import {
@@ -28,6 +29,7 @@ import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../../workflows/theme';
 
 const lh = (size: number) => Math.round(size * 1.45);
 const QUANTITY_DROP = 'Volume terpasang turun karena bobot atau volume rencana berubah sejak verifikasi terakhir.';
+const RECORDED_DROP = 'Progres baris ini turun dari yang tercatat. Isi alasan sebelum verifikasi.';
 
 interface Props {
   projectId: string;
@@ -52,6 +54,8 @@ interface Loaded {
   projectId: string;
   claim: ProgressClaim | null;
   lines: ProgressClaimLine[];
+  /** The claim's BoQ rows read fresh, by id. */
+  rows: Map<string, ClaimableItem>;
   weights: Map<string, RowWeights>;
   verified: Map<string, StagePct>;
   ledger: Map<string, number>;
@@ -91,22 +95,26 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
   const [returning, setReturning] = useState(false);
   const [returnNote, setReturnNote] = useState('');
   const [busy, setBusy] = useState(false);
+  // Lines verify_progress_claim demanded a reason for although the preview saw no drop.
+  const [forcedReasons, setForcedReasons] = useState<ReadonlySet<string>>(() => new Set());
   const seq = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ keepInputs = false }: { keepInputs?: boolean } = {}) => {
     const mine = ++seq.current;
     setError(null);
     try {
       const claim = (await getOpenClaim(projectId)) ?? (await getLatestClaim(projectId));
       if (!claim || claim.status !== 'SUBMITTED') {
         if (mine === seq.current) {
-          setData({ projectId, claim, lines: [], weights: new Map(), verified: new Map(), ledger: new Map() });
+          setData({ projectId, claim, lines: [], rows: new Map(), weights: new Map(), verified: new Map(), ledger: new Map() });
           setLineInputs({});
+          setForcedReasons(new Set());
         }
         return;
       }
-      const [lines, weightRows, verified, ledger] = await Promise.all([
-        listClaimLines(claim.id),
+      const lines = await listClaimLines(claim.id);
+      const [rows, weightRows, verified, ledger] = await Promise.all([
+        listClaimRows(lines.map((l) => l.boq_item_id)),
         listStageWeights(projectId),
         listVerifiedStagePct(projectId),
         listEntryTotals(projectId),
@@ -117,11 +125,18 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
         if (checked.ok) weights.set(w.boq_item_id, { weights: checked.weights, source: w.source, referenceClass: w.reference_class });
       }
       if (mine !== seq.current) return;
-      setData({ projectId, claim, lines, weights, verified, ledger });
-      setLineInputs(Object.fromEntries(lines.map((l) => {
+      setData({ projectId, claim, lines, rows, weights, verified, ledger });
+      const claimed = (l: ProgressClaimLine): LineInput => {
         const w = weights.get(l.boq_item_id)?.weights;
-        return [l.id, { inputs: w ? pctInputs(w, l.claimed_pct) : {}, reason: l.regress_reason ?? '' }];
-      })));
+        return { inputs: w ? pctInputs(w, l.claimed_pct) : {}, reason: l.regress_reason ?? '' };
+      };
+      if (keepInputs) {
+        // Reloading after a refusal keeps what the verifier typed.
+        setLineInputs((prev) => Object.fromEntries(lines.map((l) => [l.id, prev[l.id] ?? claimed(l)])));
+        return;
+      }
+      setLineInputs(Object.fromEntries(lines.map((l) => [l.id, claimed(l)])));
+      setForcedReasons(new Set());
       setVerifierNote('');
       setReturning(false);
       setReturnNote('');
@@ -145,8 +160,10 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
   const actionable = submitted && canVerifyClaimAs(profile?.role, profile?.id, claim?.submitted_by, lineAuthors);
   const ownClaim = submitted && canVerifyClaim(profile?.role) && !actionable;
 
+  const itemOf = (loaded: Loaded, boqItemId: string) => loaded.rows.get(boqItemId) ?? items.get(boqItemId);
+
   const check = (loaded: Loaded, line: ProgressClaimLine, state: LineInput): LineCheck => {
-    const item = items.get(line.boq_item_id);
+    const item = itemOf(loaded, line.boq_item_id);
     const code = item?.code ?? '—';
     const ledgerBefore = loaded.ledger.get(line.boq_item_id) ?? 0;
     const rowWeights = loaded.weights.get(line.boq_item_id) ?? null;
@@ -161,7 +178,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     const regressed = read.ok ? regressedStages(rowWeights.weights, prev, read.pct) : [];
     return {
       code, item, rowWeights, prev, read, prevFraction, next, delta, regressed, ledgerBefore,
-      needsReason: regressed.length > 0 || (delta != null && delta < 0),
+      needsReason: regressed.length > 0 || (delta != null && delta < 0) || forcedReasons.has(line.id),
     };
   };
 
@@ -204,6 +221,17 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
       await load();
     } catch (err) {
       toast((err as Error)?.message ?? 'Verifikasi gagal.', 'critical');
+      const refusal = err as { code?: string | null; detail?: string } | null;
+      if (refusal?.code === 'CLAIM_REGRESS_REASON') {
+        // The recorded figures moved after this page loaded, for example a
+        // re-publish changed the planned volume. Ask for a reason on the row
+        // the refusal names (every row when it names none) and reload the
+        // figures behind the preview, keeping what was typed.
+        const rowCode = regressReasonRowCode(refusal.detail);
+        const named = current.lines.filter((l) => rowCode != null && itemOf(current, l.boq_item_id)?.code === rowCode);
+        setForcedReasons(new Set((named.length > 0 ? named : current.lines).map((l) => l.id)));
+        await load({ keepInputs: true });
+      }
     } finally {
       setBusy(false);
     }
@@ -328,7 +356,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
                 <Text style={styles.warn}>
                   {c.regressed.length > 0
                     ? `Turun dari angka terverifikasi: ${c.regressed.map((s) => stageKeyLabel(s)).join(', ')}.`
-                    : QUANTITY_DROP}
+                    : c.delta != null && c.delta < 0 ? QUANTITY_DROP : RECORDED_DROP}
                 </Text>
                 <TextInput
                   style={[styles.input, styles.textarea, !actionable && styles.inputDisabled]}

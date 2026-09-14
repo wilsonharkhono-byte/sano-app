@@ -2,7 +2,8 @@
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
 import { supabase } from '../supabase';
 import {
-  countLinkedLinesByRow, countSubmittedClaims, getOpenClaim, listEntryTotals, listVerifiedStagePct, removeClaimLine, resetStageWeights,
+  countLinkedLinesByRow, countSubmittedClaims, getOpenClaim, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct, removeClaimLine,
+  resetStageWeights,
   returnClaim, saveClaimLine, seedReferenceWeights, setStageWeights, submitClaim, verifyClaim,
 } from '../progressClaims/claims';
 
@@ -12,7 +13,7 @@ function chain(result: Result) {
   const calls: Array<[string, unknown[]]> = [];
   const settled = { data: result.data ?? null, error: result.error ?? null, count: result.count ?? null };
   const q: Record<string, unknown> = { calls };
-  for (const m of ['select', 'eq', 'in', 'gte', 'not', 'order', 'limit']) {
+  for (const m of ['select', 'eq', 'in', 'gte', 'not', 'order', 'limit', 'range']) {
     q[m] = jest.fn((...args: unknown[]) => { calls.push([m, args]); return q; });
   }
   q.maybeSingle = jest.fn(async () => settled);
@@ -63,6 +64,47 @@ describe('reads', () => {
     expect(from).toHaveBeenCalledWith('progress_entry_totals');
   });
 
+  it('pages past the 1,000-row cap in a stable order', async () => {
+    const firstPage = Array.from({ length: 1000 }, (_, i) => ({ boq_item_id: `r${i}`, installed_total: 1 }));
+    const first = chain({ data: firstPage });
+    const second = chain({ data: [{ boq_item_id: 'r1000', installed_total: '2.5' }] });
+    from.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const totals = await listEntryTotals('p1');
+    expect(totals.size).toBe(1001);
+    expect(totals.get('r1000')).toBe(2.5);
+    expect(first.calls).toEqual(expect.arrayContaining([['order', ['boq_item_id']], ['range', [0, 999]]]));
+    expect(second.calls).toEqual(expect.arrayContaining([['range', [1000, 1999]]]));
+  });
+
+  it.each([
+    ['stage weights', () => listStageWeights('p1'), 'boq_stage_weights'],
+    ['latest verified figures', () => listVerifiedStagePct('p1'), 'progress_claim_latest_verified'],
+  ])('pages the %s as well', async (_what, call, table) => {
+    const q = chain({ data: [] });
+    from.mockReturnValueOnce(q);
+    await (call as () => Promise<unknown>)();
+    expect(from).toHaveBeenCalledWith(table);
+    expect(q.calls).toEqual(expect.arrayContaining([['eq', ['project_id', 'p1']], ['range', [0, 999]]]));
+  });
+
+  it('reads the claim rows as they are now, a hundred ids per request', async () => {
+    const ids = Array.from({ length: 150 }, (_, i) => `r${i}`);
+    const first = chain({ data: [{ id: 'r0', project_id: 'p1', code: 'T1-001', label: 'Lantai 1 ; Kolom', unit: 'm³', planned: '200', installed: 0, progress: 0 }] });
+    const second = chain({ data: [] });
+    from.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const rows = await listClaimRows([...ids, 'r0']);
+    expect(from).toHaveBeenCalledWith('boq_items');
+    expect(rows.get('r0')).toMatchObject({ code: 'T1-001', planned: 200 });
+    const idsIn = (q: ReturnType<typeof chain>) => q.calls.find(([m]) => m === 'in')?.[1][1] as string[];
+    expect(idsIn(first)).toHaveLength(100);
+    expect(idsIn(second)).toHaveLength(50);
+  });
+
+  it('reads no rows for a claim without lines', async () => {
+    await expect(listClaimRows([])).resolves.toEqual(new Map());
+    expect(from).not.toHaveBeenCalled();
+  });
+
   it('counts linked report lines from the latest revision since the week start', async () => {
     from
       .mockReturnValueOnce(chain({ data: [{ id: 'r1v1', report_no: 1, revision: 1 }, { id: 'r1v2', report_no: 1, revision: 2 }] }))
@@ -108,6 +150,15 @@ describe('writes', () => {
   it('turns a refusal into its Indonesian sentence', async () => {
     rpc.mockResolvedValueOnce({ data: null, error: { message: 'CLAIM_LOCKED: klaim x sedang menunggu verifikasi' } });
     await expect(submitClaim('c1')).rejects.toThrow('Klaim sedang diverifikasi. Tunggu hasilnya sebelum menambah progres.');
+  });
+
+  it('keeps the refusal code and the server text for the screen', async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: { message: 'CLAIM_REGRESS_REASON: baris T1-001 turun dari progres terverifikasi' } });
+    await expect(verifyClaim('c1', [])).rejects.toMatchObject({
+      message: 'Penurunan progres wajib disertai alasan.',
+      code: 'CLAIM_REGRESS_REASON',
+      detail: 'CLAIM_REGRESS_REASON: baris T1-001 turun dari progres terverifikasi',
+    });
   });
 
   it('skips the seed call when no row is missing weights', async () => {

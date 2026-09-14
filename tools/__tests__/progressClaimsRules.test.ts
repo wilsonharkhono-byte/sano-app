@@ -1,7 +1,7 @@
 // tools/__tests__/progressClaimsRules.test.ts
 import {
   CLAIM_RPC_ERROR_COPY, canEditStageWeights, canSaveClaimLine, canVerifyClaim, canVerifyClaimAs, claimLineView, isClaimEditable,
-  isRegression, mapClaimRpcError, validateClaimPct,
+  ClaimRpcError, claimRpcErrorCode, isRegression, mapClaimRpcError, regressReasonRowCode, validateClaimPct,
 } from '../progressClaims/claimRules';
 
 const split = { BEKISTING: 0.368, PEMBESIAN: 0.38, PENGECORAN: 0.252 };
@@ -85,5 +85,29 @@ describe('mapClaimRpcError', () => {
   it('falls back to the raw text, then to a generic sentence', () => {
     expect(mapClaimRpcError('connection reset')).toBe('Gagal menyimpan: connection reset');
     expect(mapClaimRpcError(null)).toBe('Gagal menyimpan. Coba lagi.');
+  });
+});
+
+describe('refusal codes', () => {
+  it('names the code in a refusal and nothing in any other failure', () => {
+    expect(claimRpcErrorCode('CLAIM_REGRESS_REASON: baris T1-001 turun dari progres terverifikasi')).toBe('CLAIM_REGRESS_REASON');
+    expect(claimRpcErrorCode('CLAIM_ROLE: peran estimator')).toBe('CLAIM_ROLE');
+    expect(claimRpcErrorCode('connection reset')).toBeNull();
+    expect(claimRpcErrorCode(undefined)).toBeNull();
+  });
+
+  it('carries the sentence, the code and the server text', () => {
+    const err = new ClaimRpcError('CLAIM_LOCKED: klaim x sedang menunggu verifikasi');
+    expect(err).toBeInstanceOf(ClaimRpcError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe(mapClaimRpcError('CLAIM_LOCKED: x'));
+    expect(err.code).toBe('CLAIM_LOCKED');
+    expect(err.detail).toBe('CLAIM_LOCKED: klaim x sedang menunggu verifikasi');
+  });
+
+  it('reads the row a reason was demanded for', () => {
+    expect(regressReasonRowCode('CLAIM_REGRESS_REASON: baris IV.A.2.7 turun dari progres terverifikasi')).toBe('IV.A.2.7');
+    expect(regressReasonRowCode('CLAIM_LOCKED: x')).toBeNull();
+    expect(regressReasonRowCode(null)).toBeNull();
   });
 });

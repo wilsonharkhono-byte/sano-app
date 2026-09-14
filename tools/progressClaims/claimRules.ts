@@ -115,3 +115,35 @@ export function mapClaimRpcError(message: string | null | undefined): string {
   }
   return text ? `Gagal menyimpan: ${text}` : 'Gagal menyimpan. Coba lagi.';
 }
+
+/** The refusal code in an RPC error message (for example `CLAIM_REGRESS_REASON`), or null. */
+export function claimRpcErrorCode(message: string | null | undefined): string | null {
+  const text = message ?? '';
+  for (const [code] of CLAIM_RPC_ERROR_COPY) {
+    if (text.includes(`${code}:`)) return code;
+  }
+  return null;
+}
+
+/**
+ * A refused claim RPC. `message` is the Indonesian sentence for the user,
+ * `code` the refusal code a screen can act on, and `detail` the server's text.
+ */
+export class ClaimRpcError extends Error {
+  readonly code: string | null;
+  readonly detail: string;
+
+  constructor(detail: string | null | undefined) {
+    super(mapClaimRpcError(detail));
+    this.name = 'ClaimRpcError';
+    this.code = claimRpcErrorCode(detail);
+    this.detail = detail ?? '';
+    Object.setPrototypeOf(this, ClaimRpcError.prototype);
+  }
+}
+
+/** The BoQ code a CLAIM_REGRESS_REASON refusal names (104 raises it with the row code), or null. */
+export function regressReasonRowCode(detail: string | null | undefined): string | null {
+  const match = /CLAIM_REGRESS_REASON: baris (.+?) turun dari progres terverifikasi/.exec(detail ?? '');
+  return match ? match[1] : null;
+}

@@ -1,11 +1,13 @@
 // tools/progressClaims/claims.ts
 // SANO — data access for stage weights and the weekly stage claim (migrations
-// 103 and 104; spec §6.2, §16, §18). Reads go through RLS. Every write is an
-// RPC that re-checks the rules, and a refusal comes back as an Error whose
-// message is the Indonesian sentence from mapClaimRpcError.
+// 103 and 104; spec §6.2, §16, §18). Reads go through RLS, a page at a time
+// where a project can pass PostgREST's 1,000-row cap. Every write is an RPC
+// that re-checks the rules, and a refusal comes back as a ClaimRpcError: its
+// message is the Indonesian sentence, its code the refusal code.
+import { fetchAllPaged } from '../queryHelpers';
 import { supabase } from '../supabase';
-import { mapClaimRpcError, type ClaimStatus } from './claimRules';
-import { countLinesByRow, latestRevisionReportIds } from './claimView';
+import { ClaimRpcError, type ClaimStatus } from './claimRules';
+import { countLinesByRow, latestRevisionReportIds, type ClaimableItem } from './claimView';
 import type { StagePct } from './stageMath';
 import type { StageWeights, WeightSource } from './stageWeights';
 import type { WorkAreaClass } from './workAreaClass';
@@ -67,7 +69,7 @@ const LINE_COLUMNS =
 
 async function callRpc<T>(name: string, args: Record<string, unknown>): Promise<T> {
   const { data, error } = await supabase.rpc(name, args);
-  if (error) throw new Error(mapClaimRpcError(error.message));
+  if (error) throw new ClaimRpcError(error.message);
   return data as T;
 }
 
@@ -120,31 +122,59 @@ export async function listClaimLines(claimId: string): Promise<ProgressClaimLine
 
 /** Each row's most recently verified stage percents, one row per BoQ item (migration 104 view). */
 export async function listVerifiedStagePct(projectId: string): Promise<Map<string, StagePct>> {
-  const { data, error } = await supabase
-    .from('progress_claim_latest_verified')
-    .select('boq_item_id, verified_pct')
-    .eq('project_id', projectId);
-  if (error) throw error;
-  return new Map(((data ?? []) as Array<{ boq_item_id: string; verified_pct: StagePct }>).map((r) => [r.boq_item_id, r.verified_pct]));
+  const rows = await fetchAllPaged<{ boq_item_id: string; verified_pct: StagePct }>((from, to) =>
+    supabase
+      .from('progress_claim_latest_verified')
+      .select('boq_item_id, verified_pct')
+      .eq('project_id', projectId)
+      .order('boq_item_id')
+      .range(from, to));
+  return new Map(rows.map((r) => [r.boq_item_id, r.verified_pct]));
 }
 
 /** What each row's progress entries sum to, one row per BoQ item (migration 104 view). Verification writes the difference from this. */
 export async function listEntryTotals(projectId: string): Promise<Map<string, number>> {
-  const { data, error } = await supabase
-    .from('progress_entry_totals')
-    .select('boq_item_id, installed_total')
-    .eq('project_id', projectId);
-  if (error) throw error;
-  return new Map(((data ?? []) as Array<{ boq_item_id: string; installed_total: number | string }>).map((r) => [r.boq_item_id, Number(r.installed_total) || 0]));
+  const rows = await fetchAllPaged<{ boq_item_id: string; installed_total: number | string }>((from, to) =>
+    supabase
+      .from('progress_entry_totals')
+      .select('boq_item_id, installed_total')
+      .eq('project_id', projectId)
+      .order('boq_item_id')
+      .range(from, to));
+  return new Map(rows.map((r) => [r.boq_item_id, Number(r.installed_total) || 0]));
 }
 
 export async function listStageWeights(projectId: string): Promise<StageWeightRow[]> {
-  const { data, error } = await supabase
-    .from('boq_stage_weights')
-    .select('boq_item_id, weights, source, reference_class, updated_at')
-    .eq('project_id', projectId);
-  if (error) throw error;
-  return (data ?? []) as StageWeightRow[];
+  return fetchAllPaged<StageWeightRow>((from, to) =>
+    supabase
+      .from('boq_stage_weights')
+      .select('boq_item_id, weights, source, reference_class, updated_at')
+      .eq('project_id', projectId)
+      .order('boq_item_id')
+      .range(from, to));
+}
+
+const ROW_ID_CHUNK = 100;
+
+/**
+ * A claim's BoQ rows as they are now, keyed by id. The screen's copy of
+ * boq_items can predate a re-publish, and verification computes from the live
+ * planned volume. Ids go in chunks so the request URL stays short.
+ */
+export async function listClaimRows(boqItemIds: ReadonlyArray<string>): Promise<Map<string, ClaimableItem>> {
+  const ids = [...new Set(boqItemIds)];
+  const rows = new Map<string, ClaimableItem>();
+  for (let i = 0; i < ids.length; i += ROW_ID_CHUNK) {
+    const { data, error } = await supabase
+      .from('boq_items')
+      .select('id, project_id, code, label, unit, planned, installed, progress, superseded_at')
+      .in('id', ids.slice(i, i + ROW_ID_CHUNK));
+    if (error) throw error;
+    for (const r of (data ?? []) as ClaimableItem[]) {
+      rows.set(r.id, { ...r, planned: Number(r.planned) || 0, installed: Number(r.installed) || 0, progress: Number(r.progress) || 0 });
+    }
+  }
+  return rows;
 }
 
 /**

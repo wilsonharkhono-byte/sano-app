@@ -6,6 +6,7 @@ jest.mock('../../../../tools/progressClaims/claims', () => ({
   getOpenClaim: jest.fn(),
   getLatestClaim: jest.fn(),
   listClaimLines: jest.fn(),
+  listClaimRows: jest.fn(),
   listStageWeights: jest.fn(),
   listVerifiedStagePct: jest.fn(),
   listEntryTotals: jest.fn(),
@@ -23,9 +24,12 @@ jest.mock('../../../../workflows/components/StoragePhoto', () => {
 });
 
 import {
-  getLatestClaim, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
+  getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
 } from '../../../../tools/progressClaims/claims';
 import ProgressClaimVerifyPanel from '../ProgressClaimVerifyPanel';
+
+// Rendering suites run slowly beside the full jest run; the 5 s default flakes.
+jest.setTimeout(20000);
 
 const kolom = { BEKISTING: 0.326, PEMBESIAN: 0.486, PENGECORAN: 0.188 };
 const balok = { BEKISTING: 0.368, PEMBESIAN: 0.38, PENGECORAN: 0.252 };
@@ -57,6 +61,7 @@ beforeEach(() => {
   (getOpenClaim as jest.Mock).mockResolvedValue(claim('SUBMITTED'));
   (getLatestClaim as jest.Mock).mockResolvedValue(null);
   (listClaimLines as jest.Mock).mockResolvedValue([line()]);
+  (listClaimRows as jest.Mock).mockResolvedValue(new Map([['k1', K1], ['b1', B1]]));
   (listStageWeights as jest.Mock).mockResolvedValue([weightRow('k1', kolom)]);
   (listVerifiedStagePct as jest.Mock).mockResolvedValue(new Map([['k1', { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }]]));
   (listEntryTotals as jest.Mock).mockResolvedValue(new Map([['k1', 32.6]]));
@@ -142,6 +147,34 @@ describe('ProgressClaimVerifyPanel', () => {
     fireEvent.press(getByLabelText('Verifikasi klaim'));
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Status klaim sudah berubah. Muat ulang halaman.', 'critical'));
     expect(getByLabelText('Verifikasi Pembesian T1-001').props.value).toBe('55');
+  });
+
+  it('previews from the BoQ row as it is now, not the copy the screen loaded', async () => {
+    (listClaimRows as jest.Mock).mockResolvedValue(new Map([['k1', { ...K1, planned: 200 }]]));
+    const { findByLabelText, getByText } = renderPanel();
+    fireEvent.changeText(await findByLabelText('Verifikasi Pembesian T1-001'), '50');
+    expect(getByText('Progres baris 32,6% menjadi 56,9% (perkiraan +81,2 m³)')).toBeTruthy();
+    expect(listClaimRows).toHaveBeenCalledWith(['k1']);
+  });
+
+  it('asks for a reason on the row the server names, keeping the typed figures', async () => {
+    (verifyClaim as jest.Mock).mockRejectedValueOnce(Object.assign(new Error('Penurunan progres wajib disertai alasan.'), {
+      code: 'CLAIM_REGRESS_REASON',
+      detail: 'CLAIM_REGRESS_REASON: baris T1-001 turun dari progres terverifikasi',
+    }));
+    const { findByLabelText, findByText, getByLabelText, getByText, toast } = renderPanel();
+    fireEvent.changeText(await findByLabelText('Verifikasi Pembesian T1-001'), '55');
+    fireEvent.press(getByLabelText('Verifikasi klaim'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Penurunan progres wajib disertai alasan.', 'critical'));
+    expect(await findByText('Verifikasi')).toBeTruthy();
+    expect(getOpenClaim).toHaveBeenCalledTimes(2);
+    expect(getByText('Progres baris ini turun dari yang tercatat. Isi alasan sebelum verifikasi.')).toBeTruthy();
+    expect(getByLabelText('Verifikasi Pembesian T1-001').props.value).toBe('55');
+    fireEvent.changeText(getByLabelText('Alasan penurunan T1-001'), 'Volume rencana direvisi');
+    fireEvent.press(getByLabelText('Verifikasi klaim'));
+    await waitFor(() => expect(verifyClaim).toHaveBeenLastCalledWith('c1', [
+      { line_id: 'l1', verified_pct: { BEKISTING: 100, PEMBESIAN: 55, PENGECORAN: 0 }, regress_reason: 'Volume rencana direvisi' },
+    ], null));
   });
 
   it('returns the claim with a note, and refuses an empty one', async () => {
