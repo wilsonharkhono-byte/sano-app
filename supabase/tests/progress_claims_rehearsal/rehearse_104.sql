@@ -191,8 +191,11 @@ UPDATE boq_items SET installed = 4 WHERE id = rehearsal.row(3);
 SELECT rehearsal.expect('104 a session without a JWT (the SQL editor) may still set installed', (SELECT installed = 4 FROM boq_items WHERE id = rehearsal.row(3)));
 
 BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
-SELECT rehearsal.expect('104 claim 3 submits and reaches both estimators', (submit_progress_claim(:'claim3') ->> 'verifiers_notified')::int = 2);
+SELECT rehearsal.expect('104 claim 3 submits and reaches only the estimator who filled no line', (submit_progress_claim(:'claim3') ->> 'verifiers_notified')::int = 1);
 COMMIT;
+SELECT rehearsal.expect('104 the estimator who filled a line is not asked to verify, the other one is',
+  (SELECT count(*) = 0 FROM notifications WHERE related_entity_id = :'claim3' AND type = 'PROGRESS_CLAIM_SUBMITTED' AND recipient_user_id = rehearsal.u('est'))
+  AND (SELECT count(*) = 1 FROM notifications WHERE related_entity_id = :'claim3' AND type = 'PROGRESS_CLAIM_SUBMITTED' AND recipient_user_id = rehearsal.u('est2')));
 
 SELECT id AS c3_row1 FROM progress_claim_lines WHERE claim_id = :'claim3' AND boq_item_id = rehearsal.row(1) \gset
 SELECT id AS c3_row3 FROM progress_claim_lines WHERE claim_id = :'claim3' AND boq_item_id = rehearsal.row(3) \gset
@@ -236,6 +239,20 @@ SELECT rehearsal.expect('104 with no verifier assigned the principal is told ins
   (:'submit4'::jsonb ->> 'verifiers_notified')::int = 0
   AND (:'submit4'::jsonb ->> 'notified')::int = 1
   AND (SELECT count(*) = 1 FROM notifications WHERE related_entity_id = :'claim4' AND type = 'PROGRESS_CLAIM_SUBMITTED' AND recipient_user_id = rehearsal.u('pri')));
+ROLLBACK;
+
+-- F3b. The only estimator left filled a line: nobody who can verify is assigned, so the principal hears
+BEGIN;
+DELETE FROM project_assignments WHERE project_id = rehearsal.p() AND user_id = rehearsal.u('est2');
+SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT save_progress_claim_line(rehearsal.p(), rehearsal.row(2), '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}') ->> 'claim_id' AS claim4b \gset
+SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT submit_progress_claim(:'claim4b') AS submit4b \gset
+RESET ROLE;
+SELECT rehearsal.expect('104 a line author is never the only one asked, so the principal is told',
+  (:'submit4b'::jsonb ->> 'verifiers_notified')::int = 0
+  AND (SELECT count(*) = 0 FROM notifications WHERE related_entity_id = :'claim4b' AND recipient_user_id = rehearsal.u('est'))
+  AND (SELECT count(*) = 1 FROM notifications WHERE related_entity_id = :'claim4b' AND type = 'PROGRESS_CLAIM_SUBMITTED' AND recipient_user_id = rehearsal.u('pri')));
 ROLLBACK;
 
 -- F4. Removing the last line, an admin verifying, the principal reading, estimator seeding, the views

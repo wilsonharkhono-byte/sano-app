@@ -22,8 +22,9 @@
 --     reason. The entries of a claimed row therefore always sum to
 --     boq_items.installed, and every reader of either agrees (spec §18).
 --   * Three notification types: PROGRESS_CLAIM_SUBMITTED to the project's
---     estimators other than the submitter (its admins when it has none, and
---     its principals when it has neither, so someone can assign a verifier),
+--     estimators who neither submitted it nor filled one of its lines (its
+--     admins when it has none, and its principals when it has neither, so
+--     someone can assign a verifier),
 --     PROGRESS_CLAIM_RETURNED and PROGRESS_CLAIM_VERIFIED to the submitter.
 --   * Progress gets exactly one writer. The supervisor insert policies on
 --     progress_entries and progress_photos (002) and the supervisor progress
@@ -569,9 +570,11 @@ DECLARE
   v_row      RECORD;
   v_lines    INTEGER;
   v_project  TEXT;
-  v_target   TEXT;
   v_notified INTEGER := 0;
   v_verifiers INTEGER := 0;
+  v_authors  UUID[];
+  v_recipient UUID;
+  v_role     TEXT;
 BEGIN
   SELECT * INTO v_claim FROM progress_claims WHERE id = p_claim_id FOR UPDATE;
   IF NOT FOUND THEN
@@ -615,25 +618,41 @@ BEGIN
   WHERE id = p_claim_id;
 
   SELECT name INTO v_project FROM projects WHERE id = v_claim.project_id;
-  v_target := CASE WHEN EXISTS (
-      SELECT 1 FROM project_assignments pa JOIN profiles p ON p.id = pa.user_id
-      WHERE pa.project_id = v_claim.project_id AND p.role = 'estimator' AND pa.user_id <> v_uid
-    ) THEN 'estimator' ELSE 'admin' END;
+  -- Whoever submitted the claim or filled one of its lines cannot verify it
+  -- (verify_progress_claim refuses them), so they are never the ones asked.
+  SELECT array_agg(DISTINCT a.user_id) INTO v_authors
+  FROM (
+    SELECT created_by AS user_id FROM progress_claim_lines WHERE claim_id = p_claim_id
+    UNION
+    SELECT updated_by FROM progress_claim_lines WHERE claim_id = p_claim_id
+    UNION
+    SELECT v_uid
+  ) a;
 
   BEGIN
-    PERFORM enqueue_notification(
-      v_claim.project_id,
-      'PROGRESS_CLAIM_SUBMITTED',
-      'Klaim progres menunggu verifikasi',
-      format('%s: %s baris, minggu %s', COALESCE(v_project, 'Proyek'), v_lines, to_char(v_claim.week_start, 'DD/MM/YYYY')),
-      'ProgressClaimVerify',
-      jsonb_build_object('projectId', v_claim.project_id, 'claimId', p_claim_id, 'initialSection', 'klaim'),
-      p_claim_id,
-      v_uid,     -- p_exclude_user_id: the submitter is never told about their own claim
-      v_target   -- p_target_role (066): estimators, or admins when the project has none
-    );
-    SELECT count(*) INTO v_verifiers FROM notifications n
-    WHERE n.related_entity_id = p_claim_id AND n.type = 'PROGRESS_CLAIM_SUBMITTED' AND n.created_at >= now();
+    -- The project's estimators who can verify; its admins when there are none.
+    FOREACH v_role IN ARRAY ARRAY['estimator', 'admin'] LOOP
+      FOR v_recipient IN
+        SELECT pa.user_id FROM project_assignments pa JOIN profiles p ON p.id = pa.user_id
+        WHERE pa.project_id = v_claim.project_id AND p.role = v_role AND NOT (pa.user_id = ANY (v_authors))
+      LOOP
+        PERFORM enqueue_notification_user(
+          v_claim.project_id,
+          v_recipient,
+          'PROGRESS_CLAIM_SUBMITTED',
+          'Klaim progres menunggu verifikasi',
+          format('%s: %s baris, minggu %s', COALESCE(v_project, 'Proyek'), v_lines, to_char(v_claim.week_start, 'DD/MM/YYYY')),
+          'ProgressClaimVerify',
+          jsonb_build_object('projectId', v_claim.project_id, 'claimId', p_claim_id, 'initialSection', 'klaim'),
+          p_claim_id,
+          v_authors,
+          NULL
+        );
+      END LOOP;
+      SELECT count(*) INTO v_verifiers FROM notifications n
+      WHERE n.related_entity_id = p_claim_id AND n.type = 'PROGRESS_CLAIM_SUBMITTED' AND n.created_at >= now();
+      EXIT WHEN v_verifiers > 0;
+    END LOOP;
     -- Nobody assigned can verify. Notifications are readable only by project
     -- members (092), so an unassigned estimator would never see one; tell the
     -- principals instead (093 makes them members of every project), who can

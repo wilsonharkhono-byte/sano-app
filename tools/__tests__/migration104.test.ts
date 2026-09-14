@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { KNOWN_DEEPLINK_SCREENS } from '../notificationRouting';
-import { CLAIM_RPC_ERROR_COPY } from '../progressClaims/claimRules';
+import { CLAIM_RPC_ERROR_COPY, regressReasonRowCode } from '../progressClaims/claimRules';
 
 const ROOT = path.join(__dirname, '..', '..');
 const MIGRATIONS = path.join(ROOT, 'supabase', 'migrations');
@@ -321,24 +321,28 @@ describe('migration 104 - notifications', () => {
   });
 
   it.each([
-    ['submit_progress_claim', 'enqueue_notification(', "'PROGRESS_CLAIM_SUBMITTED'", "'ProgressClaimVerify',"],
+    ['submit_progress_claim', 'enqueue_notification_user(', "'PROGRESS_CLAIM_SUBMITTED'", "'ProgressClaimVerify',"],
     ['return_progress_claim', 'enqueue_notification_user(', "'PROGRESS_CLAIM_RETURNED'", "'ProgressClaim',"],
     ['verify_progress_claim', 'enqueue_notification_user(', "'PROGRESS_CLAIM_VERIFIED'", "'ProgressClaim',"],
   ])('%s enqueues inside a handler that cannot roll the claim back', (fn, call, type, screen) => {
     const body = fnBody(fn);
-    const start = body.indexOf(`PERFORM ${call}`);
+    const nested = body.indexOf('\n  BEGIN\n', body.indexOf('UPDATE progress_claims'));
+    const start = body.indexOf(`PERFORM ${call}`, nested);
     const handler = body.search(new RegExp(`EXCEPTION WHEN OTHERS THEN\\s+RAISE WARNING '${fn}: notification failed: %', SQLERRM;`));
-    expect(start).toBeGreaterThan(-1);
+    expect(nested).toBeGreaterThan(-1);
+    expect(start).toBeGreaterThan(nested);
     expect(handler).toBeGreaterThan(start);
-    expect(body.slice(0, start).trimEnd().endsWith('BEGIN')).toBe(true);
+    expect(body.slice(nested, handler)).not.toMatch(/\n  END;\n/);
     expect(body.slice(start, handler)).toContain(type);
     expect(body.slice(start, handler)).toContain(screen);
   });
 
-  it('tells the estimators, or the admins when the project has none, and never the submitter', () => {
+  it('asks assigned estimators, else admins, and never the submitter or a line author', () => {
     const body = fnBody('submit_progress_claim');
-    expect(body).toMatch(/p\.role = 'estimator' AND pa\.user_id <> v_uid\s+\) THEN 'estimator' ELSE 'admin' END;/);
-    expect(body).toMatch(/v_uid,\s+-- p_exclude_user_id/);
+    expect(body).toMatch(/SELECT created_by AS user_id FROM progress_claim_lines WHERE claim_id = p_claim_id\s+UNION\s+SELECT updated_by FROM progress_claim_lines WHERE claim_id = p_claim_id\s+UNION\s+SELECT v_uid/);
+    expect(body).toContain("FOREACH v_role IN ARRAY ARRAY['estimator', 'admin'] LOOP");
+    expect(body).toContain('AND p.role = v_role AND NOT (pa.user_id = ANY (v_authors))');
+    expect(body).toContain('EXIT WHEN v_verifiers > 0;');
   });
 
   it('tells the principals when nobody assigned can verify, and reports both counts', () => {
@@ -423,6 +427,12 @@ describe('migration 104 - the app and the database agree', () => {
       const code = name.includes('stage_weights') ? CODE_103 : CODE;
       expect({ name, params: [...args.matchAll(/\b(p_\w+):/g)].map((m) => m[1]).sort() }).toEqual({ name, params: sqlParams(name, code) });
     }
+  });
+
+  it('names the row in every reason refusal the way the verify screen reads it back', () => {
+    const raises = [...CODE.matchAll(/RAISE EXCEPTION '(CLAIM_REGRESS_REASON: [^']*)', v_item\.code;/g)].map((m) => m[1]);
+    expect(raises).toHaveLength(2);
+    for (const message of raises) expect(regressReasonRowCode(message.replace('%', 'IV.A.2.7'))).toBe('IV.A.2.7');
   });
 
   it('raises exactly the codes claimRules.ts explains, across 103 and 104', () => {
