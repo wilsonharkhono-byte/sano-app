@@ -22,6 +22,7 @@ import { computeOverallProgress } from '../../tools/progressMath';
 import { getKasbonAging, kasbonStatusLabel } from '../../tools/kasbon';
 import type { KasbonAging } from '../../tools/types';
 import { formatRp } from '../../tools/opname';
+import ProgressClaimStatusCard from '../../workflows/screens/progressClaim/ProgressClaimStatusCard';
 
 interface PendingCounts {
   perubahan: number;
@@ -957,6 +958,15 @@ export default function PrincipalHomeScreen() {
     </Card>
   );
 
+  // ── Klaim progres minggu ini (report-driven progress spec §6.3) ──
+  const claimWeekCard = project ? (
+    <ProgressClaimStatusCard
+      projectId={project.id}
+      boqItems={boqItems}
+      onOpen={() => navigation.navigate('Reports', { initialSection: 'klaim' })}
+    />
+  ) : null;
+
   // ── Section 8: Catatan Perubahan ──
   const CHANGE_TYPE_LABELS: Record<string, string> = {
     permintaan_owner: 'Permintaan Owner',
@@ -1391,6 +1401,7 @@ export default function PrincipalHomeScreen() {
               {statRowBlock}
               {todayPulseCard}
               {progressVsScheduleCard}
+              {claimWeekCard}
               {allClearCard}
               {pendingCard}
               {financialCard}
@@ -1418,6 +1429,7 @@ export default function PrincipalHomeScreen() {
             {statRowBlock}
             {todayPulseCard}
             {progressVsScheduleCard}
+            {claimWeekCard}
             {allClearCard}
             {pendingCard}
             {teamActivityCard}
