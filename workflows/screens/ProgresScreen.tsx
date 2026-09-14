@@ -7,6 +7,7 @@ import Card from '../components/Card';
 import Badge from '../components/Badge';
 import StatTile from '../components/StatTile';
 import { useProject } from '../hooks/useProject';
+import { queueDeeplink } from '../pendingDeeplink';
 import { useToast } from '../components/Toast';
 import CatatanPerubahanScreen from './CatatanPerubahanScreen';
 import DailyLogScreen from './DailyLogScreen';
@@ -20,7 +21,7 @@ type SubModule = 'home' | 'progress' | 'perubahan' | 'daily-log';
 
 export default function ProgresScreen() {
   const navigation = useNavigation<any>();
-  const { boqItems, project, profile, setActiveProject, refresh } = useProject();
+  const { projects, boqItems, project, profile, setActiveProject, refresh } = useProject();
   const { show: toast } = useToast();
   const [activeModule, setActiveModule] = useState<SubModule>('home');
   const [selectedProgressItemId, setSelectedProgressItemId] = useState<string | null>(null);
@@ -51,17 +52,24 @@ export default function ProgresScreen() {
     const params = route.params as { module?: string; projectId?: string } | undefined;
     if (!params || appliedParams.current === params) return;
     appliedParams.current = params;
-    if (params.projectId && params.projectId !== project?.id) setActiveProject(params.projectId);
+    // Notification taps switch projects before navigating
+    // (workflows/pendingDeeplink.ts). A link opened any other way switches
+    // here; the switch unmounts this screen, so the route is queued for
+    // RoleRouter to open again once the new project has loaded.
+    if (params.projectId && params.projectId !== project?.id && projects.some((p) => p.id === params.projectId)) {
+      queueDeeplink(route.name, { ...params });
+      setActiveProject(params.projectId);
+      return;
+    }
     if (params.module === 'progress') {
       setClaimRowId(null);
       setActiveModule('progress');
-      // A returned or verified claim changed what the panel and boq_items
-      // show: reload the panel even if it is already open, and the project
-      // data behind Progres Terkini and Beranda.
       setClaimReloadKey((k) => k + 1);
+      // A returned or verified claim changed boq_items: reload the project data
+      // behind Progres Terkini and Beranda.
       void refresh();
     }
-  }, [route.params, project?.id, setActiveProject, refresh]);
+  }, [route.params, route.name, project?.id, projects, setActiveProject, refresh]);
 
   const loadHomeDetails = useCallback(async () => {
     if (!project) return;

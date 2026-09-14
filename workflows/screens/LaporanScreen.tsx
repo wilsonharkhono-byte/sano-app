@@ -21,6 +21,7 @@ import MilestoneFormScreen from './MilestoneFormScreen';
 import MilestoneAiDraftScreen from './MilestoneAiDraftScreen';
 import MilestoneAiReviewScreen from './MilestoneAiReviewScreen';
 import { useProject } from '../hooks/useProject';
+import { queueDeeplink } from '../pendingDeeplink';
 import { useToast } from '../components/Toast';
 import { isPositiveNumber, isNonEmpty, sanitizeText } from '../../tools/validation';
 import { pickAndUploadPhoto } from '../../tools/storage';
@@ -53,7 +54,7 @@ function formatReportTimestamp(value: string) {
 
 export default function LaporanScreen() {
   const route = useRoute<any>();
-  const { project, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
+  const { project, projects, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
   const { show: toast } = useToast();
   // Estimators manage team membership here (migration 037), but principal
   // members are out of reach (migration 090): only a principal actor may add
@@ -85,10 +86,18 @@ export default function LaporanScreen() {
     const params = route.params as { initialSection?: Section; projectId?: string } | undefined;
     if (!params || appliedParams.current === params) return;
     appliedParams.current = params;
-    if (params.projectId && params.projectId !== project?.id) setActiveProject(params.projectId);
+    // Notification taps switch projects before navigating
+    // (workflows/pendingDeeplink.ts). A link opened any other way switches
+    // here; the switch unmounts this screen, so the route is queued for
+    // RoleRouter to open again once the new project has loaded.
+    if (params.projectId && params.projectId !== project?.id && projects.some((p) => p.id === params.projectId)) {
+      queueDeeplink(route.name, { ...params });
+      setActiveProject(params.projectId);
+      return;
+    }
     if (params.initialSection) setActiveSection(params.initialSection);
     if (params.initialSection === 'klaim') setClaimReloadKey((k) => k + 1);
-  }, [route.params, project?.id, setActiveProject]);
+  }, [route.params, route.name, project?.id, projects, setActiveProject]);
 
   useEffect(() => {
     if (route.params?.contractId) {
@@ -167,7 +176,6 @@ export default function LaporanScreen() {
   const [mtnReason, setMtnReason] = useState('');
   const [mtnPhotos, setMtnPhotos] = useState<string[]>([]);
   const [mtnBalances, setMtnBalances] = useState<Array<{ id: string; name: string; unit: string; on_site: number }>>([]);
-  const { projects } = useProject();
 
   // Report metrics
   // Task 3.2: volume-weighted over active, planned>0 items (tools/progressMath.ts)

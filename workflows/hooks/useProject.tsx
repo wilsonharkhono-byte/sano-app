@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '../../tools/supabase';
 import { autoPurgeStaleDrafts } from '../../tools/schedule';
 import type { Profile, Project, BoqItem, PurchaseOrder, Envelope, Milestone, Defect, ActivityLog } from '../../tools/types';
@@ -22,6 +22,8 @@ interface ProjectContextType {
   activityLog: ActivityLog[];
 
   loading: boolean;
+  /** The project whose data is loaded right now; differs from project.id while a switch loads. */
+  dataProjectId: string | null;
   refresh: () => Promise<void>;
 }
 
@@ -38,6 +40,7 @@ const ProjectContext = createContext<ProjectContextType>({
   defects: [],
   activityLog: [],
   loading: true,
+  dataProjectId: null,
   refresh: async () => {},
 });
 
@@ -57,6 +60,12 @@ export function ProjectProvider({ userId, children }: { userId: string; children
   const [defects, setDefects] = useState<Defect[]>([]);
   const [activityLog, setActivityLog] = useState<ActivityLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dataProjectId, setDataProjectId] = useState<string | null>(null);
+  // The project the newest load is for. A slower load for a project the user
+  // already left must never overwrite the newer project's data.
+  const activeProjectIdRef = useRef<string | null>(null);
+  activeProjectIdRef.current = activeProjectId;
+  const dataProjectIdRef = useRef<string | null>(null);
 
   const project = projects.find(p => p.id === activeProjectId) ?? null;
 
@@ -69,7 +78,9 @@ export function ProjectProvider({ userId, children }: { userId: string; children
         .eq('id', userId)
         .single();
       if (profErr) console.warn('Profile fetch error:', profErr.message);
-      setProfile(prof);
+      // Keep the known profile when a refresh fails: a null profile would swap
+      // the whole navigator to the office app.
+      if (prof || !profErr) setProfile(prof);
 
       // Fetch projects directly and let RLS decide visibility:
       //   • office roles (admin/principal/estimator) see every project
@@ -136,6 +147,8 @@ export function ProjectProvider({ userId, children }: { userId: string; children
       for (const r of results) {
         if (r.error) console.warn('Query error:', r.error.message);
       }
+      // A newer project was chosen while this load ran: drop this result.
+      if (activeProjectIdRef.current !== pid) return;
 
       setBoqItems(results[0].data ?? []);
       setPurchaseOrders(results[1].data ?? []);
@@ -144,6 +157,8 @@ export function ProjectProvider({ userId, children }: { userId: string; children
       setDefects(results[4].data ?? []);
       setActivityLog(results[5].data ?? []);
       setMilestoneDrafts(results[6].data ?? []);
+      dataProjectIdRef.current = pid;
+      setDataProjectId(pid);
 
       void autoPurgeStaleDrafts(pid).then((purged) => {
         if (purged > 0) {
@@ -154,8 +169,22 @@ export function ProjectProvider({ userId, children }: { userId: string; children
       });
     } catch (err) {
       console.warn('Project data load failed:', err);
+      if (activeProjectIdRef.current === pid) {
+        if (dataProjectIdRef.current !== pid) {
+          // Never leave the previous project's rows under the new project's name.
+          setBoqItems([]);
+          setPurchaseOrders([]);
+          setEnvelopes([]);
+          setMilestones([]);
+          setDefects([]);
+          setActivityLog([]);
+          setMilestoneDrafts([]);
+        }
+        dataProjectIdRef.current = pid;
+        setDataProjectId(pid);
+      }
     } finally {
-      setLoading(false);
+      if (activeProjectIdRef.current === pid) setLoading(false);
     }
   }, []);
 
@@ -172,6 +201,7 @@ export function ProjectProvider({ userId, children }: { userId: string; children
   const setActiveProject = useCallback((projectId: string) => {
     // Only allow switching to a project that is visible to this user
     if (projects.some(p => p.id === projectId) || projects.length === 0) {
+      activeProjectIdRef.current = projectId;
       setActiveProjectId(projectId);
     }
   }, [projects]);
@@ -202,6 +232,7 @@ export function ProjectProvider({ userId, children }: { userId: string; children
         defects,
         activityLog,
         loading,
+        dataProjectId,
         refresh,
       }}
     >

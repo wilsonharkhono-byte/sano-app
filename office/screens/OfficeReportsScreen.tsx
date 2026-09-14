@@ -12,6 +12,7 @@ import MilestoneFormScreen from '../../workflows/screens/MilestoneFormScreen';
 import MilestoneAiDraftScreen from '../../workflows/screens/MilestoneAiDraftScreen';
 import MilestoneAiReviewScreen from '../../workflows/screens/MilestoneAiReviewScreen';
 import { useProject } from '../../workflows/hooks/useProject';
+import { queueDeeplink } from '../../workflows/pendingDeeplink';
 import { useToast } from '../../workflows/components/Toast';
 import { getSiteChangeSummary, type SiteChangeSummary } from '../../tools/siteChanges';
 import { getLaborPaymentSummary, type LaborPaymentSummary } from '../../tools/opnameRpc';
@@ -39,7 +40,7 @@ type Section = 'overview' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadw
 export default function OfficeReportsScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
-  const { project, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
+  const { projects, project, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
   const { show: toast } = useToast();
   const [activeSection, setActiveSection] = useState<Section>(route.params?.initialSection ?? 'overview');
   const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
@@ -54,10 +55,18 @@ export default function OfficeReportsScreen() {
     const params = route.params as { initialSection?: Section; projectId?: string } | undefined;
     if (!params || appliedParams.current === params) return;
     appliedParams.current = params;
-    if (params.projectId && params.projectId !== project?.id) setActiveProject(params.projectId);
+    // Notification taps switch projects before navigating
+    // (workflows/pendingDeeplink.ts). A link opened any other way switches
+    // here; the switch unmounts this screen, so the route is queued for
+    // RoleRouter to open again once the new project has loaded.
+    if (params.projectId && params.projectId !== project?.id && projects.some((p) => p.id === params.projectId)) {
+      queueDeeplink(route.name, { ...params });
+      setActiveProject(params.projectId);
+      return;
+    }
     if (params.initialSection) setActiveSection(params.initialSection);
     if (params.initialSection === 'klaim') setClaimReloadKey((k) => k + 1);
-  }, [route.params, project?.id, setActiveProject]);
+  }, [route.params, route.name, project?.id, projects, setActiveProject]);
 
   // Claims waiting for verification on the active project, for the Klaim tab badge.
   const [pendingClaims, setPendingClaims] = useState(0);

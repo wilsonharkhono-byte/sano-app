@@ -3,6 +3,8 @@ import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../../tools/supabase';
 import { NotificationList, type NotificationItem } from '../../workflows/screens/components/NotificationList';
+import { useProject } from '../../workflows/hooks/useProject';
+import { routeDeeplink } from '../../workflows/pendingDeeplink';
 
 const NOTIFICATION_ROUTE_MAP: Record<string, string> = {
   ApprovalsScreen: 'Approvals',
@@ -83,6 +85,8 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
     return () => { void supabase.removeChannel(channel); };
   }, [profileId, fetch]);
 
+  const { project, projects, setActiveProject } = useProject();
+
   const handlePress = useCallback(async (item: NotificationItem) => {
     if (!item.readAt) {
       await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', item.id);
@@ -90,13 +94,18 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
     }
     const target = NOTIFICATION_ROUTE_MAP[item.deeplinkScreen] ?? item.deeplinkScreen;
     try {
-      // A fresh params object per tap, so a screen that applies params once per
-      // navigation still reacts to a second tap on the same notification.
-      navigation.navigate(target, { ...(item.deeplinkParams ?? {}) });
+      // Fresh params per tap; another project's notification switches the
+      // project first, and RoleRouter replays the navigation once it loads.
+      routeDeeplink(target, item.deeplinkParams, {
+        currentProjectId: project?.id,
+        visibleProjectIds: projects.map((p) => p.id),
+        setActiveProject,
+        navigate: (screen, params) => navigation.navigate(screen, params),
+      });
     } catch {
       // Route not in current role's nav — stay on Notifikasi (no-op).
     }
-  }, [navigation]);
+  }, [navigation, project?.id, projects, setActiveProject]);
 
   if (loading) {
     return (
