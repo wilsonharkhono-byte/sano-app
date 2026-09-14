@@ -100,10 +100,29 @@ describe('ReportLinesCard', () => {
     expect(queryByText('Buat tautan (AI)')).toBeNull();
   });
 
-  it('reloads when the reload token changes', async () => {
-    const { findByText, rerender } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} reloadToken={0} />);
+  it('reloads when the reload token changes, and only then', async () => {
+    // One stable toast: a fresh jest.fn() per render would re-run the effect
+    // by itself and hide whether the token is what triggers the reload.
+    const toast = jest.fn();
+    const { findByText, rerender } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={toast} reloadToken={0} />);
     await findByText('Tautan Progres (1/2)');
-    rerender(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} reloadToken={1} />);
+    rerender(<ReportLinesCard reportId="r1" boqItems={boq} toast={toast} reloadToken={0} />);
+    expect(listReportLines).toHaveBeenCalledTimes(1);
+    rerender(<ReportLinesCard reportId="r1" boqItems={boq} toast={toast} reloadToken={1} />);
     await waitFor(() => expect(listReportLines).toHaveBeenCalledTimes(2));
+  });
+
+  it('hides every AI action from a role that may not start AI spend', async () => {
+    (listReportLines as jest.Mock).mockResolvedValue([
+      line({ ai_boq_item_id: null, ai_model: null, ai_confidence: null }),
+    ]);
+    const { findByText, queryByText } = render(<ReportLinesCard reportId="r1" boqItems={boq} toast={jest.fn()} canRunAi={false} />);
+    expect(await findByText('Belum ada saran AI')).toBeTruthy();
+    expect(queryByText('Jalankan AI')).toBeNull();
+
+    (listReportLines as jest.Mock).mockResolvedValue([]);
+    const empty = render(<ReportLinesCard reportId="r2" boqItems={boq} toast={jest.fn()} canRunAi={false} />);
+    expect(await empty.findByText('Belum ada tautan untuk laporan ini.')).toBeTruthy();
+    expect(empty.queryByText('Buat tautan (AI)')).toBeNull();
   });
 });

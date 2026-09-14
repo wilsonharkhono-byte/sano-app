@@ -148,6 +148,8 @@ const BACKLINK_STOP_CODES: ReadonlySet<string> = new Set(['DAILY_CAP', 'AUTH', '
 export interface BacklinkResult {
   ok: number;
   failed: number;
+  /** Reports another caller is linking right now (LINK_IN_PROGRESS): neither a failure nor a reason to stop. */
+  skipped: number;
   /** The code that stopped the run early, or null when every report was attempted. */
   stoppedBy: string | null;
   firstError: string | null;
@@ -162,11 +164,12 @@ export async function backlinkReports(
   reportIds: string[],
   opts: { onProgress?: (done: number, total: number) => void; shouldStop?: () => boolean } = {},
 ): Promise<BacklinkResult> {
-  const result: BacklinkResult = { ok: 0, failed: 0, stoppedBy: null, firstError: null };
+  const result: BacklinkResult = { ok: 0, failed: 0, skipped: 0, stoppedBy: null, firstError: null };
   for (let i = 0; i < reportIds.length; i += 1) {
     if (opts.shouldStop?.()) { result.stoppedBy = 'CANCELLED'; break; }
     const res = await invokeReportLink(reportIds[i]);
     if (res.ok) result.ok += 1;
+    else if (res.code === 'LINK_IN_PROGRESS') result.skipped += 1;
     else {
       result.failed += 1;
       if (!result.firstError) result.firstError = res.error ?? res.code ?? null;

@@ -26,6 +26,8 @@ interface Props {
   linking?: boolean;
   /** Bump to make the card reload its lines (e.g. when that run finishes). */
   reloadToken?: number;
+  /** False for the principal, who reads links and never starts AI spend. */
+  canRunAi?: boolean;
 }
 
 interface EditDraft { boqItemId: string; stage: string; state: ActivityState }
@@ -33,7 +35,7 @@ interface EditDraft { boqItemId: string; stage: string; state: ActivityState }
 const STATUS_LABELS: Record<ClientReportLine['status'], string> = { SUGGESTED: 'Saran', CONFIRMED: 'Terkonfirmasi', DISMISSED: 'Tidak terkait' };
 const HIT_SLOP = { top: 8, bottom: 8, left: 8, right: 8 };
 
-export default function ReportLinesCard({ reportId, boqItems, toast, linking = false, reloadToken = 0 }: Props) {
+export default function ReportLinesCard({ reportId, boqItems, toast, linking = false, reloadToken = 0, canRunAi = true }: Props) {
   const [lines, setLines] = useState<ClientReportLine[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
@@ -136,10 +138,12 @@ export default function ReportLinesCard({ reportId, boqItems, toast, linking = f
       {lines && lines.length === 0 && !linking && (
         <View>
           <Text style={styles.hint}>Belum ada tautan untuk laporan ini.</Text>
-          <TouchableOpacity style={[styles.primaryBtn, busy && styles.disabled]} disabled={busy} onPress={() => runAi(false)} accessibilityRole="button">
-            <Ionicons name="sparkles-outline" size={16} color={COLORS.textInverse} />
-            <Text style={styles.primaryText}>Buat tautan (AI)</Text>
-          </TouchableOpacity>
+          {canRunAi && (
+            <TouchableOpacity style={[styles.primaryBtn, busy && styles.disabled]} disabled={busy} onPress={() => runAi(false)} accessibilityRole="button">
+              <Ionicons name="sparkles-outline" size={16} color={COLORS.textInverse} />
+              <Text style={styles.primaryText}>Buat tautan (AI)</Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
 
@@ -152,7 +156,7 @@ export default function ReportLinesCard({ reportId, boqItems, toast, linking = f
                 <Text style={styles.primaryText}>Konfirmasi {summary.suggestedReady} saran</Text>
               </TouchableOpacity>
             )}
-            {summary.aiMissing > 0 && !linking && (
+            {summary.aiMissing > 0 && !linking && canRunAi && (
               <TouchableOpacity style={[styles.secondaryBtn, busy && styles.disabled]} disabled={busy} onPress={() => runAi(true)} accessibilityRole="button">
                 <Ionicons name="sparkles-outline" size={16} color={COLORS.primary} />
                 <Text style={styles.secondaryText}>Jalankan AI</Text>

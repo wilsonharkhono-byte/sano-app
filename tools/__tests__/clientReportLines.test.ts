@@ -84,13 +84,28 @@ describe('backlinkReports', () => {
     const progress: number[] = [];
     const res = await backlinkReports(['r1', 'r2', 'r3'], { onProgress: (done) => progress.push(done) });
     expect(order).toEqual(['r1', 'r2', 'r3']);
-    expect(res).toEqual({ ok: 2, failed: 1, stoppedBy: null, firstError: 'model' });
+    expect(res).toEqual({ ok: 2, failed: 1, skipped: 0, stoppedBy: null, firstError: 'model' });
     expect(progress).toEqual([1, 2, 3]);
+  });
+
+  it('counts a report another caller is linking as skipped, not failed, and keeps going', async () => {
+    (supabase.functions.invoke as jest.Mock).mockImplementation(async (_fn: string, { body }: { body: { report_id: string } }) =>
+      body.report_id === 'r1'
+        ? { data: null, error: { context: { json: async () => ({ ok: false, code: 'LINK_IN_PROGRESS', error: 'sedang berjalan' }) } } }
+        : { data: { ok: true, code: 'LINKED' }, error: null });
+    expect(await backlinkReports(['r1', 'r2'])).toEqual({ ok: 1, failed: 0, skipped: 1, stoppedBy: null, firstError: null });
   });
 
   it('stops on a run-level error such as DAILY_CAP or AUTH, and on cancel', async () => {
     (supabase.functions.invoke as jest.Mock).mockResolvedValue({ data: { ok: false, code: 'DAILY_CAP', error: 'habis' }, error: null });
-    expect(await backlinkReports(['r1', 'r2'])).toEqual({ ok: 0, failed: 1, stoppedBy: 'DAILY_CAP', firstError: 'habis' });
+    expect(await backlinkReports(['r1', 'r2'])).toEqual({ ok: 0, failed: 1, skipped: 0, stoppedBy: 'DAILY_CAP', firstError: 'habis' });
+    expect(supabase.functions.invoke).toHaveBeenCalledTimes(1);
+
+    (supabase.functions.invoke as jest.Mock).mockClear();
+    (supabase.functions.invoke as jest.Mock).mockResolvedValue({
+      data: null, error: { context: { json: async () => ({ ok: false, code: 'AUTH', error: 'Sesi tidak valid.' }) } },
+    });
+    expect(await backlinkReports(['r1', 'r2', 'r3'])).toEqual({ ok: 0, failed: 1, skipped: 0, stoppedBy: 'AUTH', firstError: 'Sesi tidak valid.' });
     expect(supabase.functions.invoke).toHaveBeenCalledTimes(1);
 
     (supabase.functions.invoke as jest.Mock).mockClear();
