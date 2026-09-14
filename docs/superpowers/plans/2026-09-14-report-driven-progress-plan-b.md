@@ -14,6 +14,8 @@
 
 **Migrations:** 103 (stage weights) and 104 (claims, notifications). Paste order after 102: 103, then 104. Re-pasting 098, 059 or 002 later undoes part of 104; re-paste 104 afterwards (its header and self-checks say which part).
 
+**Reviews:** two independent reviews (database layer, UI and wiring) followed the first build; every confirmed finding is fixed in the code below (commits 39f8497..3d4c5c3) and pinned by tests or rehearsal checks.
+
 **Worktree / branch:** `feat/report-driven-progress`. Inside a worktree `package.json`'s `testPathIgnorePatterns` matches the worktree path, so ALWAYS run jest as `npx jest <paths> --testPathIgnorePatterns='/node_modules/'`.
 
 ---
@@ -33,7 +35,7 @@
 | `tools/progressClaims/claims.ts` | Reads through RLS, writes through the 103/104 RPCs. |
 | `tools/notificationRouting.ts` (modify) | Claim deeplinks per role. |
 | `supabase/migrations/103_boq_stage_weights.sql` | `boq_stage_weights`, actor check, seed/set/reset RPCs. |
-| `supabase/migrations/104_progress_claims.sql` | Claims, lines, five RPCs, shape lock, notification types, closed supervisor writes. |
+| `supabase/migrations/104_progress_claims.sql` | Claims, lines, five RPCs, verified-row shape lock, notification types, read views, single writer of progress. |
 | `supabase/tests/progress_claims_rehearsal/` | Docker rehearsal: fixture, 117 checks, `run.sh`. |
 | `workflows/components/StoragePhoto.tsx` | Read-only photo (same file as the photo-fix branch). |
 | `workflows/screens/progressClaim/StageClaimForm.tsx` | Inline stage form for one row. |
@@ -550,7 +552,7 @@ git commit -m "feat(progress): stage-weight shapes, validation and reference loo
 - Create: `tools/progressClaims/stageMath.ts`
 - Test: `tools/__tests__/progressClaimsStageMath.test.ts`
 
-This is the client-side preview. `rowFraction` divides by the weights' own sum, so weights of 0.333 × 3 still reach 1 when every stage is complete (spec §18). Migration 104 `stage_row_fraction` computes the same number, and the rehearsal (Task 12) checks the same cases in SQL.
+This is the client-side preview. `rowFraction` divides by the weights' own sum, so weights of 0.333 × 3 still reach 1 when every stage is complete (spec §18). Migration 104 `stage_row_fraction` computes the same number, and the rehearsal (Task 12) checks the same cases in SQL. `deltaFromInstalled` previews what verification writes: the difference from the entry totals of the row, so a weight or planned-volume change since the last verification shows up before anyone presses Verifikasi.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -558,7 +560,7 @@ This is the client-side preview. `rowFraction` divides by the weights' own sum, 
 
 ```ts
 // tools/__tests__/progressClaimsStageMath.test.ts
-import { clampPct, claimDelta, rowFraction, workStatusFor } from '../progressClaims/stageMath';
+import { clampPct, claimDelta, deltaFromInstalled, rowFraction, workStatusFor } from '../progressClaims/stageMath';
 
 const split = { BEKISTING: 0.368, PEMBESIAN: 0.38, PENGECORAN: 0.252 };
 
@@ -611,6 +613,14 @@ describe('workStatusFor', () => {
 describe('rowFraction normalization', () => {
   it('reaches 1 when every stage is complete even if the weights sum to 0.999', () => {
     expect(rowFraction({ BEKISTING: 0.333, PEMBESIAN: 0.333, PENGECORAN: 0.333 }, { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 100 })).toBe(1);
+  });
+});
+
+describe('deltaFromInstalled', () => {
+  it('writes the difference from what the entries already sum to', () => {
+    expect(deltaFromInstalled(100, 32.6, 0.6176)).toMatchObject({ installedAfter: 61.76, deltaQuantity: 29.16, regression: false });
+    expect(deltaFromInstalled(100, 52.04, 0.4)).toMatchObject({ installedAfter: 40, deltaQuantity: -12.04, regression: true });
+    expect(deltaFromInstalled(10, 0, 0.5)).toMatchObject({ installedAfter: 5, deltaQuantity: 5, progressAfter: 50, unchanged: false });
   });
 });
 ```
@@ -674,6 +684,25 @@ export function claimDelta(planned: number, previousFraction: number, newFractio
   };
 }
 
+/**
+ * What verify_progress_claim writes for a row (migration 104): installed
+ * becomes planned x newFraction (4 decimals), and the entry is the difference
+ * from what the row's entries already sum to. Unlike claimDelta, this follows
+ * weight or planned-volume changes made since the last verification.
+ */
+export function deltaFromInstalled(planned: number, installedBefore: number, newFraction: number): ClaimDelta {
+  const round4 = (n: number) => Math.round(n * 1e4) / 1e4;
+  const installedAfter = round4(planned * newFraction);
+  const deltaQuantity = round4(installedAfter - installedBefore);
+  return {
+    deltaQuantity: deltaQuantity === 0 ? 0 : deltaQuantity,
+    installedAfter,
+    progressAfter: Math.round(newFraction * 1000) / 10,
+    regression: deltaQuantity < 0,
+    unchanged: deltaQuantity === 0,
+  };
+}
+
 export function workStatusFor(fraction: number): 'COMPLETE' | 'IN_PROGRESS' {
   return fraction >= 1 - 1e-6 ? 'COMPLETE' : 'IN_PROGRESS';
 }
@@ -682,7 +711,7 @@ export function workStatusFor(fraction: number): 'COMPLETE' | 'IN_PROGRESS' {
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest tools/__tests__/progressClaimsStageMath.test.ts --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 1 suite, 8 tests.
+Expected: PASS, 1 suite, 9 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1203,7 +1232,7 @@ git commit -m "feat(progress): WIB week helpers for weekly claims"
 - Create: `tools/progressClaims/claimRules.ts`
 - Test: `tools/__tests__/progressClaimsRules.test.ts`
 
-Roles, editable states, percent validation and the Indonesian sentence for every refusal code migrations 103 and 104 raise. Separation of duties lives here as `canVerifyClaimAs`: whoever submitted never verifies. The static test of Task 12 fails when a code is raised without copy or copy exists for a code nothing raises.
+Roles, editable states, percent validation and the Indonesian sentence for every refusal code migrations 103 and 104 raise. Separation of duties lives here as `canVerifyClaimAs`: whoever submitted the claim or filled one of its lines never verifies it. The static test of Task 12 fails when a code is raised without copy or copy exists for a code nothing raises.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1240,6 +1269,8 @@ describe('roles and states', () => {
     expect(canVerifyClaimAs('estimator', 'u-est', 'u-est')).toBe(false);
     expect(canVerifyClaimAs('admin', null, 'u-sup')).toBe(false);
     expect(canVerifyClaimAs('supervisor', 'u-sup2', 'u-sup')).toBe(false);
+    expect(canVerifyClaimAs('estimator', 'u-est', 'u-sup', ['u-sup', 'u-est'])).toBe(false);
+    expect(canVerifyClaimAs('estimator', 'u-est2', 'u-sup', ['u-sup', 'u-est'])).toBe(true);
   });
 
   it('allows editing a draft or returned claim only', () => {
@@ -1336,9 +1367,17 @@ export function canVerifyClaim(role: string | null | undefined): boolean {
   return role === 'estimator' || role === 'admin';
 }
 
-/** Separation of duties: whoever submitted a claim never verifies it, whatever their role. */
-export function canVerifyClaimAs(role: string | null | undefined, uid: string | null | undefined, submittedBy: string | null | undefined): boolean {
-  return canVerifyClaim(role) && !!uid && uid !== submittedBy;
+/**
+ * Separation of duties: whoever submitted a claim, or filled any of its lines,
+ * never verifies it, whatever their role. verify_progress_claim refuses it too.
+ */
+export function canVerifyClaimAs(
+  role: string | null | undefined,
+  uid: string | null | undefined,
+  submittedBy: string | null | undefined,
+  lineAuthors: ReadonlyArray<string | null | undefined> = [],
+): boolean {
+  return canVerifyClaim(role) && !!uid && uid !== submittedBy && !lineAuthors.includes(uid);
 }
 
 export function canEditStageWeights(role: string | null | undefined): boolean {
@@ -1404,10 +1443,11 @@ export const CLAIM_RPC_ERROR_COPY: ReadonlyArray<[string, string]> = [
   ['CLAIM_EVIDENCE', 'Lampiran foto tidak valid. Ambil ulang fotonya dari aplikasi.'],
   ['CLAIM_RETURN_NOTE', 'Tulis alasan pengembalian klaim.'],
   ['CLAIM_LINES', 'Daftar baris verifikasi tidak cocok dengan klaim. Muat ulang halaman.'],
-  ['CLAIM_SELF_VERIFY', 'Klaim yang Anda kirim harus diverifikasi estimator atau admin lain.'],
+  ['CLAIM_SELF_VERIFY', 'Klaim yang Anda kirim atau isi sendiri harus diverifikasi estimator atau admin lain.'],
   ['WEIGHTS_INVALID', 'Bobot tahapan tidak valid. Jumlah ketiga tahap harus 100%.'],
   ['WEIGHTS_CLASS', 'Kelas referensi bobot tidak dikenal.'],
-  ['WEIGHTS_SHAPE_LOCKED', 'Baris ini sudah punya klaim, jadi jenis bobotnya (satu tahap atau tiga tahap) tidak bisa diubah. Ubah nilainya saja.'],
+  ['WEIGHTS_SHAPE_LOCKED', 'Baris ini sudah punya klaim terverifikasi, jadi jenis bobotnya (satu tahap atau tiga tahap) tidak bisa diubah. Ubah nilainya saja.'],
+  ['PROGRESS_SINGLE_WRITER', 'Progres BoQ hanya berubah lewat verifikasi klaim progres.'],
 ];
 
 export function mapClaimRpcError(message: string | null | undefined): string {
@@ -1439,7 +1479,7 @@ git commit -m "feat(progress): claim roles, states, percent validation and refus
 - Create: `tools/progressClaims/claimView.ts`
 - Test: `tools/__tests__/progressClaimsView.test.ts`
 
-Everything the claim screens compute without I/O: which rows are claimable (live, planned > 0, only T1 work areas on a SANO Input project), which rows need reference weights and of which class, the latest verified figure per row, the latest-revision rule for report evidence (spec §17), per-row views, status copy, and percent and weight input parsing with a decimal comma.
+Everything the claim screens compute without I/O: which rows are claimable (live, planned > 0, only T1 work areas on a SANO Input project), which rows need reference weights and of which class, the latest verified figure per row, the latest-revision rule for report evidence (spec §17), per-row views, status copy, percent and weight input parsing with a decimal comma, the entry-total ledger per row, and a project filter that ignores rows of the previous project during a switch.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1449,7 +1489,7 @@ Everything the claim screens compute without I/O: which rows are claimable (live
 // tools/__tests__/progressClaimsView.test.ts
 import {
   buildRowViews, claimStatusSummary, claimableRows, countLinesByRow, formatPercent, formatQty, latestRevisionReportIds,
-  latestVerifiedByRow, missingWeightSeeds, parsePercentInput, pctInputs, readPctInputs, readWeightPercentInputs,
+  missingWeightSeeds, parsePercentInput, pctInputs, readPctInputs, readWeightPercentInputs,
   regressedStages, stageKeyLabel, weightPercentInputs, weightSourceLabel, type ClaimableItem,
 } from '../progressClaims/claimView';
 import { REFERENCE_PROFILE } from '../progressClaims/referenceStageWeights.data';
@@ -1470,6 +1510,14 @@ describe('claimableRows', () => {
       row({ id: 'z', code: 'T1-004', label: 'Tangga', planned: 0 }),
     ]);
     expect(rows.map((r) => r.id)).toEqual(['a', 'b']);
+  });
+
+  it('drops rows of another project still in hand after a project switch', () => {
+    const rows = claimableRows([
+      row({ id: 'a', code: 'T1-001', label: 'Lantai 1 ; Kolom', project_id: 'p1' }),
+      row({ id: 'b', code: 'T1-001', label: 'Lantai 1 ; Kolom', project_id: 'p2' }),
+    ], 'p1');
+    expect(rows.map((r) => r.id)).toEqual(['a']);
   });
 
   it('keeps every live planned row of a full-RAB project', () => {
@@ -1513,16 +1561,6 @@ describe('weights', () => {
 });
 
 describe('verified figures and report evidence', () => {
-  it('keeps the most recently verified figure per row and ignores lines without one', () => {
-    const map = latestVerifiedByRow([
-      { boq_item_id: 'k1', verified_pct: { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 }, updated_at: '2026-09-07T03:00:00+00:00', progress_claims: { verified_at: '2026-09-07T03:00:00+00:00' } },
-      { boq_item_id: 'k1', verified_pct: { BEKISTING: 100, PEMBESIAN: 60, PENGECORAN: 0 }, updated_at: '2026-09-14T03:00:00+00:00', progress_claims: [{ verified_at: '2026-09-14T03:00:00+00:00' }] },
-      { boq_item_id: 't1', verified_pct: null, updated_at: '2026-09-14T03:00:00+00:00', progress_claims: { verified_at: '2026-09-14T03:00:00+00:00' } },
-    ]);
-    expect(map.get('k1')).toEqual({ BEKISTING: 100, PEMBESIAN: 60, PENGECORAN: 0 });
-    expect(map.has('t1')).toBe(false);
-  });
-
   it('counts confirmed lines of the latest revision of each report only', () => {
     const ids = latestRevisionReportIds([
       { id: 'r1v1', report_no: 1, revision: 1 },
@@ -1542,9 +1580,9 @@ describe('verified figures and report evidence', () => {
 describe('buildRowViews', () => {
   it('joins weights, verified figures and this claim line into one view per row', () => {
     const rows = [
-      row({ id: 'k1', code: 'T1-001', label: 'Lantai 1 ; Kolom' }),
+      row({ id: 'k1', code: 'T1-001', label: 'Lantai 1 ; Kolom', installed: 32.6 }),
       row({ id: 't1', code: 'T1-002', label: 'Tangga', planned: 10 }),
-      row({ id: 'x', code: 'T1-003', label: 'Lantai 2 ; Dinding' }),
+      row({ id: 'x', code: 'T1-003', label: 'Lantai 2 ; Dinding', installed: 5 }),
     ];
     const views = buildRowViews(
       rows,
@@ -1559,10 +1597,11 @@ describe('buildRowViews', () => {
         evidence: { photo_refs: ['progress/p/1.jpg'] },
       }],
       new Map([['k1', 3]]),
+      new Map([['k1', 32.6]]),
     );
-    expect(views[0]).toMatchObject({ lineId: 'l1', source: 'reference', prevFraction: 0.326, claimedFraction: 0.6176, photoRefs: ['progress/p/1.jpg'], linkedLines: 3, note: 'Begel' });
+    expect(views[0]).toMatchObject({ lineId: 'l1', source: 'reference', prevFraction: 0.326, claimedFraction: 0.6176, photoRefs: ['progress/p/1.jpg'], linkedLines: 3, note: 'Begel', installedLedger: 32.6, installedMismatch: false });
     expect(views[1]).toMatchObject({ weights: null, source: null, claimedFraction: null, prevFraction: 0 });
-    expect(views[2]).toMatchObject({ weights: null, prevPct: {}, lineId: null, linkedLines: 0 });
+    expect(views[2]).toMatchObject({ weights: null, prevPct: {}, lineId: null, linkedLines: 0, installedLedger: 0, installedMismatch: true });
   });
 });
 
@@ -1646,6 +1685,7 @@ import { classifyWorkAreas, type WorkAreaClass } from './workAreaClass';
 /** The BoQ fields these screens read; tools/types.ts BoqItem satisfies it. */
 export interface ClaimableItem {
   id: string;
+  project_id?: string | null;
   code: string;
   label: string;
   unit: string;
@@ -1665,8 +1705,11 @@ const SIMPLIFIED_CODE_RE = /^T1-\d+$/;
  * project only its T1 work areas count, exactly as buildWorkGroups treats them
  * (the Others anchor is not a work area).
  */
-export function claimableRows<T extends ClaimableItem>(items: T[]): T[] {
-  const live = items.filter((b) => (b.superseded_at ?? null) == null);
+export function claimableRows<T extends ClaimableItem>(items: T[], projectId?: string | null): T[] {
+  // Project data loads in steps: just after a project switch the previous
+  // project's rows are still in hand. Never show or seed those.
+  const own = projectId ? items.filter((b) => b.project_id == null || b.project_id === projectId) : items;
+  const live = own.filter((b) => (b.superseded_at ?? null) == null);
   const simplified = live.filter((b) => SIMPLIFIED_CODE_RE.test((b.code ?? '').trim()));
   const base = simplified.length > 0 ? simplified : live;
   return base
@@ -1733,27 +1776,6 @@ export function missingWeightSeeds(
     .map((r) => ({ boq_item_id: r.id, reference_class: classes.get(r.id) ?? 'LAINNYA' }));
 }
 
-/** A verified claim line with its claim embedded (PostgREST returns an object or a one-element array). */
-export interface VerifiedLineRow {
-  boq_item_id: string;
-  verified_pct: StagePct | null;
-  updated_at: string;
-  progress_claims: { verified_at: string | null } | Array<{ verified_at: string | null }> | null;
-}
-
-/** The most recently verified stage percents per row. */
-export function latestVerifiedByRow(rows: VerifiedLineRow[]): Map<string, StagePct> {
-  const best = new Map<string, { at: string; pct: StagePct }>();
-  for (const r of rows) {
-    if (!r.verified_pct) continue;
-    const claim = Array.isArray(r.progress_claims) ? r.progress_claims[0] : r.progress_claims;
-    const at = `${claim?.verified_at ?? ''}|${r.updated_at}`;
-    const current = best.get(r.boq_item_id);
-    if (!current || at > current.at) best.set(r.boq_item_id, { at, pct: r.verified_pct });
-  }
-  return new Map([...best].map(([id, v]) => [id, v.pct]));
-}
-
 /** Spec §17: only the latest revision of each report number counts, so a re-issued report never counts twice. */
 export function latestRevisionReportIds(reports: Array<{ id: string; report_no: number; revision: number }>): Set<string> {
   const best = new Map<number, { id: string; revision: number }>();
@@ -1803,6 +1825,10 @@ export interface ClaimRowView {
   /** 0..1; null when this claim has no line for the row. */
   claimedFraction: number | null;
   linkedLines: number;
+  /** What the row's progress entries sum to; verification writes the difference from this. */
+  installedLedger: number;
+  /** boq_items.installed differs from the entries (legacy data); verification follows the entries. */
+  installedMismatch: boolean;
 }
 
 export function zeroPct(weights: StageWeights): StagePct {
@@ -1815,6 +1841,7 @@ export function buildRowViews(
   verified: Map<string, StagePct>,
   lines: ClaimLineLike[],
   linked: Map<string, number> = new Map(),
+  ledger: Map<string, number> | null = null,
 ): ClaimRowView[] {
   const weightByRow = new Map(weights.map((w) => [w.boq_item_id, w]));
   const lineByRow = new Map(lines.map((l) => [l.boq_item_id, l]));
@@ -1839,6 +1866,8 @@ export function buildRowViews(
       prevFraction: usable ? rowFraction(usable, prevPct) : 0,
       claimedFraction: usable && line ? rowFraction(usable, line.claimed_pct) : null,
       linkedLines: linked.get(item.id) ?? 0,
+      installedLedger: ledger ? ledger.get(item.id) ?? 0 : Number(item.installed) || 0,
+      installedMismatch: ledger ? Math.abs((Number(item.installed) || 0) - (ledger.get(item.id) ?? 0)) > 0.0001 : false,
     };
   });
 }
@@ -1974,7 +2003,7 @@ git commit -m "feat(progress): pure view model for the weekly stage claim screen
 - Create: `tools/progressClaims/claims.ts`
 - Test: `tools/__tests__/progressClaimsData.test.ts`
 
-Reads go through RLS; every write is an RPC of migrations 103 and 104, and a refusal comes back as an Error whose message is the Indonesian sentence. Report evidence is advisory: when report lines cannot be read (migration 102 not pasted) the count is empty rather than an error. Task 12 pins the RPC parameter names here to the SQL signatures.
+Reads go through RLS (the latest verified figures and the entry totals come from two one-row-per-item views); every write is an RPC of migrations 103 and 104, and a refusal comes back as an Error whose message is the Indonesian sentence. Report evidence is advisory: when report lines cannot be read (migration 102 not pasted) the count is empty rather than an error. Task 12 pins the RPC parameter names here to the SQL signatures.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1985,7 +2014,7 @@ Reads go through RLS; every write is an RPC of migrations 103 and 104, and a ref
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
 import { supabase } from '../supabase';
 import {
-  countLinkedLinesByRow, countSubmittedClaims, getOpenClaim, listVerifiedStagePct, removeClaimLine, resetStageWeights,
+  countLinkedLinesByRow, countSubmittedClaims, getOpenClaim, listEntryTotals, listVerifiedStagePct, removeClaimLine, resetStageWeights,
   returnClaim, saveClaimLine, seedReferenceWeights, setStageWeights, submitClaim, verifyClaim,
 } from '../progressClaims/claims';
 
@@ -2032,14 +2061,18 @@ describe('reads', () => {
     expect(q.calls).toEqual(expect.arrayContaining([['eq', ['status', 'SUBMITTED']]]));
   });
 
-  it('reads verified lines through their claim and keeps the latest per row', async () => {
-    const q = chain({ data: [
-      { boq_item_id: 'k1', verified_pct: { SINGLE: 20 }, updated_at: 'a', progress_claims: { verified_at: '2026-09-07T00:00:00+00:00' } },
-      { boq_item_id: 'k1', verified_pct: { SINGLE: 50 }, updated_at: 'b', progress_claims: { verified_at: '2026-09-14T00:00:00+00:00' } },
-    ] });
+  it('reads the latest verified figures from the one-row-per-item view', async () => {
+    const q = chain({ data: [{ boq_item_id: 'k1', verified_pct: { SINGLE: 50 } }] });
     from.mockReturnValueOnce(q);
     await expect(listVerifiedStagePct('p1')).resolves.toEqual(new Map([['k1', { SINGLE: 50 }]]));
-    expect(q.calls).toEqual(expect.arrayContaining([['eq', ['progress_claims.status', 'VERIFIED']]]));
+    expect(from).toHaveBeenCalledWith('progress_claim_latest_verified');
+    expect(q.calls).toEqual(expect.arrayContaining([['eq', ['project_id', 'p1']]]));
+  });
+
+  it('reads what each row entries sum to, as numbers', async () => {
+    from.mockReturnValueOnce(chain({ data: [{ boq_item_id: 'k1', installed_total: '52.04' }, { boq_item_id: 'k2', installed_total: 5 }] }));
+    await expect(listEntryTotals('p1')).resolves.toEqual(new Map([['k1', 52.04], ['k2', 5]]));
+    expect(from).toHaveBeenCalledWith('progress_entry_totals');
   });
 
   it('counts linked report lines from the latest revision since the week start', async () => {
@@ -2113,7 +2146,7 @@ Expected: FAIL — `Cannot find module '../progressClaims/claims'`.
 // message is the Indonesian sentence from mapClaimRpcError.
 import { supabase } from '../supabase';
 import { mapClaimRpcError, type ClaimStatus } from './claimRules';
-import { countLinesByRow, latestRevisionReportIds, latestVerifiedByRow, type VerifiedLineRow } from './claimView';
+import { countLinesByRow, latestRevisionReportIds } from './claimView';
 import type { StagePct } from './stageMath';
 import type { StageWeights, WeightSource } from './stageWeights';
 import type { WorkAreaClass } from './workAreaClass';
@@ -2154,6 +2187,8 @@ export interface ProgressClaimLine {
   regress_reason: string | null;
   note: string | null;
   evidence: { photo_refs?: string[]; report_line_ids?: string[] } | null;
+  created_by: string;
+  updated_by: string;
   created_at: string;
   updated_at: string;
 }
@@ -2169,7 +2204,7 @@ export interface StageWeightRow {
 const CLAIM_COLUMNS =
   'id, project_id, week_start, status, created_by, created_at, updated_at, submitted_by, submitted_at, returned_by, returned_at, return_note, verified_by, verified_at, verifier_note';
 const LINE_COLUMNS =
-  'id, claim_id, project_id, boq_item_id, prev_verified, claimed_pct, verified_pct, weights_snapshot, row_pct_prev, row_pct_new, installed_before, delta_quantity, regress_reason, note, evidence, created_at, updated_at';
+  'id, claim_id, project_id, boq_item_id, prev_verified, claimed_pct, verified_pct, weights_snapshot, row_pct_prev, row_pct_new, installed_before, delta_quantity, regress_reason, note, evidence, created_by, updated_by, created_at, updated_at';
 
 async function callRpc<T>(name: string, args: Record<string, unknown>): Promise<T> {
   const { data, error } = await supabase.rpc(name, args);
@@ -2224,15 +2259,24 @@ export async function listClaimLines(claimId: string): Promise<ProgressClaimLine
   return (data ?? []) as ProgressClaimLine[];
 }
 
-/** Each row's most recently verified stage percents. */
+/** Each row's most recently verified stage percents, one row per BoQ item (migration 104 view). */
 export async function listVerifiedStagePct(projectId: string): Promise<Map<string, StagePct>> {
   const { data, error } = await supabase
-    .from('progress_claim_lines')
-    .select('boq_item_id, verified_pct, updated_at, progress_claims!inner(status, verified_at)')
-    .eq('project_id', projectId)
-    .eq('progress_claims.status', 'VERIFIED');
+    .from('progress_claim_latest_verified')
+    .select('boq_item_id, verified_pct')
+    .eq('project_id', projectId);
   if (error) throw error;
-  return latestVerifiedByRow((data ?? []) as unknown as VerifiedLineRow[]);
+  return new Map(((data ?? []) as Array<{ boq_item_id: string; verified_pct: StagePct }>).map((r) => [r.boq_item_id, r.verified_pct]));
+}
+
+/** What each row's progress entries sum to, one row per BoQ item (migration 104 view). Verification writes the difference from this. */
+export async function listEntryTotals(projectId: string): Promise<Map<string, number>> {
+  const { data, error } = await supabase
+    .from('progress_entry_totals')
+    .select('boq_item_id, installed_total')
+    .eq('project_id', projectId);
+  if (error) throw error;
+  return new Map(((data ?? []) as Array<{ boq_item_id: string; installed_total: number | string }>).map((r) => [r.boq_item_id, Number(r.installed_total) || 0]));
 }
 
 export async function listStageWeights(projectId: string): Promise<StageWeightRow[]> {
@@ -2329,7 +2373,7 @@ export async function removeClaimLine(lineId: string): Promise<{ claim_id: strin
   return callRpc('remove_progress_claim_line', { p_line_id: lineId });
 }
 
-export async function submitClaim(claimId: string): Promise<{ claim_id: string; status: ClaimStatus; lines: number; notified: number }> {
+export async function submitClaim(claimId: string): Promise<{ claim_id: string; status: ClaimStatus; lines: number; notified: number; verifiers_notified: number }> {
   return callRpc('submit_progress_claim', { p_claim_id: claimId });
 }
 
@@ -2360,7 +2404,7 @@ export async function verifyClaim(claimId: string, lines: VerifyLineInput[], not
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest tools/__tests__/progressClaimsData.test.ts --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 1 suite, 16 tests.
+Expected: PASS, 1 suite, 17 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -3108,7 +3152,7 @@ git commit -m "feat(db): migration 103 stage weights per BoQ row with reference 
 - Create: `supabase/tests/progress_claims_rehearsal/run.sh`
 - Test: `tools/__tests__/migration104.test.ts`
 
-Claims and lines with read policies only; save, remove, submit, return and verify RPCs; verification as the only writer of progress, writing the difference from existing entries (negative for a correction) so entries always sum to `installed`; the weight shape lock; three notification types on top of 098; the supervisor progress write policies of 002 and 059 dropped. The rehearsal applies 001-102 to a disposable local `supabase/postgres` container and runs 117 checks as real roles.
+Claims and lines with read policies only; save, remove, submit, return and verify RPCs; verification as the only writer of progress, writing the difference from existing entries (negative for a correction) so entries always sum to `installed`; the weight shape lock; three notification types on top of 098; the supervisor progress write policies of 002 and 059 dropped. A trigger keeps verification the only writer of `installed` and `progress` (office roles included), the office write access 036 granted on entries and photos becomes read-only, `sync_boq_progress` is revoked, principals hear about claims nobody assigned can verify, and two security-invoker views serve one row per BoQ item. The rehearsal applies 001-102 to a disposable local `supabase/postgres` container and runs the role checks, including every confirmed review finding.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3184,7 +3228,7 @@ describe('migration 104 - header states why, paste order and what a re-paste und
 
   it('names what a later re-paste of 098, 059 or 002 undoes', () => {
     expect(SQL).toMatch(/WHAT A LATER RE-PASTE OF AN OLDER FILE UNDOES/);
-    for (const f of ['098', '059', '002']) expect(SQL).toMatch(new RegExp(`--\\s+\\* ${f}:`));
+    for (const f of ['098', '059', '002', '036']) expect(SQL).toMatch(new RegExp(`--\\s+\\* ${f}:`));
   });
 
   it('says what makes a second paste safe and names this suite', () => {
@@ -3194,7 +3238,7 @@ describe('migration 104 - header states why, paste order and what a re-paste und
 
   it('carries a self-check a human can run after pasting', () => {
     expect(SQL).toMatch(/SELF-CHECK \(run after pasting; writes nothing\)/);
-    expect(SQL.match(/EXPECTED:/g) ?? []).toHaveLength(8);
+    expect(SQL.match(/EXPECTED:/g) ?? []).toHaveLength(12);
   });
 });
 
@@ -3261,14 +3305,43 @@ describe('migration 104 - the tables are read-only to the app', () => {
       ['progress_claims_select', 'progress_claims', 'SELECT'],
       ['progress_claim_lines_select', 'progress_claim_lines', 'SELECT'],
     ]);
-    expect(CODE.match(/\bCREATE POLICY\b/g) ?? []).toHaveLength(2);
+    expect(CODE.match(/\bCREATE POLICY\b/g) ?? []).toHaveLength(4);
   });
 });
 
 describe('migration 104 - the direct supervisor paths into progress close', () => {
-  it('drops the progress_entries insert policy of 002 and the boq_items progress policy of 059', () => {
+  it('drops the supervisor insert policies of 002 and the boq_items progress policy of 059', () => {
     expect(CODE).toContain('DROP POLICY IF EXISTS "progress_entries_assigned_insert" ON progress_entries;');
+    expect(CODE).toContain('DROP POLICY IF EXISTS "progress_photos_assigned_insert" ON progress_photos;');
     expect(CODE).toContain('DROP POLICY IF EXISTS "boq_items_assigned_progress_update" ON boq_items;');
+  });
+
+  it('turns 036 office access to progress entries and photos into read-only policies', () => {
+    for (const t of ['progress_entries', 'progress_photos']) {
+      expect(CODE).toContain(`DROP POLICY IF EXISTS ${t}_office_all ON ${t};`);
+      expect(CODE).toMatch(new RegExp(`CREATE POLICY ${t}_office_read ON ${t}\\s+FOR SELECT TO authenticated\\s+USING \\(is_office_role\\(\\)\\);`));
+    }
+  });
+
+  it('revokes sync_boq_progress from every client role', () => {
+    expect(CODE).toContain("IF to_regprocedure('public.sync_boq_progress(uuid)') IS NOT NULL THEN");
+    expect(CODE).toContain("EXECUTE 'REVOKE ALL ON FUNCTION public.sync_boq_progress(uuid) FROM PUBLIC, anon, authenticated';");
+  });
+
+  it('refuses any other change to installed or progress with a trigger only verification unlocks', () => {
+    const guard = fnBody('boq_items_progress_single_writer');
+    expect(guard).toContain("IF auth.uid() IS NULL OR current_setting('sano.progress_writer', true) IS NOT DISTINCT FROM 'verify' THEN");
+    expect(guard).toContain('NEW.installed IS DISTINCT FROM OLD.installed OR NEW.progress IS DISTINCT FROM OLD.progress');
+    expect(guard).toMatch(/RAISE EXCEPTION 'PROGRESS_SINGLE_WRITER:/);
+    expect(CODE).toMatch(/DROP TRIGGER IF EXISTS boq_items_progress_single_writer_trg ON boq_items;\s+CREATE TRIGGER boq_items_progress_single_writer_trg\s+BEFORE INSERT OR UPDATE ON boq_items/);
+    const verify = fnBody('verify_progress_claim');
+    const unlock = verify.indexOf("PERFORM set_config('sano.progress_writer', 'verify', true);");
+    expect(unlock).toBeGreaterThan(-1);
+    expect(verify.indexOf('FOR v_line IN SELECT * FROM progress_claim_lines')).toBeGreaterThan(unlock);
+    expect(verify.indexOf("PERFORM set_config('sano.progress_writer', '', true);")).toBeGreaterThan(verify.indexOf('END LOOP;'));
+    const names = [...CODE.matchAll(/CREATE OR REPLACE FUNCTION (\w+)\(/g)].map((m) => m[1]);
+    expect(names.filter((n) => fnBody(n).includes("'sano.progress_writer', 'verify'"))).toEqual(['verify_progress_claim']);
+    expect(CODE_103).not.toContain('sano.progress_writer');
   });
 
   it('lets a correction entry be negative but never zero', () => {
@@ -3325,9 +3398,12 @@ describe('migration 104 - each RPC', () => {
     expect(body).toContain('jsonb_array_length(v_refs) > 12');
   });
 
-  it('needs a reason for any figure below the verified one, at save and at verify', () => {
+  it('needs a reason for any lower figure: a dropped stage at save, and a dropped stage or quantity at verify', () => {
     expect(fnBody('save_progress_claim_line')).toMatch(/IF v_reason IS NULL AND EXISTS \(/);
-    expect(fnBody('verify_progress_claim')).toMatch(/IF v_regressed AND v_reason IS NULL THEN\s+RAISE EXCEPTION 'CLAIM_REGRESS_REASON:/);
+    const verify = fnBody('verify_progress_claim');
+    expect(verify).toContain('v_needs_reason := v_regressed OR v_delta < 0;');
+    expect(verify.indexOf('v_delta := v_after - v_before;')).toBeLessThan(verify.indexOf('v_needs_reason := v_regressed OR v_delta < 0;'));
+    expect(verify).toMatch(/IF v_needs_reason AND v_reason IS NULL THEN\s+RAISE EXCEPTION 'CLAIM_REGRESS_REASON:/);
   });
 
   it('needs a note to return a claim', () => {
@@ -3338,8 +3414,8 @@ describe('migration 104 - each RPC', () => {
 describe('migration 104 - verification', () => {
   const body = fnBody('verify_progress_claim');
 
-  it('never lets the submitter verify', () => {
-    expect(body).toMatch(/IF v_claim\.submitted_by = v_uid THEN\s+RAISE EXCEPTION 'CLAIM_SELF_VERIFY:/);
+  it('never lets the submitter, or anyone who filled a line, verify', () => {
+    expect(body).toMatch(/IF v_claim\.submitted_by = v_uid OR EXISTS \(\s+SELECT 1 FROM progress_claim_lines l\s+WHERE l\.claim_id = p_claim_id AND \(l\.created_by = v_uid OR l\.updated_by = v_uid\)\s+\) THEN\s+RAISE EXCEPTION 'CLAIM_SELF_VERIFY:/);
   });
 
   it('verifies every line of the claim exactly once', () => {
@@ -3370,6 +3446,14 @@ describe('migration 104 - verification', () => {
     expect(body).toMatch(/installed_before\s+= v_before/);
     expect(body).toMatch(/delta_quantity\s+= v_delta/);
     expect(body).toMatch(/progress_entry_id = v_entry_id/);
+  });
+
+  it('keeps installed as it stood and logs a mismatch with the entries instead of overwriting it silently', () => {
+    expect(CODE).toContain('  installed_cached_before NUMERIC,');
+    expect(CODE).toContain('ALTER TABLE progress_claim_lines ADD COLUMN IF NOT EXISTS installed_cached_before NUMERIC;');
+    expect(body).toContain('v_cached_before := v_item.installed;');
+    expect(body).toMatch(/IF abs\(COALESCE\(v_cached_before, 0\) - v_before\) > 0\.0001 THEN\s+INSERT INTO activity_log/);
+    expect(body).toMatch(/installed_cached_before = v_cached_before/);
   });
 
   it('uses the same percent math as tools/progressClaims/stageMath.ts', () => {
@@ -3418,6 +3502,13 @@ describe('migration 104 - notifications', () => {
     expect(body).toMatch(/v_uid,\s+-- p_exclude_user_id/);
   });
 
+  it('tells the principals when nobody assigned can verify, and reports both counts', () => {
+    const body = fnBody('submit_progress_claim');
+    expect(body).toMatch(/IF v_verifiers = 0 THEN\s+PERFORM enqueue_notification\(/);
+    expect(body).toMatch(/v_uid,\s+'principal'\s+\);/);
+    expect(body).toMatch(/'notified', v_notified, 'verifiers_notified', v_verifiers/);
+  });
+
   it('tells the submitter on return and verify, never the actor', () => {
     for (const fn of ['return_progress_claim', 'verify_progress_claim']) {
       expect(fnBody(fn)).toMatch(/v_claim\.submitted_by,[\s\S]*ARRAY\[v_uid\],\s+NULL\s+\);/);
@@ -3437,8 +3528,26 @@ describe('migration 104 - weights stay consistent with claims', () => {
   it('refuses to switch a claimed row between one and three stages', () => {
     const body = fnBody('boq_stage_weights_shape_lock');
     expect(body).toContain("(NEW.weights ? 'SINGLE') IS DISTINCT FROM (OLD.weights ? 'SINGLE')");
+    expect(body).toMatch(/JOIN progress_claims c ON c\.id = l\.claim_id\s+WHERE l\.boq_item_id = NEW\.boq_item_id AND c\.status = 'VERIFIED'/);
     expect(body).toMatch(/RAISE EXCEPTION 'WEIGHTS_SHAPE_LOCKED:/);
     expect(CODE).toMatch(/CREATE TRIGGER boq_stage_weights_shape_lock_trg\s+BEFORE UPDATE OF weights ON boq_stage_weights/);
+  });
+});
+
+describe('migration 104 - read views', () => {
+  it.each(['progress_claim_latest_verified', 'progress_entry_totals'])("%s applies the caller's RLS and anon cannot read it", (view) => {
+    expect(CODE).toMatch(new RegExp(`CREATE OR REPLACE VIEW ${view} WITH \\(security_invoker = on\\) AS`));
+    expect(CODE).toMatch(new RegExp(`REVOKE ALL ON [^;]*\\b${view}\\b[^;]* FROM PUBLIC, anon;`));
+    expect(CODE).toMatch(new RegExp(`GRANT SELECT ON [^;]*\\b${view}\\b[^;]* TO authenticated, service_role;`));
+  });
+
+  it('keeps one row per BoQ item, the newest verification first', () => {
+    expect(CODE).toMatch(/SELECT DISTINCT ON \(l\.boq_item_id\)/);
+    expect(CODE).toMatch(/ORDER BY l\.boq_item_id, c\.verified_at DESC, l\.updated_at DESC;/);
+  });
+
+  it('never creates a view without OR REPLACE', () => {
+    expect(CODE).not.toMatch(/\bCREATE\s+VIEW\b/i);
   });
 });
 
@@ -3453,6 +3562,7 @@ describe('migration 104 - privileges', () => {
   it('keeps the internal lookup and the trigger function away from clients', () => {
     expect(CODE).toContain('REVOKE ALL ON FUNCTION latest_verified_stage_pct(UUID) FROM PUBLIC, anon, authenticated;');
     expect(CODE).toContain('REVOKE ALL ON FUNCTION boq_stage_weights_shape_lock() FROM PUBLIC, anon, authenticated;');
+    expect(CODE).toContain('REVOKE ALL ON FUNCTION boq_items_progress_single_writer() FROM PUBLIC, anon, authenticated;');
     expect(CODE).not.toMatch(/GRANT EXECUTE ON FUNCTION latest_verified_stage_pct\(UUID\) TO [^;]*authenticated/);
   });
 });
@@ -3531,14 +3641,24 @@ Expected: FAIL — `ENOENT: no such file or directory` for `104_progress_claims.
 --     reason. The entries of a claimed row therefore always sum to
 --     boq_items.installed, and every reader of either agrees (spec §18).
 --   * Three notification types: PROGRESS_CLAIM_SUBMITTED to the project's
---     estimators (its admins when it has none), PROGRESS_CLAIM_RETURNED and
---     PROGRESS_CLAIM_VERIFIED to the submitter.
---   * The direct supervisor paths into progress close: the progress_entries
---     insert policy (002) and the boq_items progress update policy (059) are
---     dropped, and progress_entries.quantity may now be negative but never 0.
---     Office roles keep 036's access, which publishing a BoQ needs.
+--     estimators other than the submitter (its admins when it has none, and
+--     its principals when it has neither, so someone can assign a verifier),
+--     PROGRESS_CLAIM_RETURNED and PROGRESS_CLAIM_VERIFIED to the submitter.
+--   * Progress gets exactly one writer. The supervisor insert policies on
+--     progress_entries and progress_photos (002) and the supervisor progress
+--     policy on boq_items (059) are dropped; 036's office FOR ALL policies on
+--     progress_entries and progress_photos become read-only; 002's
+--     sync_boq_progress() is revoked; and a trigger refuses any change to
+--     boq_items.installed or progress unless verify_progress_claim marked its
+--     own transaction. Office roles still edit every other boq_items column,
+--     which publishing a BoQ needs. progress_entries.quantity may now be
+--     negative but never 0.
 --   * A row's weights cannot switch between one stage and three once the row
---     has a claim line, because its stored percents would stop matching.
+--     has a VERIFIED claim line. An open line is re-checked against the
+--     current weights at submit and verify instead, so an estimator can still
+--     correct a shape a supervisor seeded.
+--   * Two read views with one row per BoQ item (latest verified percents,
+--     entry totals), so the claim screens never meet PostgREST's row cap.
 --
 -- PASTE ORDER. After 103 (progress_actor_role, boq_stage_weights) and 102
 -- (progress_ai_runs). It re-creates the notifications type CHECK as 098's
@@ -3549,8 +3669,10 @@ Expected: FAIL — `ENOENT: no such file or directory` for `104_progress_claims.
 --     is dropped with only a WARNING (self-check 4 shows it).
 --   * 059: supervisors can write boq_items.installed and progress directly
 --     again (self-check 3 shows it).
---   * 002: supervisors can insert progress_entries directly again
---     (self-check 3 shows it).
+--   * 002: supervisors can insert progress_entries and progress_photos
+--     directly again (self-check 3 shows it).
+--   * 036: office roles regain full write access to progress_entries and
+--     progress_photos (self-check 3 shows it).
 --
 -- RE-PASTE SAFETY. CREATE TABLE / INDEX IF NOT EXISTS, CREATE OR REPLACE
 -- FUNCTION, DROP POLICY / TRIGGER IF EXISTS before CREATE, and constraint swaps
@@ -3630,6 +3752,7 @@ CREATE TABLE IF NOT EXISTS progress_claim_lines (
   row_pct_prev      NUMERIC,
   row_pct_new       NUMERIC,
   installed_before  NUMERIC,
+  installed_cached_before NUMERIC,
   delta_quantity    NUMERIC,
   regress_reason    TEXT,
   note              TEXT,
@@ -3650,6 +3773,8 @@ CREATE TABLE IF NOT EXISTS progress_claim_lines (
 );
 CREATE INDEX IF NOT EXISTS idx_progress_claim_lines_row ON progress_claim_lines (boq_item_id);
 CREATE INDEX IF NOT EXISTS idx_progress_claim_lines_project ON progress_claim_lines (project_id);
+-- A database that ran an earlier draft of this file lacks the column.
+ALTER TABLE progress_claim_lines ADD COLUMN IF NOT EXISTS installed_cached_before NUMERIC;
 
 -- 102 left progress_ai_runs.claim_id without a foreign key: this table did not exist yet.
 DO $$
@@ -3727,7 +3852,7 @@ AS $$
 $$;
 
 -- ───────────────────────────────────────────────────────────────────────────
--- 3. A claimed row keeps its weight shape
+-- 3. A verified row keeps its weight shape
 -- ───────────────────────────────────────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION boq_stage_weights_shape_lock()
@@ -3735,8 +3860,12 @@ RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
 AS $$
 BEGIN
   IF (NEW.weights ? 'SINGLE') IS DISTINCT FROM (OLD.weights ? 'SINGLE')
-     AND EXISTS (SELECT 1 FROM progress_claim_lines l WHERE l.boq_item_id = NEW.boq_item_id) THEN
-    RAISE EXCEPTION 'WEIGHTS_SHAPE_LOCKED: baris % sudah punya klaim progres', NEW.boq_item_id;
+     AND EXISTS (
+       SELECT 1 FROM progress_claim_lines l
+       JOIN progress_claims c ON c.id = l.claim_id
+       WHERE l.boq_item_id = NEW.boq_item_id AND c.status = 'VERIFIED'
+     ) THEN
+    RAISE EXCEPTION 'WEIGHTS_SHAPE_LOCKED: baris % sudah punya klaim progres terverifikasi', NEW.boq_item_id;
   END IF;
   RETURN NEW;
 END;
@@ -3765,11 +3894,87 @@ CREATE POLICY progress_claim_lines_select ON progress_claim_lines
   USING (is_project_member(project_id) OR is_office_role());
 
 -- ───────────────────────────────────────────────────────────────────────────
--- 5. Close the direct supervisor paths into progress
+-- 4b. Read views, one row per BoQ item
 -- ───────────────────────────────────────────────────────────────────────────
 
+-- security_invoker = on, or a view reads with its owner's rights and skips the
+-- caller's RLS (061's lesson).
+CREATE OR REPLACE VIEW progress_claim_latest_verified WITH (security_invoker = on) AS
+SELECT DISTINCT ON (l.boq_item_id)
+  l.project_id, l.boq_item_id, l.verified_pct, c.verified_at
+FROM progress_claim_lines l
+JOIN progress_claims c ON c.id = l.claim_id
+WHERE c.status = 'VERIFIED' AND l.verified_pct IS NOT NULL
+ORDER BY l.boq_item_id, c.verified_at DESC, l.updated_at DESC;
+
+CREATE OR REPLACE VIEW progress_entry_totals WITH (security_invoker = on) AS
+SELECT project_id, boq_item_id, sum(quantity) AS installed_total, count(*) AS entry_count
+FROM progress_entries
+GROUP BY project_id, boq_item_id;
+
+REVOKE ALL ON progress_claim_latest_verified, progress_entry_totals FROM PUBLIC, anon;
+GRANT SELECT ON progress_claim_latest_verified, progress_entry_totals TO authenticated, service_role;
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- 5. Progress has one writer: verify_progress_claim
+-- ───────────────────────────────────────────────────────────────────────────
+
+-- Supervisors: no direct insert into progress_entries or progress_photos (002)
+-- and no direct update of boq_items.installed or progress (059).
 DROP POLICY IF EXISTS "progress_entries_assigned_insert" ON progress_entries;
+DROP POLICY IF EXISTS "progress_photos_assigned_insert" ON progress_photos;
 DROP POLICY IF EXISTS "boq_items_assigned_progress_update" ON boq_items;
+
+-- Office roles: 036 gave them FOR ALL on both tables; they only read them.
+DROP POLICY IF EXISTS progress_entries_office_all ON progress_entries;
+DROP POLICY IF EXISTS progress_entries_office_read ON progress_entries;
+CREATE POLICY progress_entries_office_read ON progress_entries
+  FOR SELECT TO authenticated
+  USING (is_office_role());
+
+DROP POLICY IF EXISTS progress_photos_office_all ON progress_photos;
+DROP POLICY IF EXISTS progress_photos_office_read ON progress_photos;
+CREATE POLICY progress_photos_office_read ON progress_photos
+  FOR SELECT TO authenticated
+  USING (is_office_role());
+
+-- 002's sync_boq_progress() rewrote installed and progress from the entries
+-- for any caller, rounding progress to whole percents.
+DO $$
+BEGIN
+  IF to_regprocedure('public.sync_boq_progress(uuid)') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON FUNCTION public.sync_boq_progress(uuid) FROM PUBLIC, anon, authenticated';
+  END IF;
+END $$;
+
+-- Office roles still edit boq_items (publishing writes label, planned,
+-- superseded_at and more), so the last door is a trigger: installed and
+-- progress change only inside verify_progress_claim, which sets
+-- sano.progress_writer = 'verify' for its own transaction. PostgREST gives a
+-- client no way to set that setting. A session without a JWT (the Dashboard
+-- SQL editor, the service role) stays trusted, the same exception 059 makes.
+CREATE OR REPLACE FUNCTION boq_items_progress_single_writer()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL OR current_setting('sano.progress_writer', true) IS NOT DISTINCT FROM 'verify' THEN
+    RETURN NEW;
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF COALESCE(NEW.installed, 0) <> 0 OR COALESCE(NEW.progress, 0) <> 0 THEN
+      RAISE EXCEPTION 'PROGRESS_SINGLE_WRITER: baris BoQ baru dimulai dari progres 0';
+    END IF;
+  ELSIF NEW.installed IS DISTINCT FROM OLD.installed OR NEW.progress IS DISTINCT FROM OLD.progress THEN
+    RAISE EXCEPTION 'PROGRESS_SINGLE_WRITER: progres baris % hanya berubah lewat verifikasi klaim progres', OLD.code;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS boq_items_progress_single_writer_trg ON boq_items;
+CREATE TRIGGER boq_items_progress_single_writer_trg
+  BEFORE INSERT OR UPDATE ON boq_items
+  FOR EACH ROW EXECUTE FUNCTION boq_items_progress_single_writer();
 
 DO $$
 DECLARE c record;
@@ -3985,6 +4190,7 @@ DECLARE
   v_project  TEXT;
   v_target   TEXT;
   v_notified INTEGER := 0;
+  v_verifiers INTEGER := 0;
 BEGIN
   SELECT * INTO v_claim FROM progress_claims WHERE id = p_claim_id FOR UPDATE;
   IF NOT FOUND THEN
@@ -4045,13 +4251,35 @@ BEGIN
       v_uid,     -- p_exclude_user_id: the submitter is never told about their own claim
       v_target   -- p_target_role (066): estimators, or admins when the project has none
     );
+    SELECT count(*) INTO v_verifiers FROM notifications n
+    WHERE n.related_entity_id = p_claim_id AND n.type = 'PROGRESS_CLAIM_SUBMITTED' AND n.created_at >= now();
+    -- Nobody assigned can verify. Notifications are readable only by project
+    -- members (092), so an unassigned estimator would never see one; tell the
+    -- principals instead (093 makes them members of every project), who can
+    -- assign an estimator.
+    IF v_verifiers = 0 THEN
+      PERFORM enqueue_notification(
+        v_claim.project_id,
+        'PROGRESS_CLAIM_SUBMITTED',
+        'Klaim progres belum punya verifikator',
+        format('%s: belum ada estimator atau admin di proyek ini untuk memverifikasi klaim minggu %s. Tugaskan estimator.', COALESCE(v_project, 'Proyek'), to_char(v_claim.week_start, 'DD/MM/YYYY')),
+        'ProgressClaimVerify',
+        jsonb_build_object('projectId', v_claim.project_id, 'claimId', p_claim_id, 'initialSection', 'klaim'),
+        p_claim_id,
+        v_uid,
+        'principal'
+      );
+    END IF;
     SELECT count(*) INTO v_notified FROM notifications n
     WHERE n.related_entity_id = p_claim_id AND n.type = 'PROGRESS_CLAIM_SUBMITTED' AND n.created_at >= now();
   EXCEPTION WHEN OTHERS THEN
     RAISE WARNING 'submit_progress_claim: notification failed: %', SQLERRM;
   END;
 
-  RETURN jsonb_build_object('claim_id', p_claim_id, 'status', 'SUBMITTED', 'lines', v_lines, 'notified', v_notified);
+  RETURN jsonb_build_object(
+    'claim_id', p_claim_id, 'status', 'SUBMITTED', 'lines', v_lines,
+    'notified', v_notified, 'verifiers_notified', v_verifiers
+  );
 END;
 $$;
 
@@ -4136,6 +4364,8 @@ DECLARE
   v_entries   INTEGER := 0;
   v_regress   INTEGER := 0;
   v_notified  INTEGER := 0;
+  v_needs_reason  BOOLEAN;
+  v_cached_before NUMERIC;
 BEGIN
   SELECT * INTO v_claim FROM progress_claims WHERE id = p_claim_id FOR UPDATE;
   IF NOT FOUND THEN
@@ -4145,8 +4375,11 @@ BEGIN
   IF v_claim.status <> 'SUBMITTED' THEN
     RAISE EXCEPTION 'CLAIM_STATE: klaim berstatus %', v_claim.status;
   END IF;
-  IF v_claim.submitted_by = v_uid THEN
-    RAISE EXCEPTION 'CLAIM_SELF_VERIFY: klaim ini Anda kirim sendiri';
+  IF v_claim.submitted_by = v_uid OR EXISTS (
+       SELECT 1 FROM progress_claim_lines l
+       WHERE l.claim_id = p_claim_id AND (l.created_by = v_uid OR l.updated_by = v_uid)
+     ) THEN
+    RAISE EXCEPTION 'CLAIM_SELF_VERIFY: klaim ini berisi angka yang Anda kirim atau isi sendiri';
   END IF;
 
   IF p_lines IS NULL OR jsonb_typeof(p_lines) <> 'array' THEN
@@ -4166,6 +4399,9 @@ BEGIN
   END IF;
 
   v_week := to_char(v_claim.week_start, 'DD/MM/YYYY');
+
+  -- Unlocks boq_items_progress_single_writer for this transaction only.
+  PERFORM set_config('sano.progress_writer', 'verify', true);
 
   FOR v_line IN SELECT * FROM progress_claim_lines WHERE claim_id = p_claim_id ORDER BY created_at, id LOOP
     SELECT e INTO v_input FROM jsonb_array_elements(p_lines) AS e WHERE e ->> 'line_id' = v_line.id::text;
@@ -4191,17 +4427,35 @@ BEGIN
       SELECT 1 FROM jsonb_each(v_prev) AS e(k, v)
       WHERE (v #>> '{}')::numeric > COALESCE((v_pct ->> k)::numeric, 0)
     );
-    v_reason := COALESCE(NULLIF(btrim(COALESCE(v_input ->> 'regress_reason', '')), ''), v_line.regress_reason);
-    IF v_regressed AND v_reason IS NULL THEN
-      RAISE EXCEPTION 'CLAIM_REGRESS_REASON: baris % turun dari progres terverifikasi', v_item.code;
-    END IF;
 
     v_frac_prev := stage_row_fraction(v_weights, v_prev);
     v_frac_new  := stage_row_fraction(v_weights, v_pct);
     SELECT COALESCE(sum(quantity), 0) INTO v_before FROM progress_entries WHERE boq_item_id = v_item.id;
+    v_cached_before := v_item.installed;
     v_after := round(v_item.planned * v_frac_new, 4);
     v_delta := v_after - v_before;
     v_entry_id := NULL;
+
+    -- A lower figure needs a reason, whether a stage percent dropped or the
+    -- quantity fell because the weights or the planned volume changed since
+    -- the last verification.
+    v_needs_reason := v_regressed OR v_delta < 0;
+    v_reason := COALESCE(NULLIF(btrim(COALESCE(v_input ->> 'regress_reason', '')), ''), v_line.regress_reason);
+    IF v_needs_reason AND v_reason IS NULL THEN
+      RAISE EXCEPTION 'CLAIM_REGRESS_REASON: baris % turun dari progres terverifikasi', v_item.code;
+    END IF;
+
+    -- installed set outside the entries (legacy data): the entries win, and
+    -- the difference is logged so it is never overwritten silently.
+    IF abs(COALESCE(v_cached_before, 0) - v_before) > 0.0001 THEN
+      INSERT INTO activity_log (project_id, user_id, type, label, flag)
+      VALUES (
+        v_claim.project_id, v_uid, 'progres',
+        format('%s: terpasang tercatat %s berbeda dari riwayat progres %s; verifikasi mengikuti riwayat',
+               v_item.code, trim_scale(COALESCE(v_cached_before, 0)), trim_scale(v_before)),
+        'WARNING'
+      );
+    END IF;
 
     IF v_delta <> 0 THEN
       INSERT INTO progress_entries (project_id, boq_item_id, reported_by, quantity, unit, work_status, note)
@@ -4229,7 +4483,7 @@ BEGIN
         CASE WHEN v_delta < 0 THEN 'WARNING' ELSE 'OK' END
       );
     END IF;
-    IF v_regressed OR v_delta < 0 THEN
+    IF v_needs_reason THEN
       v_regress := v_regress + 1;
     END IF;
 
@@ -4242,6 +4496,7 @@ BEGIN
         row_pct_prev      = v_frac_prev,
         row_pct_new       = v_frac_new,
         installed_before  = v_before,
+        installed_cached_before = v_cached_before,
         delta_quantity    = v_delta,
         regress_reason    = v_reason,
         progress_entry_id = v_entry_id,
@@ -4249,6 +4504,7 @@ BEGIN
         updated_at        = now()
     WHERE id = v_line.id;
   END LOOP;
+  PERFORM set_config('sano.progress_writer', '', true);
 
   UPDATE progress_claims
   SET status = 'VERIFIED', verified_by = v_uid, verified_at = now(),
@@ -4301,6 +4557,7 @@ REVOKE ALL ON FUNCTION latest_verified_stage_pct(UUID) FROM PUBLIC, anon, authen
 GRANT EXECUTE ON FUNCTION latest_verified_stage_pct(UUID) TO service_role;
 
 REVOKE ALL ON FUNCTION boq_stage_weights_shape_lock() FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION boq_items_progress_single_writer() FROM PUBLIC, anon, authenticated;
 
 REVOKE ALL ON FUNCTION save_progress_claim_line(UUID, UUID, JSONB, TEXT, JSONB, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION save_progress_claim_line(UUID, UUID, JSONB, TEXT, JSONB, TEXT) TO authenticated, service_role;
@@ -4330,15 +4587,25 @@ RESET lock_timeout;
 --    progress_claim_lines_claim_row, progress_claim_lines_pkey,
 --    progress_claims_one_open, progress_claims_pkey.
 --
--- 2. Both tables are read-only to the app:
+-- 2. The claim tables are read-only to the app, and the views apply the
+--    caller's RLS:
 --      SELECT tablename, policyname, cmd FROM pg_policies
 --      WHERE tablename IN ('progress_claims', 'progress_claim_lines');
 --    EXPECTED: two rows, both SELECT.
+--      SELECT relname, reloptions FROM pg_class
+--      WHERE relname IN ('progress_claim_latest_verified', 'progress_entry_totals') ORDER BY 1;
+--    EXPECTED: two rows, each with {security_invoker=on}.
 --
--- 3. The direct supervisor progress writes are gone:
---      SELECT policyname FROM pg_policies
---      WHERE policyname IN ('progress_entries_assigned_insert', 'boq_items_assigned_progress_update');
---    EXPECTED: no rows. A row means 002 or 059 was re-pasted: re-paste 104.
+-- 3. Progress has one writer:
+--      SELECT tablename, policyname, cmd FROM pg_policies
+--      WHERE tablename IN ('progress_entries', 'progress_photos') ORDER BY 1, 2;
+--    EXPECTED: SELECT rows only. An INSERT or ALL row means 002 or 036 was
+--    re-pasted: re-paste 104.
+--      SELECT count(*) FROM pg_policies WHERE policyname = 'boq_items_assigned_progress_update';
+--    EXPECTED: 0. A 1 means 059 was re-pasted: re-paste 104.
+--      SELECT has_function_privilege('authenticated', 'sync_boq_progress(uuid)', 'EXECUTE'),
+--             (SELECT count(*) FROM pg_trigger WHERE tgname = 'boq_items_progress_single_writer_trg');
+--    EXPECTED: f, 1.
 --
 -- 4. The type list is 098's thirteen plus three:
 --      SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'notifications_type_check';
@@ -4365,7 +4632,16 @@ RESET lock_timeout;
 --      ROLLBACK;
 --    EXPECTED: ERROR starting CLAIM_ROLE.
 --
--- 8. Re-paste this whole file.
+-- 8. An office role cannot set installed outside verification (rolled back):
+--      BEGIN;
+--        SET LOCAL ROLE authenticated;
+--        SELECT set_config('request.jwt.claims',
+--               '{"sub":"<AN_ESTIMATOR_UUID>","role":"authenticated"}', true);
+--        UPDATE boq_items SET installed = installed + 1 WHERE id = '<ANY_BOQ_ROW_UUID>';
+--      ROLLBACK;
+--    EXPECTED: ERROR starting PROGRESS_SINGLE_WRITER.
+--
+-- 9. Re-paste this whole file.
 --    EXPECTED: no error, and checks 1-6 unchanged.
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -4373,7 +4649,8 @@ SELECT proname, prosecdef, has_function_privilege('anon', oid, 'EXECUTE') AS ano
 FROM pg_proc
 WHERE proname IN ('stage_pct_valid', 'stage_pct_round', 'stage_row_fraction', 'zero_stage_pct',
                   'latest_verified_stage_pct', 'save_progress_claim_line', 'remove_progress_claim_line',
-                  'submit_progress_claim', 'return_progress_claim', 'verify_progress_claim')
+                  'submit_progress_claim', 'return_progress_claim', 'verify_progress_claim',
+                  'boq_items_progress_single_writer')
 ORDER BY proname;
 ```
 
@@ -4667,6 +4944,131 @@ SELECT rehearsal.expect('104 notifications: sixteen types with the three claim t
 SELECT rehearsal.expect('104 policies: the supervisor progress write policies are gone', (SELECT count(*) = 0 FROM pg_policies WHERE policyname IN ('progress_entries_assigned_insert', 'boq_items_assigned_progress_update')));
 SELECT rehearsal.expect('104 privileges: anon runs none of the 104 functions', NOT bool_or(has_function_privilege('anon', oid, 'EXECUTE'))) FROM pg_proc WHERE proname IN ('stage_pct_valid', 'stage_pct_round', 'stage_row_fraction', 'zero_stage_pct', 'latest_verified_stage_pct', 'save_progress_claim_line', 'remove_progress_claim_line', 'submit_progress_claim', 'return_progress_claim', 'verify_progress_claim');
 SELECT rehearsal.expect('104 privileges: authenticated cannot call latest_verified_stage_pct', NOT has_function_privilege('authenticated', 'latest_verified_stage_pct(uuid)', 'EXECUTE'));
+
+-- F. Review fixes: one writer of progress, re-weighting between verifications,
+--    a verifier-less project, line authors, legacy installed, the read views.
+
+-- F1. Nobody but verification writes progress, and publishing still works
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('pri') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect_error('104 the principal cannot insert a progress entry', format('INSERT INTO progress_entries (project_id, boq_item_id, reported_by, quantity, unit, work_status) VALUES (%L, %L, %L, 50, %L, %L)', rehearsal.p(), rehearsal.row(2), rehearsal.u('pri'), 'm3', 'IN_PROGRESS'), 'new row violates row-level security');
+SELECT rehearsal.expect_error('104 the principal cannot set installed', format('UPDATE boq_items SET installed = 9.5, progress = 95 WHERE id = %L', rehearsal.row(2)), 'PROGRESS_SINGLE_WRITER:');
+ROLLBACK;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect_error('104 an estimator cannot call sync_boq_progress', format('SELECT sync_boq_progress(%L)', rehearsal.p()), 'permission denied');
+SELECT rehearsal.expect_error('104 an estimator cannot insert a progress photo', format('INSERT INTO progress_photos (progress_entry_id, storage_path) SELECT id, %L FROM progress_entries WHERE project_id = %L LIMIT 1', 'progress/x.jpg', rehearsal.p()), 'new row violates row-level security');
+SELECT rehearsal.expect_error('104 a new BoQ row cannot start with progress', format('INSERT INTO boq_items (project_id, code, label, unit, planned, installed) VALUES (%L, %L, %L, %L, 10, 5)', rehearsal.p(), 'T1-099', 'Uji', 'm3'), 'PROGRESS_SINGLE_WRITER:');
+WITH u AS (UPDATE boq_items SET label = label || ' (uji)' WHERE id = rehearsal.row(2) RETURNING 1)
+SELECT rehearsal.expect('104 an estimator still edits other BoQ columns, as publishing needs', count(*) = 1) FROM u;
+ROLLBACK;
+
+-- F2. Claim 3: re-weighting, an estimator reshaping a supervisor seed, a line author, legacy installed
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 an estimator re-weights a verified row without changing its shape', (set_boq_stage_weights(rehearsal.row(1), '{"BEKISTING":0.2,"PEMBESIAN":0.5,"PENGECORAN":0.3}') ->> 'source') = 'manual');
+COMMIT;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 a supervisor seeds a one-stage class on a row without weights', seed_reference_stage_weights(rehearsal.p(), jsonb_build_array(jsonb_build_object('boq_item_id', rehearsal.row(6), 'reference_class', 'LAINNYA'))) = 1);
+SELECT save_progress_claim_line(rehearsal.p(), rehearsal.row(6), '{"SINGLE":100}') ->> 'claim_id' AS claim3 \gset
+SELECT rehearsal.expect('104 the same stage percents on the re-weighted row save without a reason', (save_progress_claim_line(rehearsal.p(), rehearsal.row(1), '{"BEKISTING":100,"PEMBESIAN":40,"PENGECORAN":0}') ->> 'claim_id') = :'claim3');
+COMMIT;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 an estimator reshapes a row whose only claim line is still open', (reset_boq_stage_weights(rehearsal.row(6), 'PILECAP_SLOOF_PLAT_DASAR') ->> 'source') = 'reference');
+SELECT rehearsal.expect('104 an estimator may also fill a line', (save_progress_claim_line(rehearsal.p(), rehearsal.row(3), '{"SINGLE":50}') ->> 'claim_id') = :'claim3');
+COMMIT;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect_error('104 submit re-checks an open line against reshaped weights', format('SELECT submit_progress_claim(%L)', :'claim3'), 'CLAIM_PCT:');
+SELECT rehearsal.expect('104 the supervisor re-enters the reshaped row', (save_progress_claim_line(rehearsal.p(), rehearsal.row(6), '{"BEKISTING":100,"PEMBESIAN":50,"PENGECORAN":0}') ->> 'claim_id') = :'claim3');
+COMMIT;
+
+UPDATE boq_items SET installed = 4 WHERE id = rehearsal.row(3);
+SELECT rehearsal.expect('104 a session without a JWT (the SQL editor) may still set installed', (SELECT installed = 4 FROM boq_items WHERE id = rehearsal.row(3)));
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 claim 3 submits and reaches both estimators', (submit_progress_claim(:'claim3') ->> 'verifiers_notified')::int = 2);
+COMMIT;
+
+SELECT id AS c3_row1 FROM progress_claim_lines WHERE claim_id = :'claim3' AND boq_item_id = rehearsal.row(1) \gset
+SELECT id AS c3_row3 FROM progress_claim_lines WHERE claim_id = :'claim3' AND boq_item_id = rehearsal.row(3) \gset
+SELECT id AS c3_row6 FROM progress_claim_lines WHERE claim_id = :'claim3' AND boq_item_id = rehearsal.row(6) \gset
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect_error('104 an estimator who filled a line cannot verify the claim', format('SELECT verify_progress_claim(%L, %L)', :'claim3', jsonb_build_array(
+  jsonb_build_object('line_id', :'c3_row1', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":40,"PENGECORAN":0}'::jsonb),
+  jsonb_build_object('line_id', :'c3_row3', 'verified_pct', '{"SINGLE":50}'::jsonb),
+  jsonb_build_object('line_id', :'c3_row6', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":50,"PENGECORAN":0}'::jsonb))), 'CLAIM_SELF_VERIFY:');
+ROLLBACK;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est2') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect_error('104 a quantity drop from re-weighting needs a reason even when no percent dropped', format('SELECT verify_progress_claim(%L, %L)', :'claim3', jsonb_build_array(
+  jsonb_build_object('line_id', :'c3_row1', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":40,"PENGECORAN":0}'::jsonb),
+  jsonb_build_object('line_id', :'c3_row3', 'verified_pct', '{"SINGLE":50}'::jsonb),
+  jsonb_build_object('line_id', :'c3_row6', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":50,"PENGECORAN":0}'::jsonb))), 'CLAIM_REGRESS_REASON:');
+SELECT verify_progress_claim(:'claim3', jsonb_build_array(
+  jsonb_build_object('line_id', :'c3_row1', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":40,"PENGECORAN":0}'::jsonb, 'regress_reason', 'Bobot kolom diubah estimator'),
+  jsonb_build_object('line_id', :'c3_row3', 'verified_pct', '{"SINGLE":50}'::jsonb),
+  jsonb_build_object('line_id', :'c3_row6', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":50,"PENGECORAN":0}'::jsonb))) AS verify3 \gset
+COMMIT;
+
+SELECT rehearsal.expect('104 re-weighting writes a -12.04 correction that carries its reason', (SELECT count(*) = 1 AND bool_and(note LIKE '%Bobot kolom diubah estimator%') FROM progress_entries WHERE boq_item_id = rehearsal.row(1) AND quantity = -12.04));
+SELECT rehearsal.expect('104 kolom installed 40 = 100 x (0.2 + 0.5 x 0.4)', (SELECT installed = 40 FROM boq_items WHERE id = rehearsal.row(1)));
+SELECT rehearsal.expect('104 the reshaped pile cap row installed 11.07 = 30 x (0.131 + 0.476 x 0.5)', (SELECT installed = 11.07 FROM boq_items WHERE id = rehearsal.row(6)));
+SELECT rehearsal.expect('104 legacy installed 4 gives way to the entries and the difference is logged',
+  (SELECT installed = 5 FROM boq_items WHERE id = rehearsal.row(3))
+  AND (SELECT count(*) = 1 FROM activity_log WHERE project_id = rehearsal.p() AND flag = 'WARNING' AND label LIKE 'T1-003: terpasang tercatat 4 berbeda dari riwayat progres 0%')
+  AND (SELECT installed_cached_before = 4 AND installed_before = 0 FROM progress_claim_lines WHERE id = :'c3_row3'));
+SELECT rehearsal.expect('104 after claim 3 every claimed row still sums its entries to installed', (SELECT bool_and(b.installed = COALESCE((SELECT sum(quantity) FROM progress_entries e WHERE e.boq_item_id = b.id), 0)) FROM boq_items b WHERE b.id IN (SELECT boq_item_id FROM progress_claim_lines WHERE project_id = rehearsal.p())));
+
+-- F3. No estimator or admin assigned: the principal hears about the claim
+BEGIN;
+DELETE FROM project_assignments WHERE project_id = rehearsal.p() AND user_id IN (rehearsal.u('est'), rehearsal.u('est2'));
+SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT save_progress_claim_line(rehearsal.p(), rehearsal.row(2), '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}') ->> 'claim_id' AS claim4 \gset
+SELECT submit_progress_claim(:'claim4') AS submit4 \gset
+RESET ROLE;
+SELECT rehearsal.expect('104 with no verifier assigned the principal is told instead',
+  (:'submit4'::jsonb ->> 'verifiers_notified')::int = 0
+  AND (:'submit4'::jsonb ->> 'notified')::int = 1
+  AND (SELECT count(*) = 1 FROM notifications WHERE related_entity_id = :'claim4' AND type = 'PROGRESS_CLAIM_SUBMITTED' AND recipient_user_id = rehearsal.u('pri')));
+ROLLBACK;
+
+-- F4. Removing the last line, an admin verifying, the principal reading, estimator seeding, the views
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT save_progress_claim_line(rehearsal.p(), rehearsal.row(2), '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}') AS save5 \gset
+SELECT rehearsal.expect('104 removing the last line leaves an empty claim', (remove_progress_claim_line((:'save5'::jsonb ->> 'line_id')::uuid) ->> 'lines_left')::int = 0);
+SELECT rehearsal.expect_error('104 an empty claim cannot be submitted', format('SELECT submit_progress_claim(%L)', :'save5'::jsonb ->> 'claim_id'), 'CLAIM_EMPTY:');
+SELECT rehearsal.expect('104 the emptied claim takes a line again', (save_progress_claim_line(rehearsal.p(), rehearsal.row(2), '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}') ->> 'claim_id') = (:'save5'::jsonb ->> 'claim_id'));
+SELECT rehearsal.expect('104 and submits', (submit_progress_claim((:'save5'::jsonb ->> 'claim_id')::uuid) ->> 'status') = 'SUBMITTED');
+COMMIT;
+
+SELECT id AS c5_line FROM progress_claim_lines WHERE claim_id = (:'save5'::jsonb ->> 'claim_id')::uuid \gset
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('adm') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 an unassigned admin verifies as an office role', (verify_progress_claim((:'save5'::jsonb ->> 'claim_id')::uuid, jsonb_build_array(jsonb_build_object('line_id', :'c5_line', 'verified_pct', '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}'::jsonb))) ->> 'status') = 'VERIFIED');
+COMMIT;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('pri') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 the principal reads claim lines', (SELECT count(*) > 0 FROM progress_claim_lines WHERE project_id = rehearsal.p()));
+SELECT rehearsal.expect('104 the latest verified view has one row per verified BoQ row', (SELECT count(*) = 4 FROM progress_claim_latest_verified WHERE project_id = rehearsal.p()));
+ROLLBACK;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 the entry totals view equals installed for every claimed row', (SELECT bool_and(t.installed_total = b.installed) FROM progress_entry_totals t JOIN boq_items b ON b.id = t.boq_item_id WHERE t.project_id = rehearsal.p()));
+SELECT rehearsal.expect('104 the latest verified view shows row 2 at its newest figure', (SELECT verified_pct = '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}'::jsonb FROM progress_claim_latest_verified WHERE boq_item_id = rehearsal.row(2)));
+ROLLBACK;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('out') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 an outsider reads nothing through the views', (SELECT count(*) FROM progress_claim_latest_verified) = 0 AND (SELECT count(*) FROM progress_entry_totals) = 0);
+ROLLBACK;
+
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT rehearsal.expect('104 an estimator seeds reference weights too', seed_reference_stage_weights(rehearsal.p(), jsonb_build_array(jsonb_build_object('boq_item_id', rehearsal.row(5), 'reference_class', 'DINDING'))) = 1);
+ROLLBACK;
+
+SELECT rehearsal.expect('104 privileges: anon cannot read the views', NOT has_table_privilege('anon', 'progress_claim_latest_verified', 'SELECT') AND NOT has_table_privilege('anon', 'progress_entry_totals', 'SELECT'));
+SELECT rehearsal.expect('104 privileges: the views run with the caller rights', (SELECT bool_and(reloptions @> ARRAY['security_invoker=on']) FROM pg_class WHERE relname IN ('progress_claim_latest_verified', 'progress_entry_totals')));
 ```
 
 `supabase/tests/progress_claims_rehearsal/run.sh` (new file):
@@ -4719,7 +5121,7 @@ echo "PASS=$pass FAIL=$fail ERROR=$err"
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest tools/__tests__/migration104.test.ts tools/__tests__/migration096.test.ts tools/__tests__/migration098.test.ts tools/__tests__/migration099.test.ts tools/__tests__/migration100.test.ts tools/__tests__/migration101.test.ts --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 6 suites, 229 tests.
+Expected: PASS, 6 suites, 238 tests.
 
 - [ ] **Step 5: Rehearse both migrations as real roles**
 
@@ -4729,7 +5131,7 @@ Run: `supabase/tests/progress_claims_rehearsal/run.sh`
 Expected last line:
 
 ```text
-PASS=117 FAIL=0 ERROR=0
+PASS=153 FAIL=0 ERROR=0
 ```
 
 - [ ] **Step 6: Commit**
@@ -5060,6 +5462,8 @@ const makeRow = (over: Partial<WeightedRowView> = {}): WeightedRowView => ({
   prevFraction: 0.326,
   claimedFraction: null,
   linkedLines: 0,
+  installedLedger: 32.6,
+  installedMismatch: false,
   ...over,
 });
 
@@ -5107,7 +5511,7 @@ describe('StageClaimForm', () => {
   });
 
   it('asks for a reason before saving a figure below the verified one', async () => {
-    const { getByLabelText, toast } = setup({ prevPct: { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 }, prevFraction: 0.5204 });
+    const { getByLabelText, toast } = setup({ prevPct: { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 }, prevFraction: 0.5204, installedLedger: 52.04 });
     fireEvent.changeText(getByLabelText('Persentase Bekisting'), '90');
     fireEvent.press(getByLabelText('Simpan progres T1-001'));
     expect(toast).toHaveBeenCalledWith('Penurunan progres wajib disertai alasan.', 'critical');
@@ -5116,6 +5520,29 @@ describe('StageClaimForm', () => {
     await waitFor(() => expect(saveClaimLine).toHaveBeenCalledWith(expect.objectContaining({
       claimedPct: { BEKISTING: 90, PEMBESIAN: 40, PENGECORAN: 0 }, regressReason: 'Bekisting K3 dibongkar ulang',
     })));
+  });
+
+  it('asks for a reason when re-weighting lowers the quantity although no stage dropped', () => {
+    const { getByLabelText, getByText, toast } = setup({
+      weights: { BEKISTING: 0.2, PEMBESIAN: 0.5, PENGECORAN: 0.3 },
+      prevPct: { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 },
+      prevFraction: 0.4,
+      installedLedger: 52.04,
+    });
+    expect(getByText('Progres baris 40% menjadi 40% (-12,04 m³)')).toBeTruthy();
+    expect(getByText('Volume terpasang turun karena bobot atau volume rencana berubah sejak verifikasi terakhir.')).toBeTruthy();
+    fireEvent.press(getByLabelText('Simpan progres T1-001'));
+    expect(toast).toHaveBeenCalledWith('Penurunan progres wajib disertai alasan.', 'critical');
+    expect(saveClaimLine).not.toHaveBeenCalled();
+  });
+
+  it('says when installed on the BoQ differs from the progress history', () => {
+    const { getByText } = setup({
+      item: { id: 'k1', code: 'T1-001', label: 'Lantai 1 ; Kolom', unit: 'm³', planned: 100, installed: 10, progress: 10 },
+      installedLedger: 0,
+      installedMismatch: true,
+    });
+    expect(getByText('Terpasang di BoQ 10 m³ berbeda dari riwayat progres 0 m³; verifikasi mengikuti riwayat.')).toBeTruthy();
   });
 
   it('refuses an invalid percent with the reason', () => {
@@ -5176,7 +5603,7 @@ import {
   formatFraction, formatPercent, formatQty, pctInputs, readPctInputs, regressedStages, stageKeyLabel, weightSourceLabel,
   type ClaimRowView,
 } from '../../../tools/progressClaims/claimView';
-import { claimDelta, rowFraction } from '../../../tools/progressClaims/stageMath';
+import { deltaFromInstalled, rowFraction } from '../../../tools/progressClaims/stageMath';
 import { stagesOf, weightOf, type StageWeights } from '../../../tools/progressClaims/stageWeights';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../theme';
 
@@ -5211,11 +5638,13 @@ export default function StageClaimForm({ projectId, row, editable, onSaved, onRe
     const next = rowFraction(weights, read.pct);
     return {
       next,
-      delta: claimDelta(item.planned, row.prevFraction, next),
+      // What verification will write: the difference from what the row's entries already sum to.
+      delta: deltaFromInstalled(item.planned, row.installedLedger, next),
       regressed: regressedStages(weights, row.prevPct, read.pct),
     };
-  }, [read, weights, item.planned, row.prevFraction, row.prevPct]);
-  const needsReason = !!preview && preview.regressed.length > 0;
+  }, [read, weights, item.planned, row.installedLedger, row.prevPct]);
+  const quantityDrops = !!preview && preview.delta.deltaQuantity < 0;
+  const needsReason = !!preview && (preview.regressed.length > 0 || quantityDrops);
 
   const setStage = (stage: string, value: string) => setInputs((prev) => ({ ...prev, [stage]: value }));
 
@@ -5325,11 +5754,18 @@ export default function StageClaimForm({ projectId, row, editable, onSaved, onRe
       ) : (
         <Text style={styles.error}>{read.ok ? '' : read.reason}</Text>
       )}
+      {row.installedMismatch && (
+        <Text style={styles.meta}>
+          {`Terpasang di BoQ ${formatQty(item.installed, item.unit)} berbeda dari riwayat progres ${formatQty(row.installedLedger, item.unit)}; verifikasi mengikuti riwayat.`}
+        </Text>
+      )}
 
       {needsReason && (
         <>
           <Text style={styles.warn}>
-            {`Turun dari angka terverifikasi: ${preview!.regressed.map((s) => stageKeyLabel(s)).join(', ')}.`}
+            {preview!.regressed.length > 0
+              ? `Turun dari angka terverifikasi: ${preview!.regressed.map((s) => stageKeyLabel(s)).join(', ')}.`
+              : 'Volume terpasang turun karena bobot atau volume rencana berubah sejak verifikasi terakhir.'}
           </Text>
           <TextInput
             style={[styles.input, styles.textarea]}
@@ -5449,7 +5885,7 @@ const styles = StyleSheet.create({
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest workflows/screens/progressClaim/__tests__/StageClaimForm.test.tsx --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 1 suite, 8 tests.
+Expected: PASS, 1 suite, 10 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -5484,41 +5920,53 @@ jest.mock('../../../../tools/progressClaims/claims', () => ({
   listClaimLines: jest.fn(),
   listVerifiedStagePct: jest.fn(),
   countLinkedLinesByRow: jest.fn(),
+  listEntryTotals: jest.fn(),
   submitClaim: jest.fn(),
 }));
 jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
 jest.mock('../StageClaimForm', () => {
   const ReactLocal = require('react');
-  const { Text } = require('react-native');
+  const { Text, TouchableOpacity, View } = require('react-native');
   return {
     __esModule: true,
-    default: (props: { row: { item: { id: string } }; editable: boolean }) =>
-      ReactLocal.createElement(Text, { testID: `claim-form-${props.row.item.id}` }, props.editable ? 'editable' : 'read-only'),
+    default: (props: { row: { item: { id: string } }; editable: boolean; onSaved: () => void }) =>
+      ReactLocal.createElement(
+        View,
+        { testID: `claim-form-${props.row.item.id}` },
+        ReactLocal.createElement(Text, null, props.editable ? 'editable' : 'read-only'),
+        ReactLocal.createElement(TouchableOpacity, { onPress: props.onSaved, accessibilityLabel: 'Simulasi simpan' }, ReactLocal.createElement(Text, null, 'Simulasi simpan')),
+      ),
   };
 });
 
 import {
-  countLinkedLinesByRow, getOpenClaim, listClaimLines, listStageWeights, listVerifiedStagePct, seedReferenceWeights, submitClaim,
+  countLinkedLinesByRow, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, seedReferenceWeights,
+  submitClaim,
 } from '../../../../tools/progressClaims/claims';
 import ProgressClaimPanel from '../ProgressClaimPanel';
 
 const kolom = { BEKISTING: 0.326, PEMBESIAN: 0.486, PENGECORAN: 0.188 };
-const item = (id: string, code: string, label: string, sort: number) => ({
-  id, code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
+const item = (id: string, code: string, label: string, sort: number, projectId = 'p1') => ({
+  id, project_id: projectId, code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
 });
 const ITEMS = [item('k1', 'T1-001', 'Lantai 1 ; Kolom', 1), item('pc1', 'T1-002', 'Lantai 1 ; Pile Cap', 2)];
 const EMPTY: typeof ITEMS = [];
 const kolomWeights = { boq_item_id: 'k1', weights: kolom, source: 'reference', reference_class: 'KOLOM', updated_at: 'x' };
-const claim = (status: string) => ({
+const claim = (status: string, over: Record<string, unknown> = {}) => ({
   id: 'c1', project_id: 'p1', week_start: '2026-09-14', status, created_by: 'sup', created_at: 'x', updated_at: 'x',
   submitted_by: status === 'DRAFT' ? null : 'sup', submitted_at: null, returned_by: null, returned_at: null, return_note: null,
-  verified_by: null, verified_at: null, verifier_note: null,
+  verified_by: null, verified_at: null, verifier_note: null, ...over,
 });
 const line = {
   id: 'l1', claim_id: 'c1', project_id: 'p1', boq_item_id: 'k1', prev_verified: { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 },
   claimed_pct: { BEKISTING: 100, PEMBESIAN: 60, PENGECORAN: 0 }, verified_pct: null, weights_snapshot: null, row_pct_prev: null,
   row_pct_new: null, installed_before: null, delta_quantity: null, regress_reason: null, note: null, evidence: { photo_refs: [] },
-  created_at: 'x', updated_at: 'x',
+  created_by: 'sup', updated_by: 'sup', created_at: 'x', updated_at: 'x',
+};
+const renderPanel = (over: Partial<React.ComponentProps<typeof ProgressClaimPanel>> = {}) => {
+  const toast = jest.fn();
+  const props = { projectId: 'p1', role: 'supervisor', boqItems: ITEMS, toast, ...over };
+  return { ...render(<ProgressClaimPanel {...props} />), toast, props };
 };
 
 beforeEach(() => {
@@ -5529,7 +5977,8 @@ beforeEach(() => {
   (listClaimLines as jest.Mock).mockResolvedValue([line]);
   (listVerifiedStagePct as jest.Mock).mockResolvedValue(new Map([['k1', { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }]]));
   (countLinkedLinesByRow as jest.Mock).mockResolvedValue(new Map([['k1', 2]]));
-  (submitClaim as jest.Mock).mockResolvedValue({ claim_id: 'c1', status: 'SUBMITTED', lines: 1, notified: 2 });
+  (listEntryTotals as jest.Mock).mockResolvedValue(new Map([['k1', 32.6]]));
+  (submitClaim as jest.Mock).mockResolvedValue({ claim_id: 'c1', status: 'SUBMITTED', lines: 1, notified: 2, verifiers_notified: 2 });
 });
 
 describe('ProgressClaimPanel', () => {
@@ -5537,64 +5986,94 @@ describe('ProgressClaimPanel', () => {
     (listStageWeights as jest.Mock)
       .mockResolvedValueOnce([kolomWeights])
       .mockResolvedValueOnce([kolomWeights, { boq_item_id: 'pc1', weights: { BEKISTING: 0.131, PEMBESIAN: 0.476, PENGECORAN: 0.393 }, source: 'reference', reference_class: 'PILECAP_SLOOF_PLAT_DASAR', updated_at: 'x' }]);
-    const { findByText, getByText } = render(<ProgressClaimPanel projectId="p1" role="supervisor" boqItems={ITEMS} toast={jest.fn()} />);
+    const { findByText, getByText } = renderPanel();
     expect(await findByText('Belum dikirim')).toBeTruthy();
     expect(seedReferenceWeights).toHaveBeenCalledWith('p1', [{ boq_item_id: 'pc1', reference_class: 'PILECAP_SLOOF_PLAT_DASAR' }]);
     expect(getByText('Minggu ini 61,8%')).toBeTruthy();
     expect(getByText('Terverifikasi 32,6%')).toBeTruthy();
     expect(getByText('0 foto · 2 baris laporan')).toBeTruthy();
     expect(countLinkedLinesByRow).toHaveBeenCalledWith('p1', '2026-09-14');
+    expect(listEntryTotals).toHaveBeenCalledWith('p1');
   });
 
   it('never seeds weights for a role that only reads, and explains a row without them', async () => {
-    const toast = jest.fn();
-    const { findByLabelText } = render(<ProgressClaimPanel projectId="p1" role="principal" boqItems={ITEMS} toast={toast} />);
+    const { findByLabelText, toast } = renderPanel({ role: 'principal' });
     fireEvent.press(await findByLabelText('T1-002 Lantai 1 ; Pile Cap'));
     expect(seedReferenceWeights).not.toHaveBeenCalled();
     expect(toast).toHaveBeenCalledWith('Bobot tahapan baris ini belum diatur. Minta estimator menerapkan bobot di Baseline.', 'warning');
   });
 
-  it('opens the stage form under the tapped row', async () => {
-    const { findByLabelText, getByTestId } = render(<ProgressClaimPanel projectId="p1" role="supervisor" boqItems={ITEMS} toast={jest.fn()} />);
+  it('opens the stage form under the tapped row and reloads after a save', async () => {
+    const { findByLabelText, getByLabelText, getByTestId, getByText } = renderPanel();
     fireEvent.press(await findByLabelText('T1-001 Lantai 1 ; Kolom'));
-    expect(getByTestId('claim-form-k1').props.children).toBe('editable');
+    expect(getByTestId('claim-form-k1')).toBeTruthy();
+    expect(getByText('editable')).toBeTruthy();
+    fireEvent.press(getByLabelText('Simulasi simpan'));
+    await waitFor(() => expect(getOpenClaim).toHaveBeenCalledTimes(2));
   });
 
   it('opens the row it was asked to open', async () => {
-    const { findByTestId } = render(<ProgressClaimPanel projectId="p1" role="supervisor" boqItems={ITEMS} initialRowId="k1" toast={jest.fn()} />);
+    const { findByTestId } = renderPanel({ initialRowId: 'k1' });
     expect(await findByTestId('claim-form-k1')).toBeTruthy();
   });
 
-  it('submits the week after an inline confirmation and reloads', async () => {
-    const toast = jest.fn();
-    const { findByLabelText, getByLabelText } = render(<ProgressClaimPanel projectId="p1" role="supervisor" boqItems={ITEMS} toast={toast} />);
+  it('submits the week after an inline confirmation, names who was told, and reloads', async () => {
+    const { findByLabelText, getByLabelText, toast } = renderPanel();
     fireEvent.press(await findByLabelText('Kirim klaim'));
     fireEvent.press(getByLabelText('Ya, kirim'));
     await waitFor(() => expect(submitClaim).toHaveBeenCalledWith('c1'));
     await waitFor(() => expect(getOpenClaim).toHaveBeenCalledTimes(2));
-    expect(toast).toHaveBeenCalledWith('Klaim dikirim. 2 orang diberi tahu untuk verifikasi.', 'ok');
+    expect(toast).toHaveBeenCalledWith('Klaim dikirim. 2 estimator atau admin diberi tahu untuk verifikasi.', 'ok');
   });
 
-  it('warns when nobody could be told about the submission', async () => {
-    (submitClaim as jest.Mock).mockResolvedValueOnce({ claim_id: 'c1', status: 'SUBMITTED', lines: 1, notified: 0 });
-    const toast = jest.fn();
-    const { findByLabelText, getByLabelText } = render(<ProgressClaimPanel projectId="p1" role="supervisor" boqItems={ITEMS} toast={toast} />);
+  it.each([
+    [{ notified: 1, verifiers_notified: 0 }, 'Klaim dikirim, tetapi belum ada estimator atau admin di proyek ini. Prinsipal diberi tahu agar menugaskan verifikator.'],
+    [{ notified: 0, verifiers_notified: 0 }, 'Klaim dikirim, tetapi belum ada yang bisa diberi tahu. Minta admin menugaskan estimator ke proyek ini.'],
+  ])('warns when no verifier could be told (%j)', async (counts, message) => {
+    (submitClaim as jest.Mock).mockResolvedValueOnce({ claim_id: 'c1', status: 'SUBMITTED', lines: 1, ...counts });
+    const { findByLabelText, getByLabelText, toast } = renderPanel();
     fireEvent.press(await findByLabelText('Kirim klaim'));
     fireEvent.press(getByLabelText('Ya, kirim'));
-    await waitFor(() => expect(toast).toHaveBeenCalledWith('Klaim dikirim, tetapi belum ada estimator atau admin di proyek ini yang bisa diberi tahu.', 'warning'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(message, 'warning'));
   });
 
   it('locks a submitted claim: a banner, no Kirim, and a read-only form', async () => {
     (getOpenClaim as jest.Mock).mockResolvedValue(claim('SUBMITTED'));
-    const { findByText, queryByLabelText, getByLabelText, getByTestId } = render(<ProgressClaimPanel projectId="p1" role="supervisor" boqItems={ITEMS} toast={jest.fn()} />);
+    const { findByText, queryByLabelText, getByLabelText, getByText } = renderPanel();
     expect(await findByText('Menunggu verifikasi estimator. Baris baru bisa ditambah setelah klaim diverifikasi atau dikembalikan.')).toBeTruthy();
     expect(queryByLabelText('Kirim klaim')).toBeNull();
     fireEvent.press(getByLabelText('T1-001 Lantai 1 ; Kolom'));
-    expect(getByTestId('claim-form-k1').props.children).toBe('read-only');
+    expect(getByText('read-only')).toBeTruthy();
+  });
+
+  it('lets the supervisor edit and resend a returned claim, showing why it came back', async () => {
+    (getOpenClaim as jest.Mock).mockResolvedValue(claim('RETURNED', { return_note: 'Foto pembesian kurang jelas' }));
+    const { findByText, getByLabelText, getByText } = renderPanel();
+    expect(await findByText('Dikembalikan')).toBeTruthy();
+    expect(getByText(`Minggu 14${String.fromCharCode(0x2013)}20 Sep: Foto pembesian kurang jelas`)).toBeTruthy();
+    expect(getByLabelText('Kirim klaim')).toBeTruthy();
+    fireEvent.press(getByLabelText('T1-001 Lantai 1 ; Kolom'));
+    expect(getByText('editable')).toBeTruthy();
+  });
+
+  it('reloads when asked to, as a notification tap does', async () => {
+    const { findByText, rerender, props } = renderPanel();
+    await findByText('Belum dikirim');
+    rerender(<ProgressClaimPanel {...props} reloadKey={1} />);
+    await waitFor(() => expect(getOpenClaim).toHaveBeenCalledTimes(2));
+  });
+
+  it("never shows the previous project's claim or rows after a project switch", async () => {
+    const { findByText, rerender, props, getByLabelText, queryByText } = renderPanel();
+    await findByText('Belum dikirim');
+    rerender(<ProgressClaimPanel {...props} projectId="p2" />);
+    expect(getByLabelText('Memuat klaim progres')).toBeTruthy();
+    expect(queryByText('Belum dikirim')).toBeNull();
+    expect(listStageWeights).not.toHaveBeenCalledWith('p2');
   });
 
   it('says so when the project has no BoQ rows to claim', () => {
-    const { getByText } = render(<ProgressClaimPanel projectId="p1" role="supervisor" boqItems={EMPTY} toast={jest.fn()} />);
+    const { getByText } = renderPanel({ boqItems: EMPTY });
     expect(getByText('Belum ada baris BoQ yang bisa diklaim. BoQ proyek ini belum dipublikasikan atau belum punya volume rencana.')).toBeTruthy();
     expect(listStageWeights).not.toHaveBeenCalled();
   });
@@ -5624,7 +6103,7 @@ import Badge from '../../components/Badge';
 import StageClaimForm, { type WeightedRowView } from './StageClaimForm';
 import { canSaveClaimLine, isClaimEditable } from '../../../tools/progressClaims/claimRules';
 import {
-  countLinkedLinesByRow, getOpenClaim, listClaimLines, listStageWeights, listVerifiedStagePct, seedReferenceWeights, submitClaim,
+  countLinkedLinesByRow, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, seedReferenceWeights, submitClaim,
   type ProgressClaim, type ProgressClaimLine, type StageWeightRow,
 } from '../../../tools/progressClaims/claims';
 import {
@@ -5643,19 +6122,25 @@ interface Props {
   boqItems: ClaimableItem[];
   /** Row to open on arrival, e.g. from "Tambah progres untuk item ini". */
   initialRowId?: string | null;
+  /** Bump to reload, e.g. when a claim notification brings the user back to a panel already on screen. */
+  reloadKey?: number;
   toast: (msg: string, type?: 'ok' | 'warning' | 'critical') => void;
 }
 
 interface Loaded {
+  projectId: string;
   claim: ProgressClaim | null;
   lines: ProgressClaimLine[];
   weights: StageWeightRow[];
   verified: Map<string, StagePct>;
   linked: Map<string, number>;
+  ledger: Map<string, number>;
 }
 
-export default function ProgressClaimPanel({ projectId, role, boqItems, initialRowId, toast }: Props) {
-  const rows = useMemo(() => claimableRows(boqItems), [boqItems]);
+export default function ProgressClaimPanel({ projectId, role, boqItems, initialRowId, reloadKey = 0, toast }: Props) {
+  const rows = useMemo(() => claimableRows(boqItems, projectId), [boqItems, projectId]);
+  // Just after a project switch the context still holds the previous project's rows.
+  const switching = rows.length === 0 && boqItems.some((b) => b.project_id != null && b.project_id !== projectId);
   const canSave = canSaveClaimLine(role);
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -5679,12 +6164,13 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
         }
       }
       const claim = await getOpenClaim(projectId);
-      const [lines, verified, linked] = await Promise.all([
+      const [lines, verified, linked, ledger] = await Promise.all([
         claim ? listClaimLines(claim.id) : Promise.resolve([] as ProgressClaimLine[]),
         listVerifiedStagePct(projectId),
         countLinkedLinesByRow(projectId, claim?.week_start ?? weekStartWIB()),
+        listEntryTotals(projectId),
       ]);
-      if (mine === seq.current) setData({ claim, lines, weights, verified, linked });
+      if (mine === seq.current) setData({ projectId, claim, lines, weights, verified, linked, ledger });
     } catch (err) {
       if (mine === seq.current) setError((err as Error)?.message ?? 'Klaim progres gagal dimuat.');
     }
@@ -5696,22 +6182,24 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
     return () => {
       seq.current += 1;
     };
-  }, [load, rows.length]);
+  }, [load, rows.length, reloadKey]);
 
   useEffect(() => {
     setExpandedId(initialRowId ?? null);
     setConfirming(false);
   }, [projectId, initialRowId]);
 
+  // Never render another project's claim, with its Kirim still live.
+  const current = data && data.projectId === projectId ? data : null;
   const views = useMemo(
-    () => (data ? buildRowViews(rows, data.weights, data.verified, data.lines, data.linked) : []),
-    [data, rows],
+    () => (current ? buildRowViews(rows, current.weights, current.verified, current.lines, current.linked, current.ledger) : []),
+    [current, rows],
   );
 
-  const claim = data?.claim ?? null;
+  const claim = current?.claim ?? null;
   const summary = claimStatusSummary(claim);
   const editable = canSave && (claim === null || isClaimEditable(claim.status));
-  const lineCount = data?.lines.length ?? 0;
+  const lineCount = current?.lines.length ?? 0;
 
   const submit = async () => {
     if (!claim) return;
@@ -5719,8 +6207,13 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
     try {
       const result = await submitClaim(claim.id);
       setConfirming(false);
-      if (result.notified > 0) toast(`Klaim dikirim. ${result.notified} orang diberi tahu untuk verifikasi.`, 'ok');
-      else toast('Klaim dikirim, tetapi belum ada estimator atau admin di proyek ini yang bisa diberi tahu.', 'warning');
+      if (result.verifiers_notified > 0) {
+        toast(`Klaim dikirim. ${result.verifiers_notified} estimator atau admin diberi tahu untuk verifikasi.`, 'ok');
+      } else if (result.notified > 0) {
+        toast('Klaim dikirim, tetapi belum ada estimator atau admin di proyek ini. Prinsipal diberi tahu agar menugaskan verifikator.', 'warning');
+      } else {
+        toast('Klaim dikirim, tetapi belum ada yang bisa diberi tahu. Minta admin menugaskan estimator ke proyek ini.', 'warning');
+      }
       await load();
     } catch (err) {
       toast((err as Error)?.message ?? 'Gagal mengirim klaim.', 'critical');
@@ -5741,6 +6234,10 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
     setExpandedId(null);
     void load();
   };
+
+  if (switching) {
+    return <ActivityIndicator style={styles.loading} accessibilityLabel="Memuat klaim progres" />;
+  }
 
   if (rows.length === 0) {
     return (
@@ -5763,7 +6260,7 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
     );
   }
 
-  if (!data) {
+  if (!current) {
     return <ActivityIndicator style={styles.loading} accessibilityLabel="Memuat klaim progres" />;
   }
 
@@ -5888,7 +6385,7 @@ const styles = StyleSheet.create({
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest workflows/screens/progressClaim/__tests__/ProgressClaimPanel.test.tsx --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 1 suite, 8 tests.
+Expected: PASS, 1 suite, 12 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -5905,8 +6402,10 @@ git commit -m "feat(progress): weekly claim panel with inline row form and Kirim
 - Modify: `workflows/screens/ProgresScreen.tsx`
 - Modify: `workflows/screens/LaporanScreen.tsx`
 - Modify: `workflows/navigation.tsx`
+- Modify: `workflows/App.tsx`
+- Modify: `workflows/screens/NotificationsScreen.tsx`
 
-The quantity form, its direct `progress_entries` insert, the Gate 4 panel and the client-side installed sync are removed from the Progres tab; Tambah progres and "Tambah progres untuk item ini" open the claim panel (spec §16). Laporan gets a Klaim Progres Mingguan card instead of a fifth tab, so the tab row does not overflow at 360 dp. Claim notifications carry a project id: the screens switch to it once per navigation.
+The quantity form, its direct `progress_entries` insert, the Gate 4 panel and the client-side installed sync are removed from the Progres tab; Tambah progres and "Tambah progres untuk item ini" open the claim panel (spec §16). Laporan gets a Klaim Progres Mingguan card instead of a fifth tab, so the tab row does not overflow at 360 dp. Route params apply once per navigation (every tap passes a fresh params object), switch to the project the notification names, and bump the claim panel reload key; a returned or verified claim also refreshes project data. The app router blocks on its spinner only until the first load, so a refresh or project switch no longer unmounts the navigator and throws the user back to the first tab.
 
 - [ ] **Step 1: Apply the screen changes**
 
@@ -5914,7 +6413,7 @@ The quantity form, its direct `progress_entries` insert, the Gate 4 panel and th
 
 ```diff
 diff --git a/workflows/screens/ProgresScreen.tsx b/workflows/screens/ProgresScreen.tsx
-index dfd7d4f..128b8ca 100644
+index dfd7d4f..ccc4b5d 100644
 --- a/workflows/screens/ProgresScreen.tsx
 +++ b/workflows/screens/ProgresScreen.tsx
 @@ -1,33 +1,26 @@
@@ -5953,11 +6452,11 @@ index dfd7d4f..128b8ca 100644
  export default function ProgresScreen() {
    const navigation = useNavigation<any>();
 -  const { boqItems, project, profile, refresh } = useProject();
-+  const { boqItems, project, profile, setActiveProject } = useProject();
++  const { boqItems, project, profile, setActiveProject, refresh } = useProject();
    const { show: toast } = useToast();
    const [activeModule, setActiveModule] = useState<SubModule>('home');
    const [selectedProgressItemId, setSelectedProgressItemId] = useState<string | null>(null);
-@@ -45,49 +38,24 @@ export default function ProgresScreen() {
+@@ -45,49 +38,30 @@ export default function ProgresScreen() {
    const [changeSummary, setChangeSummary] = useState<SiteChangeSummary | null>(null);
    const [todayLogExists, setTodayLogExists] = useState<boolean | null>(null);
  
@@ -6007,6 +6506,7 @@ index dfd7d4f..128b8ca 100644
 +  // ── Tambah progres: the weekly stage claim (report-driven progress spec §16) ──
 +  const route = useRoute<any>();
 +  const [claimRowId, setClaimRowId] = useState<string | null>(null);
++  const [claimReloadKey, setClaimReloadKey] = useState(0);
 +  const appliedParams = useRef<unknown>(null);
 +
 +  // A claim notification (migration 104: PROGRESS_CLAIM_RETURNED / _VERIFIED)
@@ -6020,12 +6520,17 @@ index dfd7d4f..128b8ca 100644
 +    if (params.module === 'progress') {
 +      setClaimRowId(null);
 +      setActiveModule('progress');
++      // A returned or verified claim changed what the panel and boq_items
++      // show: reload the panel even if it is already open, and the project
++      // data behind Progres Terkini and Beranda.
++      setClaimReloadKey((k) => k + 1);
++      void refresh();
 +    }
-+  }, [route.params, project?.id, setActiveProject]);
++  }, [route.params, project?.id, setActiveProject, refresh]);
  
    const loadHomeDetails = useCallback(async () => {
      if (!project) return;
-@@ -128,158 +96,14 @@ export default function ProgresScreen() {
+@@ -128,158 +102,14 @@ export default function ProgresScreen() {
      [recentEntries, selectedProgressItemId],
    );
  
@@ -6186,7 +6691,7 @@ index dfd7d4f..128b8ca 100644
    // ── Sub-module header ──
    const SubHeader = ({ title }: { title: string }) => (
      <View style={styles.subHeader}>
-@@ -349,6 +173,7 @@ export default function ProgresScreen() {
+@@ -349,6 +179,7 @@ export default function ProgresScreen() {
                    onPress={() => {
                      if (btn.key === 'ruangan') navigation.navigate('RoomScan');
                      else if (btn.key === 'papan') navigation.navigate('RoomBoard');
@@ -6194,7 +6699,16 @@ index dfd7d4f..128b8ca 100644
                      else setActiveModule(btn.key as SubModule);
                    }}
                    accessibilityRole="button"
-@@ -477,115 +302,20 @@ export default function ProgresScreen() {
+@@ -373,7 +204,7 @@ export default function ProgresScreen() {
+                 <Text style={styles.expandTitle}>Progres Terkini per Item</Text>
+                 <Ionicons name={showRecentProgress ? 'chevron-up' : 'chevron-down'} size={18} color={COLORS.textSec} />
+               </TouchableOpacity>
+-              <Text style={styles.sectionHint}>Tap item untuk buka detail progres dan tambah entri baru untuk item yang sama.</Text>
++              <Text style={styles.sectionHint}>Ketuk item untuk melihat riwayat progres terverifikasi atau mengisi klaim minggu ini.</Text>
+               {showRecentProgress && (
+                 <>
+                   {boqItems.filter(b => b.progress > 0).map(b => (
+@@ -477,115 +308,21 @@ export default function ProgresScreen() {
            </>
          )}
  
@@ -6317,17 +6831,28 @@ index dfd7d4f..128b8ca 100644
 +              role={profile?.role}
 +              boqItems={boqItems}
 +              initialRowId={claimRowId}
++              reloadKey={claimReloadKey}
 +              toast={toast}
 +            />
            </>
          )}
+ 
+@@ -619,7 +356,7 @@ const styles = StyleSheet.create({
+ 
+   expandHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACE.xs },
+   expandTitle:  { fontSize: TYPE.sm, fontFamily: FONTS.bold, textTransform: 'uppercase', letterSpacing: 0.3, color: COLORS.text },
+-  sectionHint:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, lineHeight: 17, marginBottom: SPACE.sm },
++  sectionHint:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, lineHeight: 18, marginBottom: SPACE.sm },
+ 
+   // Sub header
+   subHeader: { flexDirection: 'row', alignItems: 'center', gap: SPACE.md, marginBottom: SPACE.md, marginTop: SPACE.sm },
 ```
 
 `workflows/screens/LaporanScreen.tsx` (apply this change):
 
 ```diff
 diff --git a/workflows/screens/LaporanScreen.tsx b/workflows/screens/LaporanScreen.tsx
-index c252c76..fa06f18 100644
+index c252c76..eeec1bd 100644
 --- a/workflows/screens/LaporanScreen.tsx
 +++ b/workflows/screens/LaporanScreen.tsx
 @@ -1,4 +1,4 @@
@@ -6362,23 +6887,33 @@ index c252c76..fa06f18 100644
    const { show: toast } = useToast();
    // Estimators manage team membership here (migration 037), but principal
    // members are out of reach (migration 090): only a principal actor may add
-@@ -81,6 +82,15 @@ export default function LaporanScreen() {
-     }
-   }, [route.params?.initialSection]);
+@@ -74,12 +75,20 @@ export default function LaporanScreen() {
+     onOrder: number;
+   } | null>(null);
  
-+  // A notification can name another project (claim deeplinks carry projectId).
-+  const appliedProjectParam = useRef<unknown>(null);
-+  useEffect(() => {
-+    const params = route.params as { projectId?: string } | undefined;
-+    if (!params?.projectId || appliedProjectParam.current === params) return;
-+    appliedProjectParam.current = params;
-+    if (params.projectId !== project?.id) setActiveProject(params.projectId);
++  // Route params apply once per navigation. Every navigate hands over a new
++  // params object, so opening the same section again after a manual tab
++  // switch still lands. Claim deeplinks also carry projectId and reload the
++  // claim panel.
++  const [claimReloadKey, setClaimReloadKey] = useState(0);
++  const appliedParams = useRef<unknown>(null);
+   useEffect(() => {
+-    const nextSection = route.params?.initialSection as Section | undefined;
+-    if (nextSection) {
+-      setActiveSection(nextSection);
+-    }
+-  }, [route.params?.initialSection]);
++    const params = route.params as { initialSection?: Section; projectId?: string } | undefined;
++    if (!params || appliedParams.current === params) return;
++    appliedParams.current = params;
++    if (params.projectId && params.projectId !== project?.id) setActiveProject(params.projectId);
++    if (params.initialSection) setActiveSection(params.initialSection);
++    if (params.initialSection === 'klaim') setClaimReloadKey((k) => k + 1);
 +  }, [route.params, project?.id, setActiveProject]);
-+
+ 
    useEffect(() => {
      if (route.params?.contractId) {
-       setFocusedContractId(route.params.contractId);
-@@ -444,6 +454,19 @@ export default function LaporanScreen() {
+@@ -444,6 +453,19 @@ export default function LaporanScreen() {
                <StatTile value={openDefects} label="Perubahan Open" color={COLORS.critical} />
              </View>
  
@@ -6398,21 +6933,21 @@ index c252c76..fa06f18 100644
              {/* Material status */}
              <Card title="Status Material">
                <View style={styles.metricRow}>
-@@ -721,6 +744,13 @@ export default function LaporanScreen() {
+@@ -721,6 +743,13 @@ export default function LaporanScreen() {
            </>
          )}
  
 +        {activeSection === 'klaim' && project && (
 +          <>
 +            <Text style={styles.sectionHead}>Klaim Progres Mingguan</Text>
-+            <ProgressClaimPanel projectId={project.id} role={profile?.role} boqItems={boqItems} toast={toast} />
++            <ProgressClaimPanel projectId={project.id} role={profile?.role} boqItems={boqItems} reloadKey={claimReloadKey} toast={toast} />
 +          </>
 +        )}
 +
          {activeSection === 'jadwal' && (
            <MilestonePanel
              embedded
-@@ -831,6 +861,8 @@ const styles = StyleSheet.create({
+@@ -831,6 +860,8 @@ const styles = StyleSheet.create({
    tabActive:     { borderBottomWidth: 2, borderBottomColor: COLORS.primary },
    tabText:       { fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', color: COLORS.textSec },
    tabTextActive: { color: COLORS.primary },
@@ -6443,6 +6978,50 @@ index 39ce7c9..f6faffb 100644
    Room:       { projectCode: string; roomCode: string };
 ```
 
+`workflows/App.tsx` (apply this change):
+
+```diff
+diff --git a/workflows/App.tsx b/workflows/App.tsx
+index 0b0d5e8..0cd777b 100644
+--- a/workflows/App.tsx
++++ b/workflows/App.tsx
+@@ -62,7 +62,13 @@ function RoleRouter() {
+     return cleanup;
+   }, []);
+ 
+-  if (loading) {
++  // Block on the spinner only until the first load finishes. A later refresh
++  // or project switch also sets loading; unmounting the navigator then would
++  // throw the user back to the first tab and drop the route params a
++  // notification just delivered.
++  const firstLoadDone = useRef(false);
++  if (!loading) firstLoadDone.current = true;
++  if (loading && !firstLoadDone.current) {
+     return (
+       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.bg }}>
+         <ActivityIndicator size="large" color={COLORS.accent} />
+```
+
+`workflows/screens/NotificationsScreen.tsx` (apply this change):
+
+```diff
+diff --git a/workflows/screens/NotificationsScreen.tsx b/workflows/screens/NotificationsScreen.tsx
+index a29e786..150cca5 100644
+--- a/workflows/screens/NotificationsScreen.tsx
++++ b/workflows/screens/NotificationsScreen.tsx
+@@ -120,7 +120,9 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
+     // Navigate immediately — never gated on the write above.
+     const target = resolveNotificationRoute(item.deeplinkScreen, profile?.role);
+     try {
+-      navigation.navigate(target, item.deeplinkParams ?? {});
++      // A fresh params object per tap, so a screen that applies params once per
++      // navigation still reacts to a second tap on the same notification.
++      navigation.navigate(target, { ...(item.deeplinkParams ?? {}) });
+     } catch {
+       // Route not in current role's nav — stay on Notifikasi (no-op).
+     }
+```
+
 - [ ] **Step 2: Type-check**
 
 Run: `npx tsc --noEmit`
@@ -6451,7 +7030,7 @@ Expected: exit 0, no output.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add workflows/screens/ProgresScreen.tsx workflows/screens/LaporanScreen.tsx workflows/navigation.tsx
+git add workflows/screens/ProgresScreen.tsx workflows/screens/LaporanScreen.tsx workflows/navigation.tsx workflows/App.tsx workflows/screens/NotificationsScreen.tsx
 git commit -m "feat(progress): Tambah progres opens the weekly stage claim"
 ```
 
@@ -6468,7 +7047,7 @@ git commit -m "feat(progress): Tambah progres opens the weekly stage claim"
 - Modify: `workflows/screens/components/NotificationList.tsx`
 - Test: `office/screens/progressClaim/__tests__/ProgressClaimVerifyPanel.test.tsx`
 
-Estimators and admins see each claimed row with its weights, the verified and claimed figure per stage, the note and photos, and verify (writing progress) or return with a note. The submitter cannot decide their own claim; the principal reads. The Reports tab gets a Klaim section with a pending badge; notification maps and styles learn the three claim types.
+Estimators and admins see each claimed row with its weights, the verified and claimed figure per stage, the note and photos, and verify (writing progress) or return with a note. The submitter cannot decide their own claim; the principal reads. The Reports tab gets a Klaim section with a pending badge; notification maps and styles learn the three claim types. The table uses short column headers and 44 dp inputs so it fits a 360 dp phone.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -6485,6 +7064,7 @@ jest.mock('../../../../tools/progressClaims/claims', () => ({
   listClaimLines: jest.fn(),
   listStageWeights: jest.fn(),
   listVerifiedStagePct: jest.fn(),
+  listEntryTotals: jest.fn(),
   verifyClaim: jest.fn(),
   returnClaim: jest.fn(),
 }));
@@ -6499,12 +7079,15 @@ jest.mock('../../../../workflows/components/StoragePhoto', () => {
 });
 
 import {
-  getLatestClaim, getOpenClaim, listClaimLines, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
+  getLatestClaim, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
 } from '../../../../tools/progressClaims/claims';
 import ProgressClaimVerifyPanel from '../ProgressClaimVerifyPanel';
 
 const kolom = { BEKISTING: 0.326, PEMBESIAN: 0.486, PENGECORAN: 0.188 };
-const ITEMS = [{ id: 'k1', code: 'T1-001', label: 'Lantai 1 ; Kolom', unit: 'm³', planned: 100, installed: 32.6, progress: 32.6 }];
+const balok = { BEKISTING: 0.368, PEMBESIAN: 0.38, PENGECORAN: 0.252 };
+const K1 = { id: 'k1', project_id: 'p1', code: 'T1-001', label: 'Lantai 1 ; Kolom', unit: 'm³', planned: 100, installed: 32.6, progress: 32.6 };
+const B1 = { id: 'b1', project_id: 'p1', code: 'T1-002', label: 'Lantai 2 ; Balok', unit: 'm³', planned: 200, installed: 0, progress: 0 };
+const ITEMS = [K1, B1];
 const claim = (status: string) => ({
   id: 'c1', project_id: 'p1', week_start: '2026-09-14', status, created_by: 'sup', created_at: 'x', updated_at: 'x',
   submitted_by: 'sup', submitted_at: 'x', returned_by: null, returned_at: null, return_note: null,
@@ -6514,13 +7097,15 @@ const line = (over: Record<string, unknown> = {}) => ({
   id: 'l1', claim_id: 'c1', project_id: 'p1', boq_item_id: 'k1', prev_verified: { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 },
   claimed_pct: { BEKISTING: 100, PEMBESIAN: 60, PENGECORAN: 0 }, verified_pct: null, weights_snapshot: null, row_pct_prev: null,
   row_pct_new: null, installed_before: null, delta_quantity: null, regress_reason: null, note: 'Begel K1-K8 terpasang',
-  evidence: { photo_refs: ['progress/p1/1.jpg'] }, created_at: 'x', updated_at: 'x', ...over,
+  evidence: { photo_refs: ['progress/p1/1.jpg'] }, created_by: 'sup', updated_by: 'sup', created_at: 'x', updated_at: 'x', ...over,
 });
+const weightRow = (id: string, weights: object, source = 'reference', cls: string | null = 'KOLOM') => ({ boq_item_id: id, weights, source, reference_class: cls, updated_at: 'x' });
 const ESTIMATOR = { id: 'est', role: 'estimator' };
 
 const renderPanel = (profile: { id: string; role: string } | null = ESTIMATOR) => {
   const props = { toast: jest.fn(), onVerified: jest.fn(), onChanged: jest.fn() };
-  return { ...render(<ProgressClaimVerifyPanel projectId="p1" profile={profile} boqItems={ITEMS} {...props} />), ...props };
+  const utils = render(<ProgressClaimVerifyPanel projectId="p1" profile={profile} boqItems={ITEMS} {...props} />);
+  return { ...utils, ...props, profile };
 };
 
 beforeEach(() => {
@@ -6528,19 +7113,21 @@ beforeEach(() => {
   (getOpenClaim as jest.Mock).mockResolvedValue(claim('SUBMITTED'));
   (getLatestClaim as jest.Mock).mockResolvedValue(null);
   (listClaimLines as jest.Mock).mockResolvedValue([line()]);
-  (listStageWeights as jest.Mock).mockResolvedValue([{ boq_item_id: 'k1', weights: kolom, source: 'reference', reference_class: 'KOLOM', updated_at: 'x' }]);
+  (listStageWeights as jest.Mock).mockResolvedValue([weightRow('k1', kolom)]);
   (listVerifiedStagePct as jest.Mock).mockResolvedValue(new Map([['k1', { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }]]));
+  (listEntryTotals as jest.Mock).mockResolvedValue(new Map([['k1', 32.6]]));
   (verifyClaim as jest.Mock).mockResolvedValue({ claim_id: 'c1', status: 'VERIFIED', lines: 1, entries: 1, regressions: 0, notified: 1 });
   (returnClaim as jest.Mock).mockResolvedValue({ claim_id: 'c1', status: 'RETURNED', notified: 1 });
 });
 
 describe('ProgressClaimVerifyPanel', () => {
-  it('shows each stage verified and claimed, the note and the photos, and verifies the edited figures', async () => {
+  it('shows each stage before, claimed and to check, the note and photos, and verifies the edited figures', async () => {
     const { findByLabelText, getByLabelText, getByText, getByTestId, onVerified, toast } = renderPanel();
     const pembesian = await findByLabelText('Verifikasi Pembesian T1-001');
     expect(pembesian.props.value).toBe('60');
     expect(getByText('Catatan pengawas: Begel K1-K8 terpasang')).toBeTruthy();
     expect(getByText('Bobot referensi')).toBeTruthy();
+    expect(getByText('Lalu: terverifikasi sebelumnya. Klaim: angka pengawas. Cek: angka verifikasi.')).toBeTruthy();
     expect(getByTestId('claim-photo-l1-0')).toBeTruthy();
     fireEvent.changeText(pembesian, '50');
     expect(getByText('Progres baris 32,6% menjadi 56,9% (perkiraan +24,3 m³)')).toBeTruthy();
@@ -6552,8 +7139,33 @@ describe('ProgressClaimVerifyPanel', () => {
     expect(toast).toHaveBeenCalledWith('Klaim diverifikasi. 1 entri progres dicatat.', 'ok');
   });
 
-  it('asks for a reason before verifying a figure below the verified one', async () => {
+  it('verifies every line of a multi-line claim in one call', async () => {
+    (listClaimLines as jest.Mock).mockResolvedValue([
+      line(),
+      line({ id: 'l2', boq_item_id: 'b1', prev_verified: { BEKISTING: 0, PEMBESIAN: 0, PENGECORAN: 0 }, claimed_pct: { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }, note: null, evidence: { photo_refs: [] } }),
+    ]);
+    (listStageWeights as jest.Mock).mockResolvedValue([weightRow('k1', kolom), weightRow('b1', balok, 'manual', null)]);
+    const { findByLabelText, getByLabelText } = renderPanel();
+    await findByLabelText('Verifikasi Bekisting T1-002');
+    fireEvent.press(getByLabelText('Verifikasi klaim'));
+    await waitFor(() => expect(verifyClaim).toHaveBeenCalledWith('c1', [
+      { line_id: 'l1', verified_pct: { BEKISTING: 100, PEMBESIAN: 60, PENGECORAN: 0 }, regress_reason: null },
+      { line_id: 'l2', verified_pct: { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }, regress_reason: null },
+    ], null));
+  });
+
+  it('blocks verification while a line has no weights', async () => {
+    (listClaimLines as jest.Mock).mockResolvedValue([line(), line({ id: 'l2', boq_item_id: 'b1' })]);
+    const { findByText, getByLabelText, toast } = renderPanel();
+    expect(await findByText('Bobot tahapan baris ini belum diatur. Kembalikan klaim atau atur bobot di Baseline.')).toBeTruthy();
+    fireEvent.press(getByLabelText('Verifikasi klaim'));
+    expect(toast).toHaveBeenCalledWith('T1-002: bobot tahapan belum diatur.', 'critical');
+    expect(verifyClaim).not.toHaveBeenCalled();
+  });
+
+  it('asks for a reason before verifying a stage below the verified one', async () => {
     (listVerifiedStagePct as jest.Mock).mockResolvedValue(new Map([['k1', { BEKISTING: 100, PEMBESIAN: 70, PENGECORAN: 0 }]]));
+    (listEntryTotals as jest.Mock).mockResolvedValue(new Map([['k1', 66.62]]));
     (listClaimLines as jest.Mock).mockResolvedValue([line({ claimed_pct: { BEKISTING: 100, PEMBESIAN: 80, PENGECORAN: 0 } })]);
     const { findByLabelText, getByLabelText, toast } = renderPanel();
     fireEvent.changeText(await findByLabelText('Verifikasi Pembesian T1-001'), '50');
@@ -6567,6 +7179,27 @@ describe('ProgressClaimVerifyPanel', () => {
     ], null));
   });
 
+  it('asks for a reason when re-weighting lowers the quantity although no stage dropped', async () => {
+    (listStageWeights as jest.Mock).mockResolvedValue([weightRow('k1', { BEKISTING: 0.2, PEMBESIAN: 0.5, PENGECORAN: 0.3 }, 'manual', null)]);
+    (listVerifiedStagePct as jest.Mock).mockResolvedValue(new Map([['k1', { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 }]]));
+    (listEntryTotals as jest.Mock).mockResolvedValue(new Map([['k1', 52.04]]));
+    (listClaimLines as jest.Mock).mockResolvedValue([line({ claimed_pct: { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 } })]);
+    const { findByText, getByLabelText, getByText, toast } = renderPanel();
+    expect(await findByText('Volume terpasang turun karena bobot atau volume rencana berubah sejak verifikasi terakhir.')).toBeTruthy();
+    expect(getByText('Progres baris 40% menjadi 40% (perkiraan -12,04 m³)')).toBeTruthy();
+    fireEvent.press(getByLabelText('Verifikasi klaim'));
+    expect(toast).toHaveBeenCalledWith('T1-001: penurunan progres wajib disertai alasan.', 'critical');
+  });
+
+  it('keeps the edited figures when verification fails', async () => {
+    (verifyClaim as jest.Mock).mockRejectedValueOnce(new Error('Status klaim sudah berubah. Muat ulang halaman.'));
+    const { findByLabelText, getByLabelText, toast } = renderPanel();
+    fireEvent.changeText(await findByLabelText('Verifikasi Pembesian T1-001'), '55');
+    fireEvent.press(getByLabelText('Verifikasi klaim'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Status klaim sudah berubah. Muat ulang halaman.', 'critical'));
+    expect(getByLabelText('Verifikasi Pembesian T1-001').props.value).toBe('55');
+  });
+
   it('returns the claim with a note, and refuses an empty one', async () => {
     const { findByLabelText, getByLabelText, onChanged, toast } = renderPanel();
     fireEvent.press(await findByLabelText('Kembalikan klaim'));
@@ -6578,19 +7211,23 @@ describe('ProgressClaimVerifyPanel', () => {
     expect(onChanged).toHaveBeenCalled();
   });
 
-  it('never lets the submitter decide their own claim', async () => {
-    const { findByText, queryByLabelText, getByLabelText } = renderPanel({ id: 'sup', role: 'estimator' });
-    expect(await findByText('Klaim ini Anda kirim sendiri. Verifikasi harus dilakukan estimator atau admin lain.')).toBeTruthy();
+  it.each([
+    ['the submitter', { id: 'sup', role: 'estimator' }, {}],
+    ['someone who filled a line', { id: 'est', role: 'estimator' }, { updated_by: 'est' }],
+  ])('never lets %s decide the claim', async (_who, profile, lineOver) => {
+    (listClaimLines as jest.Mock).mockResolvedValue([line(lineOver)]);
+    const { findByText, queryByLabelText, getByLabelText } = renderPanel(profile);
+    expect(await findByText('Klaim ini berisi angka yang Anda kirim atau isi sendiri. Verifikasi harus dilakukan estimator atau admin lain.')).toBeTruthy();
     expect(queryByLabelText('Verifikasi klaim')).toBeNull();
     expect(getByLabelText('Verifikasi Pembesian T1-001').props.editable).toBe(false);
   });
 
-  it('lets the principal read without deciding', async () => {
-    const { findByLabelText, queryByLabelText, queryByText } = renderPanel({ id: 'pri', role: 'principal' });
+  it('lets the principal read without deciding or being told to change figures', async () => {
+    const { findByLabelText, queryByLabelText, getByText } = renderPanel({ id: 'pri', role: 'principal' });
     expect((await findByLabelText('Verifikasi Pembesian T1-001')).props.editable).toBe(false);
     expect(queryByLabelText('Verifikasi klaim')).toBeNull();
     expect(queryByLabelText('Kembalikan klaim')).toBeNull();
-    expect(queryByText('Klaim ini Anda kirim sendiri. Verifikasi harus dilakukan estimator atau admin lain.')).toBeNull();
+    expect(getByText('1 baris diklaim. Angka cek terisi dari klaim pengawas.')).toBeTruthy();
   });
 
   it('says when nothing waits for verification and shows the last claim', async () => {
@@ -6600,6 +7237,13 @@ describe('ProgressClaimVerifyPanel', () => {
     expect(await findByText('Tidak ada klaim yang menunggu verifikasi.')).toBeTruthy();
     expect(getByText('Terverifikasi')).toBeTruthy();
     expect(listClaimLines).not.toHaveBeenCalled();
+  });
+
+  it('reloads when asked to, as a notification tap does', async () => {
+    const { findByLabelText, rerender, toast, onVerified, onChanged } = renderPanel();
+    await findByLabelText('Verifikasi Pembesian T1-001');
+    rerender(<ProgressClaimVerifyPanel projectId="p1" profile={ESTIMATOR} boqItems={ITEMS} reloadKey={1} toast={toast} onVerified={onVerified} onChanged={onChanged} />);
+    await waitFor(() => expect(getOpenClaim).toHaveBeenCalledTimes(2));
   });
 });
 ```
@@ -6615,12 +7259,13 @@ Expected: FAIL — `Cannot find module '../ProgressClaimVerifyPanel'`.
 
 ```tsx
 // office/screens/progressClaim/ProgressClaimVerifyPanel.tsx
-// SANO — Verifikasi Klaim Progres (spec §6.2 steps 4-5). The estimator sees
+// SANO — Verifikasi Klaim Progres (spec §6.2 steps 4-5, §18). The estimator sees
 // every claimed row with its weights, the verified and claimed figure per
 // stage, the supervisor's note and photos, and sets the verified figures.
 // Verifikasi writes progress through verify_progress_claim; Kembalikan sends
-// the claim back with a note. The principal reads the same view, and whoever
-// submitted a claim never verifies it (the RPC refuses it as well).
+// the claim back with a note. The principal reads the same view. Whoever
+// submitted the claim or filled one of its lines never verifies it (the RPC
+// refuses that as well).
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Card from '../../../workflows/components/Card';
@@ -6628,23 +7273,28 @@ import Badge from '../../../workflows/components/Badge';
 import StoragePhoto from '../../../workflows/components/StoragePhoto';
 import { canVerifyClaim, canVerifyClaimAs } from '../../../tools/progressClaims/claimRules';
 import {
-  getLatestClaim, getOpenClaim, listClaimLines, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
+  getLatestClaim, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
   type ProgressClaim, type ProgressClaimLine, type VerifyLineInput,
 } from '../../../tools/progressClaims/claims';
 import {
   claimStatusSummary, formatFraction, formatPercent, formatQty, pctInputs, readPctInputs, regressedStages, stageKeyLabel,
-  weightSourceLabel, zeroPct, type ClaimableItem,
+  weightSourceLabel, zeroPct, type ClaimableItem, type PctRead,
 } from '../../../tools/progressClaims/claimView';
-import { claimDelta, rowFraction, type StagePct } from '../../../tools/progressClaims/stageMath';
-import { stagesOf, validateStageWeights, type StageWeights, type WeightSource } from '../../../tools/progressClaims/stageWeights';
+import { deltaFromInstalled, rowFraction, type StagePct } from '../../../tools/progressClaims/stageMath';
+import {
+  stagesOf, validateStageWeights, type StageKey, type StageWeights, type WeightSource,
+} from '../../../tools/progressClaims/stageWeights';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../../workflows/theme';
 
 const lh = (size: number) => Math.round(size * 1.45);
+const QUANTITY_DROP = 'Volume terpasang turun karena bobot atau volume rencana berubah sejak verifikasi terakhir.';
 
 interface Props {
   projectId: string;
   profile: { id: string; role: string } | null;
   boqItems: ClaimableItem[];
+  /** Bump to reload, e.g. when a notification brings the user back to a panel already on screen. */
+  reloadKey?: number;
   toast: (msg: string, type?: 'ok' | 'warning' | 'critical') => void;
   /** After a verification wrote progress, so the screen can reload boq_items. */
   onVerified?: () => void;
@@ -6659,10 +7309,12 @@ interface RowWeights {
 }
 
 interface Loaded {
+  projectId: string;
   claim: ProgressClaim | null;
   lines: ProgressClaimLine[];
   weights: Map<string, RowWeights>;
   verified: Map<string, StagePct>;
+  ledger: Map<string, number>;
 }
 
 interface LineInput {
@@ -6670,10 +7322,28 @@ interface LineInput {
   reason: string;
 }
 
+/** One line's figures as the form currently holds them. */
+interface LineCheck {
+  code: string;
+  item: ClaimableItem | undefined;
+  rowWeights: RowWeights | null;
+  prev: StagePct;
+  read: PctRead | null;
+  prevFraction: number;
+  next: number | null;
+  delta: number | null;
+  regressed: StageKey[];
+  needsReason: boolean;
+  ledgerBefore: number;
+}
+
 const EMPTY_INPUT: LineInput = { inputs: {}, reason: '' };
 
-export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems, toast, onVerified, onChanged }: Props) {
-  const items = useMemo(() => new Map(boqItems.map((b) => [b.id, b])), [boqItems]);
+export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems, reloadKey = 0, toast, onVerified, onChanged }: Props) {
+  const items = useMemo(
+    () => new Map(boqItems.filter((b) => b.project_id == null || b.project_id === projectId).map((b) => [b.id, b])),
+    [boqItems, projectId],
+  );
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lineInputs, setLineInputs] = useState<Record<string, LineInput>>({});
@@ -6690,15 +7360,16 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
       const claim = (await getOpenClaim(projectId)) ?? (await getLatestClaim(projectId));
       if (!claim || claim.status !== 'SUBMITTED') {
         if (mine === seq.current) {
-          setData({ claim, lines: [], weights: new Map(), verified: new Map() });
+          setData({ projectId, claim, lines: [], weights: new Map(), verified: new Map(), ledger: new Map() });
           setLineInputs({});
         }
         return;
       }
-      const [lines, weightRows, verified] = await Promise.all([
+      const [lines, weightRows, verified, ledger] = await Promise.all([
         listClaimLines(claim.id),
         listStageWeights(projectId),
         listVerifiedStagePct(projectId),
+        listEntryTotals(projectId),
       ]);
       const weights = new Map<string, RowWeights>();
       for (const w of weightRows) {
@@ -6706,7 +7377,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
         if (checked.ok) weights.set(w.boq_item_id, { weights: checked.weights, source: w.source, referenceClass: w.reference_class });
       }
       if (mine !== seq.current) return;
-      setData({ claim, lines, weights, verified });
+      setData({ projectId, claim, lines, weights, verified, ledger });
       setLineInputs(Object.fromEntries(lines.map((l) => {
         const w = weights.get(l.boq_item_id)?.weights;
         return [l.id, { inputs: w ? pctInputs(w, l.claimed_pct) : {}, reason: l.regress_reason ?? '' }];
@@ -6724,52 +7395,69 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     return () => {
       seq.current += 1;
     };
-  }, [load]);
+  }, [load, reloadKey]);
 
-  const claim = data?.claim ?? null;
+  // Never render another project's claim with its decision buttons live.
+  const current = data && data.projectId === projectId ? data : null;
+  const claim = current?.claim ?? null;
   const submitted = claim?.status === 'SUBMITTED';
-  const actionable = submitted && canVerifyClaimAs(profile?.role, profile?.id, claim?.submitted_by);
+  const lineAuthors = useMemo(() => (current?.lines ?? []).flatMap((l) => [l.created_by, l.updated_by]), [current]);
+  const actionable = submitted && canVerifyClaimAs(profile?.role, profile?.id, claim?.submitted_by, lineAuthors);
   const ownClaim = submitted && canVerifyClaim(profile?.role) && !actionable;
 
-  const prevOf = (line: ProgressClaimLine, weights: StageWeights): StagePct =>
-    data?.verified.get(line.boq_item_id) ?? line.prev_verified ?? zeroPct(weights);
+  const check = (loaded: Loaded, line: ProgressClaimLine, state: LineInput): LineCheck => {
+    const item = items.get(line.boq_item_id);
+    const code = item?.code ?? '—';
+    const ledgerBefore = loaded.ledger.get(line.boq_item_id) ?? 0;
+    const rowWeights = loaded.weights.get(line.boq_item_id) ?? null;
+    if (!rowWeights) {
+      return { code, item, rowWeights: null, prev: {}, read: null, prevFraction: 0, next: null, delta: null, regressed: [], needsReason: false, ledgerBefore };
+    }
+    const prev = loaded.verified.get(line.boq_item_id) ?? line.prev_verified ?? zeroPct(rowWeights.weights);
+    const read = readPctInputs(rowWeights.weights, state.inputs);
+    const prevFraction = rowFraction(rowWeights.weights, prev);
+    const next = read.ok ? rowFraction(rowWeights.weights, read.pct) : null;
+    const delta = next != null ? deltaFromInstalled(item?.planned ?? 0, ledgerBefore, next).deltaQuantity : null;
+    const regressed = read.ok ? regressedStages(rowWeights.weights, prev, read.pct) : [];
+    return {
+      code, item, rowWeights, prev, read, prevFraction, next, delta, regressed, ledgerBefore,
+      needsReason: regressed.length > 0 || (delta != null && delta < 0),
+    };
+  };
 
   const setInput = (lineId: string, stage: string, value: string) =>
     setLineInputs((prev) => {
-      const current = prev[lineId] ?? EMPTY_INPUT;
-      return { ...prev, [lineId]: { ...current, inputs: { ...current.inputs, [stage]: value } } };
+      const existing = prev[lineId] ?? EMPTY_INPUT;
+      return { ...prev, [lineId]: { ...existing, inputs: { ...existing.inputs, [stage]: value } } };
     });
 
   const setReason = (lineId: string, reason: string) =>
     setLineInputs((prev) => ({ ...prev, [lineId]: { ...(prev[lineId] ?? EMPTY_INPUT), reason } }));
 
   const verify = async () => {
-    if (!data?.claim) return;
+    if (!current?.claim) return;
     const payload: VerifyLineInput[] = [];
-    for (const line of data.lines) {
-      const code = items.get(line.boq_item_id)?.code ?? line.boq_item_id;
-      const rowWeights = data.weights.get(line.boq_item_id);
-      if (!rowWeights) {
-        toast(`${code}: bobot tahapan belum diatur.`, 'critical');
-        return;
-      }
+    for (const line of current.lines) {
       const state = lineInputs[line.id] ?? EMPTY_INPUT;
-      const read = readPctInputs(rowWeights.weights, state.inputs);
-      if (!read.ok) {
-        toast(`${code}: ${read.reason}`, 'critical');
+      const c = check(current, line, state);
+      if (!c.rowWeights) {
+        toast(`${c.code}: bobot tahapan belum diatur.`, 'critical');
         return;
       }
-      const regressed = regressedStages(rowWeights.weights, prevOf(line, rowWeights.weights), read.pct).length > 0;
+      if (!c.read || !c.read.ok) {
+        toast(`${c.code}: ${c.read && !c.read.ok ? c.read.reason : 'persentase tidak valid.'}`, 'critical');
+        return;
+      }
       const reason = state.reason.trim();
-      if (regressed && !reason) {
-        toast(`${code}: penurunan progres wajib disertai alasan.`, 'critical');
+      if (c.needsReason && !reason) {
+        toast(`${c.code}: penurunan progres wajib disertai alasan.`, 'critical');
         return;
       }
-      payload.push({ line_id: line.id, verified_pct: read.pct, regress_reason: regressed ? reason : null });
+      payload.push({ line_id: line.id, verified_pct: c.read.pct, regress_reason: c.needsReason ? reason : null });
     }
     setBusy(true);
     try {
-      const result = await verifyClaim(data.claim.id, payload, verifierNote.trim() || null);
+      const result = await verifyClaim(current.claim.id, payload, verifierNote.trim() || null);
       toast(`Klaim diverifikasi. ${result.entries} entri progres dicatat.`, 'ok');
       onVerified?.();
       onChanged?.();
@@ -6782,7 +7470,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
   };
 
   const sendReturn = async () => {
-    if (!data?.claim) return;
+    if (!current?.claim) return;
     const note = returnNote.trim();
     if (!note) {
       toast('Tulis alasan pengembalian klaim.', 'critical');
@@ -6790,7 +7478,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     }
     setBusy(true);
     try {
-      await returnClaim(data.claim.id, note);
+      await returnClaim(current.claim.id, note);
       toast('Klaim dikembalikan ke pengawas.', 'ok');
       onChanged?.();
       await load();
@@ -6812,7 +7500,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     );
   }
 
-  if (!data) return <ActivityIndicator style={styles.loading} accessibilityLabel="Memuat klaim progres" />;
+  if (!current) return <ActivityIndicator style={styles.loading} accessibilityLabel="Memuat klaim progres" />;
 
   const summary = claimStatusSummary(claim);
 
@@ -6830,50 +7518,48 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
       <Card title="Verifikasi Klaim Progres" rightAction={<Badge flag={summary.flag} label={summary.label} />}>
         <Text style={styles.detail}>{summary.detail}</Text>
         <Text style={styles.hint}>
-          {`${data.lines.length} baris diklaim. Angka verifikasi terisi dari klaim pengawas; ubah bila foto atau laporan tidak mendukung.`}
+          {actionable
+            ? `${current.lines.length} baris diklaim. Angka cek terisi dari klaim pengawas; ubah bila foto atau laporan tidak mendukung.`
+            : `${current.lines.length} baris diklaim. Angka cek terisi dari klaim pengawas.`}
         </Text>
+        <Text style={styles.hint}>Lalu: terverifikasi sebelumnya. Klaim: angka pengawas. Cek: angka verifikasi.</Text>
         {ownClaim && (
-          <Text style={styles.banner}>Klaim ini Anda kirim sendiri. Verifikasi harus dilakukan estimator atau admin lain.</Text>
+          <Text style={styles.banner}>
+            Klaim ini berisi angka yang Anda kirim atau isi sendiri. Verifikasi harus dilakukan estimator atau admin lain.
+          </Text>
         )}
       </Card>
 
-      {data.lines.map((line) => {
-        const item = items.get(line.boq_item_id);
-        const code = item?.code ?? '—';
-        const rowWeights = data.weights.get(line.boq_item_id);
-        if (!rowWeights) {
+      {current.lines.map((line) => {
+        const state = lineInputs[line.id] ?? EMPTY_INPUT;
+        const c = check(current, line, state);
+        if (!c.rowWeights) {
           return (
-            <Card key={line.id} title={code} subtitle={item?.label}>
+            <Card key={line.id} title={c.code} subtitle={c.item?.label}>
               <Text style={styles.error}>Bobot tahapan baris ini belum diatur. Kembalikan klaim atau atur bobot di Baseline.</Text>
             </Card>
           );
         }
-        const state = lineInputs[line.id] ?? EMPTY_INPUT;
-        const prev = prevOf(line, rowWeights.weights);
-        const read = readPctInputs(rowWeights.weights, state.inputs);
-        const prevFraction = rowFraction(rowWeights.weights, prev);
-        const next = read.ok ? rowFraction(rowWeights.weights, read.pct) : null;
-        const delta = next != null ? claimDelta(item?.planned ?? 0, prevFraction, next).deltaQuantity : null;
-        const regressed = read.ok ? regressedStages(rowWeights.weights, prev, read.pct) : [];
         const refs = (line.evidence?.photo_refs ?? []).filter((r): r is string => typeof r === 'string');
+        const mismatch = !!c.item && Math.abs((Number(c.item.installed) || 0) - c.ledgerBefore) > 0.0001;
         return (
           <Card
             key={line.id}
-            title={code}
-            subtitle={item?.label}
-            rightAction={rowWeights.source === 'reference' ? <Badge flag="WARNING" label="Bobot referensi" /> : undefined}
+            title={c.code}
+            subtitle={c.item?.label}
+            rightAction={c.rowWeights.source === 'reference' ? <Badge flag="WARNING" label="Bobot referensi" /> : undefined}
           >
-            <Text style={styles.hint}>{weightSourceLabel(rowWeights.source, rowWeights.referenceClass)}</Text>
+            <Text style={styles.hint}>{weightSourceLabel(c.rowWeights.source, c.rowWeights.referenceClass)}</Text>
             <View style={[styles.tableRow, styles.tableHead]}>
-              <Text style={[styles.cellStage, styles.headText]}>Tahap</Text>
-              <Text style={[styles.cell, styles.headText]}>Terverifikasi</Text>
-              <Text style={[styles.cell, styles.headText]}>Klaim</Text>
-              <Text style={[styles.cellInput, styles.headText]}>Verifikasi</Text>
+              <Text style={[styles.cellStage, styles.headText]} numberOfLines={1}>Tahap</Text>
+              <Text style={[styles.cell, styles.headText]} numberOfLines={1}>Lalu</Text>
+              <Text style={[styles.cell, styles.headText]} numberOfLines={1}>Klaim</Text>
+              <Text style={[styles.cellInput, styles.headText]} numberOfLines={1}>Cek</Text>
             </View>
-            {stagesOf(rowWeights.weights).map((stage) => (
+            {stagesOf(c.rowWeights.weights).map((stage) => (
               <View key={stage} style={styles.tableRow}>
                 <Text style={styles.cellStage}>{stageKeyLabel(stage)}</Text>
-                <Text style={styles.cell}>{formatPercent(prev[stage] ?? 0)}</Text>
+                <Text style={styles.cell}>{formatPercent(c.prev[stage] ?? 0)}</Text>
                 <Text style={styles.cell}>{formatPercent(line.claimed_pct[stage] ?? 0)}</Text>
                 <TextInput
                   style={[styles.cellInput, styles.input, !actionable && styles.inputDisabled]}
@@ -6881,28 +7567,40 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
                   onChangeText={(v) => setInput(line.id, stage, v)}
                   editable={actionable}
                   keyboardType="decimal-pad"
-                  accessibilityLabel={`Verifikasi ${stageKeyLabel(stage)} ${code}`}
+                  accessibilityLabel={`Verifikasi ${stageKeyLabel(stage)} ${c.code}`}
                 />
               </View>
             ))}
-            {read.ok && next != null && delta != null ? (
+            {c.read && c.read.ok && c.next != null && c.delta != null ? (
               <Text style={styles.preview}>
-                {`Progres baris ${formatFraction(prevFraction)} menjadi ${formatFraction(next)} (perkiraan ${delta > 0 ? '+' : ''}${formatQty(delta, item?.unit ?? '')})`}
+                {`Progres baris ${formatFraction(c.prevFraction)} menjadi ${formatFraction(c.next)} (perkiraan ${c.delta > 0 ? '+' : ''}${formatQty(c.delta, c.item?.unit ?? '')})`}
               </Text>
             ) : (
-              <Text style={styles.error}>{read.ok ? '' : read.reason}</Text>
+              <Text style={styles.error}>{c.read && !c.read.ok ? c.read.reason : ''}</Text>
             )}
-            {regressed.length > 0 && (
-              <TextInput
-                style={[styles.input, styles.textarea]}
-                value={state.reason}
-                onChangeText={(v) => setReason(line.id, v)}
-                editable={actionable}
-                multiline
-                placeholder="Alasan progres turun"
-                placeholderTextColor={COLORS.textMuted}
-                accessibilityLabel={`Alasan penurunan ${code}`}
-              />
+            {mismatch && c.item && (
+              <Text style={styles.hint}>
+                {`Terpasang di BoQ ${formatQty(Number(c.item.installed) || 0, c.item.unit)} berbeda dari riwayat progres ${formatQty(c.ledgerBefore, c.item.unit)}; verifikasi mengikuti riwayat.`}
+              </Text>
+            )}
+            {c.needsReason && (
+              <>
+                <Text style={styles.warn}>
+                  {c.regressed.length > 0
+                    ? `Turun dari angka terverifikasi: ${c.regressed.map((s) => stageKeyLabel(s)).join(', ')}.`
+                    : QUANTITY_DROP}
+                </Text>
+                <TextInput
+                  style={[styles.input, styles.textarea, !actionable && styles.inputDisabled]}
+                  value={state.reason}
+                  onChangeText={(v) => setReason(line.id, v)}
+                  editable={actionable}
+                  multiline
+                  placeholder="Alasan progres turun"
+                  placeholderTextColor={COLORS.textMuted}
+                  accessibilityLabel={`Alasan penurunan ${c.code}`}
+                />
+              </>
             )}
             {line.note ? <Text style={styles.note}>{`Catatan pengawas: ${line.note}`}</Text> : null}
             {refs.length > 0 ? (
@@ -6992,6 +7690,7 @@ const styles = StyleSheet.create({
   hint: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs },
   note: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.text, marginTop: SPACE.sm },
   error: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.critical, marginTop: SPACE.xs },
+  warn: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.warning, marginTop: SPACE.sm },
   banner: {
     fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.warning, marginTop: SPACE.sm,
     padding: SPACE.sm, borderRadius: RADIUS, backgroundColor: COLORS.warningBg,
@@ -6999,11 +7698,11 @@ const styles = StyleSheet.create({
   tableRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.xs, paddingVertical: SPACE.xs },
   tableHead: { borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, marginTop: SPACE.sm },
   headText: { fontFamily: FONTS.bold, color: COLORS.textSec, textTransform: 'uppercase' },
-  cellStage: { flex: 1.2, fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.text },
+  cellStage: { flex: 1.3, fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.text },
   cell: { flex: 1, fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.text, textAlign: 'right' },
-  cellInput: { flex: 1, fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), textAlign: 'right' },
+  cellInput: { flex: 1.1, fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), textAlign: 'right' },
   input: {
-    backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
+    minHeight: 44, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
     paddingVertical: SPACE.xs, paddingHorizontal: SPACE.sm, fontSize: TYPE.sm, lineHeight: lh(TYPE.sm),
     fontFamily: FONTS.regular, color: COLORS.text,
   },
@@ -7031,7 +7730,7 @@ const styles = StyleSheet.create({
 
 ```diff
 diff --git a/office/screens/OfficeReportsScreen.tsx b/office/screens/OfficeReportsScreen.tsx
-index abbedcb..7da8c5f 100644
+index abbedcb..448906e 100644
 --- a/office/screens/OfficeReportsScreen.tsx
 +++ b/office/screens/OfficeReportsScreen.tsx
 @@ -1,4 +1,4 @@
@@ -7049,7 +7748,7 @@ index abbedcb..7da8c5f 100644
  import { getMaterialDrift } from '../../tools/envelopes';
  import { aggregateDriftRollup, formatRollupTile, type DriftRollup } from '../../tools/planDrift';
  import { computeOverallProgress } from '../../tools/progressMath';
-@@ -32,12 +34,12 @@ function formatTs(v: string) {
+@@ -32,20 +34,41 @@ function formatTs(v: string) {
    return new Date(v).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
  }
  
@@ -7064,18 +7763,23 @@ index abbedcb..7da8c5f 100644
    const { show: toast } = useToast();
    const [activeSection, setActiveSection] = useState<Section>(route.params?.initialSection ?? 'overview');
    const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
-@@ -46,6 +48,26 @@ export default function OfficeReportsScreen() {
-     const nextSection = route.params?.initialSection as Section | undefined;
-     if (nextSection) setActiveSection(nextSection);
-   }, [route.params?.initialSection]);
-+
-+  // A claim notification (migration 104) names its project; open it once per navigation.
-+  const appliedProjectParam = useRef<unknown>(null);
-+  useEffect(() => {
-+    const params = route.params as { projectId?: string } | undefined;
-+    if (!params?.projectId || appliedProjectParam.current === params) return;
-+    appliedProjectParam.current = params;
-+    if (params.projectId !== project?.id) setActiveProject(params.projectId);
+ 
++  // Route params apply once per navigation. Every navigate hands over a new
++  // params object, so opening Klaim again after a manual tab switch still
++  // lands. A claim notification (migration 104) also names its project and
++  // reloads the verification panel and the badge.
++  const [claimReloadKey, setClaimReloadKey] = useState(0);
++  const appliedParams = useRef<unknown>(null);
+   useEffect(() => {
+-    const nextSection = route.params?.initialSection as Section | undefined;
+-    if (nextSection) setActiveSection(nextSection);
+-  }, [route.params?.initialSection]);
++    const params = route.params as { initialSection?: Section; projectId?: string } | undefined;
++    if (!params || appliedParams.current === params) return;
++    appliedParams.current = params;
++    if (params.projectId && params.projectId !== project?.id) setActiveProject(params.projectId);
++    if (params.initialSection) setActiveSection(params.initialSection);
++    if (params.initialSection === 'klaim') setClaimReloadKey((k) => k + 1);
 +  }, [route.params, project?.id, setActiveProject]);
 +
 +  // Claims waiting for verification on the active project, for the Klaim tab badge.
@@ -7087,11 +7791,11 @@ index abbedcb..7da8c5f 100644
 +      .then((n) => { if (alive) setPendingClaims(n); })
 +      .catch(() => { if (alive) setPendingClaims(0); });
 +    return () => { alive = false; };
-+  }, [project, activeSection]);
++  }, [project, activeSection, claimReloadKey]);
    const { width } = useWindowDimensions();
    const isTablet  = width >= BREAKPOINTS.tablet;
    const isDesktop = width >= BREAKPOINTS.desktop;
-@@ -161,9 +183,10 @@ export default function OfficeReportsScreen() {
+@@ -161,9 +184,10 @@ export default function OfficeReportsScreen() {
      return <ClientReportBuilderScreen onBack={() => setActiveSection('overview')} />;
    }
  
@@ -7103,7 +7807,7 @@ index abbedcb..7da8c5f 100644
    ];
  
    return (
-@@ -182,6 +205,11 @@ export default function OfficeReportsScreen() {
+@@ -182,6 +206,11 @@ export default function OfficeReportsScreen() {
            >
              <Ionicons name={tab.icon as any} size={16} color={activeSection === tab.key ? COLORS.primary : COLORS.textSec} />
              <Text style={[styles.tabText, activeSection === tab.key && styles.tabTextActive]}>{tab.label}</Text>
@@ -7115,7 +7819,7 @@ index abbedcb..7da8c5f 100644
            </TouchableOpacity>
          ))}
        </View>
-@@ -199,6 +227,19 @@ export default function OfficeReportsScreen() {
+@@ -199,6 +228,20 @@ export default function OfficeReportsScreen() {
            />
          )}
  
@@ -7124,6 +7828,7 @@ index abbedcb..7da8c5f 100644
 +            projectId={project.id}
 +            profile={profile ? { id: profile.id, role: profile.role } : null}
 +            boqItems={boqItems}
++            reloadKey={claimReloadKey}
 +            toast={toast}
 +            onVerified={() => { void refresh(); }}
 +            onChanged={() => {
@@ -7135,7 +7840,7 @@ index abbedcb..7da8c5f 100644
          {activeSection === 'overview' && (<>
          <Text style={styles.sectionHead}>Laporan & Export</Text>
  
-@@ -720,6 +761,8 @@ const styles = StyleSheet.create({
+@@ -720,6 +763,8 @@ const styles = StyleSheet.create({
    },
    tabText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', color: COLORS.textSec },
    tabTextActive: { color: COLORS.primary },
@@ -7186,7 +7891,7 @@ index 0d9e00f..5af187b 100644
 
 ```diff
 diff --git a/office/screens/NotificationsScreen.tsx b/office/screens/NotificationsScreen.tsx
-index fe96661..a589dba 100644
+index fe96661..265004a 100644
 --- a/office/screens/NotificationsScreen.tsx
 +++ b/office/screens/NotificationsScreen.tsx
 @@ -8,6 +8,9 @@ const NOTIFICATION_ROUTE_MAP: Record<string, string> = {
@@ -7199,6 +7904,17 @@ index fe96661..a589dba 100644
  };
  
  interface Props {
+@@ -87,7 +90,9 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
+     }
+     const target = NOTIFICATION_ROUTE_MAP[item.deeplinkScreen] ?? item.deeplinkScreen;
+     try {
+-      navigation.navigate(target, item.deeplinkParams ?? {});
++      // A fresh params object per tap, so a screen that applies params once per
++      // navigation still reacts to a second tap on the same notification.
++      navigation.navigate(target, { ...(item.deeplinkParams ?? {}) });
+     } catch {
+       // Route not in current role's nav — stay on Notifikasi (no-op).
+     }
 ```
 
 `workflows/screens/components/NotificationList.tsx` (apply this change):
@@ -7223,7 +7939,7 @@ index d2dd9f9..a1ca336 100644
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest office/screens/progressClaim/__tests__/ProgressClaimVerifyPanel.test.tsx workflows/screens/components/__tests__/NotificationList.test.tsx --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 2 suites, 10 tests.
+Expected: PASS, 2 suites, 16 tests.
 
 - [ ] **Step 5: Type-check**
 
@@ -7246,7 +7962,7 @@ git commit -m "feat(progress): estimator verification panel and Klaim tab in off
 - Modify: `workflows/screens/BaselineScreen.tsx`
 - Test: `workflows/screens/progressClaim/__tests__/StageWeightsPanel.test.tsx`
 
-Estimators and admins apply the reference profile to rows without weights, edit three percents that must add up to 100, switch a row to one stage, or reset it to the reference of its class. Other roles read.
+Estimators and admins apply the reference profile to rows without weights, edit three percents that must add up to 100, switch a row to one stage, or reset it to the reference of its class. Other roles read. The card starts collapsed behind a summary, so a large RAB does not push the import sessions in Baseline down, and it ignores row taps while a save runs.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -7255,7 +7971,7 @@ Estimators and admins apply the reference profile to rows without weights, edit 
 ```tsx
 // workflows/screens/progressClaim/__tests__/StageWeightsPanel.test.tsx
 import React from 'react';
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 jest.mock('../../../../tools/progressClaims/claims', () => ({
   listStageWeights: jest.fn(),
@@ -7269,7 +7985,7 @@ import { listStageWeights, resetStageWeights, seedReferenceWeights, setStageWeig
 import StageWeightsPanel from '../StageWeightsPanel';
 
 const item = (id: string, code: string, label: string, sort: number) => ({
-  id, code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
+  id, project_id: 'p1', code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
 });
 const ITEMS = [item('k1', 'T1-001', 'Lantai 1 ; Kolom', 1), item('pc1', 'T1-002', 'Lantai 1 ; Pile Cap', 2)];
 const EMPTY: typeof ITEMS = [];
@@ -7278,6 +7994,10 @@ const kolomRow = { boq_item_id: 'k1', weights: { BEKISTING: 0.326, PEMBESIAN: 0.
 const renderPanel = (role = 'estimator', items = ITEMS) => {
   const toast = jest.fn();
   return { ...render(<StageWeightsPanel projectId="p1" role={role} boqItems={items} toast={toast} />), toast };
+};
+
+const openRows = async (utils: ReturnType<typeof renderPanel>) => {
+  fireEvent.press(await utils.findByLabelText('Tampilkan baris'));
 };
 
 beforeEach(() => {
@@ -7289,11 +8009,14 @@ beforeEach(() => {
 });
 
 describe('StageWeightsPanel', () => {
-  it('lists each row with its weights and where they came from', async () => {
-    const { findByText, getByText } = renderPanel();
-    expect(await findByText('Bekisting 32,6% · Pembesian 48,6% · Pengecoran 18,8%')).toBeTruthy();
-    expect(getByText('Bobot referensi (Kolom)')).toBeTruthy();
-    expect(getByText('Belum diatur')).toBeTruthy();
+  it('starts collapsed with a summary, then lists each row with its weights and source', async () => {
+    const utils = renderPanel();
+    expect(await utils.findByText('2 baris · 1 belum diatur · 1 referensi')).toBeTruthy();
+    expect(utils.queryByText('Belum diatur')).toBeNull();
+    await openRows(utils);
+    expect(utils.getByText('Bekisting 32,6% · Pembesian 48,6% · Pengecoran 18,8%')).toBeTruthy();
+    expect(utils.getByText('Bobot referensi (Kolom)')).toBeTruthy();
+    expect(utils.getByText('Belum diatur')).toBeTruthy();
   });
 
   it('applies the reference profile to rows that have no weights', async () => {
@@ -7305,55 +8028,86 @@ describe('StageWeightsPanel', () => {
   });
 
   it('saves three stage weights that add up to 100', async () => {
-    const { findByLabelText, getByLabelText, toast } = renderPanel();
-    fireEvent.press(await findByLabelText('T1-001 Lantai 1 ; Kolom'));
-    expect(getByLabelText('Bobot Bekisting').props.value).toBe('32,6');
-    fireEvent.changeText(getByLabelText('Bobot Bekisting'), '30');
-    fireEvent.changeText(getByLabelText('Bobot Pembesian'), '50');
-    fireEvent.changeText(getByLabelText('Bobot Pengecoran'), '20');
-    fireEvent.press(getByLabelText('Simpan bobot'));
+    const utils = renderPanel();
+    await openRows(utils);
+    fireEvent.press(utils.getByLabelText('T1-001 Lantai 1 ; Kolom'));
+    expect(utils.getByLabelText('Bobot Bekisting').props.value).toBe('32,6');
+    fireEvent.changeText(utils.getByLabelText('Bobot Bekisting'), '30');
+    fireEvent.changeText(utils.getByLabelText('Bobot Pembesian'), '50');
+    fireEvent.changeText(utils.getByLabelText('Bobot Pengecoran'), '20');
+    fireEvent.press(utils.getByLabelText('Simpan bobot'));
     await waitFor(() => expect(setStageWeights).toHaveBeenCalledWith('k1', { BEKISTING: 0.3, PEMBESIAN: 0.5, PENGECORAN: 0.2 }));
-    expect(toast).toHaveBeenCalledWith('Bobot T1-001 disimpan.', 'ok');
+    expect(utils.toast).toHaveBeenCalledWith('Bobot T1-001 disimpan.', 'ok');
   });
 
   it('refuses weights that do not add up to 100', async () => {
-    const { findByLabelText, getByLabelText, toast } = renderPanel();
-    fireEvent.press(await findByLabelText('T1-001 Lantai 1 ; Kolom'));
-    fireEvent.changeText(getByLabelText('Bobot Bekisting'), '30');
-    fireEvent.changeText(getByLabelText('Bobot Pembesian'), '50');
-    fireEvent.changeText(getByLabelText('Bobot Pengecoran'), '19');
-    fireEvent.press(getByLabelText('Simpan bobot'));
-    expect(toast).toHaveBeenCalledWith('Jumlah bobot 99%, harus 100%.', 'critical');
+    const utils = renderPanel();
+    await openRows(utils);
+    fireEvent.press(utils.getByLabelText('T1-001 Lantai 1 ; Kolom'));
+    fireEvent.changeText(utils.getByLabelText('Bobot Bekisting'), '30');
+    fireEvent.changeText(utils.getByLabelText('Bobot Pembesian'), '50');
+    fireEvent.changeText(utils.getByLabelText('Bobot Pengecoran'), '19');
+    fireEvent.press(utils.getByLabelText('Simpan bobot'));
+    expect(utils.toast).toHaveBeenCalledWith('Jumlah bobot 99%, harus 100%.', 'critical');
     expect(setStageWeights).not.toHaveBeenCalled();
   });
 
   it('switches a row to a single stage', async () => {
-    const { findByLabelText, getByLabelText } = renderPanel();
-    fireEvent.press(await findByLabelText('T1-001 Lantai 1 ; Kolom'));
-    fireEvent.press(getByLabelText('Satu tahap'));
-    fireEvent.press(getByLabelText('Simpan bobot'));
+    const utils = renderPanel();
+    await openRows(utils);
+    fireEvent.press(utils.getByLabelText('T1-001 Lantai 1 ; Kolom'));
+    fireEvent.press(utils.getByLabelText('Satu tahap'));
+    fireEvent.press(utils.getByLabelText('Simpan bobot'));
     await waitFor(() => expect(setStageWeights).toHaveBeenCalledWith('k1', { SINGLE: 1 }));
   });
 
+  it('shows the server refusal when a verified row cannot change shape', async () => {
+    (setStageWeights as jest.Mock).mockRejectedValueOnce(new Error('Baris ini sudah punya klaim terverifikasi, jadi jenis bobotnya (satu tahap atau tiga tahap) tidak bisa diubah. Ubah nilainya saja.'));
+    const utils = renderPanel();
+    await openRows(utils);
+    fireEvent.press(utils.getByLabelText('T1-001 Lantai 1 ; Kolom'));
+    fireEvent.press(utils.getByLabelText('Satu tahap'));
+    fireEvent.press(utils.getByLabelText('Simpan bobot'));
+    await waitFor(() => expect(utils.toast).toHaveBeenCalledWith('Baris ini sudah punya klaim terverifikasi, jadi jenis bobotnya (satu tahap atau tiga tahap) tidak bisa diubah. Ubah nilainya saja.', 'critical'));
+    expect(utils.getByLabelText('Simpan bobot')).toBeTruthy();
+  });
+
   it('puts a row back on the reference profile of its class', async () => {
-    const { findByLabelText, getByLabelText } = renderPanel();
-    fireEvent.press(await findByLabelText('T1-001 Lantai 1 ; Kolom'));
-    fireEvent.press(getByLabelText('Kembalikan ke referensi Kolom'));
+    const utils = renderPanel();
+    await openRows(utils);
+    fireEvent.press(utils.getByLabelText('T1-001 Lantai 1 ; Kolom'));
+    fireEvent.press(utils.getByLabelText('Kembalikan ke referensi Kolom'));
     await waitFor(() => expect(resetStageWeights).toHaveBeenCalledWith('k1', 'KOLOM'));
   });
 
   it('prefills a row without weights with the reference of its class', async () => {
-    const { findByLabelText, getByLabelText } = renderPanel();
-    fireEvent.press(await findByLabelText('T1-002 Lantai 1 ; Pile Cap'));
-    expect(getByLabelText('Bobot Bekisting').props.value).toBe('13,1');
+    const utils = renderPanel();
+    await openRows(utils);
+    fireEvent.press(utils.getByLabelText('T1-002 Lantai 1 ; Pile Cap'));
+    expect(utils.getByLabelText('Bobot Bekisting').props.value).toBe('13,1');
+  });
+
+  it('ignores row taps while a save is running', async () => {
+    let finish: () => void = () => undefined;
+    (setStageWeights as jest.Mock).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const utils = renderPanel();
+    await openRows(utils);
+    fireEvent.press(utils.getByLabelText('T1-001 Lantai 1 ; Kolom'));
+    fireEvent.press(utils.getByLabelText('Satu tahap'));
+    fireEvent.press(utils.getByLabelText('Simpan bobot'));
+    fireEvent.press(utils.getByLabelText('T1-002 Lantai 1 ; Pile Cap'));
+    expect(utils.queryByLabelText('Bobot Bekisting')).toBeNull();
+    await act(async () => { finish(); });
+    await waitFor(() => expect(utils.queryByLabelText('Simpan bobot')).toBeNull());
   });
 
   it('only reads for a supervisor', async () => {
-    const { findByText, queryByLabelText, getByLabelText } = renderPanel('supervisor');
-    expect(await findByText('Belum diatur')).toBeTruthy();
-    expect(queryByLabelText('Terapkan bobot referensi ke 1 baris')).toBeNull();
-    fireEvent.press(getByLabelText('T1-001 Lantai 1 ; Kolom'));
-    expect(queryByLabelText('Simpan bobot')).toBeNull();
+    const utils = renderPanel('supervisor');
+    await openRows(utils);
+    expect(utils.getByText('Belum diatur')).toBeTruthy();
+    expect(utils.queryByLabelText('Terapkan bobot referensi ke 1 baris')).toBeNull();
+    fireEvent.press(utils.getByLabelText('T1-001 Lantai 1 ; Kolom'));
+    expect(utils.queryByLabelText('Simpan bobot')).toBeNull();
   });
 
   it('renders nothing before a BoQ is published', () => {
@@ -7414,11 +8168,13 @@ export function weightsSummary(weights: StageWeights | null): string {
 }
 
 export default function StageWeightsPanel({ projectId, role, boqItems, toast }: Props) {
-  const rows = useMemo(() => claimableRows(boqItems), [boqItems]);
+  const rows = useMemo(() => claimableRows(boqItems, projectId), [boqItems, projectId]);
   const classes = useMemo(() => classifyRows(rows), [rows]);
   const canEdit = canEditStageWeights(role);
   const [stored, setStored] = useState<StageWeightRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Collapsed by default: a large RAB would otherwise push Baseline's import sessions far down.
+  const [expanded, setExpanded] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [mode, setMode] = useState<'split' | 'single'>('split');
   const [inputs, setInputs] = useState<Record<SplitStage, string>>(BLANK);
@@ -7434,6 +8190,11 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
     } catch (err) {
       if (mine === seq.current) setError((err as Error)?.message ?? 'Bobot tahapan gagal dimuat.');
     }
+  }, [projectId]);
+
+  useEffect(() => {
+    setStored(null);
+    setEditingId(null);
   }, [projectId]);
 
   useEffect(() => {
@@ -7453,11 +8214,12 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
     return map;
   }, [stored]);
   const missing = useMemo(() => (stored ? missingWeightSeeds(rows, stored) : []), [rows, stored]);
+  const referenceCount = useMemo(() => rows.filter((r) => byRow.get(r.id)?.row.source === 'reference').length, [rows, byRow]);
 
   const classOf = (id: string): WorkAreaClass => classes.get(id) ?? 'LAINNYA';
 
   const openEditor = (id: string) => {
-    if (!canEdit) return;
+    if (!canEdit || busy) return;
     if (editingId === id) {
       setEditingId(null);
       return;
@@ -7519,6 +8281,7 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
       </Text>
       {error && <Text style={styles.error}>{error}</Text>}
       {!stored && !error && <ActivityIndicator style={styles.loading} accessibilityLabel="Memuat bobot tahapan" />}
+      {stored && <Text style={styles.summary}>{`${rows.length} baris · ${missing.length} belum diatur · ${referenceCount} referensi`}</Text>}
       {stored && canEdit && missing.length > 0 && (
         <TouchableOpacity
           style={[styles.primaryBtn, busy && styles.btnBusy]}
@@ -7530,7 +8293,17 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
           <Text style={styles.primaryBtnText}>{`Terapkan bobot referensi ke ${missing.length} baris`}</Text>
         </TouchableOpacity>
       )}
-      {stored && rows.map((item) => {
+      {stored && (
+        <TouchableOpacity
+          style={styles.ghostBtn}
+          onPress={() => setExpanded((v) => !v)}
+          accessibilityRole="button"
+          accessibilityLabel={expanded ? 'Sembunyikan baris' : 'Tampilkan baris'}
+        >
+          <Text style={styles.ghostBtnText}>{expanded ? 'Sembunyikan baris' : 'Tampilkan baris'}</Text>
+        </TouchableOpacity>
+      )}
+      {stored && expanded && rows.map((item) => {
         const entry = byRow.get(item.id);
         const cls = classOf(item.id);
         const open = editingId === item.id;
@@ -7539,7 +8312,7 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
             <TouchableOpacity
               style={[styles.row, open && styles.rowActive]}
               onPress={() => openEditor(item.id)}
-              disabled={!canEdit}
+              disabled={!canEdit || busy}
               accessibilityRole={canEdit ? 'button' : undefined}
               accessibilityLabel={`${item.code} ${item.label}`}
             >
@@ -7559,6 +8332,7 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
                       accessibilityRole="button"
                       accessibilityLabel={m === 'split' ? 'Tiga tahap' : 'Satu tahap'}
                       accessibilityState={{ selected: mode === m }}
+                      hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
                     >
                       <Text style={[styles.modeText, mode === m && styles.modeTextActive]}>{m === 'split' ? 'Tiga tahap' : 'Satu tahap'}</Text>
                     </TouchableOpacity>
@@ -7616,6 +8390,7 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
 const styles = StyleSheet.create({
   loading: { marginTop: SPACE.sm },
   hint: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs },
+  summary: { fontSize: TYPE.sm, lineHeight: lh(TYPE.sm), fontFamily: FONTS.semibold, color: COLORS.text, marginTop: SPACE.sm },
   error: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.critical, marginTop: SPACE.xs },
   row: { paddingVertical: SPACE.sm, paddingHorizontal: SPACE.xs, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub },
   rowActive: { backgroundColor: COLORS.accentBg, borderRadius: RADIUS },
@@ -7635,7 +8410,7 @@ const styles = StyleSheet.create({
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, marginTop: SPACE.xs },
   inputLabel: { flex: 1, fontSize: TYPE.sm, lineHeight: lh(TYPE.sm), fontFamily: FONTS.semibold, color: COLORS.text },
   input: {
-    minWidth: 84, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
+    minWidth: 84, minHeight: 44, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
     paddingVertical: SPACE.xs, paddingHorizontal: SPACE.sm, fontSize: TYPE.sm, lineHeight: lh(TYPE.sm),
     fontFamily: FONTS.regular, color: COLORS.text, textAlign: 'right',
   },
@@ -7696,7 +8471,7 @@ index d0dd926..27d853d 100644
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest workflows/screens/progressClaim/__tests__/StageWeightsPanel.test.tsx --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 1 suite, 9 tests.
+Expected: PASS, 1 suite, 11 tests.
 
 - [ ] **Step 5: Type-check**
 
@@ -7728,7 +8503,7 @@ The latest claim's status and how many rows still rely on reference weights, nex
 ```tsx
 // workflows/screens/progressClaim/__tests__/ProgressClaimStatusCard.test.tsx
 import React from 'react';
-import { fireEvent, render } from '@testing-library/react-native';
+import { fireEvent, render, waitFor } from '@testing-library/react-native';
 
 jest.mock('../../../../tools/progressClaims/claims', () => ({
   getLatestClaim: jest.fn(),
@@ -7739,8 +8514,8 @@ jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
 import { getLatestClaim, listStageWeights } from '../../../../tools/progressClaims/claims';
 import ProgressClaimStatusCard from '../ProgressClaimStatusCard';
 
-const item = (id: string, code: string, label: string, sort: number) => ({
-  id, code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
+const item = (id: string, code: string, label: string, sort: number, projectId = 'p1') => ({
+  id, project_id: projectId, code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
 });
 const ITEMS = [item('k1', 'T1-001', 'Lantai 1 ; Kolom', 1), item('pc1', 'T1-002', 'Lantai 1 ; Pile Cap', 2)];
 const EMPTY: typeof ITEMS = [];
@@ -7776,6 +8551,14 @@ describe('ProgressClaimStatusCard', () => {
     (getLatestClaim as jest.Mock).mockRejectedValueOnce(new Error('offline'));
     const { findByText } = render(<ProgressClaimStatusCard projectId="p1" boqItems={ITEMS} onOpen={jest.fn()} />);
     expect(await findByText('Status klaim belum bisa dimuat.')).toBeTruthy();
+  });
+
+  it('loads again for another project', async () => {
+    const utils = render(<ProgressClaimStatusCard projectId="p1" boqItems={ITEMS} onOpen={jest.fn()} />);
+    await utils.findByText('Terverifikasi');
+    const P2 = [item('k9', 'T1-001', 'Lantai 1 ; Kolom', 1, 'p2')];
+    utils.rerender(<ProgressClaimStatusCard projectId="p2" boqItems={P2} onOpen={jest.fn()} />);
+    await waitFor(() => expect(getLatestClaim).toHaveBeenCalledWith('p2'));
   });
 
   it('renders nothing for a project without a published BoQ', () => {
@@ -7817,7 +8600,7 @@ interface Props {
 }
 
 export default function ProgressClaimStatusCard({ projectId, boqItems, onOpen }: Props) {
-  const rows = useMemo(() => claimableRows(boqItems), [boqItems]);
+  const rows = useMemo(() => claimableRows(boqItems, projectId), [boqItems, projectId]);
   const [claim, setClaim] = useState<ProgressClaim | null>(null);
   const [weights, setWeights] = useState<StageWeightRow[]>([]);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
@@ -7928,7 +8711,7 @@ index 189e5d8..35f5b6a 100644
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest workflows/screens/progressClaim/__tests__/ProgressClaimStatusCard.test.tsx --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 1 suite, 4 tests.
+Expected: PASS, 1 suite, 5 tests.
 
 - [ ] **Step 5: Type-check**
 
@@ -8048,10 +8831,10 @@ index 35d9b6e..0e74b56 100644
 
 ```diff
 diff --git a/tools/audit.ts b/tools/audit.ts
-index cc3fda8..9506bd9 100644
+index cc3fda8..ff42f94 100644
 --- a/tools/audit.ts
 +++ b/tools/audit.ts
-@@ -326,18 +326,21 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
+@@ -326,18 +326,32 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
      }
    }
  
@@ -8059,19 +8842,32 @@ index cc3fda8..9506bd9 100644
 -  const { count: recentProgress } = await supabase
 -    .from('progress_entries')
 -    .select('*', { count: 'exact', head: true })
+-    .eq('project_id', projectId)
+-    .gte('created_at', sevenDaysAgo);
+-
+-  if ((recentProgress ?? 0) === 0) {
 +  // 4. No progress claimed in 7 days (active project). Since migration 104 a
 +  // progress entry appears only when an estimator verifies a weekly claim, so
-+  // site activity is the claim lines saved, not the entries. A read error
-+  // (for example 104 not pasted yet) raises no anomaly rather than a false one.
-+  const { count: recentClaimLines, error: claimLinesError } = await supabase
-+    .from('progress_claim_lines')
-+    .select('id', { count: 'exact', head: true })
-     .eq('project_id', projectId)
--    .gte('created_at', sevenDaysAgo);
-+    .gte('updated_at', sevenDaysAgo);
- 
--  if ((recentProgress ?? 0) === 0) {
-+  if (!claimLinesError && (recentClaimLines ?? 0) === 0) {
++  // site activity is claim lines created, a draft or returned claim edited, or
++  // a claim submitted in the window. Verification also touches lines and
++  // claims, so a VERIFIED claim counts only through its submitted_at. A read
++  // error (for example 104 not pasted yet) raises no anomaly rather than a
++  // false one.
++  const [recentLines, recentClaims] = await Promise.all([
++    supabase
++      .from('progress_claim_lines')
++      .select('id', { count: 'exact', head: true })
++      .eq('project_id', projectId)
++      .gte('created_at', sevenDaysAgo),
++    supabase
++      .from('progress_claims')
++      .select('id', { count: 'exact', head: true })
++      .eq('project_id', projectId)
++      .or(`submitted_at.gte.${sevenDaysAgo},and(status.in.(DRAFT,RETURNED),updated_at.gte.${sevenDaysAgo})`),
++  ]);
++  const claimActivityReadable = !recentLines.error && !recentClaims.error;
++
++  if (claimActivityReadable && (recentLines.count ?? 0) === 0 && (recentClaims.count ?? 0) === 0) {
      anomalies.push({
        type: 'no_progress',
        found: true,
@@ -8111,12 +8907,12 @@ Expected: exit 0, no output.
 - [ ] **Step 2: Run every suite this plan adds or touches**
 
 Run: `npx jest tools/__tests__/boqWorkGroups.floor.test.ts tools/__tests__/envelopes.workgroup.test.ts tools/__tests__/workGroupDemand.test.ts tools/__tests__/progressClaimsWorkAreaClass.test.ts tools/__tests__/progressClaimsStageWeights.test.ts tools/__tests__/progressClaimsStageMath.test.ts tools/__tests__/progressClaimsReferenceWeights.test.ts tools/__tests__/progressClaimsWeek.test.ts tools/__tests__/progressClaimsRules.test.ts tools/__tests__/progressClaimsView.test.ts tools/__tests__/progressClaimsData.test.ts tools/__tests__/notificationRouting.test.ts tools/__tests__/migration103.test.ts tools/__tests__/migration096.test.ts tools/__tests__/migration104.test.ts tools/__tests__/migration098.test.ts tools/__tests__/migration099.test.ts tools/__tests__/migration100.test.ts tools/__tests__/migration101.test.ts workflows/components/__tests__/StoragePhoto.test.tsx workflows/screens/progressClaim/__tests__/StageClaimForm.test.tsx workflows/screens/progressClaim/__tests__/ProgressClaimPanel.test.tsx office/screens/progressClaim/__tests__/ProgressClaimVerifyPanel.test.tsx workflows/screens/components/__tests__/NotificationList.test.tsx workflows/screens/progressClaim/__tests__/StageWeightsPanel.test.tsx workflows/screens/progressClaim/__tests__/ProgressClaimStatusCard.test.tsx tools/__tests__/derivation.test.ts tools/__tests__/progressMath.test.ts tools/__tests__/gateAudit.test.ts tools/__tests__/auditPivot.materialFanout.test.ts tools/__tests__/auditPivot.recipeSynthesis.test.ts --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 31 suites, 504 tests.
+Expected: PASS, 31 suites, 530 tests.
 
 - [ ] **Step 3: Rehearse the migrations and stop the container**
 
 Run: `supabase/tests/progress_claims_rehearsal/run.sh --stop`
-Expected: `PASS=117 FAIL=0 ERROR=0`.
+Expected: `PASS=153 FAIL=0 ERROR=0`.
 
 - [ ] **Step 4: Bundle the web app** (CI never runs Metro; an import that only breaks the bundle fails first on Vercel)
 
