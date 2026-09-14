@@ -328,15 +328,26 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
 
   // 4. No progress claimed in 7 days (active project). Since migration 104 a
   // progress entry appears only when an estimator verifies a weekly claim, so
-  // site activity is the claim lines saved, not the entries. A read error
-  // (for example 104 not pasted yet) raises no anomaly rather than a false one.
-  const { count: recentClaimLines, error: claimLinesError } = await supabase
-    .from('progress_claim_lines')
-    .select('id', { count: 'exact', head: true })
-    .eq('project_id', projectId)
-    .gte('updated_at', sevenDaysAgo);
+  // site activity is claim lines created, a draft or returned claim edited, or
+  // a claim submitted in the window. Verification also touches lines and
+  // claims, so a VERIFIED claim counts only through its submitted_at. A read
+  // error (for example 104 not pasted yet) raises no anomaly rather than a
+  // false one.
+  const [recentLines, recentClaims] = await Promise.all([
+    supabase
+      .from('progress_claim_lines')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .gte('created_at', sevenDaysAgo),
+    supabase
+      .from('progress_claims')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .or(`submitted_at.gte.${sevenDaysAgo},and(status.in.(DRAFT,RETURNED),updated_at.gte.${sevenDaysAgo})`),
+  ]);
+  const claimActivityReadable = !recentLines.error && !recentClaims.error;
 
-  if (!claimLinesError && (recentClaimLines ?? 0) === 0) {
+  if (claimActivityReadable && (recentLines.count ?? 0) === 0 && (recentClaims.count ?? 0) === 0) {
     anomalies.push({
       type: 'no_progress',
       found: true,
