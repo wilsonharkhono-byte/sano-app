@@ -287,16 +287,16 @@ Findings from the live database and a spike over the five RAB workbooks in `asse
 - Per concrete row of `RAB (A)` / `RAB (B)`: bekisting Rp = volume × V × W, pembesian Rp = volume × Z × AA, pengecoran Rp = volume × R; the single borongan line S + T is apportioned across the three in proportion to their material Rp.
 - A row feeds the profile only when all three stages are priced on that row.
 - Each workbook counts once: the profile is the mean of per-workbook stage shares, renormalized, so one large workbook cannot dominate.
-- Ground floor = the chapters whose title names Lantai 1, dasar, bawah, basement or pondasi. Lean concrete (lantai kerja) priced in the earthworks chapter is its own evidence-only class and never decides the ground chapter.
+- Ground floor, basement-first: when any chapter title names a basement (basement, bunker, Lt. B1), only those chapters are ground, because Lantai 1 above a basement is a suspended slab; otherwise the chapters naming Lantai 1, dasar or bawah. Chapters naming pondasi are always ground. Lean concrete (lantai kerja) priced in the earthworks chapter is its own evidence-only class and never decides the ground chapter. The same rule classifies a project's live work areas from the floor part of `<lantai> ; <elemen>`.
 
 **Result** (bekisting / pembesian / pengecoran; spread across workbooks in brackets):
 
 | Class | Bekisting | Pembesian | Pengecoran | Workbooks |
 |---|---|---|---|---|
-| `BALOK_PLAT` | 37.6% | 37.8% (36–42) | 24.6% | 5 |
+| `BALOK_PLAT` | 36.8% | 38.0% (36–42) | 25.2% | 5 |
 | `KOLOM` | 32.6% | 48.6% (43–55) | 18.8% | 5 |
 | `DINDING` | 31.2% | 35.6% | 33.2% | 5 |
-| `PILECAP_SLOOF_PLAT_DASAR` | 14.2% | 46.7% (43–49) | 39.1% | 5 |
+| `PILECAP_SLOOF_PLAT_DASAR` | 13.1% | 47.6% (43–50) | 39.3% | 5 |
 
 - `LAINNYA` (3 workbooks, bekisting 32–56%) is too heterogeneous to use; those rows default to `{"SINGLE": 1}`.
 - `TANGGA`, `BOREDPILE` and strauss pile are package-priced (per m³ or per titik) in every workbook, so they have no stage split and default to `{"SINGLE": 1}` unless the estimator enters weights.
