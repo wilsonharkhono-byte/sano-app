@@ -14,7 +14,7 @@
 
 **Migrations:** 103 (stage weights) and 104 (claims, notifications). Paste order after 102: 103, then 104. Re-pasting 098, 059 or 002 later undoes part of 104; re-paste 104 afterwards (its header and self-checks say which part).
 
-**Reviews:** two independent reviews (database layer, UI and wiring) followed the first build; every confirmed finding is fixed in the code below (commits 39f8497..3d4c5c3) and pinned by tests or rehearsal checks.
+**Reviews:** two independent reviews (database layer, UI and wiring) followed the first build, and a follow-up review checked those fixes; every confirmed finding is fixed in the code below and pinned by tests or rehearsal checks.
 
 **Worktree / branch:** `feat/report-driven-progress`. Inside a worktree `package.json`'s `testPathIgnorePatterns` matches the worktree path, so ALWAYS run jest as `npx jest <paths> --testPathIgnorePatterns='/node_modules/'`.
 
@@ -36,7 +36,7 @@
 | `tools/notificationRouting.ts` (modify) | Claim deeplinks per role. |
 | `supabase/migrations/103_boq_stage_weights.sql` | `boq_stage_weights`, actor check, seed/set/reset RPCs. |
 | `supabase/migrations/104_progress_claims.sql` | Claims, lines, five RPCs, verified-row shape lock, notification types, read views, single writer of progress. |
-| `supabase/tests/progress_claims_rehearsal/` | Docker rehearsal: fixture, 117 checks, `run.sh`. |
+| `supabase/tests/progress_claims_rehearsal/` | Docker rehearsal: fixture, 155 checks, `run.sh`. |
 | `workflows/components/StoragePhoto.tsx` | Read-only photo (same file as the photo-fix branch). |
 | `workflows/screens/progressClaim/StageClaimForm.tsx` | Inline stage form for one row. |
 | `workflows/screens/progressClaim/ProgressClaimPanel.tsx` | Weekly claim panel (Progres, Laporan). |
@@ -44,6 +44,7 @@
 | `workflows/screens/progressClaim/StageWeightsPanel.tsx` | Bobot Tahapan (Baseline). |
 | `workflows/screens/progressClaim/ProgressClaimStatusCard.tsx` | Principal home card. |
 | `workflows/screens/ProgresScreen.tsx`, `LaporanScreen.tsx`, `BaselineScreen.tsx`, `workflows/navigation.tsx` (modify) | Supervisor and Baseline entry points. |
+| `workflows/pendingDeeplink.ts`, `workflows/hooks/useProject.tsx`, `workflows/App.tsx` (modify) | A project switch unmounts screens; deeplinks for another project wait for it; stale project loads are dropped. |
 | `office/screens/OfficeReportsScreen.tsx`, `PrincipalHomeScreen.tsx`, `NotificationsScreen.tsx`, `office/navigation.tsx`, `office/PrincipalNavigation.tsx`, `workflows/screens/components/NotificationList.tsx` (modify) | Office entry points and notifications. |
 | `tools/derivation.ts`, `tools/progressMath.ts`, `tools/audit.ts` (modify) | One writer of installed; audit reads claim activity. |
 
@@ -1232,7 +1233,7 @@ git commit -m "feat(progress): WIB week helpers for weekly claims"
 - Create: `tools/progressClaims/claimRules.ts`
 - Test: `tools/__tests__/progressClaimsRules.test.ts`
 
-Roles, editable states, percent validation and the Indonesian sentence for every refusal code migrations 103 and 104 raise. Separation of duties lives here as `canVerifyClaimAs`: whoever submitted the claim or filled one of its lines never verifies it. The static test of Task 12 fails when a code is raised without copy or copy exists for a code nothing raises.
+Roles, editable states, percent validation and the Indonesian sentence for every refusal code migrations 103 and 104 raise. Separation of duties lives here as `canVerifyClaimAs`: whoever submitted the claim or filled one of its lines never verifies it. The static test of Task 12 fails when a code is raised without copy or copy exists for a code nothing raises. `ClaimRpcError` keeps the refusal code and the server text beside the sentence, so the verification panel can act on a demanded reason.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1242,7 +1243,7 @@ Roles, editable states, percent validation and the Indonesian sentence for every
 // tools/__tests__/progressClaimsRules.test.ts
 import {
   CLAIM_RPC_ERROR_COPY, canEditStageWeights, canSaveClaimLine, canVerifyClaim, canVerifyClaimAs, claimLineView, isClaimEditable,
-  isRegression, mapClaimRpcError, validateClaimPct,
+  ClaimRpcError, claimRpcErrorCode, isRegression, mapClaimRpcError, regressReasonRowCode, validateClaimPct,
 } from '../progressClaims/claimRules';
 
 const split = { BEKISTING: 0.368, PEMBESIAN: 0.38, PENGECORAN: 0.252 };
@@ -1326,6 +1327,30 @@ describe('mapClaimRpcError', () => {
   it('falls back to the raw text, then to a generic sentence', () => {
     expect(mapClaimRpcError('connection reset')).toBe('Gagal menyimpan: connection reset');
     expect(mapClaimRpcError(null)).toBe('Gagal menyimpan. Coba lagi.');
+  });
+});
+
+describe('refusal codes', () => {
+  it('names the code in a refusal and nothing in any other failure', () => {
+    expect(claimRpcErrorCode('CLAIM_REGRESS_REASON: baris T1-001 turun dari progres terverifikasi')).toBe('CLAIM_REGRESS_REASON');
+    expect(claimRpcErrorCode('CLAIM_ROLE: peran estimator')).toBe('CLAIM_ROLE');
+    expect(claimRpcErrorCode('connection reset')).toBeNull();
+    expect(claimRpcErrorCode(undefined)).toBeNull();
+  });
+
+  it('carries the sentence, the code and the server text', () => {
+    const err = new ClaimRpcError('CLAIM_LOCKED: klaim x sedang menunggu verifikasi');
+    expect(err).toBeInstanceOf(ClaimRpcError);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toBe(mapClaimRpcError('CLAIM_LOCKED: x'));
+    expect(err.code).toBe('CLAIM_LOCKED');
+    expect(err.detail).toBe('CLAIM_LOCKED: klaim x sedang menunggu verifikasi');
+  });
+
+  it('reads the row a reason was demanded for', () => {
+    expect(regressReasonRowCode('CLAIM_REGRESS_REASON: baris IV.A.2.7 turun dari progres terverifikasi')).toBe('IV.A.2.7');
+    expect(regressReasonRowCode('CLAIM_LOCKED: x')).toBeNull();
+    expect(regressReasonRowCode(null)).toBeNull();
   });
 });
 ```
@@ -1457,12 +1482,44 @@ export function mapClaimRpcError(message: string | null | undefined): string {
   }
   return text ? `Gagal menyimpan: ${text}` : 'Gagal menyimpan. Coba lagi.';
 }
+
+/** The refusal code in an RPC error message (for example `CLAIM_REGRESS_REASON`), or null. */
+export function claimRpcErrorCode(message: string | null | undefined): string | null {
+  const text = message ?? '';
+  for (const [code] of CLAIM_RPC_ERROR_COPY) {
+    if (text.includes(`${code}:`)) return code;
+  }
+  return null;
+}
+
+/**
+ * A refused claim RPC. `message` is the Indonesian sentence for the user,
+ * `code` the refusal code a screen can act on, and `detail` the server's text.
+ */
+export class ClaimRpcError extends Error {
+  readonly code: string | null;
+  readonly detail: string;
+
+  constructor(detail: string | null | undefined) {
+    super(mapClaimRpcError(detail));
+    this.name = 'ClaimRpcError';
+    this.code = claimRpcErrorCode(detail);
+    this.detail = detail ?? '';
+    Object.setPrototypeOf(this, ClaimRpcError.prototype);
+  }
+}
+
+/** The BoQ code a CLAIM_REGRESS_REASON refusal names (104 raises it with the row code), or null. */
+export function regressReasonRowCode(detail: string | null | undefined): string | null {
+  const match = /CLAIM_REGRESS_REASON: baris (.+?) turun dari progres terverifikasi/.exec(detail ?? '');
+  return match ? match[1] : null;
+}
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest tools/__tests__/progressClaimsRules.test.ts --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 1 suite, 15 tests.
+Expected: PASS, 1 suite, 18 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2003,7 +2060,7 @@ git commit -m "feat(progress): pure view model for the weekly stage claim screen
 - Create: `tools/progressClaims/claims.ts`
 - Test: `tools/__tests__/progressClaimsData.test.ts`
 
-Reads go through RLS (the latest verified figures and the entry totals come from two one-row-per-item views); every write is an RPC of migrations 103 and 104, and a refusal comes back as an Error whose message is the Indonesian sentence. Report evidence is advisory: when report lines cannot be read (migration 102 not pasted) the count is empty rather than an error. Task 12 pins the RPC parameter names here to the SQL signatures.
+Reads go through RLS (the latest verified figures and the entry totals come from two one-row-per-item views); every write is an RPC of migrations 103 and 104, and a refusal comes back as a `ClaimRpcError` whose message is the Indonesian sentence. Project-wide reads page past the PostgREST 1,000-row cap with `fetchAllPaged`, and `listClaimRows` reads the BoQ rows of a claim fresh for the verification preview. Report evidence is advisory: when report lines cannot be read (migration 102 not pasted) the count is empty rather than an error. Task 12 pins the RPC parameter names here to the SQL signatures.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2014,7 +2071,8 @@ Reads go through RLS (the latest verified figures and the entry totals come from
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
 import { supabase } from '../supabase';
 import {
-  countLinkedLinesByRow, countSubmittedClaims, getOpenClaim, listEntryTotals, listVerifiedStagePct, removeClaimLine, resetStageWeights,
+  countLinkedLinesByRow, countSubmittedClaims, getOpenClaim, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct, removeClaimLine,
+  resetStageWeights,
   returnClaim, saveClaimLine, seedReferenceWeights, setStageWeights, submitClaim, verifyClaim,
 } from '../progressClaims/claims';
 
@@ -2024,7 +2082,7 @@ function chain(result: Result) {
   const calls: Array<[string, unknown[]]> = [];
   const settled = { data: result.data ?? null, error: result.error ?? null, count: result.count ?? null };
   const q: Record<string, unknown> = { calls };
-  for (const m of ['select', 'eq', 'in', 'gte', 'not', 'order', 'limit']) {
+  for (const m of ['select', 'eq', 'in', 'gte', 'not', 'order', 'limit', 'range']) {
     q[m] = jest.fn((...args: unknown[]) => { calls.push([m, args]); return q; });
   }
   q.maybeSingle = jest.fn(async () => settled);
@@ -2075,6 +2133,47 @@ describe('reads', () => {
     expect(from).toHaveBeenCalledWith('progress_entry_totals');
   });
 
+  it('pages past the 1,000-row cap in a stable order', async () => {
+    const firstPage = Array.from({ length: 1000 }, (_, i) => ({ boq_item_id: `r${i}`, installed_total: 1 }));
+    const first = chain({ data: firstPage });
+    const second = chain({ data: [{ boq_item_id: 'r1000', installed_total: '2.5' }] });
+    from.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const totals = await listEntryTotals('p1');
+    expect(totals.size).toBe(1001);
+    expect(totals.get('r1000')).toBe(2.5);
+    expect(first.calls).toEqual(expect.arrayContaining([['order', ['boq_item_id']], ['range', [0, 999]]]));
+    expect(second.calls).toEqual(expect.arrayContaining([['range', [1000, 1999]]]));
+  });
+
+  it.each([
+    ['stage weights', () => listStageWeights('p1'), 'boq_stage_weights'],
+    ['latest verified figures', () => listVerifiedStagePct('p1'), 'progress_claim_latest_verified'],
+  ])('pages the %s as well', async (_what, call, table) => {
+    const q = chain({ data: [] });
+    from.mockReturnValueOnce(q);
+    await (call as () => Promise<unknown>)();
+    expect(from).toHaveBeenCalledWith(table);
+    expect(q.calls).toEqual(expect.arrayContaining([['eq', ['project_id', 'p1']], ['range', [0, 999]]]));
+  });
+
+  it('reads the claim rows as they are now, a hundred ids per request', async () => {
+    const ids = Array.from({ length: 150 }, (_, i) => `r${i}`);
+    const first = chain({ data: [{ id: 'r0', project_id: 'p1', code: 'T1-001', label: 'Lantai 1 ; Kolom', unit: 'm³', planned: '200', installed: 0, progress: 0 }] });
+    const second = chain({ data: [] });
+    from.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const rows = await listClaimRows([...ids, 'r0']);
+    expect(from).toHaveBeenCalledWith('boq_items');
+    expect(rows.get('r0')).toMatchObject({ code: 'T1-001', planned: 200 });
+    const idsIn = (q: ReturnType<typeof chain>) => q.calls.find(([m]) => m === 'in')?.[1][1] as string[];
+    expect(idsIn(first)).toHaveLength(100);
+    expect(idsIn(second)).toHaveLength(50);
+  });
+
+  it('reads no rows for a claim without lines', async () => {
+    await expect(listClaimRows([])).resolves.toEqual(new Map());
+    expect(from).not.toHaveBeenCalled();
+  });
+
   it('counts linked report lines from the latest revision since the week start', async () => {
     from
       .mockReturnValueOnce(chain({ data: [{ id: 'r1v1', report_no: 1, revision: 1 }, { id: 'r1v2', report_no: 1, revision: 2 }] }))
@@ -2122,6 +2221,15 @@ describe('writes', () => {
     await expect(submitClaim('c1')).rejects.toThrow('Klaim sedang diverifikasi. Tunggu hasilnya sebelum menambah progres.');
   });
 
+  it('keeps the refusal code and the server text for the screen', async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: { message: 'CLAIM_REGRESS_REASON: baris T1-001 turun dari progres terverifikasi' } });
+    await expect(verifyClaim('c1', [])).rejects.toMatchObject({
+      message: 'Penurunan progres wajib disertai alasan.',
+      code: 'CLAIM_REGRESS_REASON',
+      detail: 'CLAIM_REGRESS_REASON: baris T1-001 turun dari progres terverifikasi',
+    });
+  });
+
   it('skips the seed call when no row is missing weights', async () => {
     await expect(seedReferenceWeights('p1', [])).resolves.toBe(0);
     expect(rpc).not.toHaveBeenCalled();
@@ -2141,12 +2249,14 @@ Expected: FAIL — `Cannot find module '../progressClaims/claims'`.
 ```ts
 // tools/progressClaims/claims.ts
 // SANO — data access for stage weights and the weekly stage claim (migrations
-// 103 and 104; spec §6.2, §16, §18). Reads go through RLS. Every write is an
-// RPC that re-checks the rules, and a refusal comes back as an Error whose
-// message is the Indonesian sentence from mapClaimRpcError.
+// 103 and 104; spec §6.2, §16, §18). Reads go through RLS, a page at a time
+// where a project can pass PostgREST's 1,000-row cap. Every write is an RPC
+// that re-checks the rules, and a refusal comes back as a ClaimRpcError: its
+// message is the Indonesian sentence, its code the refusal code.
+import { fetchAllPaged } from '../queryHelpers';
 import { supabase } from '../supabase';
-import { mapClaimRpcError, type ClaimStatus } from './claimRules';
-import { countLinesByRow, latestRevisionReportIds } from './claimView';
+import { ClaimRpcError, type ClaimStatus } from './claimRules';
+import { countLinesByRow, latestRevisionReportIds, type ClaimableItem } from './claimView';
 import type { StagePct } from './stageMath';
 import type { StageWeights, WeightSource } from './stageWeights';
 import type { WorkAreaClass } from './workAreaClass';
@@ -2208,7 +2318,7 @@ const LINE_COLUMNS =
 
 async function callRpc<T>(name: string, args: Record<string, unknown>): Promise<T> {
   const { data, error } = await supabase.rpc(name, args);
-  if (error) throw new Error(mapClaimRpcError(error.message));
+  if (error) throw new ClaimRpcError(error.message);
   return data as T;
 }
 
@@ -2261,31 +2371,59 @@ export async function listClaimLines(claimId: string): Promise<ProgressClaimLine
 
 /** Each row's most recently verified stage percents, one row per BoQ item (migration 104 view). */
 export async function listVerifiedStagePct(projectId: string): Promise<Map<string, StagePct>> {
-  const { data, error } = await supabase
-    .from('progress_claim_latest_verified')
-    .select('boq_item_id, verified_pct')
-    .eq('project_id', projectId);
-  if (error) throw error;
-  return new Map(((data ?? []) as Array<{ boq_item_id: string; verified_pct: StagePct }>).map((r) => [r.boq_item_id, r.verified_pct]));
+  const rows = await fetchAllPaged<{ boq_item_id: string; verified_pct: StagePct }>((from, to) =>
+    supabase
+      .from('progress_claim_latest_verified')
+      .select('boq_item_id, verified_pct')
+      .eq('project_id', projectId)
+      .order('boq_item_id')
+      .range(from, to));
+  return new Map(rows.map((r) => [r.boq_item_id, r.verified_pct]));
 }
 
 /** What each row's progress entries sum to, one row per BoQ item (migration 104 view). Verification writes the difference from this. */
 export async function listEntryTotals(projectId: string): Promise<Map<string, number>> {
-  const { data, error } = await supabase
-    .from('progress_entry_totals')
-    .select('boq_item_id, installed_total')
-    .eq('project_id', projectId);
-  if (error) throw error;
-  return new Map(((data ?? []) as Array<{ boq_item_id: string; installed_total: number | string }>).map((r) => [r.boq_item_id, Number(r.installed_total) || 0]));
+  const rows = await fetchAllPaged<{ boq_item_id: string; installed_total: number | string }>((from, to) =>
+    supabase
+      .from('progress_entry_totals')
+      .select('boq_item_id, installed_total')
+      .eq('project_id', projectId)
+      .order('boq_item_id')
+      .range(from, to));
+  return new Map(rows.map((r) => [r.boq_item_id, Number(r.installed_total) || 0]));
 }
 
 export async function listStageWeights(projectId: string): Promise<StageWeightRow[]> {
-  const { data, error } = await supabase
-    .from('boq_stage_weights')
-    .select('boq_item_id, weights, source, reference_class, updated_at')
-    .eq('project_id', projectId);
-  if (error) throw error;
-  return (data ?? []) as StageWeightRow[];
+  return fetchAllPaged<StageWeightRow>((from, to) =>
+    supabase
+      .from('boq_stage_weights')
+      .select('boq_item_id, weights, source, reference_class, updated_at')
+      .eq('project_id', projectId)
+      .order('boq_item_id')
+      .range(from, to));
+}
+
+const ROW_ID_CHUNK = 100;
+
+/**
+ * A claim's BoQ rows as they are now, keyed by id. The screen's copy of
+ * boq_items can predate a re-publish, and verification computes from the live
+ * planned volume. Ids go in chunks so the request URL stays short.
+ */
+export async function listClaimRows(boqItemIds: ReadonlyArray<string>): Promise<Map<string, ClaimableItem>> {
+  const ids = [...new Set(boqItemIds)];
+  const rows = new Map<string, ClaimableItem>();
+  for (let i = 0; i < ids.length; i += ROW_ID_CHUNK) {
+    const { data, error } = await supabase
+      .from('boq_items')
+      .select('id, project_id, code, label, unit, planned, installed, progress, superseded_at')
+      .in('id', ids.slice(i, i + ROW_ID_CHUNK));
+    if (error) throw error;
+    for (const r of (data ?? []) as ClaimableItem[]) {
+      rows.set(r.id, { ...r, planned: Number(r.planned) || 0, installed: Number(r.installed) || 0, progress: Number(r.progress) || 0 });
+    }
+  }
+  return rows;
 }
 
 /**
@@ -2404,7 +2542,7 @@ export async function verifyClaim(claimId: string, lines: VerifyLineInput[], not
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest tools/__tests__/progressClaimsData.test.ts --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 1 suite, 17 tests.
+Expected: PASS, 1 suite, 23 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -3178,7 +3316,7 @@ Claims and lines with read policies only; save, remove, submit, return and verif
 import fs from 'node:fs';
 import path from 'node:path';
 import { KNOWN_DEEPLINK_SCREENS } from '../notificationRouting';
-import { CLAIM_RPC_ERROR_COPY } from '../progressClaims/claimRules';
+import { CLAIM_RPC_ERROR_COPY, regressReasonRowCode } from '../progressClaims/claimRules';
 
 const ROOT = path.join(__dirname, '..', '..');
 const MIGRATIONS = path.join(ROOT, 'supabase', 'migrations');
@@ -3482,24 +3620,28 @@ describe('migration 104 - notifications', () => {
   });
 
   it.each([
-    ['submit_progress_claim', 'enqueue_notification(', "'PROGRESS_CLAIM_SUBMITTED'", "'ProgressClaimVerify',"],
+    ['submit_progress_claim', 'enqueue_notification_user(', "'PROGRESS_CLAIM_SUBMITTED'", "'ProgressClaimVerify',"],
     ['return_progress_claim', 'enqueue_notification_user(', "'PROGRESS_CLAIM_RETURNED'", "'ProgressClaim',"],
     ['verify_progress_claim', 'enqueue_notification_user(', "'PROGRESS_CLAIM_VERIFIED'", "'ProgressClaim',"],
   ])('%s enqueues inside a handler that cannot roll the claim back', (fn, call, type, screen) => {
     const body = fnBody(fn);
-    const start = body.indexOf(`PERFORM ${call}`);
+    const nested = body.indexOf('\n  BEGIN\n', body.indexOf('UPDATE progress_claims'));
+    const start = body.indexOf(`PERFORM ${call}`, nested);
     const handler = body.search(new RegExp(`EXCEPTION WHEN OTHERS THEN\\s+RAISE WARNING '${fn}: notification failed: %', SQLERRM;`));
-    expect(start).toBeGreaterThan(-1);
+    expect(nested).toBeGreaterThan(-1);
+    expect(start).toBeGreaterThan(nested);
     expect(handler).toBeGreaterThan(start);
-    expect(body.slice(0, start).trimEnd().endsWith('BEGIN')).toBe(true);
+    expect(body.slice(nested, handler)).not.toMatch(/\n  END;\n/);
     expect(body.slice(start, handler)).toContain(type);
     expect(body.slice(start, handler)).toContain(screen);
   });
 
-  it('tells the estimators, or the admins when the project has none, and never the submitter', () => {
+  it('asks assigned estimators, else admins, and never the submitter or a line author', () => {
     const body = fnBody('submit_progress_claim');
-    expect(body).toMatch(/p\.role = 'estimator' AND pa\.user_id <> v_uid\s+\) THEN 'estimator' ELSE 'admin' END;/);
-    expect(body).toMatch(/v_uid,\s+-- p_exclude_user_id/);
+    expect(body).toMatch(/SELECT created_by AS user_id FROM progress_claim_lines WHERE claim_id = p_claim_id\s+UNION\s+SELECT updated_by FROM progress_claim_lines WHERE claim_id = p_claim_id\s+UNION\s+SELECT v_uid/);
+    expect(body).toContain("FOREACH v_role IN ARRAY ARRAY['estimator', 'admin'] LOOP");
+    expect(body).toContain('AND p.role = v_role AND NOT (pa.user_id = ANY (v_authors))');
+    expect(body).toContain('EXIT WHEN v_verifiers > 0;');
   });
 
   it('tells the principals when nobody assigned can verify, and reports both counts', () => {
@@ -3586,6 +3728,12 @@ describe('migration 104 - the app and the database agree', () => {
     }
   });
 
+  it('names the row in every reason refusal the way the verify screen reads it back', () => {
+    const raises = [...CODE.matchAll(/RAISE EXCEPTION '(CLAIM_REGRESS_REASON: [^']*)', v_item\.code;/g)].map((m) => m[1]);
+    expect(raises).toHaveLength(2);
+    for (const message of raises) expect(regressReasonRowCode(message.replace('%', 'IV.A.2.7'))).toBe('IV.A.2.7');
+  });
+
   it('raises exactly the codes claimRules.ts explains, across 103 and 104', () => {
     const raised = [...new Set([...`${CODE_103}\n${CODE}`.matchAll(/RAISE EXCEPTION '([A-Z_]+):/g)].map((m) => m[1]))].sort();
     expect(raised).toEqual(CLAIM_RPC_ERROR_COPY.map(([code]) => code).sort());
@@ -3641,8 +3789,9 @@ Expected: FAIL — `ENOENT: no such file or directory` for `104_progress_claims.
 --     reason. The entries of a claimed row therefore always sum to
 --     boq_items.installed, and every reader of either agrees (spec §18).
 --   * Three notification types: PROGRESS_CLAIM_SUBMITTED to the project's
---     estimators other than the submitter (its admins when it has none, and
---     its principals when it has neither, so someone can assign a verifier),
+--     estimators who neither submitted it nor filled one of its lines (its
+--     admins when it has none, and its principals when it has neither, so
+--     someone can assign a verifier),
 --     PROGRESS_CLAIM_RETURNED and PROGRESS_CLAIM_VERIFIED to the submitter.
 --   * Progress gets exactly one writer. The supervisor insert policies on
 --     progress_entries and progress_photos (002) and the supervisor progress
@@ -4188,9 +4337,11 @@ DECLARE
   v_row      RECORD;
   v_lines    INTEGER;
   v_project  TEXT;
-  v_target   TEXT;
   v_notified INTEGER := 0;
   v_verifiers INTEGER := 0;
+  v_authors  UUID[];
+  v_recipient UUID;
+  v_role     TEXT;
 BEGIN
   SELECT * INTO v_claim FROM progress_claims WHERE id = p_claim_id FOR UPDATE;
   IF NOT FOUND THEN
@@ -4234,25 +4385,41 @@ BEGIN
   WHERE id = p_claim_id;
 
   SELECT name INTO v_project FROM projects WHERE id = v_claim.project_id;
-  v_target := CASE WHEN EXISTS (
-      SELECT 1 FROM project_assignments pa JOIN profiles p ON p.id = pa.user_id
-      WHERE pa.project_id = v_claim.project_id AND p.role = 'estimator' AND pa.user_id <> v_uid
-    ) THEN 'estimator' ELSE 'admin' END;
+  -- Whoever submitted the claim or filled one of its lines cannot verify it
+  -- (verify_progress_claim refuses them), so they are never the ones asked.
+  SELECT array_agg(DISTINCT a.user_id) INTO v_authors
+  FROM (
+    SELECT created_by AS user_id FROM progress_claim_lines WHERE claim_id = p_claim_id
+    UNION
+    SELECT updated_by FROM progress_claim_lines WHERE claim_id = p_claim_id
+    UNION
+    SELECT v_uid
+  ) a;
 
   BEGIN
-    PERFORM enqueue_notification(
-      v_claim.project_id,
-      'PROGRESS_CLAIM_SUBMITTED',
-      'Klaim progres menunggu verifikasi',
-      format('%s: %s baris, minggu %s', COALESCE(v_project, 'Proyek'), v_lines, to_char(v_claim.week_start, 'DD/MM/YYYY')),
-      'ProgressClaimVerify',
-      jsonb_build_object('projectId', v_claim.project_id, 'claimId', p_claim_id, 'initialSection', 'klaim'),
-      p_claim_id,
-      v_uid,     -- p_exclude_user_id: the submitter is never told about their own claim
-      v_target   -- p_target_role (066): estimators, or admins when the project has none
-    );
-    SELECT count(*) INTO v_verifiers FROM notifications n
-    WHERE n.related_entity_id = p_claim_id AND n.type = 'PROGRESS_CLAIM_SUBMITTED' AND n.created_at >= now();
+    -- The project's estimators who can verify; its admins when there are none.
+    FOREACH v_role IN ARRAY ARRAY['estimator', 'admin'] LOOP
+      FOR v_recipient IN
+        SELECT pa.user_id FROM project_assignments pa JOIN profiles p ON p.id = pa.user_id
+        WHERE pa.project_id = v_claim.project_id AND p.role = v_role AND NOT (pa.user_id = ANY (v_authors))
+      LOOP
+        PERFORM enqueue_notification_user(
+          v_claim.project_id,
+          v_recipient,
+          'PROGRESS_CLAIM_SUBMITTED',
+          'Klaim progres menunggu verifikasi',
+          format('%s: %s baris, minggu %s', COALESCE(v_project, 'Proyek'), v_lines, to_char(v_claim.week_start, 'DD/MM/YYYY')),
+          'ProgressClaimVerify',
+          jsonb_build_object('projectId', v_claim.project_id, 'claimId', p_claim_id, 'initialSection', 'klaim'),
+          p_claim_id,
+          v_authors,
+          NULL
+        );
+      END LOOP;
+      SELECT count(*) INTO v_verifiers FROM notifications n
+      WHERE n.related_entity_id = p_claim_id AND n.type = 'PROGRESS_CLAIM_SUBMITTED' AND n.created_at >= now();
+      EXIT WHEN v_verifiers > 0;
+    END LOOP;
     -- Nobody assigned can verify. Notifications are readable only by project
     -- members (092), so an unassigned estimator would never see one; tell the
     -- principals instead (093 makes them members of every project), who can
@@ -4987,8 +5154,11 @@ UPDATE boq_items SET installed = 4 WHERE id = rehearsal.row(3);
 SELECT rehearsal.expect('104 a session without a JWT (the SQL editor) may still set installed', (SELECT installed = 4 FROM boq_items WHERE id = rehearsal.row(3)));
 
 BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
-SELECT rehearsal.expect('104 claim 3 submits and reaches both estimators', (submit_progress_claim(:'claim3') ->> 'verifiers_notified')::int = 2);
+SELECT rehearsal.expect('104 claim 3 submits and reaches only the estimator who filled no line', (submit_progress_claim(:'claim3') ->> 'verifiers_notified')::int = 1);
 COMMIT;
+SELECT rehearsal.expect('104 the estimator who filled a line is not asked to verify, the other one is',
+  (SELECT count(*) = 0 FROM notifications WHERE related_entity_id = :'claim3' AND type = 'PROGRESS_CLAIM_SUBMITTED' AND recipient_user_id = rehearsal.u('est'))
+  AND (SELECT count(*) = 1 FROM notifications WHERE related_entity_id = :'claim3' AND type = 'PROGRESS_CLAIM_SUBMITTED' AND recipient_user_id = rehearsal.u('est2')));
 
 SELECT id AS c3_row1 FROM progress_claim_lines WHERE claim_id = :'claim3' AND boq_item_id = rehearsal.row(1) \gset
 SELECT id AS c3_row3 FROM progress_claim_lines WHERE claim_id = :'claim3' AND boq_item_id = rehearsal.row(3) \gset
@@ -5032,6 +5202,20 @@ SELECT rehearsal.expect('104 with no verifier assigned the principal is told ins
   (:'submit4'::jsonb ->> 'verifiers_notified')::int = 0
   AND (:'submit4'::jsonb ->> 'notified')::int = 1
   AND (SELECT count(*) = 1 FROM notifications WHERE related_entity_id = :'claim4' AND type = 'PROGRESS_CLAIM_SUBMITTED' AND recipient_user_id = rehearsal.u('pri')));
+ROLLBACK;
+
+-- F3b. The only estimator left filled a line: nobody who can verify is assigned, so the principal hears
+BEGIN;
+DELETE FROM project_assignments WHERE project_id = rehearsal.p() AND user_id = rehearsal.u('est2');
+SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('est') IS NOT NULL AS ok \gset
+SELECT save_progress_claim_line(rehearsal.p(), rehearsal.row(2), '{"BEKISTING":100,"PEMBESIAN":60,"PENGECORAN":0}') ->> 'claim_id' AS claim4b \gset
+SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
+SELECT submit_progress_claim(:'claim4b') AS submit4b \gset
+RESET ROLE;
+SELECT rehearsal.expect('104 a line author is never the only one asked, so the principal is told',
+  (:'submit4b'::jsonb ->> 'verifiers_notified')::int = 0
+  AND (SELECT count(*) = 0 FROM notifications WHERE related_entity_id = :'claim4b' AND recipient_user_id = rehearsal.u('est'))
+  AND (SELECT count(*) = 1 FROM notifications WHERE related_entity_id = :'claim4b' AND type = 'PROGRESS_CLAIM_SUBMITTED' AND recipient_user_id = rehearsal.u('pri')));
 ROLLBACK;
 
 -- F4. Removing the last line, an admin verifying, the principal reading, estimator seeding, the views
@@ -5121,7 +5305,7 @@ echo "PASS=$pass FAIL=$fail ERROR=$err"
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest tools/__tests__/migration104.test.ts tools/__tests__/migration096.test.ts tools/__tests__/migration098.test.ts tools/__tests__/migration099.test.ts tools/__tests__/migration100.test.ts tools/__tests__/migration101.test.ts --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 6 suites, 238 tests.
+Expected: PASS, 6 suites, 239 tests.
 
 - [ ] **Step 5: Rehearse both migrations as real roles**
 
@@ -5131,7 +5315,7 @@ Run: `supabase/tests/progress_claims_rehearsal/run.sh`
 Expected last line:
 
 ```text
-PASS=153 FAIL=0 ERROR=0
+PASS=155 FAIL=0 ERROR=0
 ```
 
 - [ ] **Step 6: Commit**
@@ -5447,6 +5631,9 @@ import { removeClaimLine, saveClaimLine } from '../../../../tools/progressClaims
 import { pickAndUploadPhoto } from '../../../../tools/storage';
 import StageClaimForm, { type WeightedRowView } from '../StageClaimForm';
 
+// Rendering suites run slowly beside the full jest run; the 5 s default flakes.
+jest.setTimeout(20000);
+
 const kolom = { BEKISTING: 0.326, PEMBESIAN: 0.486, PENGECORAN: 0.188 };
 const makeRow = (over: Partial<WeightedRowView> = {}): WeightedRowView => ({
   item: { id: 'k1', code: 'T1-001', label: 'Lantai 1 ; Kolom', unit: 'm³', planned: 100, installed: 32.6, progress: 32.6 },
@@ -5489,11 +5676,13 @@ describe('StageClaimForm', () => {
   });
 
   it('saves the stage percents, note and photos into this week claim', async () => {
-    const { getByLabelText, onSaved } = setup();
+    const { findByText, getByLabelText, onSaved } = setup();
     fireEvent.press(getByLabelText('Pembesian 50 persen'));
     fireEvent.changeText(getByLabelText('Catatan progres'), 'Begel K1-K8');
     fireEvent.press(getByLabelText('Tambah foto'));
-    await waitFor(() => expect(pickAndUploadPhoto).toHaveBeenCalledWith('progress/p1'));
+    // Save only once the uploaded photo is in the form, or the save races it.
+    expect(await findByText('1 foto dipilih')).toBeTruthy();
+    expect(pickAndUploadPhoto).toHaveBeenCalledWith('progress/p1');
     fireEvent.press(getByLabelText('Simpan progres T1-001'));
     await waitFor(() => expect(saveClaimLine).toHaveBeenCalledWith({
       projectId: 'p1', boqItemId: 'k1', claimedPct: { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 },
@@ -5944,6 +6133,9 @@ import {
   submitClaim,
 } from '../../../../tools/progressClaims/claims';
 import ProgressClaimPanel from '../ProgressClaimPanel';
+
+// Rendering suites run slowly beside the full jest run; the 5 s default flakes.
+jest.setTimeout(20000);
 
 const kolom = { BEKISTING: 0.326, PEMBESIAN: 0.486, PENGECORAN: 0.188 };
 const item = (id: string, code: string, label: string, sort: number, projectId = 'p1') => ({
@@ -6399,24 +6591,268 @@ git commit -m "feat(progress): weekly claim panel with inline row form and Kirim
 ### Task 16: Tambah progres becomes the stage claim (Progres and Laporan)
 
 **Files:**
+- Create: `workflows/pendingDeeplink.ts`
+- Modify: `workflows/hooks/useProject.tsx`
 - Modify: `workflows/screens/ProgresScreen.tsx`
 - Modify: `workflows/screens/LaporanScreen.tsx`
 - Modify: `workflows/navigation.tsx`
 - Modify: `workflows/App.tsx`
 - Modify: `workflows/screens/NotificationsScreen.tsx`
+- Test: `workflows/__tests__/pendingDeeplink.test.ts`
 
-The quantity form, its direct `progress_entries` insert, the Gate 4 panel and the client-side installed sync are removed from the Progres tab; Tambah progres and "Tambah progres untuk item ini" open the claim panel (spec §16). Laporan gets a Klaim Progres Mingguan card instead of a fifth tab, so the tab row does not overflow at 360 dp. Route params apply once per navigation (every tap passes a fresh params object), switch to the project the notification names, and bump the claim panel reload key; a returned or verified claim also refreshes project data. The app router blocks on its spinner only until the first load, so a refresh or project switch no longer unmounts the navigator and throws the user back to the first tab.
+The quantity form, its direct `progress_entries` insert, the Gate 4 panel and the client-side installed sync are removed from the Progres tab; Tambah progres and "Tambah progres untuk item ini" open the claim panel (spec §16). Laporan gets a Klaim Progres Mingguan card instead of a fifth tab, so the tab row does not overflow at 360 dp. Route params apply once per navigation (every tap passes a fresh params object), switch to the project the notification names, and bump the claim panel reload key; a returned or verified claim also refreshes project data. A refresh keeps the navigator mounted. A project switch unmounts it until the new project has loaded, so no screen carries in-memory state (a half-built material request, cached envelopes) into the other project, and `useProject` drops a load that finishes after the user moved on. A notification for another project switches first and waits in `pendingDeeplink.ts`; the router replays it once the navigator is back.
 
-- [ ] **Step 1: Apply the screen changes**
+- [ ] **Step 1: Write the failing test**
+
+`workflows/__tests__/pendingDeeplink.test.ts` (new file):
+
+```ts
+// workflows/__tests__/pendingDeeplink.test.ts
+import { queueDeeplink, routeDeeplink, takeDeeplink } from '../pendingDeeplink';
+
+const ctx = (currentProjectId: string | null, visible: string[] = ['p1', 'p2']) => ({
+  currentProjectId,
+  visibleProjectIds: visible,
+  setActiveProject: jest.fn(),
+  navigate: jest.fn(),
+});
+
+beforeEach(() => {
+  takeDeeplink();
+});
+
+describe('routeDeeplink', () => {
+  it('navigates at once, with a fresh params object, on the current project', () => {
+    const c = ctx('p1');
+    const params = { projectId: 'p1', claimId: 'c1', module: 'progress' };
+    expect(routeDeeplink('Progres', params, c)).toBe('navigated');
+    expect(c.navigate).toHaveBeenCalledWith('Progres', params);
+    expect(c.navigate.mock.calls[0][1]).not.toBe(params);
+    expect(c.setActiveProject).not.toHaveBeenCalled();
+    expect(takeDeeplink()).toBeNull();
+  });
+
+  it('switches to another visible project first and queues the navigation once', () => {
+    const c = ctx('p1');
+    expect(routeDeeplink('Reports', { projectId: 'p2', initialSection: 'klaim' }, c)).toBe('queued');
+    expect(c.setActiveProject).toHaveBeenCalledWith('p2');
+    expect(c.navigate).not.toHaveBeenCalled();
+    expect(takeDeeplink()).toEqual({ screen: 'Reports', params: { projectId: 'p2', initialSection: 'klaim' } });
+    expect(takeDeeplink()).toBeNull();
+  });
+
+  it('navigates without switching when the named project is not visible to the user', () => {
+    const c = ctx('p1', ['p1']);
+    expect(routeDeeplink('Progres', { projectId: 'p9' }, c)).toBe('navigated');
+    expect(c.setActiveProject).not.toHaveBeenCalled();
+  });
+
+  it('navigates when no project is active yet or the params name none', () => {
+    const noProject = ctx(null);
+    expect(routeDeeplink('Progres', { projectId: 'p2' }, noProject)).toBe('navigated');
+    const noParams = ctx('p1');
+    expect(routeDeeplink('Approvals', null, noParams)).toBe('navigated');
+    expect(noParams.navigate).toHaveBeenCalledWith('Approvals', {});
+  });
+
+  it('keeps only the newest queued deeplink', () => {
+    queueDeeplink('Progres', { a: 1 });
+    queueDeeplink('Reports', { b: 2 });
+    expect(takeDeeplink()).toEqual({ screen: 'Reports', params: { b: 2 } });
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx jest workflows/__tests__/pendingDeeplink.test.ts --testPathIgnorePatterns='/node_modules/'`
+Expected: FAIL — `Cannot find module '../pendingDeeplink'`.
+
+- [ ] **Step 3: Apply the screen changes**
+
+`workflows/pendingDeeplink.ts` (new file):
+
+```ts
+// workflows/pendingDeeplink.ts
+// SANO — a deeplink that names another project waits for the project switch.
+//
+// Switching projects unmounts the navigator: RoleRouter (workflows/App.tsx)
+// shows its spinner until the new project's data loads, which also clears
+// every screen's in-memory state, such as Permintaan's allocation caches, so
+// nothing built for one project is submitted under another. A notification
+// tap for another project therefore switches first, and RoleRouter replays the
+// navigation once the new navigator is ready. No React, no Supabase.
+
+export interface PendingDeeplink {
+  screen: string;
+  params: Record<string, unknown>;
+}
+
+let pending: PendingDeeplink | null = null;
+
+export function queueDeeplink(screen: string, params: Record<string, unknown>): void {
+  pending = { screen, params };
+}
+
+/** The queued deeplink, removed from the queue. */
+export function takeDeeplink(): PendingDeeplink | null {
+  const next = pending;
+  pending = null;
+  return next;
+}
+
+export interface DeeplinkContext {
+  currentProjectId: string | null | undefined;
+  visibleProjectIds: ReadonlyArray<string>;
+  setActiveProject: (projectId: string) => void;
+  navigate: (screen: string, params: Record<string, unknown>) => void;
+}
+
+/**
+ * Opens an already-resolved route. Params are copied, so a screen that applies
+ * params once per navigation still reacts to a second tap on the same link.
+ * When the params name another project the user can see, the project switches
+ * first and the navigation waits in the queue for RoleRouter to replay it.
+ */
+export function routeDeeplink(
+  screen: string,
+  params: Record<string, unknown> | null | undefined,
+  ctx: DeeplinkContext,
+): 'navigated' | 'queued' {
+  const fresh = { ...(params ?? {}) };
+  const projectId = typeof fresh.projectId === 'string' ? fresh.projectId : null;
+  if (projectId && ctx.currentProjectId && projectId !== ctx.currentProjectId && ctx.visibleProjectIds.includes(projectId)) {
+    queueDeeplink(screen, fresh);
+    ctx.setActiveProject(projectId);
+    return 'queued';
+  }
+  ctx.navigate(screen, fresh);
+  return 'navigated';
+}
+```
+
+`workflows/hooks/useProject.tsx` (apply this change):
+
+```diff
+diff --git a/workflows/hooks/useProject.tsx b/workflows/hooks/useProject.tsx
+index 4e19627..5dee900 100644
+--- a/workflows/hooks/useProject.tsx
++++ b/workflows/hooks/useProject.tsx
+@@ -1,4 +1,4 @@
+-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
++import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+ import { supabase } from '../../tools/supabase';
+ import { autoPurgeStaleDrafts } from '../../tools/schedule';
+ import type { Profile, Project, BoqItem, PurchaseOrder, Envelope, Milestone, Defect, ActivityLog } from '../../tools/types';
+@@ -22,6 +22,8 @@ interface ProjectContextType {
+   activityLog: ActivityLog[];
+ 
+   loading: boolean;
++  /** The project whose data is loaded right now; differs from project.id while a switch loads. */
++  dataProjectId: string | null;
+   refresh: () => Promise<void>;
+ }
+ 
+@@ -38,6 +40,7 @@ const ProjectContext = createContext<ProjectContextType>({
+   defects: [],
+   activityLog: [],
+   loading: true,
++  dataProjectId: null,
+   refresh: async () => {},
+ });
+ 
+@@ -57,6 +60,12 @@ export function ProjectProvider({ userId, children }: { userId: string; children
+   const [defects, setDefects] = useState<Defect[]>([]);
+   const [activityLog, setActivityLog] = useState<ActivityLog[]>([]);
+   const [loading, setLoading] = useState(true);
++  const [dataProjectId, setDataProjectId] = useState<string | null>(null);
++  // The project the newest load is for. A slower load for a project the user
++  // already left must never overwrite the newer project's data.
++  const activeProjectIdRef = useRef<string | null>(null);
++  activeProjectIdRef.current = activeProjectId;
++  const dataProjectIdRef = useRef<string | null>(null);
+ 
+   const project = projects.find(p => p.id === activeProjectId) ?? null;
+ 
+@@ -69,7 +78,9 @@ export function ProjectProvider({ userId, children }: { userId: string; children
+         .eq('id', userId)
+         .single();
+       if (profErr) console.warn('Profile fetch error:', profErr.message);
+-      setProfile(prof);
++      // Keep the known profile when a refresh fails: a null profile would swap
++      // the whole navigator to the office app.
++      if (prof || !profErr) setProfile(prof);
+ 
+       // Fetch projects directly and let RLS decide visibility:
+       //   • office roles (admin/principal/estimator) see every project
+@@ -136,6 +147,8 @@ export function ProjectProvider({ userId, children }: { userId: string; children
+       for (const r of results) {
+         if (r.error) console.warn('Query error:', r.error.message);
+       }
++      // A newer project was chosen while this load ran: drop this result.
++      if (activeProjectIdRef.current !== pid) return;
+ 
+       setBoqItems(results[0].data ?? []);
+       setPurchaseOrders(results[1].data ?? []);
+@@ -144,6 +157,8 @@ export function ProjectProvider({ userId, children }: { userId: string; children
+       setDefects(results[4].data ?? []);
+       setActivityLog(results[5].data ?? []);
+       setMilestoneDrafts(results[6].data ?? []);
++      dataProjectIdRef.current = pid;
++      setDataProjectId(pid);
+ 
+       void autoPurgeStaleDrafts(pid).then((purged) => {
+         if (purged > 0) {
+@@ -154,8 +169,22 @@ export function ProjectProvider({ userId, children }: { userId: string; children
+       });
+     } catch (err) {
+       console.warn('Project data load failed:', err);
++      if (activeProjectIdRef.current === pid) {
++        if (dataProjectIdRef.current !== pid) {
++          // Never leave the previous project's rows under the new project's name.
++          setBoqItems([]);
++          setPurchaseOrders([]);
++          setEnvelopes([]);
++          setMilestones([]);
++          setDefects([]);
++          setActivityLog([]);
++          setMilestoneDrafts([]);
++        }
++        dataProjectIdRef.current = pid;
++        setDataProjectId(pid);
++      }
+     } finally {
+-      setLoading(false);
++      if (activeProjectIdRef.current === pid) setLoading(false);
+     }
+   }, []);
+ 
+@@ -172,6 +201,7 @@ export function ProjectProvider({ userId, children }: { userId: string; children
+   const setActiveProject = useCallback((projectId: string) => {
+     // Only allow switching to a project that is visible to this user
+     if (projects.some(p => p.id === projectId) || projects.length === 0) {
++      activeProjectIdRef.current = projectId;
+       setActiveProjectId(projectId);
+     }
+   }, [projects]);
+@@ -202,6 +232,7 @@ export function ProjectProvider({ userId, children }: { userId: string; children
+         defects,
+         activityLog,
+         loading,
++        dataProjectId,
+         refresh,
+       }}
+     >
+```
 
 `workflows/screens/ProgresScreen.tsx` (apply this change):
 
 ```diff
 diff --git a/workflows/screens/ProgresScreen.tsx b/workflows/screens/ProgresScreen.tsx
-index dfd7d4f..ccc4b5d 100644
+index dfd7d4f..5f9fbfe 100644
 --- a/workflows/screens/ProgresScreen.tsx
 +++ b/workflows/screens/ProgresScreen.tsx
-@@ -1,33 +1,26 @@
+@@ -1,33 +1,27 @@
 -import React, { useState, useMemo, useEffect, useCallback } from 'react';
 -import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Platform } from 'react-native';
 -import { useNavigation } from '@react-navigation/native';
@@ -6432,6 +6868,7 @@ index dfd7d4f..ccc4b5d 100644
  import Badge from '../components/Badge';
  import StatTile from '../components/StatTile';
  import { useProject } from '../hooks/useProject';
++import { queueDeeplink } from '../pendingDeeplink';
  import { useToast } from '../components/Toast';
  import CatatanPerubahanScreen from './CatatanPerubahanScreen';
  import DailyLogScreen from './DailyLogScreen';
@@ -6452,11 +6889,11 @@ index dfd7d4f..ccc4b5d 100644
  export default function ProgresScreen() {
    const navigation = useNavigation<any>();
 -  const { boqItems, project, profile, refresh } = useProject();
-+  const { boqItems, project, profile, setActiveProject, refresh } = useProject();
++  const { projects, boqItems, project, profile, setActiveProject, refresh } = useProject();
    const { show: toast } = useToast();
    const [activeModule, setActiveModule] = useState<SubModule>('home');
    const [selectedProgressItemId, setSelectedProgressItemId] = useState<string | null>(null);
-@@ -45,49 +38,30 @@ export default function ProgresScreen() {
+@@ -45,49 +39,37 @@ export default function ProgresScreen() {
    const [changeSummary, setChangeSummary] = useState<SiteChangeSummary | null>(null);
    const [todayLogExists, setTodayLogExists] = useState<boolean | null>(null);
  
@@ -6516,21 +6953,28 @@ index dfd7d4f..ccc4b5d 100644
 +    const params = route.params as { module?: string; projectId?: string } | undefined;
 +    if (!params || appliedParams.current === params) return;
 +    appliedParams.current = params;
-+    if (params.projectId && params.projectId !== project?.id) setActiveProject(params.projectId);
++    // Notification taps switch projects before navigating
++    // (workflows/pendingDeeplink.ts). A link opened any other way switches
++    // here; the switch unmounts this screen, so the route is queued for
++    // RoleRouter to open again once the new project has loaded.
++    if (params.projectId && params.projectId !== project?.id && projects.some((p) => p.id === params.projectId)) {
++      queueDeeplink(route.name, { ...params });
++      setActiveProject(params.projectId);
++      return;
++    }
 +    if (params.module === 'progress') {
 +      setClaimRowId(null);
 +      setActiveModule('progress');
-+      // A returned or verified claim changed what the panel and boq_items
-+      // show: reload the panel even if it is already open, and the project
-+      // data behind Progres Terkini and Beranda.
 +      setClaimReloadKey((k) => k + 1);
++      // A returned or verified claim changed boq_items: reload the project data
++      // behind Progres Terkini and Beranda.
 +      void refresh();
 +    }
-+  }, [route.params, project?.id, setActiveProject, refresh]);
++  }, [route.params, route.name, project?.id, projects, setActiveProject, refresh]);
  
    const loadHomeDetails = useCallback(async () => {
      if (!project) return;
-@@ -128,158 +102,14 @@ export default function ProgresScreen() {
+@@ -128,158 +110,14 @@ export default function ProgresScreen() {
      [recentEntries, selectedProgressItemId],
    );
  
@@ -6691,7 +7135,7 @@ index dfd7d4f..ccc4b5d 100644
    // ── Sub-module header ──
    const SubHeader = ({ title }: { title: string }) => (
      <View style={styles.subHeader}>
-@@ -349,6 +179,7 @@ export default function ProgresScreen() {
+@@ -349,6 +187,7 @@ export default function ProgresScreen() {
                    onPress={() => {
                      if (btn.key === 'ruangan') navigation.navigate('RoomScan');
                      else if (btn.key === 'papan') navigation.navigate('RoomBoard');
@@ -6699,7 +7143,7 @@ index dfd7d4f..ccc4b5d 100644
                      else setActiveModule(btn.key as SubModule);
                    }}
                    accessibilityRole="button"
-@@ -373,7 +204,7 @@ export default function ProgresScreen() {
+@@ -373,7 +212,7 @@ export default function ProgresScreen() {
                  <Text style={styles.expandTitle}>Progres Terkini per Item</Text>
                  <Ionicons name={showRecentProgress ? 'chevron-up' : 'chevron-down'} size={18} color={COLORS.textSec} />
                </TouchableOpacity>
@@ -6708,7 +7152,7 @@ index dfd7d4f..ccc4b5d 100644
                {showRecentProgress && (
                  <>
                    {boqItems.filter(b => b.progress > 0).map(b => (
-@@ -477,115 +308,21 @@ export default function ProgresScreen() {
+@@ -477,115 +316,21 @@ export default function ProgresScreen() {
            </>
          )}
  
@@ -6837,7 +7281,7 @@ index dfd7d4f..ccc4b5d 100644
            </>
          )}
  
-@@ -619,7 +356,7 @@ const styles = StyleSheet.create({
+@@ -619,7 +364,7 @@ const styles = StyleSheet.create({
  
    expandHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACE.xs },
    expandTitle:  { fontSize: TYPE.sm, fontFamily: FONTS.bold, textTransform: 'uppercase', letterSpacing: 0.3, color: COLORS.text },
@@ -6852,7 +7296,7 @@ index dfd7d4f..ccc4b5d 100644
 
 ```diff
 diff --git a/workflows/screens/LaporanScreen.tsx b/workflows/screens/LaporanScreen.tsx
-index c252c76..eeec1bd 100644
+index c252c76..e65e9be 100644
 --- a/workflows/screens/LaporanScreen.tsx
 +++ b/workflows/screens/LaporanScreen.tsx
 @@ -1,4 +1,4 @@
@@ -6861,7 +7305,7 @@ index c252c76..eeec1bd 100644
  import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, Modal, Platform } from 'react-native';
  import { Picker } from '@react-native-picker/picker';
  import { Ionicons } from '@expo/vector-icons';
-@@ -15,6 +15,7 @@ import MandorSetupScreen from './MandorSetupScreen';
+@@ -15,11 +15,13 @@ import MandorSetupScreen from './MandorSetupScreen';
  import OpnameScreen from './OpnameScreen';
  import AttendanceScreen from './AttendanceScreen';
  import ClientReportBuilderScreen from './ClientReportBuilderScreen';
@@ -6869,7 +7313,13 @@ index c252c76..eeec1bd 100644
  import { MilestonePanel } from './MilestoneScreen';
  import MilestoneFormScreen from './MilestoneFormScreen';
  import MilestoneAiDraftScreen from './MilestoneAiDraftScreen';
-@@ -34,7 +35,7 @@ import { canManageTeamMember } from '../../tools/rolePermissions';
+ import MilestoneAiReviewScreen from './MilestoneAiReviewScreen';
+ import { useProject } from '../hooks/useProject';
++import { queueDeeplink } from '../pendingDeeplink';
+ import { useToast } from '../components/Toast';
+ import { isPositiveNumber, isNonEmpty, sanitizeText } from '../../tools/validation';
+ import { pickAndUploadPhoto } from '../../tools/storage';
+@@ -34,7 +36,7 @@ import { canManageTeamMember } from '../../tools/rolePermissions';
  import { type UserRoleType } from '../../tools/constants';
  import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
  
@@ -6878,16 +7328,16 @@ index c252c76..eeec1bd 100644
  
  // ── Report preview renderers ──────────────────────────────────────────────────
  
-@@ -52,7 +53,7 @@ function formatReportTimestamp(value: string) {
+@@ -52,7 +54,7 @@ function formatReportTimestamp(value: string) {
  
  export default function LaporanScreen() {
    const route = useRoute<any>();
 -  const { project, profile, boqItems, purchaseOrders, defects, milestones, refresh } = useProject();
-+  const { project, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
++  const { project, projects, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
    const { show: toast } = useToast();
    // Estimators manage team membership here (migration 037), but principal
    // members are out of reach (migration 090): only a principal actor may add
-@@ -74,12 +75,20 @@ export default function LaporanScreen() {
+@@ -74,12 +76,28 @@ export default function LaporanScreen() {
      onOrder: number;
    } | null>(null);
  
@@ -6901,19 +7351,34 @@ index c252c76..eeec1bd 100644
 -    const nextSection = route.params?.initialSection as Section | undefined;
 -    if (nextSection) {
 -      setActiveSection(nextSection);
--    }
--  }, [route.params?.initialSection]);
 +    const params = route.params as { initialSection?: Section; projectId?: string } | undefined;
 +    if (!params || appliedParams.current === params) return;
 +    appliedParams.current = params;
-+    if (params.projectId && params.projectId !== project?.id) setActiveProject(params.projectId);
++    // Notification taps switch projects before navigating
++    // (workflows/pendingDeeplink.ts). A link opened any other way switches
++    // here; the switch unmounts this screen, so the route is queued for
++    // RoleRouter to open again once the new project has loaded.
++    if (params.projectId && params.projectId !== project?.id && projects.some((p) => p.id === params.projectId)) {
++      queueDeeplink(route.name, { ...params });
++      setActiveProject(params.projectId);
++      return;
+     }
+-  }, [route.params?.initialSection]);
 +    if (params.initialSection) setActiveSection(params.initialSection);
 +    if (params.initialSection === 'klaim') setClaimReloadKey((k) => k + 1);
-+  }, [route.params, project?.id, setActiveProject]);
++  }, [route.params, route.name, project?.id, projects, setActiveProject]);
  
    useEffect(() => {
      if (route.params?.contractId) {
-@@ -444,6 +453,19 @@ export default function LaporanScreen() {
+@@ -158,7 +176,6 @@ export default function LaporanScreen() {
+   const [mtnReason, setMtnReason] = useState('');
+   const [mtnPhotos, setMtnPhotos] = useState<string[]>([]);
+   const [mtnBalances, setMtnBalances] = useState<Array<{ id: string; name: string; unit: string; on_site: number }>>([]);
+-  const { projects } = useProject();
+ 
+   // Report metrics
+   // Task 3.2: volume-weighted over active, planned>0 items (tools/progressMath.ts)
+@@ -444,6 +461,19 @@ export default function LaporanScreen() {
                <StatTile value={openDefects} label="Perubahan Open" color={COLORS.critical} />
              </View>
  
@@ -6933,7 +7398,7 @@ index c252c76..eeec1bd 100644
              {/* Material status */}
              <Card title="Status Material">
                <View style={styles.metricRow}>
-@@ -721,6 +743,13 @@ export default function LaporanScreen() {
+@@ -721,6 +751,13 @@ export default function LaporanScreen() {
            </>
          )}
  
@@ -6947,7 +7412,7 @@ index c252c76..eeec1bd 100644
          {activeSection === 'jadwal' && (
            <MilestonePanel
              embedded
-@@ -831,6 +860,8 @@ const styles = StyleSheet.create({
+@@ -831,6 +868,8 @@ const styles = StyleSheet.create({
    tabActive:     { borderBottomWidth: 2, borderBottomColor: COLORS.primary },
    tabText:       { fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', color: COLORS.textSec },
    tabTextActive: { color: COLORS.primary },
@@ -6982,21 +7447,134 @@ index 39ce7c9..f6faffb 100644
 
 ```diff
 diff --git a/workflows/App.tsx b/workflows/App.tsx
-index 0b0d5e8..0cd777b 100644
+index 0b0d5e8..4ad4649 100644
 --- a/workflows/App.tsx
 +++ b/workflows/App.tsx
-@@ -62,7 +62,13 @@ function RoleRouter() {
+@@ -12,6 +12,7 @@ import { registerForPushNotifications, attachNotificationTapListener } from '../
+ // Role-aware deeplink→route resolution (fixes the supervisor Approvals
+ // dead-end — see tools/notificationRouting.ts for the role×route matrix).
+ import { resolveNotificationRoute } from '../tools/notificationRouting';
++import { queueDeeplink, routeDeeplink, takeDeeplink } from './pendingDeeplink';
+ import { startCaptureQueueWorker, stopCaptureQueueWorker } from '../tools/captureQueueWorker';
+ 
+ // Module-scoped so all three role-based NavigationContainers share the same ref.
+@@ -24,19 +25,59 @@ const OfficeNavigation = lazyScreen(() => import('../office/navigation'));
+ const PrincipalNavigation = lazyScreen(() => import('../office/PrincipalNavigation'));
+ const GlobalAIChatLauncher = React.lazy(() => import('./components/GlobalAIChatLauncher'));
+ 
++// Navigates through the shared ref, or queues the deeplink when no navigator
++// is mounted yet: a cold start from a tap, or a project switch still loading.
++function navigateShared(screen: string, params: Record<string, unknown>): void {
++  const ref = navigationRef.current;
++  if (!ref?.isReady()) {
++    queueDeeplink(screen, params);
++    return;
++  }
++  try {
++    (ref.navigate as unknown as (screen: string, params?: object) => void)(screen, params);
++  } catch {
++    // Route not in current role's nav — fall back to Notifikasi tab.
++    try { ref.navigate('Notifikasi' as never); } catch {}
++  }
++}
++
++interface ProjectRefs {
++  id: { current: string | undefined };
++  ids: { current: string[] };
++  select: { current: (projectId: string) => void };
++}
++
++// Opens a resolved deeplink against the latest project, read from refs at
++// call time, so a listener attached once never routes with a stale project.
++function openDeeplink(screen: string, params: Record<string, unknown> | null | undefined, project: ProjectRefs): void {
++  routeDeeplink(screen, params, {
++    currentProjectId: project.id.current,
++    visibleProjectIds: project.ids.current,
++    setActiveProject: (projectId) => project.select.current(projectId),
++    navigate: navigateShared,
++  });
++}
++
+ // Routes to supervisor app or office dashboard based on profile role.
+ // Must be rendered inside ProjectProvider so useProject() works.
+ function RoleRouter() {
+-  const { profile, loading } = useProject();
++  const { profile, loading, project, projects, dataProjectId, setActiveProject } = useProject();
+ 
+   // The tap listener attaches once (empty deps) but must resolve routes with
+-  // the CURRENT role — the profile loads after the listener is wired, and a
+-  // deeplink like ApprovalsScreen resolves differently per role. A ref keeps
+-  // the listener closure reading the latest role without re-attaching.
++  // the CURRENT role and project, which load after the listener is wired. Refs
++  // keep the listener closure reading the latest values without re-attaching.
+   const roleRef = useRef<string | undefined>(profile?.role);
++  const projectIdRef = useRef<string | undefined>(project?.id);
++  const projectIdsRef = useRef<string[]>([]);
++  const setActiveProjectRef = useRef(setActiveProject);
+   useEffect(() => {
+     roleRef.current = profile?.role;
+   }, [profile?.role]);
++  useEffect(() => {
++    projectIdRef.current = project?.id;
++    projectIdsRef.current = projects.map((p) => p.id);
++    setActiveProjectRef.current = setActiveProject;
++  }, [project?.id, projects, setActiveProject]);
+ 
+   // Register the Expo push token once the profile is known.
+   useEffect(() => {
+@@ -49,20 +90,46 @@ function RoleRouter() {
+   // happens through the module-scoped navigationRef shared by all three navigators.
+   useEffect(() => {
+     const cleanup = attachNotificationTapListener((screen, params) => {
+-      const ref = navigationRef.current;
+-      if (!ref?.isReady()) return;
+       const target = resolveNotificationRoute(screen, roleRef.current);
+-      try {
+-        (ref.navigate as unknown as (screen: string, params?: object) => void)(target, params ?? {});
+-      } catch {
+-        // Route not in current role's nav — fall back to Notifikasi tab.
+-        try { ref.navigate('Notifikasi' as never); } catch {}
+-      }
++      openDeeplink(target, params, { id: projectIdRef, ids: projectIdsRef, select: setActiveProjectRef });
+     });
      return cleanup;
    }, []);
  
 -  if (loading) {
-+  // Block on the spinner only until the first load finishes. A later refresh
-+  // or project switch also sets loading; unmounting the navigator then would
-+  // throw the user back to the first tab and drop the route params a
-+  // notification just delivered.
++  // Block on the spinner until the first load finishes, and while a project
++  // switch loads. The switch deliberately unmounts the navigator, so every
++  // screen drops its in-memory state (a half-built material request, cached
++  // envelopes) instead of carrying it into the new project. A refresh of the
++  // same project keeps the navigator mounted, so the user stays on their tab.
 +  const firstLoadDone = useRef(false);
 +  if (!loading) firstLoadDone.current = true;
-+  if (loading && !firstLoadDone.current) {
++  const switchingProject = !!project && dataProjectId !== project.id;
++  const blocked = (loading && !firstLoadDone.current) || switchingProject;
++
++  // Replay a deeplink queued during a project switch or a cold start once the
++  // lazily loaded navigator is ready.
++  useEffect(() => {
++    if (blocked) return undefined;
++    let cancelled = false;
++    let tries = 0;
++    const replay = () => {
++      if (cancelled) return;
++      if (navigationRef.current?.isReady()) {
++        const next = takeDeeplink();
++        // Routed again rather than navigated: a deeplink queued on a cold start
++        // can name another project, which then switches and queues it once more.
++        if (next) openDeeplink(next.screen, next.params, { id: projectIdRef, ids: projectIdsRef, select: setActiveProjectRef });
++        return;
++      }
++      if (tries++ < 100) setTimeout(replay, 50);
++    };
++    replay();
++    return () => {
++      cancelled = true;
++    };
++  }, [blocked]);
++
++  if (blocked) {
      return (
        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.bg }}>
          <ActivityIndicator size="large" color={COLORS.accent} />
@@ -7006,31 +7584,63 @@ index 0b0d5e8..0cd777b 100644
 
 ```diff
 diff --git a/workflows/screens/NotificationsScreen.tsx b/workflows/screens/NotificationsScreen.tsx
-index a29e786..150cca5 100644
+index a29e786..4704d25 100644
 --- a/workflows/screens/NotificationsScreen.tsx
 +++ b/workflows/screens/NotificationsScreen.tsx
-@@ -120,7 +120,9 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
+@@ -12,6 +12,7 @@ import { useProject } from '../hooks/useProject';
+ // must be role-aware: supervisors have no Approvals route (their APPROVED/
+ // REJECTED outcomes route to Permintaan), principals keep Approvals.
+ import { resolveNotificationRoute } from '../../tools/notificationRouting';
++import { routeDeeplink } from '../pendingDeeplink';
+ 
+ interface Props {
+   profileId: string;
+@@ -45,7 +46,7 @@ function rowToItem(row: NotificationRow): NotificationItem {
+ 
+ export default function NotificationsScreen({ profileId }: Props): React.ReactElement {
+   const navigation = useNavigation<{ navigate: (screen: string, params?: object) => void }>();
+-  const { profile } = useProject();
++  const { profile, project, projects, setActiveProject } = useProject();
+   const [items, setItems] = useState<NotificationItem[]>([]);
+   const [loading, setLoading] = useState(true);
+ 
+@@ -120,11 +121,18 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
      // Navigate immediately — never gated on the write above.
      const target = resolveNotificationRoute(item.deeplinkScreen, profile?.role);
      try {
 -      navigation.navigate(target, item.deeplinkParams ?? {});
-+      // A fresh params object per tap, so a screen that applies params once per
-+      // navigation still reacts to a second tap on the same notification.
-+      navigation.navigate(target, { ...(item.deeplinkParams ?? {}) });
++      // Fresh params per tap; another project's notification switches the
++      // project first, and RoleRouter replays the navigation once it loads.
++      routeDeeplink(target, item.deeplinkParams, {
++        currentProjectId: project?.id,
++        visibleProjectIds: projects.map((p) => p.id),
++        setActiveProject,
++        navigate: (screen, params) => navigation.navigate(screen, params),
++      });
      } catch {
        // Route not in current role's nav — stay on Notifikasi (no-op).
      }
+-  }, [navigation, profile?.role]);
++  }, [navigation, profile?.role, project?.id, projects, setActiveProject]);
+ 
+   return (
+     <View style={styles.container}>
 ```
 
-- [ ] **Step 2: Type-check**
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `npx jest workflows/__tests__/pendingDeeplink.test.ts --testPathIgnorePatterns='/node_modules/'`
+Expected: PASS, 1 suite, 5 tests.
+
+- [ ] **Step 5: Type-check**
 
 Run: `npx tsc --noEmit`
 Expected: exit 0, no output.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add workflows/screens/ProgresScreen.tsx workflows/screens/LaporanScreen.tsx workflows/navigation.tsx workflows/App.tsx workflows/screens/NotificationsScreen.tsx
+git add workflows/pendingDeeplink.ts workflows/hooks/useProject.tsx workflows/screens/ProgresScreen.tsx workflows/screens/LaporanScreen.tsx workflows/navigation.tsx workflows/App.tsx workflows/screens/NotificationsScreen.tsx workflows/__tests__/pendingDeeplink.test.ts
 git commit -m "feat(progress): Tambah progres opens the weekly stage claim"
 ```
 
@@ -7047,7 +7657,7 @@ git commit -m "feat(progress): Tambah progres opens the weekly stage claim"
 - Modify: `workflows/screens/components/NotificationList.tsx`
 - Test: `office/screens/progressClaim/__tests__/ProgressClaimVerifyPanel.test.tsx`
 
-Estimators and admins see each claimed row with its weights, the verified and claimed figure per stage, the note and photos, and verify (writing progress) or return with a note. The submitter cannot decide their own claim; the principal reads. The Reports tab gets a Klaim section with a pending badge; notification maps and styles learn the three claim types. The table uses short column headers and 44 dp inputs so it fits a 360 dp phone.
+Estimators and admins see each claimed row with its weights, the verified and claimed figure per stage, the note and photos, and verify (writing progress) or return with a note. The submitter cannot decide their own claim; the principal reads. The Reports tab gets a Klaim section with a pending badge; notification maps and styles learn the three claim types. The table uses short column headers and 44 dp inputs so it fits a 360 dp phone. The preview reads the BoQ rows of the claim fresh, and when verification still demands a reason the panel opens the reason box on the row the refusal names and reloads without losing typed figures.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -7062,6 +7672,7 @@ jest.mock('../../../../tools/progressClaims/claims', () => ({
   getOpenClaim: jest.fn(),
   getLatestClaim: jest.fn(),
   listClaimLines: jest.fn(),
+  listClaimRows: jest.fn(),
   listStageWeights: jest.fn(),
   listVerifiedStagePct: jest.fn(),
   listEntryTotals: jest.fn(),
@@ -7079,9 +7690,12 @@ jest.mock('../../../../workflows/components/StoragePhoto', () => {
 });
 
 import {
-  getLatestClaim, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
+  getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
 } from '../../../../tools/progressClaims/claims';
 import ProgressClaimVerifyPanel from '../ProgressClaimVerifyPanel';
+
+// Rendering suites run slowly beside the full jest run; the 5 s default flakes.
+jest.setTimeout(20000);
 
 const kolom = { BEKISTING: 0.326, PEMBESIAN: 0.486, PENGECORAN: 0.188 };
 const balok = { BEKISTING: 0.368, PEMBESIAN: 0.38, PENGECORAN: 0.252 };
@@ -7113,6 +7727,7 @@ beforeEach(() => {
   (getOpenClaim as jest.Mock).mockResolvedValue(claim('SUBMITTED'));
   (getLatestClaim as jest.Mock).mockResolvedValue(null);
   (listClaimLines as jest.Mock).mockResolvedValue([line()]);
+  (listClaimRows as jest.Mock).mockResolvedValue(new Map([['k1', K1], ['b1', B1]]));
   (listStageWeights as jest.Mock).mockResolvedValue([weightRow('k1', kolom)]);
   (listVerifiedStagePct as jest.Mock).mockResolvedValue(new Map([['k1', { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }]]));
   (listEntryTotals as jest.Mock).mockResolvedValue(new Map([['k1', 32.6]]));
@@ -7200,6 +7815,34 @@ describe('ProgressClaimVerifyPanel', () => {
     expect(getByLabelText('Verifikasi Pembesian T1-001').props.value).toBe('55');
   });
 
+  it('previews from the BoQ row as it is now, not the copy the screen loaded', async () => {
+    (listClaimRows as jest.Mock).mockResolvedValue(new Map([['k1', { ...K1, planned: 200 }]]));
+    const { findByLabelText, getByText } = renderPanel();
+    fireEvent.changeText(await findByLabelText('Verifikasi Pembesian T1-001'), '50');
+    expect(getByText('Progres baris 32,6% menjadi 56,9% (perkiraan +81,2 m³)')).toBeTruthy();
+    expect(listClaimRows).toHaveBeenCalledWith(['k1']);
+  });
+
+  it('asks for a reason on the row the server names, keeping the typed figures', async () => {
+    (verifyClaim as jest.Mock).mockRejectedValueOnce(Object.assign(new Error('Penurunan progres wajib disertai alasan.'), {
+      code: 'CLAIM_REGRESS_REASON',
+      detail: 'CLAIM_REGRESS_REASON: baris T1-001 turun dari progres terverifikasi',
+    }));
+    const { findByLabelText, findByText, getByLabelText, getByText, toast } = renderPanel();
+    fireEvent.changeText(await findByLabelText('Verifikasi Pembesian T1-001'), '55');
+    fireEvent.press(getByLabelText('Verifikasi klaim'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Penurunan progres wajib disertai alasan.', 'critical'));
+    expect(await findByText('Verifikasi')).toBeTruthy();
+    expect(getOpenClaim).toHaveBeenCalledTimes(2);
+    expect(getByText('Progres baris ini turun dari yang tercatat. Isi alasan sebelum verifikasi.')).toBeTruthy();
+    expect(getByLabelText('Verifikasi Pembesian T1-001').props.value).toBe('55');
+    fireEvent.changeText(getByLabelText('Alasan penurunan T1-001'), 'Volume rencana direvisi');
+    fireEvent.press(getByLabelText('Verifikasi klaim'));
+    await waitFor(() => expect(verifyClaim).toHaveBeenLastCalledWith('c1', [
+      { line_id: 'l1', verified_pct: { BEKISTING: 100, PEMBESIAN: 55, PENGECORAN: 0 }, regress_reason: 'Volume rencana direvisi' },
+    ], null));
+  });
+
   it('returns the claim with a note, and refuses an empty one', async () => {
     const { findByLabelText, getByLabelText, onChanged, toast } = renderPanel();
     fireEvent.press(await findByLabelText('Kembalikan klaim'));
@@ -7265,15 +7908,16 @@ Expected: FAIL — `Cannot find module '../ProgressClaimVerifyPanel'`.
 // Verifikasi writes progress through verify_progress_claim; Kembalikan sends
 // the claim back with a note. The principal reads the same view. Whoever
 // submitted the claim or filled one of its lines never verifies it (the RPC
-// refuses that as well).
+// refuses that as well). The preview reads the claim's BoQ rows fresh, because
+// verification computes from the live planned volume.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Card from '../../../workflows/components/Card';
 import Badge from '../../../workflows/components/Badge';
 import StoragePhoto from '../../../workflows/components/StoragePhoto';
-import { canVerifyClaim, canVerifyClaimAs } from '../../../tools/progressClaims/claimRules';
+import { canVerifyClaim, canVerifyClaimAs, regressReasonRowCode } from '../../../tools/progressClaims/claimRules';
 import {
-  getLatestClaim, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
+  getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
   type ProgressClaim, type ProgressClaimLine, type VerifyLineInput,
 } from '../../../tools/progressClaims/claims';
 import {
@@ -7288,6 +7932,7 @@ import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../../workflows/theme';
 
 const lh = (size: number) => Math.round(size * 1.45);
 const QUANTITY_DROP = 'Volume terpasang turun karena bobot atau volume rencana berubah sejak verifikasi terakhir.';
+const RECORDED_DROP = 'Progres baris ini turun dari yang tercatat. Isi alasan sebelum verifikasi.';
 
 interface Props {
   projectId: string;
@@ -7312,6 +7957,8 @@ interface Loaded {
   projectId: string;
   claim: ProgressClaim | null;
   lines: ProgressClaimLine[];
+  /** The claim's BoQ rows read fresh, by id. */
+  rows: Map<string, ClaimableItem>;
   weights: Map<string, RowWeights>;
   verified: Map<string, StagePct>;
   ledger: Map<string, number>;
@@ -7351,22 +7998,26 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
   const [returning, setReturning] = useState(false);
   const [returnNote, setReturnNote] = useState('');
   const [busy, setBusy] = useState(false);
+  // Lines verify_progress_claim demanded a reason for although the preview saw no drop.
+  const [forcedReasons, setForcedReasons] = useState<ReadonlySet<string>>(() => new Set());
   const seq = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ keepInputs = false }: { keepInputs?: boolean } = {}) => {
     const mine = ++seq.current;
     setError(null);
     try {
       const claim = (await getOpenClaim(projectId)) ?? (await getLatestClaim(projectId));
       if (!claim || claim.status !== 'SUBMITTED') {
         if (mine === seq.current) {
-          setData({ projectId, claim, lines: [], weights: new Map(), verified: new Map(), ledger: new Map() });
+          setData({ projectId, claim, lines: [], rows: new Map(), weights: new Map(), verified: new Map(), ledger: new Map() });
           setLineInputs({});
+          setForcedReasons(new Set());
         }
         return;
       }
-      const [lines, weightRows, verified, ledger] = await Promise.all([
-        listClaimLines(claim.id),
+      const lines = await listClaimLines(claim.id);
+      const [rows, weightRows, verified, ledger] = await Promise.all([
+        listClaimRows(lines.map((l) => l.boq_item_id)),
         listStageWeights(projectId),
         listVerifiedStagePct(projectId),
         listEntryTotals(projectId),
@@ -7377,11 +8028,18 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
         if (checked.ok) weights.set(w.boq_item_id, { weights: checked.weights, source: w.source, referenceClass: w.reference_class });
       }
       if (mine !== seq.current) return;
-      setData({ projectId, claim, lines, weights, verified, ledger });
-      setLineInputs(Object.fromEntries(lines.map((l) => {
+      setData({ projectId, claim, lines, rows, weights, verified, ledger });
+      const claimed = (l: ProgressClaimLine): LineInput => {
         const w = weights.get(l.boq_item_id)?.weights;
-        return [l.id, { inputs: w ? pctInputs(w, l.claimed_pct) : {}, reason: l.regress_reason ?? '' }];
-      })));
+        return { inputs: w ? pctInputs(w, l.claimed_pct) : {}, reason: l.regress_reason ?? '' };
+      };
+      if (keepInputs) {
+        // Reloading after a refusal keeps what the verifier typed.
+        setLineInputs((prev) => Object.fromEntries(lines.map((l) => [l.id, prev[l.id] ?? claimed(l)])));
+        return;
+      }
+      setLineInputs(Object.fromEntries(lines.map((l) => [l.id, claimed(l)])));
+      setForcedReasons(new Set());
       setVerifierNote('');
       setReturning(false);
       setReturnNote('');
@@ -7405,8 +8063,10 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
   const actionable = submitted && canVerifyClaimAs(profile?.role, profile?.id, claim?.submitted_by, lineAuthors);
   const ownClaim = submitted && canVerifyClaim(profile?.role) && !actionable;
 
+  const itemOf = (loaded: Loaded, boqItemId: string) => loaded.rows.get(boqItemId) ?? items.get(boqItemId);
+
   const check = (loaded: Loaded, line: ProgressClaimLine, state: LineInput): LineCheck => {
-    const item = items.get(line.boq_item_id);
+    const item = itemOf(loaded, line.boq_item_id);
     const code = item?.code ?? '—';
     const ledgerBefore = loaded.ledger.get(line.boq_item_id) ?? 0;
     const rowWeights = loaded.weights.get(line.boq_item_id) ?? null;
@@ -7421,7 +8081,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     const regressed = read.ok ? regressedStages(rowWeights.weights, prev, read.pct) : [];
     return {
       code, item, rowWeights, prev, read, prevFraction, next, delta, regressed, ledgerBefore,
-      needsReason: regressed.length > 0 || (delta != null && delta < 0),
+      needsReason: regressed.length > 0 || (delta != null && delta < 0) || forcedReasons.has(line.id),
     };
   };
 
@@ -7464,6 +8124,17 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
       await load();
     } catch (err) {
       toast((err as Error)?.message ?? 'Verifikasi gagal.', 'critical');
+      const refusal = err as { code?: string | null; detail?: string } | null;
+      if (refusal?.code === 'CLAIM_REGRESS_REASON') {
+        // The recorded figures moved after this page loaded, for example a
+        // re-publish changed the planned volume. Ask for a reason on the row
+        // the refusal names (every row when it names none) and reload the
+        // figures behind the preview, keeping what was typed.
+        const rowCode = regressReasonRowCode(refusal.detail);
+        const named = current.lines.filter((l) => rowCode != null && itemOf(current, l.boq_item_id)?.code === rowCode);
+        setForcedReasons(new Set((named.length > 0 ? named : current.lines).map((l) => l.id)));
+        await load({ keepInputs: true });
+      }
     } finally {
       setBusy(false);
     }
@@ -7588,7 +8259,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
                 <Text style={styles.warn}>
                   {c.regressed.length > 0
                     ? `Turun dari angka terverifikasi: ${c.regressed.map((s) => stageKeyLabel(s)).join(', ')}.`
-                    : QUANTITY_DROP}
+                    : c.delta != null && c.delta < 0 ? QUANTITY_DROP : RECORDED_DROP}
                 </Text>
                 <TextInput
                   style={[styles.input, styles.textarea, !actionable && styles.inputDisabled]}
@@ -7730,7 +8401,7 @@ const styles = StyleSheet.create({
 
 ```diff
 diff --git a/office/screens/OfficeReportsScreen.tsx b/office/screens/OfficeReportsScreen.tsx
-index abbedcb..448906e 100644
+index abbedcb..6b60df3 100644
 --- a/office/screens/OfficeReportsScreen.tsx
 +++ b/office/screens/OfficeReportsScreen.tsx
 @@ -1,4 +1,4 @@
@@ -7739,7 +8410,15 @@ index abbedcb..448906e 100644
  import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Modal, useWindowDimensions } from 'react-native';
  import { useNavigation, useRoute } from '@react-navigation/native';
  import { Ionicons } from '@expo/vector-icons';
-@@ -22,6 +22,8 @@ import type { MandorAttendance, KasbonAging } from '../../tools/types';
+@@ -12,6 +12,7 @@ import MilestoneFormScreen from '../../workflows/screens/MilestoneFormScreen';
+ import MilestoneAiDraftScreen from '../../workflows/screens/MilestoneAiDraftScreen';
+ import MilestoneAiReviewScreen from '../../workflows/screens/MilestoneAiReviewScreen';
+ import { useProject } from '../../workflows/hooks/useProject';
++import { queueDeeplink } from '../../workflows/pendingDeeplink';
+ import { useToast } from '../../workflows/components/Toast';
+ import { getSiteChangeSummary, type SiteChangeSummary } from '../../tools/siteChanges';
+ import { getLaborPaymentSummary, type LaborPaymentSummary } from '../../tools/opnameRpc';
+@@ -22,6 +23,8 @@ import type { MandorAttendance, KasbonAging } from '../../tools/types';
  import { generateReport, recordReportExport, type ReportPayload, type ReportType, type ReportFilters } from '../../tools/reports';
  import { ReportPreview } from '../../workflows/components/ReportPreview';
  import ClientReportBuilderScreen from '../../workflows/screens/ClientReportBuilderScreen';
@@ -7748,7 +8427,7 @@ index abbedcb..448906e 100644
  import { getMaterialDrift } from '../../tools/envelopes';
  import { aggregateDriftRollup, formatRollupTile, type DriftRollup } from '../../tools/planDrift';
  import { computeOverallProgress } from '../../tools/progressMath';
-@@ -32,20 +34,41 @@ function formatTs(v: string) {
+@@ -32,20 +35,49 @@ function formatTs(v: string) {
    return new Date(v).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
  }
  
@@ -7759,7 +8438,7 @@ index abbedcb..448906e 100644
    const navigation = useNavigation<any>();
    const route = useRoute<any>();
 -  const { project, profile, boqItems, purchaseOrders, defects, milestones } = useProject();
-+  const { project, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
++  const { projects, project, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
    const { show: toast } = useToast();
    const [activeSection, setActiveSection] = useState<Section>(route.params?.initialSection ?? 'overview');
    const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
@@ -7777,10 +8456,18 @@ index abbedcb..448906e 100644
 +    const params = route.params as { initialSection?: Section; projectId?: string } | undefined;
 +    if (!params || appliedParams.current === params) return;
 +    appliedParams.current = params;
-+    if (params.projectId && params.projectId !== project?.id) setActiveProject(params.projectId);
++    // Notification taps switch projects before navigating
++    // (workflows/pendingDeeplink.ts). A link opened any other way switches
++    // here; the switch unmounts this screen, so the route is queued for
++    // RoleRouter to open again once the new project has loaded.
++    if (params.projectId && params.projectId !== project?.id && projects.some((p) => p.id === params.projectId)) {
++      queueDeeplink(route.name, { ...params });
++      setActiveProject(params.projectId);
++      return;
++    }
 +    if (params.initialSection) setActiveSection(params.initialSection);
 +    if (params.initialSection === 'klaim') setClaimReloadKey((k) => k + 1);
-+  }, [route.params, project?.id, setActiveProject]);
++  }, [route.params, route.name, project?.id, projects, setActiveProject]);
 +
 +  // Claims waiting for verification on the active project, for the Klaim tab badge.
 +  const [pendingClaims, setPendingClaims] = useState(0);
@@ -7795,7 +8482,7 @@ index abbedcb..448906e 100644
    const { width } = useWindowDimensions();
    const isTablet  = width >= BREAKPOINTS.tablet;
    const isDesktop = width >= BREAKPOINTS.desktop;
-@@ -161,9 +184,10 @@ export default function OfficeReportsScreen() {
+@@ -161,9 +193,10 @@ export default function OfficeReportsScreen() {
      return <ClientReportBuilderScreen onBack={() => setActiveSection('overview')} />;
    }
  
@@ -7807,7 +8494,7 @@ index abbedcb..448906e 100644
    ];
  
    return (
-@@ -182,6 +206,11 @@ export default function OfficeReportsScreen() {
+@@ -182,6 +215,11 @@ export default function OfficeReportsScreen() {
            >
              <Ionicons name={tab.icon as any} size={16} color={activeSection === tab.key ? COLORS.primary : COLORS.textSec} />
              <Text style={[styles.tabText, activeSection === tab.key && styles.tabTextActive]}>{tab.label}</Text>
@@ -7819,7 +8506,7 @@ index abbedcb..448906e 100644
            </TouchableOpacity>
          ))}
        </View>
-@@ -199,6 +228,20 @@ export default function OfficeReportsScreen() {
+@@ -199,6 +237,20 @@ export default function OfficeReportsScreen() {
            />
          )}
  
@@ -7840,7 +8527,7 @@ index abbedcb..448906e 100644
          {activeSection === 'overview' && (<>
          <Text style={styles.sectionHead}>Laporan & Export</Text>
  
-@@ -720,6 +763,8 @@ const styles = StyleSheet.create({
+@@ -720,6 +772,8 @@ const styles = StyleSheet.create({
    },
    tabText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', color: COLORS.textSec },
    tabTextActive: { color: COLORS.primary },
@@ -7891,10 +8578,17 @@ index 0d9e00f..5af187b 100644
 
 ```diff
 diff --git a/office/screens/NotificationsScreen.tsx b/office/screens/NotificationsScreen.tsx
-index fe96661..265004a 100644
+index fe96661..a1b13ac 100644
 --- a/office/screens/NotificationsScreen.tsx
 +++ b/office/screens/NotificationsScreen.tsx
-@@ -8,6 +8,9 @@ const NOTIFICATION_ROUTE_MAP: Record<string, string> = {
+@@ -3,11 +3,16 @@ import { View, ActivityIndicator, StyleSheet } from 'react-native';
+ import { useNavigation } from '@react-navigation/native';
+ import { supabase } from '../../tools/supabase';
+ import { NotificationList, type NotificationItem } from '../../workflows/screens/components/NotificationList';
++import { useProject } from '../../workflows/hooks/useProject';
++import { routeDeeplink } from '../../workflows/pendingDeeplink';
+ 
+ const NOTIFICATION_ROUTE_MAP: Record<string, string> = {
    ApprovalsScreen: 'Approvals',
    POScreen: 'Procurement',
    ReceiptScreen: 'Terima',
@@ -7904,17 +8598,36 @@ index fe96661..265004a 100644
  };
  
  interface Props {
-@@ -87,7 +90,9 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
+@@ -80,6 +85,8 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
+     return () => { void supabase.removeChannel(channel); };
+   }, [profileId, fetch]);
+ 
++  const { project, projects, setActiveProject } = useProject();
++
+   const handlePress = useCallback(async (item: NotificationItem) => {
+     if (!item.readAt) {
+       await supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('id', item.id);
+@@ -87,11 +94,18 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
      }
      const target = NOTIFICATION_ROUTE_MAP[item.deeplinkScreen] ?? item.deeplinkScreen;
      try {
 -      navigation.navigate(target, item.deeplinkParams ?? {});
-+      // A fresh params object per tap, so a screen that applies params once per
-+      // navigation still reacts to a second tap on the same notification.
-+      navigation.navigate(target, { ...(item.deeplinkParams ?? {}) });
++      // Fresh params per tap; another project's notification switches the
++      // project first, and RoleRouter replays the navigation once it loads.
++      routeDeeplink(target, item.deeplinkParams, {
++        currentProjectId: project?.id,
++        visibleProjectIds: projects.map((p) => p.id),
++        setActiveProject,
++        navigate: (screen, params) => navigation.navigate(screen, params),
++      });
      } catch {
        // Route not in current role's nav — stay on Notifikasi (no-op).
      }
+-  }, [navigation]);
++  }, [navigation, project?.id, projects, setActiveProject]);
+ 
+   if (loading) {
+     return (
 ```
 
 `workflows/screens/components/NotificationList.tsx` (apply this change):
@@ -7939,7 +8652,7 @@ index d2dd9f9..a1ca336 100644
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npx jest office/screens/progressClaim/__tests__/ProgressClaimVerifyPanel.test.tsx workflows/screens/components/__tests__/NotificationList.test.tsx --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 2 suites, 16 tests.
+Expected: PASS, 2 suites, 18 tests.
 
 - [ ] **Step 5: Type-check**
 
@@ -7983,6 +8696,9 @@ jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
 
 import { listStageWeights, resetStageWeights, seedReferenceWeights, setStageWeights } from '../../../../tools/progressClaims/claims';
 import StageWeightsPanel from '../StageWeightsPanel';
+
+// Rendering suites run slowly beside the full jest run; the 5 s default flakes.
+jest.setTimeout(20000);
 
 const item = (id: string, code: string, label: string, sort: number) => ({
   id, project_id: 'p1', code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
@@ -8514,6 +9230,9 @@ jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
 import { getLatestClaim, listStageWeights } from '../../../../tools/progressClaims/claims';
 import ProgressClaimStatusCard from '../ProgressClaimStatusCard';
 
+// Rendering suites run slowly beside the full jest run; the 5 s default flakes.
+jest.setTimeout(20000);
+
 const item = (id: string, code: string, label: string, sort: number, projectId = 'p1') => ({
   id, project_id: projectId, code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
 });
@@ -8733,10 +9452,96 @@ git commit -m "feat(progress): principal home card for the weekly claim"
 - Modify: `tools/derivation.ts`
 - Modify: `tools/progressMath.ts`
 - Modify: `tools/audit.ts`
+- Test: `tools/__tests__/auditNoProgress.test.ts`
 
-`syncBoqInstalledFromDerived` has no caller left and is removed; the progressMath note names the single writer of `installed`; the audit's "no progress in 7 days" anomaly counts saved claim lines, because entries now appear only at verification.
+`syncBoqInstalledFromDerived` has no caller left and is removed; the progressMath note names the single writer of `installed`; the audit's "no progress in 7 days" anomaly counts claim lines created, lines edited while their claim is open and claims submitted, because entries now appear only at verification; returning or verifying a claim never counts as site activity.
 
-- [ ] **Step 1: Apply the changes**
+- [ ] **Step 1: Write the failing test**
+
+`tools/__tests__/auditNoProgress.test.ts` (new file):
+
+```ts
+// tools/__tests__/auditNoProgress.test.ts
+jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
+import { supabase } from '../supabase';
+import { detectAnomalies } from '../audit';
+
+type Result = { data?: unknown; error?: unknown; count?: number | null };
+
+function chain(result: Result) {
+  const calls: Array<[string, unknown[]]> = [];
+  const settled = { data: result.data ?? [], error: result.error ?? null, count: result.count ?? null };
+  const q: Record<string, unknown> = { calls };
+  for (const m of ['select', 'eq', 'in', 'gte', 'lte', 'order', 'limit']) {
+    q[m] = jest.fn((...args: unknown[]) => { calls.push([m, args]); return q; });
+  }
+  q.then = (resolve: (v: typeof settled) => unknown, reject: (e: unknown) => unknown) => Promise.resolve(settled).then(resolve, reject);
+  return q as typeof q & { calls: typeof calls };
+}
+
+const from = supabase.from as jest.Mock;
+
+/** Claim activity counts in query order: lines created, lines edited on an open claim, claims submitted. */
+function mockProject(counts: number[], error: unknown = null) {
+  const claimQueries: Array<ReturnType<typeof chain>> = [];
+  from.mockImplementation((table: string) => {
+    if (table !== 'progress_claim_lines' && table !== 'progress_claims') return chain({ data: [] });
+    const q = chain({ count: counts[claimQueries.length] ?? 0, error });
+    claimQueries.push(q);
+    return q;
+  });
+  return claimQueries;
+}
+
+const raisesNoProgress = async () => (await detectAnomalies('p1')).some((a) => a.type === 'no_progress');
+
+beforeEach(() => {
+  from.mockReset();
+});
+
+describe('detectAnomalies: no progress claimed in 7 days', () => {
+  it('raises the anomaly when the site created, edited and submitted nothing', async () => {
+    const queries = mockProject([0, 0, 0]);
+    await expect(raisesNoProgress()).resolves.toBe(true);
+    expect(queries).toHaveLength(3);
+  });
+
+  it.each([
+    ['a claim line created', [1, 0, 0]],
+    ['a line edited on an open claim', [0, 1, 0]],
+    ['a claim submitted', [0, 0, 1]],
+  ])('counts %s as site activity', async (_what, counts) => {
+    mockProject(counts as number[]);
+    await expect(raisesNoProgress()).resolves.toBe(false);
+  });
+
+  it('reads edits on open claims only and submissions by submitted_at, so a return or a verification is not site activity', async () => {
+    const queries = mockProject([0, 0, 0]);
+    await detectAnomalies('p1');
+    const [created, edited, submitted] = queries;
+    expect(created.calls).toEqual(expect.arrayContaining([['gte', ['created_at', expect.any(String)]]]));
+    expect(edited.calls).toEqual(expect.arrayContaining([
+      ['select', ['id, progress_claims!inner(status)', { count: 'exact', head: true }]],
+      ['gte', ['updated_at', expect.any(String)]],
+      ['in', ['progress_claims.status', ['DRAFT', 'SUBMITTED', 'RETURNED']]],
+    ]));
+    expect(submitted.calls).toEqual(expect.arrayContaining([['gte', ['submitted_at', expect.any(String)]]]));
+    expect(submitted.calls.some(([, args]) => args[0] === 'updated_at')).toBe(false);
+  });
+
+  it('raises nothing when claim activity cannot be read', async () => {
+    mockProject([0, 0, 0], { message: 'relation "progress_claims" does not exist' });
+    await expect(raisesNoProgress()).resolves.toBe(false);
+  });
+});
+```
+
+- [ ] **Step 2: Run it to verify it fails**
+
+Run: `npx jest tools/__tests__/auditNoProgress.test.ts --testPathIgnorePatterns='/node_modules/'`
+Expected: FAIL — every case throws `TypeError: supabase.from(...).select(...).eq(...).or is not a function` (the old check filters claims with `.or`).
+
+- [ ] **Step 3: Apply the changes**
 
 `tools/derivation.ts` (apply this change):
 
@@ -8831,10 +9636,10 @@ index 35d9b6e..0e74b56 100644
 
 ```diff
 diff --git a/tools/audit.ts b/tools/audit.ts
-index cc3fda8..ff42f94 100644
+index cc3fda8..22d3e7a 100644
 --- a/tools/audit.ts
 +++ b/tools/audit.ts
-@@ -326,18 +326,32 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
+@@ -326,18 +326,39 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
      }
    }
  
@@ -8848,26 +9653,33 @@ index cc3fda8..ff42f94 100644
 -  if ((recentProgress ?? 0) === 0) {
 +  // 4. No progress claimed in 7 days (active project). Since migration 104 a
 +  // progress entry appears only when an estimator verifies a weekly claim, so
-+  // site activity is claim lines created, a draft or returned claim edited, or
-+  // a claim submitted in the window. Verification also touches lines and
-+  // claims, so a VERIFIED claim counts only through its submitted_at. A read
-+  // error (for example 104 not pasted yet) raises no anomaly rather than a
-+  // false one.
-+  const [recentLines, recentClaims] = await Promise.all([
++  // site activity is a claim line created, a line edited while its claim is
++  // still open, or a claim submitted in the window. Returning or verifying a
++  // claim stamps it too, so neither counts on its own: a verified claim counts
++  // through its submitted_at, a returned one through the lines the site edits
++  // afterwards. A read error (for example 104 not pasted yet) raises no
++  // anomaly rather than a false one.
++  const claimActivity = await Promise.all([
 +    supabase
 +      .from('progress_claim_lines')
 +      .select('id', { count: 'exact', head: true })
 +      .eq('project_id', projectId)
 +      .gte('created_at', sevenDaysAgo),
 +    supabase
++      .from('progress_claim_lines')
++      .select('id, progress_claims!inner(status)', { count: 'exact', head: true })
++      .eq('project_id', projectId)
++      .gte('updated_at', sevenDaysAgo)
++      .in('progress_claims.status', ['DRAFT', 'SUBMITTED', 'RETURNED']),
++    supabase
 +      .from('progress_claims')
 +      .select('id', { count: 'exact', head: true })
 +      .eq('project_id', projectId)
-+      .or(`submitted_at.gte.${sevenDaysAgo},and(status.in.(DRAFT,RETURNED),updated_at.gte.${sevenDaysAgo})`),
++      .gte('submitted_at', sevenDaysAgo),
 +  ]);
-+  const claimActivityReadable = !recentLines.error && !recentClaims.error;
++  const claimActivityReadable = claimActivity.every((r) => !r.error);
 +
-+  if (claimActivityReadable && (recentLines.count ?? 0) === 0 && (recentClaims.count ?? 0) === 0) {
++  if (claimActivityReadable && claimActivity.every((r) => (r.count ?? 0) === 0)) {
      anomalies.push({
        type: 'no_progress',
        found: true,
@@ -8878,20 +9690,25 @@ index cc3fda8..ff42f94 100644
      });
 ```
 
-- [ ] **Step 2: Type-check**
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `npx jest tools/__tests__/auditNoProgress.test.ts --testPathIgnorePatterns='/node_modules/'`
+Expected: PASS, 1 suite, 6 tests.
+
+- [ ] **Step 5: Type-check**
 
 Run: `npx tsc --noEmit`
 Expected: exit 0, no output.
 
-- [ ] **Step 3: Run the suites that read progress**
+- [ ] **Step 6: Run the suites that read progress**
 
 Run: `npx jest tools/__tests__/derivation.test.ts tools/__tests__/progressMath.test.ts tools/__tests__/gateAudit.test.ts tools/__tests__/auditPivot.materialFanout.test.ts tools/__tests__/auditPivot.recipeSynthesis.test.ts --testPathIgnorePatterns='/node_modules/'`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add tools/derivation.ts tools/progressMath.ts tools/audit.ts docs/superpowers/specs/2026-09-13-report-driven-progress-design.md
+git add tools/derivation.ts tools/progressMath.ts tools/audit.ts tools/__tests__/auditNoProgress.test.ts docs/superpowers/specs/2026-09-13-report-driven-progress-design.md
 git commit -m "refactor(progress): one writer of installed; audit reads claim activity; spec amendment 18"
 ```
 
@@ -8906,13 +9723,13 @@ Expected: exit 0, no output.
 
 - [ ] **Step 2: Run every suite this plan adds or touches**
 
-Run: `npx jest tools/__tests__/boqWorkGroups.floor.test.ts tools/__tests__/envelopes.workgroup.test.ts tools/__tests__/workGroupDemand.test.ts tools/__tests__/progressClaimsWorkAreaClass.test.ts tools/__tests__/progressClaimsStageWeights.test.ts tools/__tests__/progressClaimsStageMath.test.ts tools/__tests__/progressClaimsReferenceWeights.test.ts tools/__tests__/progressClaimsWeek.test.ts tools/__tests__/progressClaimsRules.test.ts tools/__tests__/progressClaimsView.test.ts tools/__tests__/progressClaimsData.test.ts tools/__tests__/notificationRouting.test.ts tools/__tests__/migration103.test.ts tools/__tests__/migration096.test.ts tools/__tests__/migration104.test.ts tools/__tests__/migration098.test.ts tools/__tests__/migration099.test.ts tools/__tests__/migration100.test.ts tools/__tests__/migration101.test.ts workflows/components/__tests__/StoragePhoto.test.tsx workflows/screens/progressClaim/__tests__/StageClaimForm.test.tsx workflows/screens/progressClaim/__tests__/ProgressClaimPanel.test.tsx office/screens/progressClaim/__tests__/ProgressClaimVerifyPanel.test.tsx workflows/screens/components/__tests__/NotificationList.test.tsx workflows/screens/progressClaim/__tests__/StageWeightsPanel.test.tsx workflows/screens/progressClaim/__tests__/ProgressClaimStatusCard.test.tsx tools/__tests__/derivation.test.ts tools/__tests__/progressMath.test.ts tools/__tests__/gateAudit.test.ts tools/__tests__/auditPivot.materialFanout.test.ts tools/__tests__/auditPivot.recipeSynthesis.test.ts --testPathIgnorePatterns='/node_modules/'`
-Expected: PASS, 31 suites, 530 tests.
+Run: `npx jest tools/__tests__/boqWorkGroups.floor.test.ts tools/__tests__/envelopes.workgroup.test.ts tools/__tests__/workGroupDemand.test.ts tools/__tests__/progressClaimsWorkAreaClass.test.ts tools/__tests__/progressClaimsStageWeights.test.ts tools/__tests__/progressClaimsStageMath.test.ts tools/__tests__/progressClaimsReferenceWeights.test.ts tools/__tests__/progressClaimsWeek.test.ts tools/__tests__/progressClaimsRules.test.ts tools/__tests__/progressClaimsView.test.ts tools/__tests__/progressClaimsData.test.ts tools/__tests__/notificationRouting.test.ts tools/__tests__/migration103.test.ts tools/__tests__/migration096.test.ts tools/__tests__/migration104.test.ts tools/__tests__/migration098.test.ts tools/__tests__/migration099.test.ts tools/__tests__/migration100.test.ts tools/__tests__/migration101.test.ts workflows/components/__tests__/StoragePhoto.test.tsx workflows/screens/progressClaim/__tests__/StageClaimForm.test.tsx workflows/screens/progressClaim/__tests__/ProgressClaimPanel.test.tsx workflows/__tests__/pendingDeeplink.test.ts office/screens/progressClaim/__tests__/ProgressClaimVerifyPanel.test.tsx workflows/screens/components/__tests__/NotificationList.test.tsx workflows/screens/progressClaim/__tests__/StageWeightsPanel.test.tsx workflows/screens/progressClaim/__tests__/ProgressClaimStatusCard.test.tsx tools/__tests__/auditNoProgress.test.ts tools/__tests__/derivation.test.ts tools/__tests__/progressMath.test.ts tools/__tests__/gateAudit.test.ts tools/__tests__/auditPivot.materialFanout.test.ts tools/__tests__/auditPivot.recipeSynthesis.test.ts --testPathIgnorePatterns='/node_modules/'`
+Expected: PASS, 33 suites, 553 tests.
 
 - [ ] **Step 3: Rehearse the migrations and stop the container**
 
 Run: `supabase/tests/progress_claims_rehearsal/run.sh --stop`
-Expected: `PASS=153 FAIL=0 ERROR=0`.
+Expected: `PASS=155 FAIL=0 ERROR=0`.
 
 - [ ] **Step 4: Bundle the web app** (CI never runs Metro; an import that only breaks the bundle fails first on Vercel)
 
