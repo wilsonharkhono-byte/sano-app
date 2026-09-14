@@ -75,7 +75,7 @@ function formatFloorToken(token: string): string {
   return cleaned.toUpperCase();
 }
 
-function extractFloorContext(raw: string | null | undefined): string | null {
+export function extractFloorContext(raw: string | null | undefined): string | null {
   const compact = (raw ?? '').replace(/\s+/g, ' ').trim();
   if (!compact) return null;
   if (/\bsemi\s*basement\b/i.test(compact)) return 'Semi Basement';
@@ -95,7 +95,7 @@ function extractFloor(item: ClassifyInput): string | null {
 }
 
 // Floor ordering for stable group sort (basement < dasar < numbered < atap).
-function floorRank(floor: string | null): number {
+export function floorRank(floor: string | null): number {
   if (!floor) return 0;
   if (/semi\s*basement/i.test(floor)) return -3;
   if (/basement/i.test(floor)) return -2;
