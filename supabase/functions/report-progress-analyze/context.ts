@@ -12,7 +12,22 @@ export const PHOTOS_BUCKET = 'photos';
 export const SITE_MEDIA_BUCKET = 'site-media';
 export const SITE_MEDIA_PREFIX = `${SITE_MEDIA_BUCKET}:`;
 
+/** A lease older than this is presumed abandoned (a killed isolate) and may be taken over. */
+export const LINK_CLAIM_TTL_MS = 2 * 60 * 1000;
+
 export interface FrozenLine { id: string; line_index: number; status: string; line_text: string }
+
+/**
+ * PostgREST `or` filter matching a report whose link lease is free: never
+ * taken, older than the TTL, or dated more than one TTL in the future. The
+ * last case matters because the column is member-writable (migration 051):
+ * a far-future value would otherwise block linking forever.
+ */
+export function leaseFreeFilter(nowMs: number, ttlMs: number = LINK_CLAIM_TTL_MS): string {
+  const staleBefore = new Date(nowMs - ttlMs).toISOString();
+  const tamperedAfter = new Date(nowMs + ttlMs).toISOString();
+  return `link_claimed_at.is.null,link_claimed_at.lt.${staleBefore},link_claimed_at.gt.${tamperedAfter}`;
+}
 export interface SnapshotLine { index: number; area: string; note: string; text: string }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

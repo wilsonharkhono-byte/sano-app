@@ -16,7 +16,7 @@ import { validateReportLineLinks } from './validate.ts';
 import { buildClaudeRequest, buildSystemPrompt, buildUserPrompt, readClaudeResponse, type ClaudeImage, type LinkPromptContext } from './prompt.ts';
 import { claudeCostUsd, type ClaudeUsage } from './cost.ts';
 import {
-  linesFromSnapshot, photoRefsFromSnapshot, promptLinesFromFrozen, recentFromRows, storageTarget, type FrozenLine,
+  leaseFreeFilter, linesFromSnapshot, photoRefsFromSnapshot, promptLinesFromFrozen, recentFromRows, storageTarget, type FrozenLine,
 } from './context.ts';
 import {
   AI_QUOTA_MESSAGE, TIMEOUT_ERROR, bytesToBase64, fetchWithTimeout, isTimeoutError, isUuid, isoDaysBefore,
@@ -38,8 +38,6 @@ const MAX_IMAGE_BYTES = 3_500_000;
 const MAX_TOTAL_IMAGE_BYTES = 20_000_000;
 const CONTINUITY_DAYS = 14;
 const MAX_RECENT_LINKS = 60;
-/** A lease older than this is presumed abandoned (a killed isolate) and may be taken over. */
-const LINK_CLAIM_TTL_MS = 2 * 60 * 1000;
 
 const DEADLINE_MS = 110_000;
 const CLAUDE_BUDGET_MS = 90_000;
@@ -236,21 +234,32 @@ async function linkReport(admin: SupabaseClient, reportId: string, force: boolea
   // ── Lease: one linker per report. A conditional UPDATE only succeeds for one
   //    caller; a lease older than the TTL belongs to a killed isolate and may
   //    be taken over. Released on every exit below.
-  const staleBefore = new Date(Date.now() - LINK_CLAIM_TTL_MS).toISOString();
+  const now = Date.now();
+  const claimedAt = new Date(now).toISOString();
   const { data: leased, error: leaseError } = await admin
     .from('client_progress_reports')
-    .update({ link_claimed_at: new Date().toISOString() })
+    .update({ link_claimed_at: claimedAt })
     .eq('id', report.id)
-    .or(`link_claimed_at.is.null,link_claimed_at.lt.${staleBefore}`)
+    .or(leaseFreeFilter(now))
     .select('id');
-  if (leaseError || !leased || leased.length === 0) {
+  // A failed statement is not a busy lease (e.g. migration 101 not pasted yet).
+  if (leaseError) {
+    return json({ ok: false, code: 'CONTEXT', error: truncate(`Kunci tautan tidak bisa diambil: ${leaseError.message}`, 300) }, 500);
+  }
+  if (!leased || leased.length === 0) {
     return json({ ok: false, code: 'LINK_IN_PROGRESS', error: 'Tautan AI sedang berjalan untuk laporan ini. Tunggu sebentar lalu muat ulang.' }, 409);
   }
 
   try {
-    return await linkLeased(admin, report, rows, snapshotLines, force, remainingMs);
+    return await linkLeased(admin, report, String(projectRes.data.name ?? ''), rows, snapshotLines, force, remainingMs);
   } finally {
-    const { error } = await admin.from('client_progress_reports').update({ link_claimed_at: null }).eq('id', report.id);
+    // Release only our own lease: if this run outlived the TTL and another
+    // caller took over, their value must survive.
+    const { error } = await admin
+      .from('client_progress_reports')
+      .update({ link_claimed_at: null })
+      .eq('id', report.id)
+      .eq('link_claimed_at', claimedAt);
     if (error) console.error(`report-progress-analyze: lease release failed for report ${report.id}:`, error.message);
   }
 }
@@ -258,6 +267,7 @@ async function linkReport(admin: SupabaseClient, reportId: string, force: boolea
 async function linkLeased(
   admin: SupabaseClient,
   report: ReportRow,
+  projectName: string,
   rows: BoqRow[],
   snapshotLines: ReturnType<typeof linesFromSnapshot>,
   force: boolean,
@@ -323,7 +333,7 @@ async function linkLeased(
   }
 
   const ctx: LinkPromptContext = {
-    projectName: String((await admin.from('projects').select('name').eq('id', report.project_id).single()).data?.name ?? ''),
+    projectName,
     todayLabel: jakartaTodayLabel(new Date().toISOString()),
     reportLabel: `#${report.report_no}${(report.revision ?? 1) > 1 ? ` R${report.revision}` : ''}`,
     periodLabel: report.period_start === report.period_end ? report.period_start : `${report.period_start} – ${report.period_end}`,

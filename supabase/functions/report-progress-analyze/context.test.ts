@@ -1,7 +1,7 @@
 // supabase/functions/report-progress-analyze/context.test.ts
 import { assertEquals } from 'std/assert';
 import {
-  isPhotoPathInProject, linesFromSnapshot, photoRefsFromSnapshot, promptLinesFromFrozen, recentFromRows, storageTarget,
+  isPhotoPathInProject, leaseFreeFilter, linesFromSnapshot, photoRefsFromSnapshot, promptLinesFromFrozen, recentFromRows, storageTarget,
 } from './context.ts';
 
 const PID = '11e59d22-5aa8-436e-b82d-ccbd6c2bdd7d';
@@ -43,6 +43,27 @@ Deno.test('isPhotoPathInProject allows only this project\'s report, daily-log an
   assertEquals(isPhotoPathInProject(`client-report/${PID}/`, PID), false);
   assertEquals(isPhotoPathInProject(`client-report/${PID}/../${OTHER}/x.jpg`, PID), false);
   assertEquals(isPhotoPathInProject(`client-report/${PID}/1.jpg`, ''), false);
+});
+
+Deno.test('isPhotoPathInProject refuses bucket/folder crossovers and traversal hidden in a signed URL', () => {
+  assertEquals(isPhotoPathInProject(`site-media:client-report/${PID}/x.jpg`, PID), false);
+  assertEquals(isPhotoPathInProject(`site-events/${PID}/e/m.jpg`, PID), false);
+  const { refs, outOfScope } = photoRefsFromSnapshot({
+    thumbs: [
+      { url: `https://x.supabase.co/storage/v1/object/sign/photos/client-report/${PID}/%2e%2e/${OTHER}/x.jpg?token=t` },
+      { url: `https://x.supabase.co/storage/v1/object/sign/avatars/client-report/${PID}/x.jpg?token=t` },
+    ],
+  }, PID, 8);
+  assertEquals(refs, []);
+  assertEquals(outOfScope, 2);
+});
+
+Deno.test('leaseFreeFilter frees a null, a stale and a far-future lease, and nothing else', () => {
+  const now = Date.parse('2026-09-14T01:00:00.000Z');
+  assertEquals(
+    leaseFreeFilter(now),
+    'link_claimed_at.is.null,link_claimed_at.lt.2026-09-14T00:58:00.000Z,link_claimed_at.gt.2026-09-14T01:02:00.000Z',
+  );
 });
 
 Deno.test('photoRefsFromSnapshot prefers stored paths, recovers URLs, counts out-of-scope, and caps', () => {

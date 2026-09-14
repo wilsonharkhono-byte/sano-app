@@ -83,9 +83,10 @@ CREATE INDEX IF NOT EXISTS idx_progress_ai_runs_report
 -- ───────────────────────────────────────────────────────────────────────────
 -- 1b. Lease column: one linker per report. The edge function takes it with a
 --     conditional UPDATE before any provider spend and clears it on exit; a
---     value older than two minutes is an abandoned lease and may be taken over.
---     Member-writable like the rest of the row (051), which can only ever
---     delay a link by that TTL.
+--     value older than two minutes is an abandoned lease and may be taken over,
+--     and so is one dated more than two minutes in the FUTURE: the column is
+--     member-writable like the rest of the row (051), and a far-future value
+--     would otherwise block linking forever.
 -- ───────────────────────────────────────────────────────────────────────────
 
 ALTER TABLE client_progress_reports ADD COLUMN IF NOT EXISTS link_claimed_at TIMESTAMPTZ;
@@ -148,7 +149,13 @@ BEGIN
   -- Every role, every path: a line may only point at a row of the report's
   -- own project. The FK alone would let a member confirm a line to another
   -- project's row, and Plan B groups CONFIRMED lines by boq_item_id.
-  IF NEW.boq_item_id IS NOT NULL AND NOT EXISTS (
+  -- Checked only when the column is actually written: an unchanged value was
+  -- checked when it was set, and an ON DELETE SET NULL cascade clearing ONE
+  -- of the two columns must not trip over the other still naming the row
+  -- being deleted. (OLD reads as NULL in an INSERT trigger on PG 11+.)
+  IF NEW.boq_item_id IS NOT NULL
+     AND (TG_OP = 'INSERT' OR NEW.boq_item_id IS DISTINCT FROM OLD.boq_item_id)
+     AND NOT EXISTS (
        SELECT 1 FROM boq_items b
        JOIN client_progress_reports r ON r.id = NEW.report_id
        WHERE b.id = NEW.boq_item_id AND b.project_id = r.project_id
@@ -156,7 +163,9 @@ BEGIN
     RAISE EXCEPTION 'CLIENT_REPORT_LINES_ROW_PROJECT: baris BoQ bukan milik proyek laporan ini'
       USING ERRCODE = 'check_violation';
   END IF;
-  IF NEW.ai_boq_item_id IS NOT NULL AND NOT EXISTS (
+  IF NEW.ai_boq_item_id IS NOT NULL
+     AND (TG_OP = 'INSERT' OR NEW.ai_boq_item_id IS DISTINCT FROM OLD.ai_boq_item_id)
+     AND NOT EXISTS (
        SELECT 1 FROM boq_items b
        JOIN client_progress_reports r ON r.id = NEW.report_id
        WHERE b.id = NEW.ai_boq_item_id AND b.project_id = r.project_id
@@ -175,10 +184,10 @@ BEGIN
       USING ERRCODE = 'insufficient_privilege';
   END IF;
 
-  -- A decision is signed by whoever makes it, whatever the client sent.
+  -- A decision is signed and timed by the server, whatever the client sent.
   IF NEW.status IN ('CONFIRMED', 'DISMISSED') THEN
     NEW.confirmed_by := auth.uid();
-    NEW.confirmed_at := COALESCE(NEW.confirmed_at, now());
+    NEW.confirmed_at := now();
   END IF;
 
   IF NEW.report_id IS DISTINCT FROM OLD.report_id
