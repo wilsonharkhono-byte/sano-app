@@ -62,7 +62,13 @@ function RoleRouter() {
     return cleanup;
   }, []);
 
-  if (loading) {
+  // Block on the spinner only until the first load finishes. A later refresh
+  // or project switch also sets loading; unmounting the navigator then would
+  // throw the user back to the first tab and drop the route params a
+  // notification just delivered.
+  const firstLoadDone = useRef(false);
+  if (!loading) firstLoadDone.current = true;
+  if (loading && !firstLoadDone.current) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.bg }}>
         <ActivityIndicator size="large" color={COLORS.accent} />

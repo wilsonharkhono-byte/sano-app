@@ -75,20 +75,19 @@ export default function LaporanScreen() {
     onOrder: number;
   } | null>(null);
 
+  // Route params apply once per navigation. Every navigate hands over a new
+  // params object, so opening the same section again after a manual tab
+  // switch still lands. Claim deeplinks also carry projectId and reload the
+  // claim panel.
+  const [claimReloadKey, setClaimReloadKey] = useState(0);
+  const appliedParams = useRef<unknown>(null);
   useEffect(() => {
-    const nextSection = route.params?.initialSection as Section | undefined;
-    if (nextSection) {
-      setActiveSection(nextSection);
-    }
-  }, [route.params?.initialSection]);
-
-  // A notification can name another project (claim deeplinks carry projectId).
-  const appliedProjectParam = useRef<unknown>(null);
-  useEffect(() => {
-    const params = route.params as { projectId?: string } | undefined;
-    if (!params?.projectId || appliedProjectParam.current === params) return;
-    appliedProjectParam.current = params;
-    if (params.projectId !== project?.id) setActiveProject(params.projectId);
+    const params = route.params as { initialSection?: Section; projectId?: string } | undefined;
+    if (!params || appliedParams.current === params) return;
+    appliedParams.current = params;
+    if (params.projectId && params.projectId !== project?.id) setActiveProject(params.projectId);
+    if (params.initialSection) setActiveSection(params.initialSection);
+    if (params.initialSection === 'klaim') setClaimReloadKey((k) => k + 1);
   }, [route.params, project?.id, setActiveProject]);
 
   useEffect(() => {
@@ -747,7 +746,7 @@ export default function LaporanScreen() {
         {activeSection === 'klaim' && project && (
           <>
             <Text style={styles.sectionHead}>Klaim Progres Mingguan</Text>
-            <ProgressClaimPanel projectId={project.id} role={profile?.role} boqItems={boqItems} toast={toast} />
+            <ProgressClaimPanel projectId={project.id} role={profile?.role} boqItems={boqItems} reloadKey={claimReloadKey} toast={toast} />
           </>
         )}
 

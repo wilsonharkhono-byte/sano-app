@@ -90,7 +90,9 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
     }
     const target = NOTIFICATION_ROUTE_MAP[item.deeplinkScreen] ?? item.deeplinkScreen;
     try {
-      navigation.navigate(target, item.deeplinkParams ?? {});
+      // A fresh params object per tap, so a screen that applies params once per
+      // navigation still reacts to a second tap on the same notification.
+      navigation.navigate(target, { ...(item.deeplinkParams ?? {}) });
     } catch {
       // Route not in current role's nav — stay on Notifikasi (no-op).
     }

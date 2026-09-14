@@ -20,7 +20,7 @@ type SubModule = 'home' | 'progress' | 'perubahan' | 'daily-log';
 
 export default function ProgresScreen() {
   const navigation = useNavigation<any>();
-  const { boqItems, project, profile, setActiveProject } = useProject();
+  const { boqItems, project, profile, setActiveProject, refresh } = useProject();
   const { show: toast } = useToast();
   const [activeModule, setActiveModule] = useState<SubModule>('home');
   const [selectedProgressItemId, setSelectedProgressItemId] = useState<string | null>(null);
@@ -41,6 +41,7 @@ export default function ProgresScreen() {
   // ── Tambah progres: the weekly stage claim (report-driven progress spec §16) ──
   const route = useRoute<any>();
   const [claimRowId, setClaimRowId] = useState<string | null>(null);
+  const [claimReloadKey, setClaimReloadKey] = useState(0);
   const appliedParams = useRef<unknown>(null);
 
   // A claim notification (migration 104: PROGRESS_CLAIM_RETURNED / _VERIFIED)
@@ -54,8 +55,13 @@ export default function ProgresScreen() {
     if (params.module === 'progress') {
       setClaimRowId(null);
       setActiveModule('progress');
+      // A returned or verified claim changed what the panel and boq_items
+      // show: reload the panel even if it is already open, and the project
+      // data behind Progres Terkini and Beranda.
+      setClaimReloadKey((k) => k + 1);
+      void refresh();
     }
-  }, [route.params, project?.id, setActiveProject]);
+  }, [route.params, project?.id, setActiveProject, refresh]);
 
   const loadHomeDetails = useCallback(async () => {
     if (!project) return;
@@ -198,7 +204,7 @@ export default function ProgresScreen() {
                 <Text style={styles.expandTitle}>Progres Terkini per Item</Text>
                 <Ionicons name={showRecentProgress ? 'chevron-up' : 'chevron-down'} size={18} color={COLORS.textSec} />
               </TouchableOpacity>
-              <Text style={styles.sectionHint}>Tap item untuk buka detail progres dan tambah entri baru untuk item yang sama.</Text>
+              <Text style={styles.sectionHint}>Ketuk item untuk melihat riwayat progres terverifikasi atau mengisi klaim minggu ini.</Text>
               {showRecentProgress && (
                 <>
                   {boqItems.filter(b => b.progress > 0).map(b => (
@@ -314,6 +320,7 @@ export default function ProgresScreen() {
               role={profile?.role}
               boqItems={boqItems}
               initialRowId={claimRowId}
+              reloadKey={claimReloadKey}
               toast={toast}
             />
           </>
@@ -349,7 +356,7 @@ const styles = StyleSheet.create({
 
   expandHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: SPACE.xs },
   expandTitle:  { fontSize: TYPE.sm, fontFamily: FONTS.bold, textTransform: 'uppercase', letterSpacing: 0.3, color: COLORS.text },
-  sectionHint:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, lineHeight: 17, marginBottom: SPACE.sm },
+  sectionHint:  { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, lineHeight: 18, marginBottom: SPACE.sm },
 
   // Sub header
   subHeader: { flexDirection: 'row', alignItems: 'center', gap: SPACE.md, marginBottom: SPACE.md, marginTop: SPACE.sm },

@@ -44,18 +44,19 @@ export default function OfficeReportsScreen() {
   const [activeSection, setActiveSection] = useState<Section>(route.params?.initialSection ?? 'overview');
   const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
 
+  // Route params apply once per navigation. Every navigate hands over a new
+  // params object, so opening Klaim again after a manual tab switch still
+  // lands. A claim notification (migration 104) also names its project and
+  // reloads the verification panel and the badge.
+  const [claimReloadKey, setClaimReloadKey] = useState(0);
+  const appliedParams = useRef<unknown>(null);
   useEffect(() => {
-    const nextSection = route.params?.initialSection as Section | undefined;
-    if (nextSection) setActiveSection(nextSection);
-  }, [route.params?.initialSection]);
-
-  // A claim notification (migration 104) names its project; open it once per navigation.
-  const appliedProjectParam = useRef<unknown>(null);
-  useEffect(() => {
-    const params = route.params as { projectId?: string } | undefined;
-    if (!params?.projectId || appliedProjectParam.current === params) return;
-    appliedProjectParam.current = params;
-    if (params.projectId !== project?.id) setActiveProject(params.projectId);
+    const params = route.params as { initialSection?: Section; projectId?: string } | undefined;
+    if (!params || appliedParams.current === params) return;
+    appliedParams.current = params;
+    if (params.projectId && params.projectId !== project?.id) setActiveProject(params.projectId);
+    if (params.initialSection) setActiveSection(params.initialSection);
+    if (params.initialSection === 'klaim') setClaimReloadKey((k) => k + 1);
   }, [route.params, project?.id, setActiveProject]);
 
   // Claims waiting for verification on the active project, for the Klaim tab badge.
@@ -67,7 +68,7 @@ export default function OfficeReportsScreen() {
       .then((n) => { if (alive) setPendingClaims(n); })
       .catch(() => { if (alive) setPendingClaims(0); });
     return () => { alive = false; };
-  }, [project, activeSection]);
+  }, [project, activeSection, claimReloadKey]);
   const { width } = useWindowDimensions();
   const isTablet  = width >= BREAKPOINTS.tablet;
   const isDesktop = width >= BREAKPOINTS.desktop;
@@ -232,6 +233,7 @@ export default function OfficeReportsScreen() {
             projectId={project.id}
             profile={profile ? { id: profile.id, role: profile.role } : null}
             boqItems={boqItems}
+            reloadKey={claimReloadKey}
             toast={toast}
             onVerified={() => { void refresh(); }}
             onChanged={() => {
