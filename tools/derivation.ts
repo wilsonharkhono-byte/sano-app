@@ -519,39 +519,12 @@ export async function deriveMaterialBalance(projectId: string): Promise<Material
   return balances.sort((a, b) => a.material_name.localeCompare(b.material_name));
 }
 
-// ── Sync Derived Totals Back to BoQ ─────────────────────────────────
-// Updates boq_items.installed from derived totals. Call after progress entries.
-
-export async function syncBoqInstalledFromDerived(projectId: string): Promise<number> {
-  const totals = await deriveBoqInstalledTotals(projectId);
-  let updated = 0;
-
-  for (const t of totals) {
-    const { error } = await supabase
-      .from('boq_items')
-      .update({
-        installed: t.total_installed,
-        progress: 0, // Will be recomputed below
-      })
-      .eq('id', t.boq_item_id);
-
-    if (!error) {
-      // Recompute progress percentage
-      const { data: item } = await supabase
-        .from('boq_items')
-        .select('planned')
-        .eq('id', t.boq_item_id)
-        .single();
-
-      if (item && item.planned > 0) {
-        const pct = Math.min(100, Math.round((t.total_installed / item.planned) * 100));
-        await supabase.from('boq_items').update({ progress: pct }).eq('id', t.boq_item_id);
-      }
-      updated++;
-    }
-  }
-  return updated;
-}
+// ── boq_items.installed has one writer ───────────────────────────────
+// verify_progress_claim (migration 104) sets installed and progress and
+// records every change as a progress_entries row, negative for a correction,
+// so a claimed row's entries always sum to its installed column. The client
+// sync that used to recompute both from progress_entries was removed with the
+// quantity form it served (report-driven progress spec §16, §18).
 
 // ── Control-aware Material Balance ───────────────────────────────────
 // Merges quantity balances with Rupiah budgets into one row per material.

@@ -309,3 +309,33 @@ Findings from the live database and a spike over the five RAB workbooks in `asse
 **Revisions.** A re-issued report gets fresh line rows (the §5.1 carry-forward was not built in Plan A). Claim aggregation (§6.2) and the prefill read CONFIRMED lines from the latest revision of each `report_no` only, so an older revision never counts twice.
 
 **Screen size.** Before Plan B adds claim entry points, `workflows/screens/ClientReportBuilderScreen.tsx` is split into a `useReportLinking` hook, a history card and an issued-report view.
+
+## 18. Amendment 2026-09-14 — Plan B1 as built
+
+Settled while writing and rehearsing Plan B1 (`docs/superpowers/plans/2026-09-14-report-driven-progress-plan-b.md`). Where this section and §5.4, §6.2 or §11 disagree, this section wins.
+
+**Split.** Plan B ships in two parts. B1 (this amendment): stage weights, Tambah progres as the stage claim, weekly submit, estimator verification, notifications and the principal card, with no AI. B2: the `prefill` stage, the SANO Input weight columns, weights derived from AHS lines, and the ClientReportBuilderScreen split (§17), since B2 adds the first claim entry point there. Plan C keeps the cross-check flags.
+
+**Weights seed themselves, from a class.** A row without weights cannot be claimed. When a supervisor, estimator or admin opens the claim screen, rows without weights receive the reference profile of their work-area class through `seed_reference_stage_weights`. The client sends only the class; the numbers live in migration 103 and a static test pins them to `referenceStageWeights.data.ts`. Seeding never overwrites a row. Estimators and admins edit, switch to one stage, or reset to the reference in Baseline › Bobot Tahapan. Once a row has a claim line, its weights can change value but not shape (one stage versus three).
+
+**One claim in progress per project** replaces `unique (project_id, week_start)`: a partial unique index over DRAFT, SUBMITTED and RETURNED. `week_start` is the WIB Monday of the week the claim opened, and a second claim may open in the same week once the first is verified.
+
+**Every write is an RPC.** `progress_claims` and `progress_claim_lines` have read policies only. `save_progress_claim_line`, `remove_progress_claim_line`, `submit_progress_claim`, `return_progress_claim` and `verify_progress_claim` re-check membership, role, claim state, weights, planned volume, percents, photo paths and regressions, and raise code-prefixed refusals mapped to Indonesian copy in `claimRules.ts`. Every progress RPC needs a signed-in person; the service role can neither claim nor verify.
+
+**Separation of duties.** Supervisors, estimators and admins may save and submit; estimators and admins verify or return; whoever submitted a claim cannot verify it (`CLAIM_SELF_VERIFY`). The principal reads.
+
+**Corrections are negative entries.** This replaces the direct `installed` write for regressions in §6.2 step 5 and the derivation rule in §6.2 step 6. `progress_entries.quantity` may now be negative but never zero. Per line, verification writes one entry of `planned × row fraction − Σ existing entries`, so a claimed row's entries always sum to `boq_items.installed`, and every reader of either agrees: the progress report, the client report's installed-as-of history and the screens. A figure below the verified one needs a reason, at save and at verify. `syncBoqInstalledFromDerived` is removed; it had no caller once the quantity form went.
+
+**Row fraction** is divided by the weights' own sum, so weights of 0.333 / 0.333 / 0.333 still reach 100 % when every stage is complete (§7.5). `boq_items.progress` keeps one decimal.
+
+**Direct supervisor writes close.** Migration 104 drops `progress_entries_assigned_insert` (002) and `boq_items_assigned_progress_update` (059). Office roles keep the access 036 gives them, which BoQ publishing needs.
+
+**Evidence in B1.** Claim photos are storage paths under `progress/<project id>/`, at most 12 per line, replaced as a set on each save; the app asks for at least one photo when a row's figure rises. Verification copies a line's photos to `progress_photos` for a positive entry. The overview counts confirmed Blueprint lines per row since the claim's week start, from the latest revision of each report only.
+
+**Notifications.** `PROGRESS_CLAIM_SUBMITTED` goes to the project's estimators other than the submitter (its admins when there are none) and deeplinks `ProgressClaimVerify` (office Reports › Klaim). `PROGRESS_CLAIM_RETURNED` and `PROGRESS_CLAIM_VERIFIED` go to the submitter and deeplink `ProgressClaim` (the supervisor's Progres tab; Reports on an office navigator). The type list is 098's thirteen plus these three.
+
+**Entry points.** Progres tab: Tambah progres opens the claim panel, and "Tambah progres untuk item ini" opens that row. Laporan: a Klaim Progres Mingguan card opens the same panel, without a fifth tab, so the tab row cannot overflow at 360 dp. Office Reports: a Klaim tab with a pending badge; the principal sees it read-only. Baseline: Bobot Tahapan. Principal home: Klaim Progres Minggu Ini, next to Progres vs Jadwal.
+
+**Audit.** The "no progress in 7 days" anomaly counts claim lines saved in the window instead of progress entries, and raises nothing when the table cannot be read.
+
+**Rehearsal.** `supabase/tests/progress_claims_rehearsal/run.sh` applies 001–102 to a disposable local `supabase/postgres` container, pastes 103 and 104 twice, and runs 117 behaviour checks as a supervisor, two estimators, an admin, the principal and an outsider.

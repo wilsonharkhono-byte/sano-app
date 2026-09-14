@@ -326,18 +326,21 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
     }
   }
 
-  // 4. No progress entries in 7 days (active project)
-  const { count: recentProgress } = await supabase
-    .from('progress_entries')
-    .select('*', { count: 'exact', head: true })
+  // 4. No progress claimed in 7 days (active project). Since migration 104 a
+  // progress entry appears only when an estimator verifies a weekly claim, so
+  // site activity is the claim lines saved, not the entries. A read error
+  // (for example 104 not pasted yet) raises no anomaly rather than a false one.
+  const { count: recentClaimLines, error: claimLinesError } = await supabase
+    .from('progress_claim_lines')
+    .select('id', { count: 'exact', head: true })
     .eq('project_id', projectId)
-    .gte('created_at', sevenDaysAgo);
+    .gte('updated_at', sevenDaysAgo);
 
-  if ((recentProgress ?? 0) === 0) {
+  if (!claimLinesError && (recentClaimLines ?? 0) === 0) {
     anomalies.push({
       type: 'no_progress',
       found: true,
-      description: 'Tidak ada entri progres dalam 7 hari terakhir',
+      description: 'Tidak ada klaim progres dalam 7 hari terakhir',
       entityId: projectId,
       severity: 'WARNING',
     });
