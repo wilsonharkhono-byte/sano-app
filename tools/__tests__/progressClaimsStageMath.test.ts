@@ -1,5 +1,5 @@
 // tools/__tests__/progressClaimsStageMath.test.ts
-import { clampPct, claimDelta, rowFraction, workStatusFor } from '../progressClaims/stageMath';
+import { clampPct, claimDelta, deltaFromInstalled, rowFraction, workStatusFor } from '../progressClaims/stageMath';
 
 const split = { BEKISTING: 0.368, PEMBESIAN: 0.38, PENGECORAN: 0.252 };
 
@@ -52,5 +52,13 @@ describe('workStatusFor', () => {
 describe('rowFraction normalization', () => {
   it('reaches 1 when every stage is complete even if the weights sum to 0.999', () => {
     expect(rowFraction({ BEKISTING: 0.333, PEMBESIAN: 0.333, PENGECORAN: 0.333 }, { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 100 })).toBe(1);
+  });
+});
+
+describe('deltaFromInstalled', () => {
+  it('writes the difference from what the entries already sum to', () => {
+    expect(deltaFromInstalled(100, 32.6, 0.6176)).toMatchObject({ installedAfter: 61.76, deltaQuantity: 29.16, regression: false });
+    expect(deltaFromInstalled(100, 52.04, 0.4)).toMatchObject({ installedAfter: 40, deltaQuantity: -12.04, regression: true });
+    expect(deltaFromInstalled(10, 0, 0.5)).toMatchObject({ installedAfter: 5, deltaQuantity: 5, progressAfter: 50, unchanged: false });
   });
 });

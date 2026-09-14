@@ -47,6 +47,25 @@ export function claimDelta(planned: number, previousFraction: number, newFractio
   };
 }
 
+/**
+ * What verify_progress_claim writes for a row (migration 104): installed
+ * becomes planned x newFraction (4 decimals), and the entry is the difference
+ * from what the row's entries already sum to. Unlike claimDelta, this follows
+ * weight or planned-volume changes made since the last verification.
+ */
+export function deltaFromInstalled(planned: number, installedBefore: number, newFraction: number): ClaimDelta {
+  const round4 = (n: number) => Math.round(n * 1e4) / 1e4;
+  const installedAfter = round4(planned * newFraction);
+  const deltaQuantity = round4(installedAfter - installedBefore);
+  return {
+    deltaQuantity: deltaQuantity === 0 ? 0 : deltaQuantity,
+    installedAfter,
+    progressAfter: Math.round(newFraction * 1000) / 10,
+    regression: deltaQuantity < 0,
+    unchanged: deltaQuantity === 0,
+  };
+}
+
 export function workStatusFor(fraction: number): 'COMPLETE' | 'IN_PROGRESS' {
   return fraction >= 1 - 1e-6 ? 'COMPLETE' : 'IN_PROGRESS';
 }

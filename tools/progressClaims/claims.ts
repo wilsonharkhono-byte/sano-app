@@ -5,7 +5,7 @@
 // message is the Indonesian sentence from mapClaimRpcError.
 import { supabase } from '../supabase';
 import { mapClaimRpcError, type ClaimStatus } from './claimRules';
-import { countLinesByRow, latestRevisionReportIds, latestVerifiedByRow, type VerifiedLineRow } from './claimView';
+import { countLinesByRow, latestRevisionReportIds } from './claimView';
 import type { StagePct } from './stageMath';
 import type { StageWeights, WeightSource } from './stageWeights';
 import type { WorkAreaClass } from './workAreaClass';
@@ -46,6 +46,8 @@ export interface ProgressClaimLine {
   regress_reason: string | null;
   note: string | null;
   evidence: { photo_refs?: string[]; report_line_ids?: string[] } | null;
+  created_by: string;
+  updated_by: string;
   created_at: string;
   updated_at: string;
 }
@@ -61,7 +63,7 @@ export interface StageWeightRow {
 const CLAIM_COLUMNS =
   'id, project_id, week_start, status, created_by, created_at, updated_at, submitted_by, submitted_at, returned_by, returned_at, return_note, verified_by, verified_at, verifier_note';
 const LINE_COLUMNS =
-  'id, claim_id, project_id, boq_item_id, prev_verified, claimed_pct, verified_pct, weights_snapshot, row_pct_prev, row_pct_new, installed_before, delta_quantity, regress_reason, note, evidence, created_at, updated_at';
+  'id, claim_id, project_id, boq_item_id, prev_verified, claimed_pct, verified_pct, weights_snapshot, row_pct_prev, row_pct_new, installed_before, delta_quantity, regress_reason, note, evidence, created_by, updated_by, created_at, updated_at';
 
 async function callRpc<T>(name: string, args: Record<string, unknown>): Promise<T> {
   const { data, error } = await supabase.rpc(name, args);
@@ -116,15 +118,24 @@ export async function listClaimLines(claimId: string): Promise<ProgressClaimLine
   return (data ?? []) as ProgressClaimLine[];
 }
 
-/** Each row's most recently verified stage percents. */
+/** Each row's most recently verified stage percents, one row per BoQ item (migration 104 view). */
 export async function listVerifiedStagePct(projectId: string): Promise<Map<string, StagePct>> {
   const { data, error } = await supabase
-    .from('progress_claim_lines')
-    .select('boq_item_id, verified_pct, updated_at, progress_claims!inner(status, verified_at)')
-    .eq('project_id', projectId)
-    .eq('progress_claims.status', 'VERIFIED');
+    .from('progress_claim_latest_verified')
+    .select('boq_item_id, verified_pct')
+    .eq('project_id', projectId);
   if (error) throw error;
-  return latestVerifiedByRow((data ?? []) as unknown as VerifiedLineRow[]);
+  return new Map(((data ?? []) as Array<{ boq_item_id: string; verified_pct: StagePct }>).map((r) => [r.boq_item_id, r.verified_pct]));
+}
+
+/** What each row's progress entries sum to, one row per BoQ item (migration 104 view). Verification writes the difference from this. */
+export async function listEntryTotals(projectId: string): Promise<Map<string, number>> {
+  const { data, error } = await supabase
+    .from('progress_entry_totals')
+    .select('boq_item_id, installed_total')
+    .eq('project_id', projectId);
+  if (error) throw error;
+  return new Map(((data ?? []) as Array<{ boq_item_id: string; installed_total: number | string }>).map((r) => [r.boq_item_id, Number(r.installed_total) || 0]));
 }
 
 export async function listStageWeights(projectId: string): Promise<StageWeightRow[]> {
@@ -221,7 +232,7 @@ export async function removeClaimLine(lineId: string): Promise<{ claim_id: strin
   return callRpc('remove_progress_claim_line', { p_line_id: lineId });
 }
 
-export async function submitClaim(claimId: string): Promise<{ claim_id: string; status: ClaimStatus; lines: number; notified: number }> {
+export async function submitClaim(claimId: string): Promise<{ claim_id: string; status: ClaimStatus; lines: number; notified: number; verifiers_notified: number }> {
   return callRpc('submit_progress_claim', { p_claim_id: claimId });
 }
 

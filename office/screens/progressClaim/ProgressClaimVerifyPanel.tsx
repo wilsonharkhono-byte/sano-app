@@ -1,10 +1,11 @@
 // office/screens/progressClaim/ProgressClaimVerifyPanel.tsx
-// SANO — Verifikasi Klaim Progres (spec §6.2 steps 4-5). The estimator sees
+// SANO — Verifikasi Klaim Progres (spec §6.2 steps 4-5, §18). The estimator sees
 // every claimed row with its weights, the verified and claimed figure per
 // stage, the supervisor's note and photos, and sets the verified figures.
 // Verifikasi writes progress through verify_progress_claim; Kembalikan sends
-// the claim back with a note. The principal reads the same view, and whoever
-// submitted a claim never verifies it (the RPC refuses it as well).
+// the claim back with a note. The principal reads the same view. Whoever
+// submitted the claim or filled one of its lines never verifies it (the RPC
+// refuses that as well).
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Card from '../../../workflows/components/Card';
@@ -12,23 +13,28 @@ import Badge from '../../../workflows/components/Badge';
 import StoragePhoto from '../../../workflows/components/StoragePhoto';
 import { canVerifyClaim, canVerifyClaimAs } from '../../../tools/progressClaims/claimRules';
 import {
-  getLatestClaim, getOpenClaim, listClaimLines, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
+  getLatestClaim, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
   type ProgressClaim, type ProgressClaimLine, type VerifyLineInput,
 } from '../../../tools/progressClaims/claims';
 import {
   claimStatusSummary, formatFraction, formatPercent, formatQty, pctInputs, readPctInputs, regressedStages, stageKeyLabel,
-  weightSourceLabel, zeroPct, type ClaimableItem,
+  weightSourceLabel, zeroPct, type ClaimableItem, type PctRead,
 } from '../../../tools/progressClaims/claimView';
-import { claimDelta, rowFraction, type StagePct } from '../../../tools/progressClaims/stageMath';
-import { stagesOf, validateStageWeights, type StageWeights, type WeightSource } from '../../../tools/progressClaims/stageWeights';
+import { deltaFromInstalled, rowFraction, type StagePct } from '../../../tools/progressClaims/stageMath';
+import {
+  stagesOf, validateStageWeights, type StageKey, type StageWeights, type WeightSource,
+} from '../../../tools/progressClaims/stageWeights';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../../workflows/theme';
 
 const lh = (size: number) => Math.round(size * 1.45);
+const QUANTITY_DROP = 'Volume terpasang turun karena bobot atau volume rencana berubah sejak verifikasi terakhir.';
 
 interface Props {
   projectId: string;
   profile: { id: string; role: string } | null;
   boqItems: ClaimableItem[];
+  /** Bump to reload, e.g. when a notification brings the user back to a panel already on screen. */
+  reloadKey?: number;
   toast: (msg: string, type?: 'ok' | 'warning' | 'critical') => void;
   /** After a verification wrote progress, so the screen can reload boq_items. */
   onVerified?: () => void;
@@ -43,10 +49,12 @@ interface RowWeights {
 }
 
 interface Loaded {
+  projectId: string;
   claim: ProgressClaim | null;
   lines: ProgressClaimLine[];
   weights: Map<string, RowWeights>;
   verified: Map<string, StagePct>;
+  ledger: Map<string, number>;
 }
 
 interface LineInput {
@@ -54,10 +62,28 @@ interface LineInput {
   reason: string;
 }
 
+/** One line's figures as the form currently holds them. */
+interface LineCheck {
+  code: string;
+  item: ClaimableItem | undefined;
+  rowWeights: RowWeights | null;
+  prev: StagePct;
+  read: PctRead | null;
+  prevFraction: number;
+  next: number | null;
+  delta: number | null;
+  regressed: StageKey[];
+  needsReason: boolean;
+  ledgerBefore: number;
+}
+
 const EMPTY_INPUT: LineInput = { inputs: {}, reason: '' };
 
-export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems, toast, onVerified, onChanged }: Props) {
-  const items = useMemo(() => new Map(boqItems.map((b) => [b.id, b])), [boqItems]);
+export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems, reloadKey = 0, toast, onVerified, onChanged }: Props) {
+  const items = useMemo(
+    () => new Map(boqItems.filter((b) => b.project_id == null || b.project_id === projectId).map((b) => [b.id, b])),
+    [boqItems, projectId],
+  );
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lineInputs, setLineInputs] = useState<Record<string, LineInput>>({});
@@ -74,15 +100,16 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
       const claim = (await getOpenClaim(projectId)) ?? (await getLatestClaim(projectId));
       if (!claim || claim.status !== 'SUBMITTED') {
         if (mine === seq.current) {
-          setData({ claim, lines: [], weights: new Map(), verified: new Map() });
+          setData({ projectId, claim, lines: [], weights: new Map(), verified: new Map(), ledger: new Map() });
           setLineInputs({});
         }
         return;
       }
-      const [lines, weightRows, verified] = await Promise.all([
+      const [lines, weightRows, verified, ledger] = await Promise.all([
         listClaimLines(claim.id),
         listStageWeights(projectId),
         listVerifiedStagePct(projectId),
+        listEntryTotals(projectId),
       ]);
       const weights = new Map<string, RowWeights>();
       for (const w of weightRows) {
@@ -90,7 +117,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
         if (checked.ok) weights.set(w.boq_item_id, { weights: checked.weights, source: w.source, referenceClass: w.reference_class });
       }
       if (mine !== seq.current) return;
-      setData({ claim, lines, weights, verified });
+      setData({ projectId, claim, lines, weights, verified, ledger });
       setLineInputs(Object.fromEntries(lines.map((l) => {
         const w = weights.get(l.boq_item_id)?.weights;
         return [l.id, { inputs: w ? pctInputs(w, l.claimed_pct) : {}, reason: l.regress_reason ?? '' }];
@@ -108,52 +135,69 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     return () => {
       seq.current += 1;
     };
-  }, [load]);
+  }, [load, reloadKey]);
 
-  const claim = data?.claim ?? null;
+  // Never render another project's claim with its decision buttons live.
+  const current = data && data.projectId === projectId ? data : null;
+  const claim = current?.claim ?? null;
   const submitted = claim?.status === 'SUBMITTED';
-  const actionable = submitted && canVerifyClaimAs(profile?.role, profile?.id, claim?.submitted_by);
+  const lineAuthors = useMemo(() => (current?.lines ?? []).flatMap((l) => [l.created_by, l.updated_by]), [current]);
+  const actionable = submitted && canVerifyClaimAs(profile?.role, profile?.id, claim?.submitted_by, lineAuthors);
   const ownClaim = submitted && canVerifyClaim(profile?.role) && !actionable;
 
-  const prevOf = (line: ProgressClaimLine, weights: StageWeights): StagePct =>
-    data?.verified.get(line.boq_item_id) ?? line.prev_verified ?? zeroPct(weights);
+  const check = (loaded: Loaded, line: ProgressClaimLine, state: LineInput): LineCheck => {
+    const item = items.get(line.boq_item_id);
+    const code = item?.code ?? '—';
+    const ledgerBefore = loaded.ledger.get(line.boq_item_id) ?? 0;
+    const rowWeights = loaded.weights.get(line.boq_item_id) ?? null;
+    if (!rowWeights) {
+      return { code, item, rowWeights: null, prev: {}, read: null, prevFraction: 0, next: null, delta: null, regressed: [], needsReason: false, ledgerBefore };
+    }
+    const prev = loaded.verified.get(line.boq_item_id) ?? line.prev_verified ?? zeroPct(rowWeights.weights);
+    const read = readPctInputs(rowWeights.weights, state.inputs);
+    const prevFraction = rowFraction(rowWeights.weights, prev);
+    const next = read.ok ? rowFraction(rowWeights.weights, read.pct) : null;
+    const delta = next != null ? deltaFromInstalled(item?.planned ?? 0, ledgerBefore, next).deltaQuantity : null;
+    const regressed = read.ok ? regressedStages(rowWeights.weights, prev, read.pct) : [];
+    return {
+      code, item, rowWeights, prev, read, prevFraction, next, delta, regressed, ledgerBefore,
+      needsReason: regressed.length > 0 || (delta != null && delta < 0),
+    };
+  };
 
   const setInput = (lineId: string, stage: string, value: string) =>
     setLineInputs((prev) => {
-      const current = prev[lineId] ?? EMPTY_INPUT;
-      return { ...prev, [lineId]: { ...current, inputs: { ...current.inputs, [stage]: value } } };
+      const existing = prev[lineId] ?? EMPTY_INPUT;
+      return { ...prev, [lineId]: { ...existing, inputs: { ...existing.inputs, [stage]: value } } };
     });
 
   const setReason = (lineId: string, reason: string) =>
     setLineInputs((prev) => ({ ...prev, [lineId]: { ...(prev[lineId] ?? EMPTY_INPUT), reason } }));
 
   const verify = async () => {
-    if (!data?.claim) return;
+    if (!current?.claim) return;
     const payload: VerifyLineInput[] = [];
-    for (const line of data.lines) {
-      const code = items.get(line.boq_item_id)?.code ?? line.boq_item_id;
-      const rowWeights = data.weights.get(line.boq_item_id);
-      if (!rowWeights) {
-        toast(`${code}: bobot tahapan belum diatur.`, 'critical');
-        return;
-      }
+    for (const line of current.lines) {
       const state = lineInputs[line.id] ?? EMPTY_INPUT;
-      const read = readPctInputs(rowWeights.weights, state.inputs);
-      if (!read.ok) {
-        toast(`${code}: ${read.reason}`, 'critical');
+      const c = check(current, line, state);
+      if (!c.rowWeights) {
+        toast(`${c.code}: bobot tahapan belum diatur.`, 'critical');
         return;
       }
-      const regressed = regressedStages(rowWeights.weights, prevOf(line, rowWeights.weights), read.pct).length > 0;
+      if (!c.read || !c.read.ok) {
+        toast(`${c.code}: ${c.read && !c.read.ok ? c.read.reason : 'persentase tidak valid.'}`, 'critical');
+        return;
+      }
       const reason = state.reason.trim();
-      if (regressed && !reason) {
-        toast(`${code}: penurunan progres wajib disertai alasan.`, 'critical');
+      if (c.needsReason && !reason) {
+        toast(`${c.code}: penurunan progres wajib disertai alasan.`, 'critical');
         return;
       }
-      payload.push({ line_id: line.id, verified_pct: read.pct, regress_reason: regressed ? reason : null });
+      payload.push({ line_id: line.id, verified_pct: c.read.pct, regress_reason: c.needsReason ? reason : null });
     }
     setBusy(true);
     try {
-      const result = await verifyClaim(data.claim.id, payload, verifierNote.trim() || null);
+      const result = await verifyClaim(current.claim.id, payload, verifierNote.trim() || null);
       toast(`Klaim diverifikasi. ${result.entries} entri progres dicatat.`, 'ok');
       onVerified?.();
       onChanged?.();
@@ -166,7 +210,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
   };
 
   const sendReturn = async () => {
-    if (!data?.claim) return;
+    if (!current?.claim) return;
     const note = returnNote.trim();
     if (!note) {
       toast('Tulis alasan pengembalian klaim.', 'critical');
@@ -174,7 +218,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     }
     setBusy(true);
     try {
-      await returnClaim(data.claim.id, note);
+      await returnClaim(current.claim.id, note);
       toast('Klaim dikembalikan ke pengawas.', 'ok');
       onChanged?.();
       await load();
@@ -196,7 +240,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     );
   }
 
-  if (!data) return <ActivityIndicator style={styles.loading} accessibilityLabel="Memuat klaim progres" />;
+  if (!current) return <ActivityIndicator style={styles.loading} accessibilityLabel="Memuat klaim progres" />;
 
   const summary = claimStatusSummary(claim);
 
@@ -214,50 +258,48 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
       <Card title="Verifikasi Klaim Progres" rightAction={<Badge flag={summary.flag} label={summary.label} />}>
         <Text style={styles.detail}>{summary.detail}</Text>
         <Text style={styles.hint}>
-          {`${data.lines.length} baris diklaim. Angka verifikasi terisi dari klaim pengawas; ubah bila foto atau laporan tidak mendukung.`}
+          {actionable
+            ? `${current.lines.length} baris diklaim. Angka cek terisi dari klaim pengawas; ubah bila foto atau laporan tidak mendukung.`
+            : `${current.lines.length} baris diklaim. Angka cek terisi dari klaim pengawas.`}
         </Text>
+        <Text style={styles.hint}>Lalu: terverifikasi sebelumnya. Klaim: angka pengawas. Cek: angka verifikasi.</Text>
         {ownClaim && (
-          <Text style={styles.banner}>Klaim ini Anda kirim sendiri. Verifikasi harus dilakukan estimator atau admin lain.</Text>
+          <Text style={styles.banner}>
+            Klaim ini berisi angka yang Anda kirim atau isi sendiri. Verifikasi harus dilakukan estimator atau admin lain.
+          </Text>
         )}
       </Card>
 
-      {data.lines.map((line) => {
-        const item = items.get(line.boq_item_id);
-        const code = item?.code ?? '—';
-        const rowWeights = data.weights.get(line.boq_item_id);
-        if (!rowWeights) {
+      {current.lines.map((line) => {
+        const state = lineInputs[line.id] ?? EMPTY_INPUT;
+        const c = check(current, line, state);
+        if (!c.rowWeights) {
           return (
-            <Card key={line.id} title={code} subtitle={item?.label}>
+            <Card key={line.id} title={c.code} subtitle={c.item?.label}>
               <Text style={styles.error}>Bobot tahapan baris ini belum diatur. Kembalikan klaim atau atur bobot di Baseline.</Text>
             </Card>
           );
         }
-        const state = lineInputs[line.id] ?? EMPTY_INPUT;
-        const prev = prevOf(line, rowWeights.weights);
-        const read = readPctInputs(rowWeights.weights, state.inputs);
-        const prevFraction = rowFraction(rowWeights.weights, prev);
-        const next = read.ok ? rowFraction(rowWeights.weights, read.pct) : null;
-        const delta = next != null ? claimDelta(item?.planned ?? 0, prevFraction, next).deltaQuantity : null;
-        const regressed = read.ok ? regressedStages(rowWeights.weights, prev, read.pct) : [];
         const refs = (line.evidence?.photo_refs ?? []).filter((r): r is string => typeof r === 'string');
+        const mismatch = !!c.item && Math.abs((Number(c.item.installed) || 0) - c.ledgerBefore) > 0.0001;
         return (
           <Card
             key={line.id}
-            title={code}
-            subtitle={item?.label}
-            rightAction={rowWeights.source === 'reference' ? <Badge flag="WARNING" label="Bobot referensi" /> : undefined}
+            title={c.code}
+            subtitle={c.item?.label}
+            rightAction={c.rowWeights.source === 'reference' ? <Badge flag="WARNING" label="Bobot referensi" /> : undefined}
           >
-            <Text style={styles.hint}>{weightSourceLabel(rowWeights.source, rowWeights.referenceClass)}</Text>
+            <Text style={styles.hint}>{weightSourceLabel(c.rowWeights.source, c.rowWeights.referenceClass)}</Text>
             <View style={[styles.tableRow, styles.tableHead]}>
-              <Text style={[styles.cellStage, styles.headText]}>Tahap</Text>
-              <Text style={[styles.cell, styles.headText]}>Terverifikasi</Text>
-              <Text style={[styles.cell, styles.headText]}>Klaim</Text>
-              <Text style={[styles.cellInput, styles.headText]}>Verifikasi</Text>
+              <Text style={[styles.cellStage, styles.headText]} numberOfLines={1}>Tahap</Text>
+              <Text style={[styles.cell, styles.headText]} numberOfLines={1}>Lalu</Text>
+              <Text style={[styles.cell, styles.headText]} numberOfLines={1}>Klaim</Text>
+              <Text style={[styles.cellInput, styles.headText]} numberOfLines={1}>Cek</Text>
             </View>
-            {stagesOf(rowWeights.weights).map((stage) => (
+            {stagesOf(c.rowWeights.weights).map((stage) => (
               <View key={stage} style={styles.tableRow}>
                 <Text style={styles.cellStage}>{stageKeyLabel(stage)}</Text>
-                <Text style={styles.cell}>{formatPercent(prev[stage] ?? 0)}</Text>
+                <Text style={styles.cell}>{formatPercent(c.prev[stage] ?? 0)}</Text>
                 <Text style={styles.cell}>{formatPercent(line.claimed_pct[stage] ?? 0)}</Text>
                 <TextInput
                   style={[styles.cellInput, styles.input, !actionable && styles.inputDisabled]}
@@ -265,28 +307,40 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
                   onChangeText={(v) => setInput(line.id, stage, v)}
                   editable={actionable}
                   keyboardType="decimal-pad"
-                  accessibilityLabel={`Verifikasi ${stageKeyLabel(stage)} ${code}`}
+                  accessibilityLabel={`Verifikasi ${stageKeyLabel(stage)} ${c.code}`}
                 />
               </View>
             ))}
-            {read.ok && next != null && delta != null ? (
+            {c.read && c.read.ok && c.next != null && c.delta != null ? (
               <Text style={styles.preview}>
-                {`Progres baris ${formatFraction(prevFraction)} menjadi ${formatFraction(next)} (perkiraan ${delta > 0 ? '+' : ''}${formatQty(delta, item?.unit ?? '')})`}
+                {`Progres baris ${formatFraction(c.prevFraction)} menjadi ${formatFraction(c.next)} (perkiraan ${c.delta > 0 ? '+' : ''}${formatQty(c.delta, c.item?.unit ?? '')})`}
               </Text>
             ) : (
-              <Text style={styles.error}>{read.ok ? '' : read.reason}</Text>
+              <Text style={styles.error}>{c.read && !c.read.ok ? c.read.reason : ''}</Text>
             )}
-            {regressed.length > 0 && (
-              <TextInput
-                style={[styles.input, styles.textarea]}
-                value={state.reason}
-                onChangeText={(v) => setReason(line.id, v)}
-                editable={actionable}
-                multiline
-                placeholder="Alasan progres turun"
-                placeholderTextColor={COLORS.textMuted}
-                accessibilityLabel={`Alasan penurunan ${code}`}
-              />
+            {mismatch && c.item && (
+              <Text style={styles.hint}>
+                {`Terpasang di BoQ ${formatQty(Number(c.item.installed) || 0, c.item.unit)} berbeda dari riwayat progres ${formatQty(c.ledgerBefore, c.item.unit)}; verifikasi mengikuti riwayat.`}
+              </Text>
+            )}
+            {c.needsReason && (
+              <>
+                <Text style={styles.warn}>
+                  {c.regressed.length > 0
+                    ? `Turun dari angka terverifikasi: ${c.regressed.map((s) => stageKeyLabel(s)).join(', ')}.`
+                    : QUANTITY_DROP}
+                </Text>
+                <TextInput
+                  style={[styles.input, styles.textarea, !actionable && styles.inputDisabled]}
+                  value={state.reason}
+                  onChangeText={(v) => setReason(line.id, v)}
+                  editable={actionable}
+                  multiline
+                  placeholder="Alasan progres turun"
+                  placeholderTextColor={COLORS.textMuted}
+                  accessibilityLabel={`Alasan penurunan ${c.code}`}
+                />
+              </>
             )}
             {line.note ? <Text style={styles.note}>{`Catatan pengawas: ${line.note}`}</Text> : null}
             {refs.length > 0 ? (
@@ -376,6 +430,7 @@ const styles = StyleSheet.create({
   hint: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs },
   note: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.text, marginTop: SPACE.sm },
   error: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.critical, marginTop: SPACE.xs },
+  warn: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.warning, marginTop: SPACE.sm },
   banner: {
     fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.warning, marginTop: SPACE.sm,
     padding: SPACE.sm, borderRadius: RADIUS, backgroundColor: COLORS.warningBg,
@@ -383,11 +438,11 @@ const styles = StyleSheet.create({
   tableRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.xs, paddingVertical: SPACE.xs },
   tableHead: { borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, marginTop: SPACE.sm },
   headText: { fontFamily: FONTS.bold, color: COLORS.textSec, textTransform: 'uppercase' },
-  cellStage: { flex: 1.2, fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.text },
+  cellStage: { flex: 1.3, fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.text },
   cell: { flex: 1, fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.text, textAlign: 'right' },
-  cellInput: { flex: 1, fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), textAlign: 'right' },
+  cellInput: { flex: 1.1, fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), textAlign: 'right' },
   input: {
-    backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
+    minHeight: 44, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
     paddingVertical: SPACE.xs, paddingHorizontal: SPACE.sm, fontSize: TYPE.sm, lineHeight: lh(TYPE.sm),
     fontFamily: FONTS.regular, color: COLORS.text,
   },

@@ -19,7 +19,7 @@ interface Props {
 }
 
 export default function ProgressClaimStatusCard({ projectId, boqItems, onOpen }: Props) {
-  const rows = useMemo(() => claimableRows(boqItems), [boqItems]);
+  const rows = useMemo(() => claimableRows(boqItems, projectId), [boqItems, projectId]);
   const [claim, setClaim] = useState<ProgressClaim | null>(null);
   const [weights, setWeights] = useState<StageWeightRow[]>([]);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');

@@ -42,6 +42,8 @@ const makeRow = (over: Partial<WeightedRowView> = {}): WeightedRowView => ({
   prevFraction: 0.326,
   claimedFraction: null,
   linkedLines: 0,
+  installedLedger: 32.6,
+  installedMismatch: false,
   ...over,
 });
 
@@ -89,7 +91,7 @@ describe('StageClaimForm', () => {
   });
 
   it('asks for a reason before saving a figure below the verified one', async () => {
-    const { getByLabelText, toast } = setup({ prevPct: { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 }, prevFraction: 0.5204 });
+    const { getByLabelText, toast } = setup({ prevPct: { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 }, prevFraction: 0.5204, installedLedger: 52.04 });
     fireEvent.changeText(getByLabelText('Persentase Bekisting'), '90');
     fireEvent.press(getByLabelText('Simpan progres T1-001'));
     expect(toast).toHaveBeenCalledWith('Penurunan progres wajib disertai alasan.', 'critical');
@@ -98,6 +100,29 @@ describe('StageClaimForm', () => {
     await waitFor(() => expect(saveClaimLine).toHaveBeenCalledWith(expect.objectContaining({
       claimedPct: { BEKISTING: 90, PEMBESIAN: 40, PENGECORAN: 0 }, regressReason: 'Bekisting K3 dibongkar ulang',
     })));
+  });
+
+  it('asks for a reason when re-weighting lowers the quantity although no stage dropped', () => {
+    const { getByLabelText, getByText, toast } = setup({
+      weights: { BEKISTING: 0.2, PEMBESIAN: 0.5, PENGECORAN: 0.3 },
+      prevPct: { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 },
+      prevFraction: 0.4,
+      installedLedger: 52.04,
+    });
+    expect(getByText('Progres baris 40% menjadi 40% (-12,04 m³)')).toBeTruthy();
+    expect(getByText('Volume terpasang turun karena bobot atau volume rencana berubah sejak verifikasi terakhir.')).toBeTruthy();
+    fireEvent.press(getByLabelText('Simpan progres T1-001'));
+    expect(toast).toHaveBeenCalledWith('Penurunan progres wajib disertai alasan.', 'critical');
+    expect(saveClaimLine).not.toHaveBeenCalled();
+  });
+
+  it('says when installed on the BoQ differs from the progress history', () => {
+    const { getByText } = setup({
+      item: { id: 'k1', code: 'T1-001', label: 'Lantai 1 ; Kolom', unit: 'm³', planned: 100, installed: 10, progress: 10 },
+      installedLedger: 0,
+      installedMismatch: true,
+    });
+    expect(getByText('Terpasang di BoQ 10 m³ berbeda dari riwayat progres 0 m³; verifikasi mengikuti riwayat.')).toBeTruthy();
   });
 
   it('refuses an invalid percent with the reason', () => {

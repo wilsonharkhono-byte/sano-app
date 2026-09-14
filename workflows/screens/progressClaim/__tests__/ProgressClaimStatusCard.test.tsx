@@ -1,6 +1,6 @@
 // workflows/screens/progressClaim/__tests__/ProgressClaimStatusCard.test.tsx
 import React from 'react';
-import { fireEvent, render } from '@testing-library/react-native';
+import { fireEvent, render, waitFor } from '@testing-library/react-native';
 
 jest.mock('../../../../tools/progressClaims/claims', () => ({
   getLatestClaim: jest.fn(),
@@ -11,8 +11,8 @@ jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
 import { getLatestClaim, listStageWeights } from '../../../../tools/progressClaims/claims';
 import ProgressClaimStatusCard from '../ProgressClaimStatusCard';
 
-const item = (id: string, code: string, label: string, sort: number) => ({
-  id, code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
+const item = (id: string, code: string, label: string, sort: number, projectId = 'p1') => ({
+  id, project_id: projectId, code, label, unit: 'm³', planned: 100, installed: 0, progress: 0, sort_order: sort, chapter: null, sub_chapter: null, superseded_at: null,
 });
 const ITEMS = [item('k1', 'T1-001', 'Lantai 1 ; Kolom', 1), item('pc1', 'T1-002', 'Lantai 1 ; Pile Cap', 2)];
 const EMPTY: typeof ITEMS = [];
@@ -48,6 +48,14 @@ describe('ProgressClaimStatusCard', () => {
     (getLatestClaim as jest.Mock).mockRejectedValueOnce(new Error('offline'));
     const { findByText } = render(<ProgressClaimStatusCard projectId="p1" boqItems={ITEMS} onOpen={jest.fn()} />);
     expect(await findByText('Status klaim belum bisa dimuat.')).toBeTruthy();
+  });
+
+  it('loads again for another project', async () => {
+    const utils = render(<ProgressClaimStatusCard projectId="p1" boqItems={ITEMS} onOpen={jest.fn()} />);
+    await utils.findByText('Terverifikasi');
+    const P2 = [item('k9', 'T1-001', 'Lantai 1 ; Kolom', 1, 'p2')];
+    utils.rerender(<ProgressClaimStatusCard projectId="p2" boqItems={P2} onOpen={jest.fn()} />);
+    await waitFor(() => expect(getLatestClaim).toHaveBeenCalledWith('p2'));
   });
 
   it('renders nothing for a project without a published BoQ', () => {

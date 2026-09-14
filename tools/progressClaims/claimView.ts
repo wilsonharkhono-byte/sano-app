@@ -16,6 +16,7 @@ import { classifyWorkAreas, type WorkAreaClass } from './workAreaClass';
 /** The BoQ fields these screens read; tools/types.ts BoqItem satisfies it. */
 export interface ClaimableItem {
   id: string;
+  project_id?: string | null;
   code: string;
   label: string;
   unit: string;
@@ -35,8 +36,11 @@ const SIMPLIFIED_CODE_RE = /^T1-\d+$/;
  * project only its T1 work areas count, exactly as buildWorkGroups treats them
  * (the Others anchor is not a work area).
  */
-export function claimableRows<T extends ClaimableItem>(items: T[]): T[] {
-  const live = items.filter((b) => (b.superseded_at ?? null) == null);
+export function claimableRows<T extends ClaimableItem>(items: T[], projectId?: string | null): T[] {
+  // Project data loads in steps: just after a project switch the previous
+  // project's rows are still in hand. Never show or seed those.
+  const own = projectId ? items.filter((b) => b.project_id == null || b.project_id === projectId) : items;
+  const live = own.filter((b) => (b.superseded_at ?? null) == null);
   const simplified = live.filter((b) => SIMPLIFIED_CODE_RE.test((b.code ?? '').trim()));
   const base = simplified.length > 0 ? simplified : live;
   return base
@@ -103,27 +107,6 @@ export function missingWeightSeeds(
     .map((r) => ({ boq_item_id: r.id, reference_class: classes.get(r.id) ?? 'LAINNYA' }));
 }
 
-/** A verified claim line with its claim embedded (PostgREST returns an object or a one-element array). */
-export interface VerifiedLineRow {
-  boq_item_id: string;
-  verified_pct: StagePct | null;
-  updated_at: string;
-  progress_claims: { verified_at: string | null } | Array<{ verified_at: string | null }> | null;
-}
-
-/** The most recently verified stage percents per row. */
-export function latestVerifiedByRow(rows: VerifiedLineRow[]): Map<string, StagePct> {
-  const best = new Map<string, { at: string; pct: StagePct }>();
-  for (const r of rows) {
-    if (!r.verified_pct) continue;
-    const claim = Array.isArray(r.progress_claims) ? r.progress_claims[0] : r.progress_claims;
-    const at = `${claim?.verified_at ?? ''}|${r.updated_at}`;
-    const current = best.get(r.boq_item_id);
-    if (!current || at > current.at) best.set(r.boq_item_id, { at, pct: r.verified_pct });
-  }
-  return new Map([...best].map(([id, v]) => [id, v.pct]));
-}
-
 /** Spec §17: only the latest revision of each report number counts, so a re-issued report never counts twice. */
 export function latestRevisionReportIds(reports: Array<{ id: string; report_no: number; revision: number }>): Set<string> {
   const best = new Map<number, { id: string; revision: number }>();
@@ -173,6 +156,10 @@ export interface ClaimRowView {
   /** 0..1; null when this claim has no line for the row. */
   claimedFraction: number | null;
   linkedLines: number;
+  /** What the row's progress entries sum to; verification writes the difference from this. */
+  installedLedger: number;
+  /** boq_items.installed differs from the entries (legacy data); verification follows the entries. */
+  installedMismatch: boolean;
 }
 
 export function zeroPct(weights: StageWeights): StagePct {
@@ -185,6 +172,7 @@ export function buildRowViews(
   verified: Map<string, StagePct>,
   lines: ClaimLineLike[],
   linked: Map<string, number> = new Map(),
+  ledger: Map<string, number> | null = null,
 ): ClaimRowView[] {
   const weightByRow = new Map(weights.map((w) => [w.boq_item_id, w]));
   const lineByRow = new Map(lines.map((l) => [l.boq_item_id, l]));
@@ -209,6 +197,8 @@ export function buildRowViews(
       prevFraction: usable ? rowFraction(usable, prevPct) : 0,
       claimedFraction: usable && line ? rowFraction(usable, line.claimed_pct) : null,
       linkedLines: linked.get(item.id) ?? 0,
+      installedLedger: ledger ? ledger.get(item.id) ?? 0 : Number(item.installed) || 0,
+      installedMismatch: ledger ? Math.abs((Number(item.installed) || 0) - (ledger.get(item.id) ?? 0)) > 0.0001 : false,
     };
   });
 }

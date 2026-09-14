@@ -11,7 +11,7 @@ import Badge from '../../components/Badge';
 import StageClaimForm, { type WeightedRowView } from './StageClaimForm';
 import { canSaveClaimLine, isClaimEditable } from '../../../tools/progressClaims/claimRules';
 import {
-  countLinkedLinesByRow, getOpenClaim, listClaimLines, listStageWeights, listVerifiedStagePct, seedReferenceWeights, submitClaim,
+  countLinkedLinesByRow, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, seedReferenceWeights, submitClaim,
   type ProgressClaim, type ProgressClaimLine, type StageWeightRow,
 } from '../../../tools/progressClaims/claims';
 import {
@@ -30,19 +30,25 @@ interface Props {
   boqItems: ClaimableItem[];
   /** Row to open on arrival, e.g. from "Tambah progres untuk item ini". */
   initialRowId?: string | null;
+  /** Bump to reload, e.g. when a claim notification brings the user back to a panel already on screen. */
+  reloadKey?: number;
   toast: (msg: string, type?: 'ok' | 'warning' | 'critical') => void;
 }
 
 interface Loaded {
+  projectId: string;
   claim: ProgressClaim | null;
   lines: ProgressClaimLine[];
   weights: StageWeightRow[];
   verified: Map<string, StagePct>;
   linked: Map<string, number>;
+  ledger: Map<string, number>;
 }
 
-export default function ProgressClaimPanel({ projectId, role, boqItems, initialRowId, toast }: Props) {
-  const rows = useMemo(() => claimableRows(boqItems), [boqItems]);
+export default function ProgressClaimPanel({ projectId, role, boqItems, initialRowId, reloadKey = 0, toast }: Props) {
+  const rows = useMemo(() => claimableRows(boqItems, projectId), [boqItems, projectId]);
+  // Just after a project switch the context still holds the previous project's rows.
+  const switching = rows.length === 0 && boqItems.some((b) => b.project_id != null && b.project_id !== projectId);
   const canSave = canSaveClaimLine(role);
   const [data, setData] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -66,12 +72,13 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
         }
       }
       const claim = await getOpenClaim(projectId);
-      const [lines, verified, linked] = await Promise.all([
+      const [lines, verified, linked, ledger] = await Promise.all([
         claim ? listClaimLines(claim.id) : Promise.resolve([] as ProgressClaimLine[]),
         listVerifiedStagePct(projectId),
         countLinkedLinesByRow(projectId, claim?.week_start ?? weekStartWIB()),
+        listEntryTotals(projectId),
       ]);
-      if (mine === seq.current) setData({ claim, lines, weights, verified, linked });
+      if (mine === seq.current) setData({ projectId, claim, lines, weights, verified, linked, ledger });
     } catch (err) {
       if (mine === seq.current) setError((err as Error)?.message ?? 'Klaim progres gagal dimuat.');
     }
@@ -83,22 +90,24 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
     return () => {
       seq.current += 1;
     };
-  }, [load, rows.length]);
+  }, [load, rows.length, reloadKey]);
 
   useEffect(() => {
     setExpandedId(initialRowId ?? null);
     setConfirming(false);
   }, [projectId, initialRowId]);
 
+  // Never render another project's claim, with its Kirim still live.
+  const current = data && data.projectId === projectId ? data : null;
   const views = useMemo(
-    () => (data ? buildRowViews(rows, data.weights, data.verified, data.lines, data.linked) : []),
-    [data, rows],
+    () => (current ? buildRowViews(rows, current.weights, current.verified, current.lines, current.linked, current.ledger) : []),
+    [current, rows],
   );
 
-  const claim = data?.claim ?? null;
+  const claim = current?.claim ?? null;
   const summary = claimStatusSummary(claim);
   const editable = canSave && (claim === null || isClaimEditable(claim.status));
-  const lineCount = data?.lines.length ?? 0;
+  const lineCount = current?.lines.length ?? 0;
 
   const submit = async () => {
     if (!claim) return;
@@ -106,8 +115,13 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
     try {
       const result = await submitClaim(claim.id);
       setConfirming(false);
-      if (result.notified > 0) toast(`Klaim dikirim. ${result.notified} orang diberi tahu untuk verifikasi.`, 'ok');
-      else toast('Klaim dikirim, tetapi belum ada estimator atau admin di proyek ini yang bisa diberi tahu.', 'warning');
+      if (result.verifiers_notified > 0) {
+        toast(`Klaim dikirim. ${result.verifiers_notified} estimator atau admin diberi tahu untuk verifikasi.`, 'ok');
+      } else if (result.notified > 0) {
+        toast('Klaim dikirim, tetapi belum ada estimator atau admin di proyek ini. Prinsipal diberi tahu agar menugaskan verifikator.', 'warning');
+      } else {
+        toast('Klaim dikirim, tetapi belum ada yang bisa diberi tahu. Minta admin menugaskan estimator ke proyek ini.', 'warning');
+      }
       await load();
     } catch (err) {
       toast((err as Error)?.message ?? 'Gagal mengirim klaim.', 'critical');
@@ -128,6 +142,10 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
     setExpandedId(null);
     void load();
   };
+
+  if (switching) {
+    return <ActivityIndicator style={styles.loading} accessibilityLabel="Memuat klaim progres" />;
+  }
 
   if (rows.length === 0) {
     return (
@@ -150,7 +168,7 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
     );
   }
 
-  if (!data) {
+  if (!current) {
     return <ActivityIndicator style={styles.loading} accessibilityLabel="Memuat klaim progres" />;
   }
 

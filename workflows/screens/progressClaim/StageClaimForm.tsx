@@ -12,7 +12,7 @@ import {
   formatFraction, formatPercent, formatQty, pctInputs, readPctInputs, regressedStages, stageKeyLabel, weightSourceLabel,
   type ClaimRowView,
 } from '../../../tools/progressClaims/claimView';
-import { claimDelta, rowFraction } from '../../../tools/progressClaims/stageMath';
+import { deltaFromInstalled, rowFraction } from '../../../tools/progressClaims/stageMath';
 import { stagesOf, weightOf, type StageWeights } from '../../../tools/progressClaims/stageWeights';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../theme';
 
@@ -47,11 +47,13 @@ export default function StageClaimForm({ projectId, row, editable, onSaved, onRe
     const next = rowFraction(weights, read.pct);
     return {
       next,
-      delta: claimDelta(item.planned, row.prevFraction, next),
+      // What verification will write: the difference from what the row's entries already sum to.
+      delta: deltaFromInstalled(item.planned, row.installedLedger, next),
       regressed: regressedStages(weights, row.prevPct, read.pct),
     };
-  }, [read, weights, item.planned, row.prevFraction, row.prevPct]);
-  const needsReason = !!preview && preview.regressed.length > 0;
+  }, [read, weights, item.planned, row.installedLedger, row.prevPct]);
+  const quantityDrops = !!preview && preview.delta.deltaQuantity < 0;
+  const needsReason = !!preview && (preview.regressed.length > 0 || quantityDrops);
 
   const setStage = (stage: string, value: string) => setInputs((prev) => ({ ...prev, [stage]: value }));
 
@@ -161,11 +163,18 @@ export default function StageClaimForm({ projectId, row, editable, onSaved, onRe
       ) : (
         <Text style={styles.error}>{read.ok ? '' : read.reason}</Text>
       )}
+      {row.installedMismatch && (
+        <Text style={styles.meta}>
+          {`Terpasang di BoQ ${formatQty(item.installed, item.unit)} berbeda dari riwayat progres ${formatQty(row.installedLedger, item.unit)}; verifikasi mengikuti riwayat.`}
+        </Text>
+      )}
 
       {needsReason && (
         <>
           <Text style={styles.warn}>
-            {`Turun dari angka terverifikasi: ${preview!.regressed.map((s) => stageKeyLabel(s)).join(', ')}.`}
+            {preview!.regressed.length > 0
+              ? `Turun dari angka terverifikasi: ${preview!.regressed.map((s) => stageKeyLabel(s)).join(', ')}.`
+              : 'Volume terpasang turun karena bobot atau volume rencana berubah sejak verifikasi terakhir.'}
           </Text>
           <TextInput
             style={[styles.input, styles.textarea]}

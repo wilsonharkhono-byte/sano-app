@@ -2,7 +2,7 @@
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
 import { supabase } from '../supabase';
 import {
-  countLinkedLinesByRow, countSubmittedClaims, getOpenClaim, listVerifiedStagePct, removeClaimLine, resetStageWeights,
+  countLinkedLinesByRow, countSubmittedClaims, getOpenClaim, listEntryTotals, listVerifiedStagePct, removeClaimLine, resetStageWeights,
   returnClaim, saveClaimLine, seedReferenceWeights, setStageWeights, submitClaim, verifyClaim,
 } from '../progressClaims/claims';
 
@@ -49,14 +49,18 @@ describe('reads', () => {
     expect(q.calls).toEqual(expect.arrayContaining([['eq', ['status', 'SUBMITTED']]]));
   });
 
-  it('reads verified lines through their claim and keeps the latest per row', async () => {
-    const q = chain({ data: [
-      { boq_item_id: 'k1', verified_pct: { SINGLE: 20 }, updated_at: 'a', progress_claims: { verified_at: '2026-09-07T00:00:00+00:00' } },
-      { boq_item_id: 'k1', verified_pct: { SINGLE: 50 }, updated_at: 'b', progress_claims: { verified_at: '2026-09-14T00:00:00+00:00' } },
-    ] });
+  it('reads the latest verified figures from the one-row-per-item view', async () => {
+    const q = chain({ data: [{ boq_item_id: 'k1', verified_pct: { SINGLE: 50 } }] });
     from.mockReturnValueOnce(q);
     await expect(listVerifiedStagePct('p1')).resolves.toEqual(new Map([['k1', { SINGLE: 50 }]]));
-    expect(q.calls).toEqual(expect.arrayContaining([['eq', ['progress_claims.status', 'VERIFIED']]]));
+    expect(from).toHaveBeenCalledWith('progress_claim_latest_verified');
+    expect(q.calls).toEqual(expect.arrayContaining([['eq', ['project_id', 'p1']]]));
+  });
+
+  it('reads what each row entries sum to, as numbers', async () => {
+    from.mockReturnValueOnce(chain({ data: [{ boq_item_id: 'k1', installed_total: '52.04' }, { boq_item_id: 'k2', installed_total: 5 }] }));
+    await expect(listEntryTotals('p1')).resolves.toEqual(new Map([['k1', 52.04], ['k2', 5]]));
+    expect(from).toHaveBeenCalledWith('progress_entry_totals');
   });
 
   it('counts linked report lines from the latest revision since the week start', async () => {

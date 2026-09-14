@@ -38,11 +38,13 @@ export function weightsSummary(weights: StageWeights | null): string {
 }
 
 export default function StageWeightsPanel({ projectId, role, boqItems, toast }: Props) {
-  const rows = useMemo(() => claimableRows(boqItems), [boqItems]);
+  const rows = useMemo(() => claimableRows(boqItems, projectId), [boqItems, projectId]);
   const classes = useMemo(() => classifyRows(rows), [rows]);
   const canEdit = canEditStageWeights(role);
   const [stored, setStored] = useState<StageWeightRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Collapsed by default: a large RAB would otherwise push Baseline's import sessions far down.
+  const [expanded, setExpanded] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [mode, setMode] = useState<'split' | 'single'>('split');
   const [inputs, setInputs] = useState<Record<SplitStage, string>>(BLANK);
@@ -58,6 +60,11 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
     } catch (err) {
       if (mine === seq.current) setError((err as Error)?.message ?? 'Bobot tahapan gagal dimuat.');
     }
+  }, [projectId]);
+
+  useEffect(() => {
+    setStored(null);
+    setEditingId(null);
   }, [projectId]);
 
   useEffect(() => {
@@ -77,11 +84,12 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
     return map;
   }, [stored]);
   const missing = useMemo(() => (stored ? missingWeightSeeds(rows, stored) : []), [rows, stored]);
+  const referenceCount = useMemo(() => rows.filter((r) => byRow.get(r.id)?.row.source === 'reference').length, [rows, byRow]);
 
   const classOf = (id: string): WorkAreaClass => classes.get(id) ?? 'LAINNYA';
 
   const openEditor = (id: string) => {
-    if (!canEdit) return;
+    if (!canEdit || busy) return;
     if (editingId === id) {
       setEditingId(null);
       return;
@@ -143,6 +151,7 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
       </Text>
       {error && <Text style={styles.error}>{error}</Text>}
       {!stored && !error && <ActivityIndicator style={styles.loading} accessibilityLabel="Memuat bobot tahapan" />}
+      {stored && <Text style={styles.summary}>{`${rows.length} baris · ${missing.length} belum diatur · ${referenceCount} referensi`}</Text>}
       {stored && canEdit && missing.length > 0 && (
         <TouchableOpacity
           style={[styles.primaryBtn, busy && styles.btnBusy]}
@@ -154,7 +163,17 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
           <Text style={styles.primaryBtnText}>{`Terapkan bobot referensi ke ${missing.length} baris`}</Text>
         </TouchableOpacity>
       )}
-      {stored && rows.map((item) => {
+      {stored && (
+        <TouchableOpacity
+          style={styles.ghostBtn}
+          onPress={() => setExpanded((v) => !v)}
+          accessibilityRole="button"
+          accessibilityLabel={expanded ? 'Sembunyikan baris' : 'Tampilkan baris'}
+        >
+          <Text style={styles.ghostBtnText}>{expanded ? 'Sembunyikan baris' : 'Tampilkan baris'}</Text>
+        </TouchableOpacity>
+      )}
+      {stored && expanded && rows.map((item) => {
         const entry = byRow.get(item.id);
         const cls = classOf(item.id);
         const open = editingId === item.id;
@@ -163,7 +182,7 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
             <TouchableOpacity
               style={[styles.row, open && styles.rowActive]}
               onPress={() => openEditor(item.id)}
-              disabled={!canEdit}
+              disabled={!canEdit || busy}
               accessibilityRole={canEdit ? 'button' : undefined}
               accessibilityLabel={`${item.code} ${item.label}`}
             >
@@ -183,6 +202,7 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
                       accessibilityRole="button"
                       accessibilityLabel={m === 'split' ? 'Tiga tahap' : 'Satu tahap'}
                       accessibilityState={{ selected: mode === m }}
+                      hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
                     >
                       <Text style={[styles.modeText, mode === m && styles.modeTextActive]}>{m === 'split' ? 'Tiga tahap' : 'Satu tahap'}</Text>
                     </TouchableOpacity>
@@ -240,6 +260,7 @@ export default function StageWeightsPanel({ projectId, role, boqItems, toast }: 
 const styles = StyleSheet.create({
   loading: { marginTop: SPACE.sm },
   hint: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs },
+  summary: { fontSize: TYPE.sm, lineHeight: lh(TYPE.sm), fontFamily: FONTS.semibold, color: COLORS.text, marginTop: SPACE.sm },
   error: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.critical, marginTop: SPACE.xs },
   row: { paddingVertical: SPACE.sm, paddingHorizontal: SPACE.xs, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub },
   rowActive: { backgroundColor: COLORS.accentBg, borderRadius: RADIUS },
@@ -259,7 +280,7 @@ const styles = StyleSheet.create({
   inputRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, marginTop: SPACE.xs },
   inputLabel: { flex: 1, fontSize: TYPE.sm, lineHeight: lh(TYPE.sm), fontFamily: FONTS.semibold, color: COLORS.text },
   input: {
-    minWidth: 84, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
+    minWidth: 84, minHeight: 44, backgroundColor: COLORS.surface, borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS,
     paddingVertical: SPACE.xs, paddingHorizontal: SPACE.sm, fontSize: TYPE.sm, lineHeight: lh(TYPE.sm),
     fontFamily: FONTS.regular, color: COLORS.text, textAlign: 'right',
   },

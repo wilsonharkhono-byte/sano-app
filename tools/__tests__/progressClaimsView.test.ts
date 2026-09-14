@@ -1,7 +1,7 @@
 // tools/__tests__/progressClaimsView.test.ts
 import {
   buildRowViews, claimStatusSummary, claimableRows, countLinesByRow, formatPercent, formatQty, latestRevisionReportIds,
-  latestVerifiedByRow, missingWeightSeeds, parsePercentInput, pctInputs, readPctInputs, readWeightPercentInputs,
+  missingWeightSeeds, parsePercentInput, pctInputs, readPctInputs, readWeightPercentInputs,
   regressedStages, stageKeyLabel, weightPercentInputs, weightSourceLabel, type ClaimableItem,
 } from '../progressClaims/claimView';
 import { REFERENCE_PROFILE } from '../progressClaims/referenceStageWeights.data';
@@ -22,6 +22,14 @@ describe('claimableRows', () => {
       row({ id: 'z', code: 'T1-004', label: 'Tangga', planned: 0 }),
     ]);
     expect(rows.map((r) => r.id)).toEqual(['a', 'b']);
+  });
+
+  it('drops rows of another project still in hand after a project switch', () => {
+    const rows = claimableRows([
+      row({ id: 'a', code: 'T1-001', label: 'Lantai 1 ; Kolom', project_id: 'p1' }),
+      row({ id: 'b', code: 'T1-001', label: 'Lantai 1 ; Kolom', project_id: 'p2' }),
+    ], 'p1');
+    expect(rows.map((r) => r.id)).toEqual(['a']);
   });
 
   it('keeps every live planned row of a full-RAB project', () => {
@@ -65,16 +73,6 @@ describe('weights', () => {
 });
 
 describe('verified figures and report evidence', () => {
-  it('keeps the most recently verified figure per row and ignores lines without one', () => {
-    const map = latestVerifiedByRow([
-      { boq_item_id: 'k1', verified_pct: { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 }, updated_at: '2026-09-07T03:00:00+00:00', progress_claims: { verified_at: '2026-09-07T03:00:00+00:00' } },
-      { boq_item_id: 'k1', verified_pct: { BEKISTING: 100, PEMBESIAN: 60, PENGECORAN: 0 }, updated_at: '2026-09-14T03:00:00+00:00', progress_claims: [{ verified_at: '2026-09-14T03:00:00+00:00' }] },
-      { boq_item_id: 't1', verified_pct: null, updated_at: '2026-09-14T03:00:00+00:00', progress_claims: { verified_at: '2026-09-14T03:00:00+00:00' } },
-    ]);
-    expect(map.get('k1')).toEqual({ BEKISTING: 100, PEMBESIAN: 60, PENGECORAN: 0 });
-    expect(map.has('t1')).toBe(false);
-  });
-
   it('counts confirmed lines of the latest revision of each report only', () => {
     const ids = latestRevisionReportIds([
       { id: 'r1v1', report_no: 1, revision: 1 },
@@ -94,9 +92,9 @@ describe('verified figures and report evidence', () => {
 describe('buildRowViews', () => {
   it('joins weights, verified figures and this claim line into one view per row', () => {
     const rows = [
-      row({ id: 'k1', code: 'T1-001', label: 'Lantai 1 ; Kolom' }),
+      row({ id: 'k1', code: 'T1-001', label: 'Lantai 1 ; Kolom', installed: 32.6 }),
       row({ id: 't1', code: 'T1-002', label: 'Tangga', planned: 10 }),
-      row({ id: 'x', code: 'T1-003', label: 'Lantai 2 ; Dinding' }),
+      row({ id: 'x', code: 'T1-003', label: 'Lantai 2 ; Dinding', installed: 5 }),
     ];
     const views = buildRowViews(
       rows,
@@ -111,10 +109,11 @@ describe('buildRowViews', () => {
         evidence: { photo_refs: ['progress/p/1.jpg'] },
       }],
       new Map([['k1', 3]]),
+      new Map([['k1', 32.6]]),
     );
-    expect(views[0]).toMatchObject({ lineId: 'l1', source: 'reference', prevFraction: 0.326, claimedFraction: 0.6176, photoRefs: ['progress/p/1.jpg'], linkedLines: 3, note: 'Begel' });
+    expect(views[0]).toMatchObject({ lineId: 'l1', source: 'reference', prevFraction: 0.326, claimedFraction: 0.6176, photoRefs: ['progress/p/1.jpg'], linkedLines: 3, note: 'Begel', installedLedger: 32.6, installedMismatch: false });
     expect(views[1]).toMatchObject({ weights: null, source: null, claimedFraction: null, prevFraction: 0 });
-    expect(views[2]).toMatchObject({ weights: null, prevPct: {}, lineId: null, linkedLines: 0 });
+    expect(views[2]).toMatchObject({ weights: null, prevPct: {}, lineId: null, linkedLines: 0, installedLedger: 0, installedMismatch: true });
   });
 });
 
