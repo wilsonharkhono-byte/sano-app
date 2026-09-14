@@ -1,33 +1,26 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Platform } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { ScrollView, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import Card from '../components/Card';
-import SelectSheet from '../components/SelectSheet';
-import FlagPanel from '../components/FlagPanel';
-import PhotoGalleryField from '../components/PhotoGalleryField';
 import Badge from '../components/Badge';
 import StatTile from '../components/StatTile';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import CatatanPerubahanScreen from './CatatanPerubahanScreen';
 import DailyLogScreen from './DailyLogScreen';
-import { getDailyLog, upsertDailyLog } from '../../tools/dailySiteLogs';
-import { computeGate4Info } from '../gates/gate4';
-import { syncBoqInstalledFromDerived } from '../../tools/derivation';
-import { sanitizeText, isPositiveNumber } from '../../tools/validation';
-import { pickAndUploadPhoto } from '../../tools/storage';
+import ProgressClaimPanel from './progressClaim/ProgressClaimPanel';
+import { getDailyLog } from '../../tools/dailySiteLogs';
 import { supabase } from '../../tools/supabase';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import { getSiteChangeSummary, type SiteChangeSummary } from '../../tools/siteChanges';
-import { buildWorkGroups } from '../../tools/boqWorkGroups';
 
 type SubModule = 'home' | 'progress' | 'perubahan' | 'daily-log';
 
 export default function ProgresScreen() {
   const navigation = useNavigation<any>();
-  const { boqItems, project, profile, refresh } = useProject();
+  const { boqItems, project, profile, setActiveProject } = useProject();
   const { show: toast } = useToast();
   const [activeModule, setActiveModule] = useState<SubModule>('home');
   const [selectedProgressItemId, setSelectedProgressItemId] = useState<string | null>(null);
@@ -45,49 +38,24 @@ export default function ProgresScreen() {
   const [changeSummary, setChangeSummary] = useState<SiteChangeSummary | null>(null);
   const [todayLogExists, setTodayLogExists] = useState<boolean | null>(null);
 
-  // ── Progress form state ──
-  const [groupKey, setGroupKey] = useState('');
-  const [boqId, setBoqId] = useState('');
-  const [qty, setQty] = useState('');
-  const [location, setLocation] = useState('');
-  const [progressPhotos, setProgressPhotos] = useState<string[]>([]);
-  const [progressNote, setProgressNote] = useState('');
-  const [submitting, setSubmitting] = useState(false);
+  // ── Tambah progres: the weekly stage claim (report-driven progress spec §16) ──
+  const route = useRoute<any>();
+  const [claimRowId, setClaimRowId] = useState<string | null>(null);
+  const appliedParams = useRef<unknown>(null);
 
-  // ── Computed ──
-  const inProgressItems = useMemo(() => boqItems.filter(b => b.progress < 100), [boqItems]);
-  const selectedItem = useMemo(() => boqItems.find(b => b.id === boqId), [boqItems, boqId]);
-
-  // Work-group grouping for the progress picker (same classifier as the material
-  // request flow). Step 1 picks a work-group; step 2 picks a BoQ row within it.
-  const inProgressIds = useMemo(() => new Set(inProgressItems.map(b => b.id)), [inProgressItems]);
-  const workGroups = useMemo(() => buildWorkGroups(boqItems), [boqItems]);
-  const visibleGroups = useMemo(
-    () => workGroups
-      .map(g => ({ group: g, openCount: g.itemIds.filter(id => inProgressIds.has(id)).length }))
-      .filter(g => g.openCount > 0),
-    [workGroups, inProgressIds],
-  );
-  const groupRows = useMemo(() => {
-    const g = workGroups.find(x => x.key === groupKey);
-    if (!g) return [];
-    const idset = new Set(g.itemIds);
-    return inProgressItems.filter(b => idset.has(b.id));
-  }, [workGroups, groupKey, inProgressItems]);
-  const gateResult = useMemo(() => {
-    if (!selectedItem || !qty) return null;
-    const q = parseFloat(qty);
-    if (isNaN(q) || q <= 0) return null;
-    return computeGate4Info(selectedItem, q);
-  }, [selectedItem, qty]);
-  const newInstalled = selectedItem && qty ? selectedItem.installed + (parseFloat(qty) || 0) : 0;
-  const newPct = selectedItem ? Math.min(100, (newInstalled / selectedItem.planned) * 100).toFixed(1) : '0';
-  const derivedWorkStatus = useMemo(() => {
-    if (!selectedItem) return 'IN_PROGRESS';
-    const q = parseFloat(qty);
-    if (isNaN(q) || q <= 0) return 'IN_PROGRESS';
-    return selectedItem.installed + q >= selectedItem.planned ? 'COMPLETE' : 'IN_PROGRESS';
-  }, [selectedItem, qty]);
+  // A claim notification (migration 104: PROGRESS_CLAIM_RETURNED / _VERIFIED)
+  // opens the claim on its own project. Applied once per navigation, so a
+  // later manual project switch is not undone.
+  useEffect(() => {
+    const params = route.params as { module?: string; projectId?: string } | undefined;
+    if (!params || appliedParams.current === params) return;
+    appliedParams.current = params;
+    if (params.projectId && params.projectId !== project?.id) setActiveProject(params.projectId);
+    if (params.module === 'progress') {
+      setClaimRowId(null);
+      setActiveModule('progress');
+    }
+  }, [route.params, project?.id, setActiveProject]);
 
   const loadHomeDetails = useCallback(async () => {
     if (!project) return;
@@ -128,156 +96,12 @@ export default function ProgresScreen() {
     [recentEntries, selectedProgressItemId],
   );
 
-  // ── Cross-prompt: offer to add progress to today's daily log highlight ──
-  const offerAddToDailyLog = useCallback(async (boqId: string, note: string) => {
-    if (!project || !profile) return;
-    const item = boqItems.find((b) => b.id === boqId);
-    const area = item ? `${item.code} — ${item.label}` : 'Progres';
-    const msg = `Tambahkan "${area}" ke Log Harian klien?`;
-    const ok = Platform.OS === 'web'
-      ? (typeof window !== 'undefined' && window.confirm ? window.confirm(msg) : false)
-      : false; // native: skip auto-prompt in MVP
-    if (!ok) return;
-
-    const d = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-
-    try {
-      const existing = await getDailyLog(project.id, iso);
-      const highlights = existing?.highlights ?? [];
-      await upsertDailyLog({
-        project_id: project.id,
-        log_date: iso,
-        weather: existing?.weather ?? null,
-        crew_total: existing?.crew_total ?? null,
-        crew_breakdown: existing?.crew_breakdown ?? null,
-        safety_incidents: existing?.safety_incidents ?? 0,
-        author_id: profile.id,
-        highlights: [...highlights, { area: item?.label ?? 'Progres', note, boq_item_id: boqId, sort_order: highlights.length, room_id: null, gate_code: null, source_event_id: null }],
-        photos: existing?.photos ?? [],
-      });
-      toast('Ditambahkan ke Log Harian', 'ok');
-    } catch {
-      toast('Tidak bisa menambahkan ke Log Harian', 'warning');
-    }
-  }, [project, profile, boqItems, toast]);
-
   // ── Handlers ──
   const goBack = () => setActiveModule('home');
 
-  const updatePhotoCollection = async (
-    folder: string,
-    setPhotos: React.Dispatch<React.SetStateAction<string[]>>,
-    replaceIndex?: number,
-    addMessage = 'Foto ditambahkan',
-    replaceMessage = 'Foto diganti',
-  ) => {
-    try {
-      const path = await pickAndUploadPhoto(folder);
-      if (!path) return;
-
-      setPhotos(prev => {
-        if (replaceIndex == null || replaceIndex < 0 || replaceIndex >= prev.length) {
-          return [...prev, path];
-        }
-        return prev.map((photo, index) => (index === replaceIndex ? path : photo));
-      });
-
-      toast(replaceIndex == null ? addMessage : replaceMessage, 'ok');
-    } catch (err: any) { toast(err.message, 'critical'); }
-  };
-
-  const removePhotoFromCollection = (
-    setPhotos: React.Dispatch<React.SetStateAction<string[]>>,
-    index: number,
-  ) => {
-    setPhotos(prev => prev.filter((_, photoIndex) => photoIndex !== index));
-    toast('Foto dihapus', 'warning');
-  };
-
-  const handleProgressPhoto = (replaceIndex?: number) =>
-    updatePhotoCollection(
-      `progress/${project!.id}`,
-      setProgressPhotos,
-      replaceIndex,
-      'Foto progres ditambahkan',
-      'Foto progres diganti',
-    );
-
-  const resetProgressForm = () => {
-    setBoqId(''); setQty(''); setLocation('');
-    setProgressPhotos([]); setProgressNote('');
-  };
-
-  const openProgressComposer = (nextBoqId?: string) => {
-    if (nextBoqId) {
-      setBoqId(nextBoqId);
-      setQty('');
-    }
+  const openProgressComposer = (rowId?: string) => {
+    setClaimRowId(rowId ?? null);
     setActiveModule('progress');
-  };
-
-  const handleProgressSubmit = async () => {
-    const needsPhoto = Platform.OS !== 'web';
-    if (!boqId || !isPositiveNumber(qty) || (needsPhoto && progressPhotos.length === 0)) {
-      toast('Lengkapi BoQ, qty, dan foto progres', 'critical'); return;
-    }
-    const item = boqItems.find(b => b.id === boqId);
-    if (!item || !project || !profile) return;
-
-    setSubmitting(true);
-    try {
-      const { data: progressEntry, error: dbError } = await supabase
-        .from('progress_entries')
-        .insert({
-          project_id: project.id,
-          boq_item_id: boqId,
-          reported_by: profile.id,
-          quantity: parseFloat(qty),
-          unit: item.unit,
-          work_status: derivedWorkStatus,
-          location: location ? sanitizeText(location) : null,
-          note: progressNote ? sanitizeText(progressNote) : null,
-        })
-        .select('id')
-        .single();
-      if (dbError || !progressEntry) throw dbError ?? new Error('Progress insert failed');
-
-      if (progressPhotos.length > 0) {
-        const { error: photoError } = await supabase.from('progress_photos').insert(
-          progressPhotos.map((path) => ({
-            progress_entry_id: progressEntry.id,
-            storage_path: path,
-            captured_at: new Date().toISOString(),
-          })),
-        );
-        if (photoError) throw photoError;
-      }
-
-      await syncBoqInstalledFromDerived(project.id);
-
-      const { error: logError } = await supabase.from('activity_log').insert({
-        project_id: project.id, user_id: profile.id,
-        type: 'progres',
-        label: `${item.label} — ${qty} ${item.unit} terpasang`,
-        flag: 'OK',
-      });
-      if (logError) throw logError;
-
-      const submittedBoqId = boqId;
-      const submittedNote = progressNote;
-      resetProgressForm();
-      await refresh();
-      await loadHomeDetails();
-      setActiveModule('home');
-      toast(`Progres dicatat: ${qty} ${item.unit}`, 'ok');
-      await offerAddToDailyLog(submittedBoqId, submittedNote ? sanitizeText(submittedNote) : 'Progres pekerjaan tercatat.');
-    } catch (err: any) {
-      console.warn('Progress submit failed:', err?.message ?? err);
-      toast(err?.message ?? 'Gagal menyimpan progres', 'critical');
-    }
-    finally { setSubmitting(false); }
   };
 
   // ── Sub-module header ──
@@ -349,6 +173,7 @@ export default function ProgresScreen() {
                   onPress={() => {
                     if (btn.key === 'ruangan') navigation.navigate('RoomScan');
                     else if (btn.key === 'papan') navigation.navigate('RoomBoard');
+                    else if (btn.key === 'progress') openProgressComposer();
                     else setActiveModule(btn.key as SubModule);
                   }}
                   accessibilityRole="button"
@@ -477,115 +302,20 @@ export default function ProgresScreen() {
           </>
         )}
 
-        {/* ── PROGRESS: Add progress entry ── */}
-        {activeModule === 'progress' && (
+        {/* ── PROGRESS: the weekly stage claim per work area ── */}
+        {activeModule === 'progress' && project && (
           <>
             <SubHeader title="Tambah Progres" />
-            <Card title="Laporan Progres Baru">
-              <Text style={styles.label}>Grup Pekerjaan <Text style={styles.req}>*</Text></Text>
-              <SelectSheet
-                title="Pilih Grup Pekerjaan"
-                placeholder="-- Pilih grup pekerjaan --"
-                accessibilityLabel="Pilih grup pekerjaan"
-                value={groupKey}
-                onChange={v => { setGroupKey(v); setBoqId(''); setQty(''); }}
-                options={visibleGroups.map(({ group, openCount }) => ({
-                  value: group.key,
-                  label: group.label,
-                  meta: `${openCount} item`,
-                }))}
-              />
-
-              <Text style={styles.label}>Item BoQ <Text style={styles.req}>*</Text></Text>
-              <SelectSheet
-                title="Pilih Item BoQ"
-                placeholder={groupKey ? '-- Pilih item BoQ --' : '-- Pilih grup dulu --'}
-                accessibilityLabel="Pilih item BoQ"
-                disabled={!groupKey}
-                value={boqId}
-                onChange={v => { setBoqId(v); setQty(''); }}
-                options={groupRows.map(b => ({
-                  value: b.id,
-                  code: b.code,
-                  label: b.label,
-                  meta: `${b.progress}%`,
-                  metaColor: b.progress === 100 ? COLORS.ok : COLORS.accent,
-                }))}
-              />
-              {selectedItem && (
-                <Text style={styles.fieldHint}>{selectedItem.progress}% selesai · {selectedItem.installed.toFixed(2)} / {selectedItem.planned} {selectedItem.unit}</Text>
-              )}
-
-              {selectedItem && (
-                <>
-                  <View style={styles.row2}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.label}>Qty Hari Ini <Text style={styles.req}>*</Text></Text>
-                      <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} keyboardType="numeric" value={qty} onChangeText={setQty} placeholder="0" />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.label}>Satuan</Text>
-                      <TextInput style={[styles.input, styles.disabled]} value={selectedItem.unit} editable={false} />
-                    </View>
-                  </View>
-
-                  {qty && parseFloat(qty) > 0 && (
-                    <Text style={[styles.fieldHint, parseFloat(newPct) >= 100 ? { color: COLORS.ok } : null]}>
-                      Setelah: {newInstalled.toFixed(2)} / {selectedItem.planned} {selectedItem.unit} = {newPct}%
-                    </Text>
-                  )}
-
-                  <View style={styles.autoStatusBox}>
-                    <Text style={styles.autoStatusTitle}>Status otomatis</Text>
-                    <Text style={styles.autoStatusText}>
-                      {derivedWorkStatus === 'COMPLETE'
-                        ? 'Entri ini akan ditandai Selesai karena progres mencapai 100%.'
-                        : 'Entri ini akan ditandai Sedang Berjalan sampai item mencapai 100%.'}
-                    </Text>
-                  </View>
-
-                  <Text style={styles.label}>Lokasi / Keterangan</Text>
-                  <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={location} onChangeText={setLocation} placeholder="Contoh: Kolom K1-K8, zona utara" />
-
-                  <Text style={styles.label}>Catatan</Text>
-                  <TextInput placeholderTextColor={COLORS.textMuted} style={[styles.input, styles.textarea]} value={progressNote} onChangeText={setProgressNote} multiline placeholder="Catatan tambahan (opsional)" />
-                  <Text style={styles.fieldHint}>
-                    Tambahan scope, permintaan owner, atau perubahan pekerjaan dicatat lewat `Catatan Perubahan`, bukan lewat progres biasa.
-                  </Text>
-
-                  <Text style={styles.label}>Foto Progres <Text style={styles.req}>*</Text></Text>
-                  <PhotoGalleryField
-                    photoPaths={progressPhotos}
-                    onAdd={() => handleProgressPhoto()}
-                    onReplace={handleProgressPhoto}
-                    onRemove={(index) => removePhotoFromCollection(setProgressPhotos, index)}
-                    emptyLabel="Tambah Foto Progres"
-                    helperText="Tambahkan beberapa bukti progres bila perlu. Foto pertama tetap menjadi lampiran utama."
-                  />
-
-                  <FlagPanel result={gateResult} gateLabel="Gate 4" />
-
-                  <TouchableOpacity
-                    style={styles.btn}
-                    onPress={handleProgressSubmit}
-                    disabled={submitting}
-                    accessibilityRole="button"
-                    accessibilityLabel="Kirim progres"
-                    accessibilityState={{ disabled: submitting, busy: submitting }}
-                  >
-                    <Text style={styles.btnText}>{submitting ? 'Mengirim...' : 'Kirim Progres'}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.ghostBtn, { marginTop: 8 }]}
-                    onPress={goBack}
-                    accessibilityRole="button"
-                    accessibilityLabel="Batal, kembali ke hub"
-                  >
-                    <Text style={styles.ghostBtnText}>Batal</Text>
-                  </TouchableOpacity>
-                </>
-              )}
-            </Card>
+            <Text style={styles.sectionHint}>
+              Isi persentase tiap tahap per area kerja. Klaim dikirim mingguan dan baru menambah progres proyek setelah estimator memverifikasi.
+            </Text>
+            <ProgressClaimPanel
+              projectId={project.id}
+              role={profile?.role}
+              boqItems={boqItems}
+              initialRowId={claimRowId}
+              toast={toast}
+            />
           </>
         )}
 

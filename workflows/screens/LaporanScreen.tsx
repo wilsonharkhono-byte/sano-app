@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, Modal, Platform } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,6 +15,7 @@ import MandorSetupScreen from './MandorSetupScreen';
 import OpnameScreen from './OpnameScreen';
 import AttendanceScreen from './AttendanceScreen';
 import ClientReportBuilderScreen from './ClientReportBuilderScreen';
+import ProgressClaimPanel from './progressClaim/ProgressClaimPanel';
 import { MilestonePanel } from './MilestoneScreen';
 import MilestoneFormScreen from './MilestoneFormScreen';
 import MilestoneAiDraftScreen from './MilestoneAiDraftScreen';
@@ -34,7 +35,7 @@ import { canManageTeamMember } from '../../tools/rolePermissions';
 import { type UserRoleType } from '../../tools/constants';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
-type Section = 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'katalog' | 'mandor' | 'opname' | 'attendance' | 'client-report';
+type Section = 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'katalog' | 'mandor' | 'opname' | 'attendance' | 'client-report' | 'klaim';
 
 // ── Report preview renderers ──────────────────────────────────────────────────
 
@@ -52,7 +53,7 @@ function formatReportTimestamp(value: string) {
 
 export default function LaporanScreen() {
   const route = useRoute<any>();
-  const { project, profile, boqItems, purchaseOrders, defects, milestones, refresh } = useProject();
+  const { project, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
   const { show: toast } = useToast();
   // Estimators manage team membership here (migration 037), but principal
   // members are out of reach (migration 090): only a principal actor may add
@@ -80,6 +81,15 @@ export default function LaporanScreen() {
       setActiveSection(nextSection);
     }
   }, [route.params?.initialSection]);
+
+  // A notification can name another project (claim deeplinks carry projectId).
+  const appliedProjectParam = useRef<unknown>(null);
+  useEffect(() => {
+    const params = route.params as { projectId?: string } | undefined;
+    if (!params?.projectId || appliedProjectParam.current === params) return;
+    appliedProjectParam.current = params;
+    if (params.projectId !== project?.id) setActiveProject(params.projectId);
+  }, [route.params, project?.id, setActiveProject]);
 
   useEffect(() => {
     if (route.params?.contractId) {
@@ -444,6 +454,19 @@ export default function LaporanScreen() {
               <StatTile value={openDefects} label="Perubahan Open" color={COLORS.critical} />
             </View>
 
+            {isSupervisor && project && (
+              <Card title="Klaim Progres Mingguan" subtitle="Isi progres per area kerja dan kirim mingguan untuk diverifikasi estimator.">
+                <TouchableOpacity
+                  style={styles.claimBtn}
+                  onPress={() => setActiveSection('klaim')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Buka klaim progres"
+                >
+                  <Text style={styles.claimBtnText}>Buka klaim progres</Text>
+                </TouchableOpacity>
+              </Card>
+            )}
+
             {/* Material status */}
             <Card title="Status Material">
               <View style={styles.metricRow}>
@@ -721,6 +744,13 @@ export default function LaporanScreen() {
           </>
         )}
 
+        {activeSection === 'klaim' && project && (
+          <>
+            <Text style={styles.sectionHead}>Klaim Progres Mingguan</Text>
+            <ProgressClaimPanel projectId={project.id} role={profile?.role} boqItems={boqItems} toast={toast} />
+          </>
+        )}
+
         {activeSection === 'jadwal' && (
           <MilestonePanel
             embedded
@@ -831,6 +861,8 @@ const styles = StyleSheet.create({
   tabActive:     { borderBottomWidth: 2, borderBottomColor: COLORS.primary },
   tabText:       { fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', color: COLORS.textSec },
   tabTextActive: { color: COLORS.primary },
+  claimBtn:      { minHeight: 44, marginTop: SPACE.sm, borderRadius: RADIUS, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', paddingHorizontal: SPACE.base },
+  claimBtnText:  { fontSize: TYPE.sm, lineHeight: Math.round(TYPE.sm * 1.45), fontFamily: FONTS.semibold, color: COLORS.textInverse, textTransform: 'uppercase' },
 
   sectionHead: {
     fontSize: TYPE.xs, fontFamily: FONTS.bold, letterSpacing: 1,

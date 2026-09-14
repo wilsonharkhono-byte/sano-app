@@ -27,8 +27,8 @@ export type TabParamList = {
   Beranda:    undefined;
   Permintaan: undefined;
   Terima:     undefined;
-  Progres:    undefined;
-  Laporan:    { initialSection?: 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' } | undefined;
+  Progres:    { module?: 'progress'; projectId?: string; claimId?: string; initialSection?: string } | undefined;
+  Laporan:    { initialSection?: 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'klaim'; projectId?: string; claimId?: string } | undefined;
   Notifikasi: undefined;
   RoomScan:   undefined;
   Room:       { projectCode: string; roomCode: string };
