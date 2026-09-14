@@ -275,3 +275,37 @@ Decided with the owner after the Plan A plan was written.
 - Kirim (submit) stays a weekly action, reachable from the Progres tab's claim overview and from Laporan; the overview lists every work area with verified, claimed-this-week, and the count of linked lines and photos behind it.
 
 **Plan impact.** Plan B's claim form is built once and mounted in two places (Progres tab per work area, Laporan for the weekly overview and Kirim); the Progres screen's `progress` sub-module is replaced rather than extended. Plan A is unchanged.
+
+## 17. Amendment 2026-09-14 — weights from the RAB workbooks, numbering, revisions
+
+Findings from the live database and a spike over the five RAB workbooks in `assets/BOQ/` (Citraland K2-7, Pakuwon AAL-5, Pakuwon PD3, Nusa Golf I4, Ernawati).
+
+**The database cannot supply stage weights.** `boq_items.cost_breakdown` exists only on the seed projects and splits by cost category (`labor`, `material`, `equipment`, `prelim`, `subkon`), not by stage. Both live projects are simplified-input (Citraland 16 `T1-` rows, Bukit Darmo 42) with no costs or prices. §7.1 therefore applies only once a full-RAB publish persists per-row stage components; until then weights come from §7.2–§7.4.
+
+**Reference profile method (§7.3, now specified).**
+
+- Per concrete row of `RAB (A)` / `RAB (B)`: bekisting Rp = volume × V × W, pembesian Rp = volume × Z × AA, pengecoran Rp = volume × R; the single borongan line S + T is apportioned across the three in proportion to their material Rp.
+- A row feeds the profile only when all three stages are priced on that row.
+- Each workbook counts once: the profile is the mean of per-workbook stage shares, renormalized, so one large workbook cannot dominate.
+- Ground floor = the chapters whose title names Lantai 1, dasar, bawah, basement or pondasi. Lean concrete (lantai kerja) priced in the earthworks chapter is its own evidence-only class and never decides the ground chapter.
+
+**Result** (bekisting / pembesian / pengecoran; spread across workbooks in brackets):
+
+| Class | Bekisting | Pembesian | Pengecoran | Workbooks |
+|---|---|---|---|---|
+| `BALOK_PLAT` | 37.6% | 37.8% (36–42) | 24.6% | 5 |
+| `KOLOM` | 32.6% | 48.6% (43–55) | 18.8% | 5 |
+| `DINDING` | 31.2% | 35.6% | 33.2% | 5 |
+| `PILECAP_SLOOF_PLAT_DASAR` | 14.2% | 46.7% (43–49) | 39.1% | 5 |
+
+- `LAINNYA` (3 workbooks, bekisting 32–56%) is too heterogeneous to use; those rows default to `{"SINGLE": 1}`.
+- `TANGGA`, `BOREDPILE` and strauss pile are package-priced (per m³ or per titik) in every workbook, so they have no stage split and default to `{"SINGLE": 1}` unless the estimator enters weights.
+- Component-level workbooks (Ernawati lists "- Besi D13" in kg under each poer) are excluded, not summed; the tight spread above shows the profile is stable without them.
+
+**Classifier coverage on live labels** (`<lantai> ; <elemen>`): Citraland 16 of 16 rows classified, including `BOREDPILE`; Bukit Darmo 38 of 42, the rest (tandon air bawah, reflecting pool, two planter boxes) fall to `LAINNYA`.
+
+**Numbering.** Plan A's migration is 102 (main's PR #67 took 101 for gate labels). Plan B uses 103 for `boq_stage_weights` and 104 for claims and notifications. §5.5's type list must be re-derived from the latest `notifications_type_check` on main at planning time, not taken from 098.
+
+**Revisions.** A re-issued report gets fresh line rows (the §5.1 carry-forward was not built in Plan A). Claim aggregation (§6.2) and the prefill read CONFIRMED lines from the latest revision of each `report_no` only, so an older revision never counts twice.
+
+**Screen size.** Before Plan B adds claim entry points, `workflows/screens/ClientReportBuilderScreen.tsx` is split into a `useReportLinking` hook, a history card and an issued-report view.
