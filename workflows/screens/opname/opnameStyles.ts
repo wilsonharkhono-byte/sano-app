@@ -1,10 +1,13 @@
 import { StyleSheet } from 'react-native';
-import { COLORS, FONTS, TYPE, SPACE, RADIUS, RADIUS_SM } from '../../theme';
+import { COLORS, FAB_CLEARANCE, FONTS, TYPE, SPACE, RADIUS, RADIUS_SM } from '../../theme';
 
 export const styles = StyleSheet.create({
   flex:   { flex: 1, backgroundColor: COLORS.bg },
   scroll: { flex: 1 },
-  content: { padding: SPACE.base, paddingBottom: SPACE.xxxl },
+  // paddingBottom: FAB_CLEARANCE, not SPACE.xxxl — OpnameListView's last
+  // contract row/action would otherwise sit under GlobalAIChatLauncher's
+  // floating sparkle button (rendered app-wide, workflows/App.tsx).
+  content: { padding: SPACE.base, paddingBottom: FAB_CLEARANCE },
 
   backBtn:  { flexDirection: 'row', alignItems: 'center', gap: SPACE.xs, paddingHorizontal: SPACE.base, paddingVertical: SPACE.md },
   backText: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.primary },
