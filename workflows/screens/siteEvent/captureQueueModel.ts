@@ -22,9 +22,8 @@ import {
  * announces an actual draft.
  *
  * This is why the badge is built here rather than re-exporting
- * tools/captureQueue.ts's queueBadgeText: that function keeps the older
- * wording and is now referenced only by its own test (see the follow-up note
- * in the review hand-off).
+ * tools/captureQueue.ts's queueBadgeText, which kept the older wording and
+ * has since been removed (it was referenced only by its own test).
  */
 export function queueBadgeText(entries: ReadonlyArray<CaptureQueueEntry>): string | null {
   const waiting = waitingCount(entries);

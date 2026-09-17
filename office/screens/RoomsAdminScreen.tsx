@@ -12,7 +12,7 @@ import RoomBoardView from './rooms/RoomBoardView';
 import RoomForm from './rooms/RoomForm';
 import RoomPasteImport from './rooms/RoomPasteImport';
 import {
-  listRooms, createRoom, setRoomActive, ensureAreaUmum, roomsToDatumAreas,
+  listRoomsResult, createRoom, setRoomActive, ensureAreaUmum, roomsToDatumAreas,
   type ParsedRoomRow,
 } from '../../tools/rooms';
 import { exportRoomLabelSheet } from '../../tools/roomLabelsHtml';
@@ -37,6 +37,7 @@ export default function RoomsAdminScreen() {
   const [mode, setMode] = useState<Mode>('none');
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -48,16 +49,26 @@ export default function RoomsAdminScreen() {
   const phase = project?.phase ?? 'STRUKTUR';
 
   const load = useCallback(async () => {
-    if (!project) { setRooms([]); setLoading(false); return; }
+    if (!project) { setRooms([]); setLoadError(null); setLoading(false); return; }
     setLoading(true);
-    setRooms(await listRooms(project.id, { includeInactive: true }));
+    const result = await listRoomsResult(project.id, { includeInactive: true });
+    if (result.rooms === null) {
+      // A failed read is not "no rooms" (CLAUDE.md §12): stale rows are
+      // dropped so the error state below is the only thing shown, rather
+      // than a list that might already be out of date next to a warning.
+      setLoadError(result.error);
+      setRooms([]);
+    } else {
+      setLoadError(null);
+      setRooms(result.rooms);
+    }
     setLoading(false);
   }, [project]);
 
   useEffect(() => { void load(); }, [load]);
 
-  // Rooms grouped by floor, floors in first-appearance order (listRooms already
-  // orders by floor, then sort_order, then name).
+  // Rooms grouped by floor, floors in first-appearance order (listRoomsResult
+  // already orders by floor, then sort_order, then name).
   const byFloor = useMemo(() => {
     const groups = new Map<string, Room[]>();
     for (const r of rooms) {
@@ -256,11 +267,23 @@ export default function RoomsAdminScreen() {
               {mode === 'paste' && <RoomPasteImport saving={saving} onCancel={() => setMode('none')} onImport={handleImport} />}
 
               {loading && <Text style={styles.empty}>Memuat…</Text>}
-              {!loading && rooms.length === 0 && (
+
+              {!loading && loadError && (
+                <View>
+                  <Text style={styles.errorText}>
+                    Daftar ruangan gagal dimuat. Periksa koneksi lalu coba lagi.
+                  </Text>
+                  <TouchableOpacity onPress={() => void load()} style={styles.ghostBtn} accessibilityRole="button">
+                    <Text style={styles.ghostText}>Coba lagi</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {!loading && !loadError && rooms.length === 0 && (
                 <Text style={styles.empty}>Belum ada ruangan. Tambahkan satu per satu atau tempel daftarnya.</Text>
               )}
 
-              {byFloor.map(([floor, list]) => (
+              {!loadError && byFloor.map(([floor, list]) => (
                 <View key={floor} style={styles.floorGroup}>
                   <Text style={styles.floorHead}>{floor}</Text>
                   {list.map((r) => (
@@ -357,6 +380,7 @@ const styles = StyleSheet.create({
     color: COLORS.textSec, marginBottom: SPACE.sm,
   },
   empty: { fontSize: TYPE.base, fontFamily: FONTS.regular, color: COLORS.textSec, textAlign: 'center', paddingVertical: SPACE.md },
+  errorText: { fontSize: TYPE.sm, fontFamily: FONTS.medium, color: COLORS.critical, lineHeight: 18, marginBottom: SPACE.sm },
   hint: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, lineHeight: 16, marginTop: SPACE.sm },
   pickerWrap: { borderWidth: 1, borderColor: COLORS.border, borderRadius: RADIUS, backgroundColor: COLORS.surface, overflow: 'hidden' },
   btnRow: { flexDirection: 'row', gap: SPACE.sm, flexWrap: 'wrap' },

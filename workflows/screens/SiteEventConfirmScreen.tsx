@@ -7,11 +7,12 @@ import Card from '../components/Card';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { listGateRefs, listGateStepRefs } from '../../tools/gateRefs';
-import { getProjectTeam, type TeamMember } from '../../tools/projectManagement';
+import { getProjectTeamResult, type TeamMember } from '../../tools/projectManagement';
 import {
   confirmSiteEvent,
   discardSiteEvent,
   getSiteEvent,
+  getSiteEventResult,
   invokeSiteEventAnalysis,
   listOpenEventsForRoom,
   saveTranscriptEdit,
@@ -74,9 +75,11 @@ export default function SiteEventConfirmScreen() {
 
   const [event, setEvent] = useState<SiteEventWithMedia | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [gates, setGates] = useState<GateRef[]>([]);
   const [steps, setSteps] = useState<GateStepRef[]>([]);
   const [team, setTeam] = useState<TeamMember[]>([]);
+  const [teamError, setTeamError] = useState<string | null>(null);
   const [openEvents, setOpenEvents] = useState<OpenEventSummary[]>([]);
   const [manual, setManual] = useState(false);
   const [form, setForm] = useState<ConfirmForm | null>(null);
@@ -110,21 +113,40 @@ export default function SiteEventConfirmScreen() {
   const load = useCallback(
     async (opts: { silent?: boolean } = {}) => {
       if (!opts.silent) setLoading(true);
-      const ev = await getSiteEvent(eventId);
+      const evResult = await getSiteEventResult(eventId);
       if (!alive.current) return;
-      if (!ev && opts.silent) return;
+      if (evResult.event === null && opts.silent) return;
+      if (evResult.error) {
+        // A network failure is not "kejadian tidak ditemukan" (CLAUDE.md
+        // §12) — offer a retry instead of the not-found copy below.
+        setLoadError('Gagal memuat. Periksa koneksi lalu coba lagi.');
+        setEvent(null);
+        setLoading(false);
+        return;
+      }
+      setLoadError(null);
+      const ev = evResult.event;
       setEvent(ev);
       if (ev) {
-        const [gateRows, stepRows, members, open] = await Promise.all([
+        const [gateRows, stepRows, teamResult, open] = await Promise.all([
           listGateRefs({ activeOnly: true }),
           listGateStepRefs({ activeOnly: true }),
-          getProjectTeam(ev.project_id),
+          getProjectTeamResult(ev.project_id),
           listOpenEventsForRoom(ev.room_id, 10),
         ]);
         if (!alive.current) return;
         setGates(gateRows);
         setSteps(stepRows);
-        setTeam(members);
+        if (teamResult.team === null) {
+          // Same rule for the team: an empty team here would make OwnerField
+          // say "Tim proyek belum diatur", which is wrong for a dropped
+          // connection rather than a project with genuinely nobody assigned.
+          setTeamError('Tim proyek gagal dimuat. Coba lagi.');
+          setTeam([]);
+        } else {
+          setTeamError(null);
+          setTeam(teamResult.team);
+        }
         setOpenEvents(open.filter((o) => o.id !== ev.id));
         const initial = initialConfirmForm(ev, todayIsoLocal(), false);
         setForm(initial.form);
@@ -312,7 +334,16 @@ export default function SiteEventConfirmScreen() {
           </Card>
         ) : null}
 
-        {!loading && !event ? (
+        {!loading && !event && loadError ? (
+          <Card borderColor={COLORS.critical}>
+            <Text style={s.errorText}>{loadError}</Text>
+            <TouchableOpacity style={s.secondaryBtn} onPress={() => void load()} accessibilityRole="button">
+              <Text style={s.secondaryText}>Coba lagi</Text>
+            </TouchableOpacity>
+          </Card>
+        ) : null}
+
+        {!loading && !event && !loadError ? (
           <Card borderColor={COLORS.critical}>
             <Text style={s.errorText}>Kejadian tidak ditemukan atau Anda tidak punya akses.</Text>
           </Card>
@@ -512,7 +543,16 @@ export default function SiteEventConfirmScreen() {
               <Text style={s.label}>
                 Pemilik{actionable ? <Text style={s.req}> *</Text> : null}
               </Text>
-              <OwnerField team={team} value={form.ownerId} onChange={(id) => update({ ownerId: id })} required={actionable} disabled={busy} />
+              {teamError ? (
+                <View>
+                  <Text style={s.errorText}>{teamError}</Text>
+                  <TouchableOpacity style={s.secondaryBtn} onPress={() => void load()} accessibilityRole="button">
+                    <Text style={s.secondaryText}>Coba lagi</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <OwnerField team={team} value={form.ownerId} onChange={(id) => update({ ownerId: id })} required={actionable} disabled={busy} />
+              )}
 
               <Text style={s.label}>
                 Tenggat{actionable ? <Text style={s.req}> *</Text> : null}

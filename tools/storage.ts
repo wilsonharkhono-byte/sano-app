@@ -23,6 +23,21 @@ const photoUrlCache = new Map<string, { url: string; expiresAt: number }>();
  */
 export const SITE_MEDIA_PATH_PREFIX = `${SITE_MEDIA_BUCKET}:`;
 
+/**
+ * Thrown by `pickPhoto` when the camera permission is denied, carrying
+ * `canAskAgain` from `requestCameraPermissionsAsync` so a caller can tell a
+ * re-askable denial from a permanent one without re-querying the permission
+ * itself. `pickAndUploadPhoto` is unchanged and still throws a bare `Error`.
+ */
+export class PhotoPermissionError extends Error {
+  canAskAgain: boolean;
+  constructor(message: string, canAskAgain: boolean) {
+    super(message);
+    this.name = 'PhotoPermissionError';
+    this.canAskAgain = canAskAgain;
+  }
+}
+
 export type StorageTarget =
   | { kind: 'local'; uri: string }
   | { kind: 'bucket'; bucket: string; path: string; allowPublicFallback: boolean };
@@ -190,7 +205,7 @@ export async function pickPhoto(): Promise<PreparedPhoto | null> {
   } else {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
-      throw new Error('Izin kamera diperlukan untuk mengambil foto.');
+      throw new PhotoPermissionError('Izin kamera diperlukan untuk mengambil foto.', permission.canAskAgain);
     }
     result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7, allowsEditing: false });
   }

@@ -35,10 +35,22 @@ const ROOM_COLUMNS =
 
 // ─── Reads ───────────────────────────────────────────────────────────────────
 
-export async function listRooms(
+/**
+ * Either the project's rooms, or an explicit read failure. A fetch failure
+ * must never collapse into "no rooms" (CLAUDE.md §12) - that is
+ * indistinguishable from a genuinely empty project and would render the same
+ * reassuring empty state over an RLS failure or a network blip. `listRooms`
+ * below is the pre-existing thin wrapper kept for callers outside this
+ * hardening pass; it still swallows the error into `[]`.
+ */
+export type RoomsResult =
+  | { rooms: Room[]; error?: undefined }
+  | { rooms: null; error: string };
+
+export async function listRoomsResult(
   projectId: string,
   opts: { includeInactive?: boolean } = {},
-): Promise<Room[]> {
+): Promise<RoomsResult> {
   let q = supabase
     .from('rooms')
     .select(ROOM_COLUMNS)
@@ -56,9 +68,17 @@ export async function listRooms(
   const { data, error } = await q;
   if (error) {
     console.warn('listRooms failed:', error.message);
-    return [];
+    return { rooms: null, error: error.message };
   }
-  return (data ?? []) as Room[];
+  return { rooms: (data ?? []) as Room[] };
+}
+
+export async function listRooms(
+  projectId: string,
+  opts: { includeInactive?: boolean } = {},
+): Promise<Room[]> {
+  const result = await listRoomsResult(projectId, opts);
+  return result.rooms ?? [];
 }
 
 // ─── Writes ──────────────────────────────────────────────────────────────────

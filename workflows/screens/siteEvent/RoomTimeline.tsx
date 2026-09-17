@@ -8,7 +8,7 @@ import {
   canClose, canEditAssignment, dueLabel, isOverdue, sortTimeline,
 } from './timelineModel';
 import { listRoomTimeline, signedMediaUrl, updateSiteEventAssignment, type TimelineEventRow } from '../../../tools/siteEvents';
-import { getProjectTeam, type TeamMember } from '../../../tools/projectManagement';
+import { getProjectTeamResult, type TeamMember } from '../../../tools/projectManagement';
 import { SITE_EVENT_STATUS_LABELS, SITE_EVENT_TYPE_LABELS } from '../../../tools/constants';
 import type { SiteEventStatus } from '../../../tools/types';
 import { COLORS, FONTS, RADIUS_SM, SPACE, TYPE } from '../../theme';
@@ -53,6 +53,7 @@ export default function RoomTimeline(props: {
   const [rows, setRows] = useState<TimelineEventRow[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [team, setTeam] = useState<TeamMember[]>([]);
+  const [teamError, setTeamError] = useState<string | null>(null);
   const [thumbs, setThumbs] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -67,9 +68,9 @@ export default function RoomTimeline(props: {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [res, members] = await Promise.all([
+    const [res, teamResult] = await Promise.all([
       listRoomTimeline(roomId, projectId, TIMELINE_LIMIT),
-      getProjectTeam(projectId),
+      getProjectTeamResult(projectId),
     ]);
     if (!alive.current) return;
     if (res.error) {
@@ -81,7 +82,16 @@ export default function RoomTimeline(props: {
       setLoadError(null);
       setRows(res.events);
     }
-    setTeam(members);
+    if (teamResult.team === null) {
+      // Same rule for the team: an empty team here would make OwnerField say
+      // "Tim proyek belum diatur", which is wrong for a dropped connection
+      // rather than a project that genuinely has nobody assigned yet.
+      setTeamError('Tim proyek gagal dimuat. Coba lagi.');
+      setTeam([]);
+    } else {
+      setTeamError(null);
+      setTeam(teamResult.team);
+    }
     setLoading(false);
 
     // One signed URL per first photo. Signing every close-up on a room with
@@ -238,7 +248,16 @@ export default function RoomTimeline(props: {
               )}
             </View>
 
-            {editing === e.id && (
+            {editing === e.id && teamError && (
+              <View style={styles.teamErrorBox}>
+                <Text style={styles.error}>{teamError}</Text>
+                <TouchableOpacity onPress={() => void load()} accessibilityRole="button" style={styles.retry}>
+                  <Text style={styles.link}>Coba lagi</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {editing === e.id && !teamError && (
               <AssignmentEditor
                 event={e}
                 team={team}
@@ -259,6 +278,7 @@ export default function RoomTimeline(props: {
 const styles = StyleSheet.create({
   empty: { fontSize: TYPE.sm, fontFamily: FONTS.regular, color: COLORS.textSec },
   error: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.critical, marginBottom: SPACE.sm },
+  teamErrorBox: { paddingTop: SPACE.sm },
   notice: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.textSec, marginBottom: SPACE.sm },
   retry: { alignSelf: 'flex-start', minHeight: 44, justifyContent: 'center' },
   row: { paddingVertical: SPACE.md, borderTopWidth: 1, borderTopColor: COLORS.borderSub },

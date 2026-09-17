@@ -6,13 +6,20 @@
  * break: a private path is never turned into a public URL.
  */
 jest.mock('../supabase', () => ({ supabase: { storage: { from: jest.fn() } } }));
-jest.mock('expo-image-picker', () => ({}));
+jest.mock('expo-image-picker', () => ({
+  requestCameraPermissionsAsync: jest.fn(),
+  launchCameraAsync: jest.fn(),
+  launchImageLibraryAsync: jest.fn(),
+}));
 jest.mock('expo-image-manipulator', () => ({ manipulateAsync: jest.fn(), SaveFormat: { JPEG: 'jpeg' } }));
 jest.mock('expo-file-system/legacy', () => ({}));
 jest.mock('react-native', () => ({ Platform: { OS: 'web' } }));
 
 import { supabase } from '../supabase';
-import { SITE_MEDIA_PATH_PREFIX, resolvePhotoUrl, storageTargetForPath } from '../storage';
+import * as ImagePicker from 'expo-image-picker';
+import { manipulateAsync } from 'expo-image-manipulator';
+import { Platform } from 'react-native';
+import { PhotoPermissionError, SITE_MEDIA_PATH_PREFIX, pickPhoto, resolvePhotoUrl, storageTargetForPath } from '../storage';
 
 const storageFrom = supabase.storage.from as unknown as jest.Mock;
 
@@ -101,5 +108,57 @@ describe('resolvePhotoUrl', () => {
     expect(bucket.createSignedUrl).toHaveBeenCalledTimes(2);
     expect(storageFrom).toHaveBeenNthCalledWith(1, 'site-media');
     expect(storageFrom).toHaveBeenNthCalledWith(2, 'photos');
+  });
+});
+
+/**
+ * pickPhoto used to throw a bare Error on a denied camera permission,
+ * discarding `canAskAgain` from requestCameraPermissionsAsync — the capture
+ * screen then had to re-query the permission itself in its catch block just
+ * to recover that one bit. PhotoPermissionError carries it directly.
+ */
+describe('pickPhoto', () => {
+  const requestCameraPermissionsAsync = ImagePicker.requestCameraPermissionsAsync as jest.Mock;
+  const launchCameraAsync = ImagePicker.launchCameraAsync as jest.Mock;
+  const manipulate = manipulateAsync as jest.Mock;
+
+  afterEach(() => {
+    Platform.OS = 'web';
+    jest.clearAllMocks();
+  });
+
+  it('throws a PhotoPermissionError carrying canAskAgain: true when the permission is denied but askable again', async () => {
+    Platform.OS = 'ios';
+    requestCameraPermissionsAsync.mockResolvedValue({ granted: false, canAskAgain: true });
+
+    const err: unknown = await pickPhoto().catch((e) => e);
+    expect(err).toBeInstanceOf(PhotoPermissionError);
+    expect(err).toMatchObject({ canAskAgain: true, message: 'Izin kamera diperlukan untuk mengambil foto.' });
+  });
+
+  it('carries canAskAgain: false for a permanent denial', async () => {
+    Platform.OS = 'android';
+    requestCameraPermissionsAsync.mockResolvedValue({ granted: false, canAskAgain: false });
+
+    const err: unknown = await pickPhoto().catch((e) => e);
+    expect(err).toBeInstanceOf(PhotoPermissionError);
+    expect((err as PhotoPermissionError).canAskAgain).toBe(false);
+  });
+
+  it('proceeds to the camera and returns a prepared photo once permission is granted', async () => {
+    Platform.OS = 'ios';
+    requestCameraPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: true });
+    launchCameraAsync.mockResolvedValue({ canceled: false, assets: [{ uri: 'file:///in.jpg', width: 100, height: 100 }] });
+    manipulate.mockResolvedValue({ uri: 'file:///out.jpg' });
+
+    await expect(pickPhoto()).resolves.toMatchObject({ uri: 'file:///out.jpg', contentType: 'image/jpeg', ext: 'jpg' });
+  });
+
+  it('returns null, not an error, when the picker is canceled', async () => {
+    Platform.OS = 'ios';
+    requestCameraPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: true });
+    launchCameraAsync.mockResolvedValue({ canceled: true, assets: [] });
+
+    await expect(pickPhoto()).resolves.toBeNull();
   });
 });
