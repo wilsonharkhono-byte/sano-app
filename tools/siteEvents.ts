@@ -369,13 +369,27 @@ export interface SiteEventWithMedia extends SiteEvent {
 const EVENT_SELECT =
   '*, site_event_media(*), rooms(room_name, floor), owner:profiles!site_events_owner_id_fkey(full_name), reporter:profiles!site_events_reporter_id_fkey(full_name), closer:profiles!site_events_closed_by_fkey(full_name)';
 
-export async function getSiteEvent(eventId: string): Promise<SiteEventWithMedia | null> {
+/**
+ * Either the event, "no such row" (`notFound: true`), or a read failure
+ * (`error`). `getSiteEvent` collapsed the last two into the same `null`, so a
+ * caller could not distinguish a dropped connection from a real 404 — the
+ * detail and confirm screens then showed "Kejadian tidak ditemukan atau Anda
+ * tidak punya akses" for a network blip, which is the wrong claim
+ * (CLAUDE.md §12). `getSiteEvent` stays a thin wrapper below for callers
+ * outside this hardening pass.
+ */
+export type SiteEventResult =
+  | { event: SiteEventWithMedia; notFound?: undefined; error?: undefined }
+  | { event: null; notFound: true; error?: undefined }
+  | { event: null; notFound?: undefined; error: string };
+
+export async function getSiteEventResult(eventId: string): Promise<SiteEventResult> {
   const { data, error } = await supabase.from('site_events').select(EVENT_SELECT).eq('id', eventId).maybeSingle();
   if (error) {
     console.warn('getSiteEvent failed:', error.message);
-    return null;
+    return { event: null, error: error.message };
   }
-  if (!data) return null;
+  if (!data) return { event: null, notFound: true };
   const row = data as SiteEvent & {
     site_event_media?: SiteEventMedia[] | null;
     rooms?: { room_name?: string; floor?: string | null } | null;
@@ -385,14 +399,21 @@ export async function getSiteEvent(eventId: string): Promise<SiteEventWithMedia 
   };
   const { site_event_media, rooms, owner, reporter, closer, ...event } = row;
   return {
-    ...(event as SiteEvent),
-    media: [...(site_event_media ?? [])].sort((a, b) => a.sort_order - b.sort_order),
-    room_name: rooms?.room_name ?? null,
-    room_floor: rooms?.floor ?? null,
-    owner_name: owner?.full_name ?? null,
-    reporter_name: reporter?.full_name ?? null,
-    closed_by_name: closer?.full_name ?? null,
+    event: {
+      ...(event as SiteEvent),
+      media: [...(site_event_media ?? [])].sort((a, b) => a.sort_order - b.sort_order),
+      room_name: rooms?.room_name ?? null,
+      room_floor: rooms?.floor ?? null,
+      owner_name: owner?.full_name ?? null,
+      reporter_name: reporter?.full_name ?? null,
+      closed_by_name: closer?.full_name ?? null,
+    },
   };
+}
+
+export async function getSiteEvent(eventId: string): Promise<SiteEventWithMedia | null> {
+  const result = await getSiteEventResult(eventId);
+  return result.event;
 }
 
 export type OpenEventSummary = Pick<SiteEvent, 'id' | 'project_id' | 'title' | 'event_type' | 'due_date' | 'is_blocking'>;
