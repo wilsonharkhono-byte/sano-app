@@ -34,7 +34,7 @@ import { needsProcurement, isShortOnSite } from '../../tools/materialThresholds'
 import { getProjectTeam, listAllProfiles, addUserToProject, removeUserFromProject, availableProfiles, type TeamMember, type ProfileOption, ROLE_LABELS } from '../../tools/projectManagement';
 import { canManageTeamMember } from '../../tools/rolePermissions';
 import { type UserRoleType } from '../../tools/constants';
-import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
+import { COLORS, FAB_CLEARANCE, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 type Section = 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'katalog' | 'mandor' | 'opname' | 'attendance' | 'client-report' | 'klaim';
 
@@ -861,7 +861,10 @@ export default function LaporanScreen() {
 const styles = StyleSheet.create({
   flex:    { flex: 1, backgroundColor: COLORS.bg },
   scroll:  { flex: 1 },
-  content: { padding: SPACE.base, paddingBottom: SPACE.xxl },
+  // paddingBottom: FAB_CLEARANCE, not SPACE.xxl — GlobalAIChatLauncher's fab
+  // (workflows/theme.ts) can cover this screen's bottom-anchored buttons
+  // ("Kirim MTN", the klaim progres panel) at the end of the scroll content.
+  content: { padding: SPACE.base, paddingBottom: FAB_CLEARANCE },
 
   tabRow:        { flexDirection: 'row', backgroundColor: COLORS.surface, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   tab:           { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: SPACE.xs + 2, paddingVertical: SPACE.md },
