@@ -1,16 +1,16 @@
-import { mapMilestoneStatusToLabel, deriveProjectStatusLabel, installedAsOf, computeWeeklyProgressDelta, assignNextReportNo, nextRevisionNo, recordClientProgressReportExport, assembleClientReportDraft, issueClientReport, listClientReports, getClientReportSnapshot } from '../clientReport';
+import { mapMilestoneStatusToLabel, deriveProjectStatusLabel, installedAsOf, computeWeeklyProgressDelta, assignNextReportNo, nextRevisionNo, recordClientProgressReportExport, assembleClientReportDraft, issueClientReport, listClientReports, getClientReportSnapshot, CLIENT_REPORT_ROOMS_READ_FAILED } from '../clientReport';
 import { supabase } from '../supabase';
 
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
 jest.mock('../dailySiteLogs', () => ({ aggregatePeriod: jest.fn() }));
 jest.mock('../storage', () => ({ resolvePhotoUrl: jest.fn(async (p: string) => `https://cdn/${p}`) }));
-jest.mock('../rooms', () => ({ listRooms: jest.fn() }));
+jest.mock('../rooms', () => ({ listRoomsResult: jest.fn() }));
 jest.mock('../gateRefs', () => ({
   listGateRefs: jest.fn(),
   gateChipLabel: (g: { code: string; short_label: string }) => `${g.code} · ${g.short_label}`,
 }));
 import { aggregatePeriod } from '../dailySiteLogs';
-import { listRooms } from '../rooms';
+import { listRoomsResult } from '../rooms';
 import { listGateRefs } from '../gateRefs';
 const mockSupabase = supabase as jest.Mocked<typeof supabase>;
 
@@ -541,7 +541,7 @@ describe('assembleClientReportDraft phase switch', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (aggregatePeriod as jest.Mock).mockResolvedValue(AGG);
-    (listRooms as jest.Mock).mockResolvedValue(ROOMS);
+    (listRoomsResult as jest.Mock).mockResolvedValue({ rooms: ROOMS });
     (listGateRefs as jest.Mock).mockResolvedValue(GATES);
     (mockSupabase.from as jest.Mock).mockReturnValue({
       select: jest.fn().mockReturnThis(), eq: jest.fn().mockReturnThis(),
@@ -552,7 +552,7 @@ describe('assembleClientReportDraft phase switch', () => {
 
   it('a STRUKTUR draft reads no rooms, carries no phase, and leaves updates untagged', async () => {
     const draft = await assembleClientReportDraft(PARAMS);
-    expect(listRooms).not.toHaveBeenCalled();
+    expect(listRoomsResult).not.toHaveBeenCalled();
     expect(listGateRefs).not.toHaveBeenCalled();
     expect('phase' in draft).toBe(false);
     expect(draft.updates).toHaveLength(3);
@@ -566,14 +566,14 @@ describe('assembleClientReportDraft phase switch', () => {
 
   it('an explicit STRUKTUR phase behaves the same way', async () => {
     const draft = await assembleClientReportDraft({ ...PARAMS, phase: 'STRUKTUR' });
-    expect(listRooms).not.toHaveBeenCalled();
+    expect(listRoomsResult).not.toHaveBeenCalled();
     expect('phase' in draft).toBe(false);
     expect(draft.updates.every((u) => u.roomLabel === undefined)).toBe(true);
   });
 
   it('a FINISHING draft orders updates by room, Area Umum last, and tags each line', async () => {
     const draft = await assembleClientReportDraft({ ...PARAMS, phase: 'FINISHING' });
-    expect(listRooms).toHaveBeenCalledWith('proj-1', { includeInactive: true });
+    expect(listRoomsResult).toHaveBeenCalledWith('proj-1', { includeInactive: true });
     expect(draft.phase).toBe('FINISHING');
     // ONE list: the renderer groups THIS, and the builder edits THIS.
     expect('roomGroups' in draft).toBe(false);
@@ -595,5 +595,14 @@ describe('assembleClientReportDraft phase switch', () => {
     const draft = await assembleClientReportDraft({ ...PARAMS, phase: 'SERAH_TERIMA' });
     expect(draft.hero?.room).toBe('Kamar Mandi Utama');
     expect('room' in draft.thumbs[0]).toBe(false);
+  });
+
+  // CLAUDE.md §12: a transient room-read failure must fail draft assembly
+  // loudly, not silently ship a client-facing report with blank room labels.
+  it('a room read failure in a room phase refuses to assemble the draft, not blank room labels', async () => {
+    (listRoomsResult as jest.Mock).mockResolvedValue({ rooms: null, error: 'network error' });
+    await expect(assembleClientReportDraft({ ...PARAMS, phase: 'FINISHING' })).rejects.toThrow(
+      CLIENT_REPORT_ROOMS_READ_FAILED,
+    );
   });
 });
