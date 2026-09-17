@@ -1,6 +1,9 @@
 jest.mock('../supabase', () => ({ supabase: {} }));
 
-import { availableProfiles, type ProfileOption, type TeamMember } from '../projectManagement';
+import { supabase } from '../supabase';
+import {
+  availableProfiles, getProjectTeam, getProjectTeamResult, type ProfileOption, type TeamMember,
+} from '../projectManagement';
 
 const profile = (id: string, name: string, role = 'supervisor'): ProfileOption => ({
   id, full_name: name, role, phone: null,
@@ -118,5 +121,73 @@ describe('inviteUser — registering a brand-new principal', () => {
       { actorRole: UserRole.PRINCIPAL },
     );
     expect(error).toBeTruthy();
+  });
+});
+
+// ── getProjectTeamResult / getProjectTeam ────────────────────────────────────
+//
+// getProjectTeam used to discard a query error entirely and return [], which
+// a caller cannot tell apart from "this project genuinely has no team" — the
+// OwnerField/AssignmentEditor empty copy ("Tim proyek belum diatur") is wrong
+// for a dropped connection (CLAUDE.md §12). getProjectTeamResult distinguishes
+// the two; getProjectTeam stays a thin wrapper for callers outside this pass.
+
+describe('getProjectTeamResult / getProjectTeam (Supabase mocked)', () => {
+  const mockSupabase = supabase as unknown as { from: jest.Mock };
+
+  afterEach(() => {
+    delete (supabase as { from?: unknown }).from;
+  });
+
+  const row = (over: Record<string, unknown> = {}) => ({
+    id: 'a-u1', user_id: 'u1', assigned_at: '2026-06-15',
+    profiles: { full_name: 'Ana', role: 'supervisor', phone: '0800' },
+    ...over,
+  });
+
+  function teamChain(result: { data: unknown; error: { message: string } | null }): Record<string, jest.Mock> {
+    const chain: Record<string, jest.Mock> = {
+      select: jest.fn(),
+      eq: jest.fn(),
+      order: jest.fn(() => Promise.resolve(result)),
+    };
+    chain.select.mockReturnValue(chain);
+    chain.eq.mockReturnValue(chain);
+    return chain;
+  }
+
+  it('shapes each assignment row into a TeamMember', async () => {
+    mockSupabase.from = jest.fn(() => teamChain({ data: [row()], error: null }));
+    await expect(getProjectTeamResult('p1')).resolves.toEqual({
+      team: [{ assignment_id: 'a-u1', user_id: 'u1', full_name: 'Ana', role: 'supervisor', phone: '0800', assigned_at: '2026-06-15' }],
+    });
+  });
+
+  it('falls back to an em dash for a missing profile join', async () => {
+    mockSupabase.from = jest.fn(() => teamChain({ data: [row({ profiles: null })], error: null }));
+    const result = await getProjectTeamResult('p1');
+    expect(result.team?.[0]).toMatchObject({ full_name: '—', role: '—', phone: null });
+  });
+
+  it('reports a read failure distinctly rather than an empty team, and warns', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockSupabase.from = jest.fn(() => teamChain({ data: null, error: { message: 'nope' } }));
+    await expect(getProjectTeamResult('p1')).resolves.toEqual({ team: null, error: 'nope' });
+    expect(warnSpy).toHaveBeenCalledWith('getProjectTeam failed:', 'nope');
+    warnSpy.mockRestore();
+  });
+
+  it('getProjectTeam wraps getProjectTeamResult and returns [] on a read failure, for untouched callers', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockSupabase.from = jest.fn(() => teamChain({ data: null, error: { message: 'nope' } }));
+    await expect(getProjectTeam('p1')).resolves.toEqual([]);
+    warnSpy.mockRestore();
+  });
+
+  it('getProjectTeam returns the same members as getProjectTeamResult on success', async () => {
+    mockSupabase.from = jest.fn(() => teamChain({ data: [row()], error: null }));
+    await expect(getProjectTeam('p1')).resolves.toEqual([
+      { assignment_id: 'a-u1', user_id: 'u1', full_name: 'Ana', role: 'supervisor', phone: '0800', assigned_at: '2026-06-15' },
+    ]);
   });
 });

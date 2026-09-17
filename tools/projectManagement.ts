@@ -139,14 +139,31 @@ export async function deleteProject(
 
 // ─── Team CRUD ───────────────────────────────────────────────────────────────
 
-export async function getProjectTeam(projectId: string): Promise<TeamMember[]> {
-  const { data } = await supabase
+/**
+ * Either the project's team, or an explicit read failure. `getProjectTeam`
+ * used to swallow the query error and return `[]`, indistinguishable from a
+ * project that genuinely has no team yet — OwnerField and AssignmentEditor
+ * would then show "Tim proyek belum diatur" for a dropped connection, which
+ * is the wrong claim (CLAUDE.md §12). `getProjectTeam` stays a thin wrapper
+ * below for callers outside this hardening pass.
+ */
+export type ProjectTeamResult =
+  | { team: TeamMember[]; error?: undefined }
+  | { team: null; error: string };
+
+export async function getProjectTeamResult(projectId: string): Promise<ProjectTeamResult> {
+  const { data, error } = await supabase
     .from('project_assignments')
     .select('id, user_id, assigned_at, profiles(full_name, role, phone)')
     .eq('project_id', projectId)
     .order('assigned_at', { ascending: true });
 
-  return (data ?? []).map((row) => {
+  if (error) {
+    console.warn('getProjectTeam failed:', error.message);
+    return { team: null, error: error.message };
+  }
+
+  const team = (data ?? []).map((row) => {
     const profiles = row.profiles as unknown as { full_name?: string; role?: string; phone?: string | null } | null;
     return {
       assignment_id: row.id,
@@ -157,6 +174,12 @@ export async function getProjectTeam(projectId: string): Promise<TeamMember[]> {
       assigned_at:   row.assigned_at,
     };
   });
+  return { team };
+}
+
+export async function getProjectTeam(projectId: string): Promise<TeamMember[]> {
+  const result = await getProjectTeamResult(projectId);
+  return result.team ?? [];
 }
 
 /** Returns all registered users — used to populate the add-member picker. */
