@@ -12,6 +12,7 @@ import { registerForPushNotifications, attachNotificationTapListener } from '../
 // Role-aware deeplink→route resolution (fixes the supervisor Approvals
 // dead-end — see tools/notificationRouting.ts for the role×route matrix).
 import { resolveNotificationRoute } from '../tools/notificationRouting';
+import { queueDeeplink, routeDeeplink, takeDeeplink } from './pendingDeeplink';
 import { startCaptureQueueWorker, stopCaptureQueueWorker } from '../tools/captureQueueWorker';
 
 // Module-scoped so all three role-based NavigationContainers share the same ref.
@@ -24,19 +25,59 @@ const OfficeNavigation = lazyScreen(() => import('../office/navigation'));
 const PrincipalNavigation = lazyScreen(() => import('../office/PrincipalNavigation'));
 const GlobalAIChatLauncher = React.lazy(() => import('./components/GlobalAIChatLauncher'));
 
+// Navigates through the shared ref, or queues the deeplink when no navigator
+// is mounted yet: a cold start from a tap, or a project switch still loading.
+function navigateShared(screen: string, params: Record<string, unknown>): void {
+  const ref = navigationRef.current;
+  if (!ref?.isReady()) {
+    queueDeeplink(screen, params);
+    return;
+  }
+  try {
+    (ref.navigate as unknown as (screen: string, params?: object) => void)(screen, params);
+  } catch {
+    // Route not in current role's nav — fall back to Notifikasi tab.
+    try { ref.navigate('Notifikasi' as never); } catch {}
+  }
+}
+
+interface ProjectRefs {
+  id: { current: string | undefined };
+  ids: { current: string[] };
+  select: { current: (projectId: string) => void };
+}
+
+// Opens a resolved deeplink against the latest project, read from refs at
+// call time, so a listener attached once never routes with a stale project.
+function openDeeplink(screen: string, params: Record<string, unknown> | null | undefined, project: ProjectRefs): void {
+  routeDeeplink(screen, params, {
+    currentProjectId: project.id.current,
+    visibleProjectIds: project.ids.current,
+    setActiveProject: (projectId) => project.select.current(projectId),
+    navigate: navigateShared,
+  });
+}
+
 // Routes to supervisor app or office dashboard based on profile role.
 // Must be rendered inside ProjectProvider so useProject() works.
 function RoleRouter() {
-  const { profile, loading } = useProject();
+  const { profile, loading, project, projects, dataProjectId, setActiveProject } = useProject();
 
   // The tap listener attaches once (empty deps) but must resolve routes with
-  // the CURRENT role — the profile loads after the listener is wired, and a
-  // deeplink like ApprovalsScreen resolves differently per role. A ref keeps
-  // the listener closure reading the latest role without re-attaching.
+  // the CURRENT role and project, which load after the listener is wired. Refs
+  // keep the listener closure reading the latest values without re-attaching.
   const roleRef = useRef<string | undefined>(profile?.role);
+  const projectIdRef = useRef<string | undefined>(project?.id);
+  const projectIdsRef = useRef<string[]>([]);
+  const setActiveProjectRef = useRef(setActiveProject);
   useEffect(() => {
     roleRef.current = profile?.role;
   }, [profile?.role]);
+  useEffect(() => {
+    projectIdRef.current = project?.id;
+    projectIdsRef.current = projects.map((p) => p.id);
+    setActiveProjectRef.current = setActiveProject;
+  }, [project?.id, projects, setActiveProject]);
 
   // Register the Expo push token once the profile is known.
   useEffect(() => {
@@ -49,20 +90,46 @@ function RoleRouter() {
   // happens through the module-scoped navigationRef shared by all three navigators.
   useEffect(() => {
     const cleanup = attachNotificationTapListener((screen, params) => {
-      const ref = navigationRef.current;
-      if (!ref?.isReady()) return;
       const target = resolveNotificationRoute(screen, roleRef.current);
-      try {
-        (ref.navigate as unknown as (screen: string, params?: object) => void)(target, params ?? {});
-      } catch {
-        // Route not in current role's nav — fall back to Notifikasi tab.
-        try { ref.navigate('Notifikasi' as never); } catch {}
-      }
+      openDeeplink(target, params, { id: projectIdRef, ids: projectIdsRef, select: setActiveProjectRef });
     });
     return cleanup;
   }, []);
 
-  if (loading) {
+  // Block on the spinner until the first load finishes, and while a project
+  // switch loads. The switch deliberately unmounts the navigator, so every
+  // screen drops its in-memory state (a half-built material request, cached
+  // envelopes) instead of carrying it into the new project. A refresh of the
+  // same project keeps the navigator mounted, so the user stays on their tab.
+  const firstLoadDone = useRef(false);
+  if (!loading) firstLoadDone.current = true;
+  const switchingProject = !!project && dataProjectId !== project.id;
+  const blocked = (loading && !firstLoadDone.current) || switchingProject;
+
+  // Replay a deeplink queued during a project switch or a cold start once the
+  // lazily loaded navigator is ready.
+  useEffect(() => {
+    if (blocked) return undefined;
+    let cancelled = false;
+    let tries = 0;
+    const replay = () => {
+      if (cancelled) return;
+      if (navigationRef.current?.isReady()) {
+        const next = takeDeeplink();
+        // Routed again rather than navigated: a deeplink queued on a cold start
+        // can name another project, which then switches and queues it once more.
+        if (next) openDeeplink(next.screen, next.params, { id: projectIdRef, ids: projectIdsRef, select: setActiveProjectRef });
+        return;
+      }
+      if (tries++ < 100) setTimeout(replay, 50);
+    };
+    replay();
+    return () => {
+      cancelled = true;
+    };
+  }, [blocked]);
+
+  if (blocked) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.bg }}>
         <ActivityIndicator size="large" color={COLORS.accent} />

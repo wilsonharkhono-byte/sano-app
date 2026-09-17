@@ -12,6 +12,7 @@ import { useProject } from '../hooks/useProject';
 // must be role-aware: supervisors have no Approvals route (their APPROVED/
 // REJECTED outcomes route to Permintaan), principals keep Approvals.
 import { resolveNotificationRoute } from '../../tools/notificationRouting';
+import { routeDeeplink } from '../pendingDeeplink';
 
 interface Props {
   profileId: string;
@@ -45,7 +46,7 @@ function rowToItem(row: NotificationRow): NotificationItem {
 
 export default function NotificationsScreen({ profileId }: Props): React.ReactElement {
   const navigation = useNavigation<{ navigate: (screen: string, params?: object) => void }>();
-  const { profile } = useProject();
+  const { profile, project, projects, setActiveProject } = useProject();
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -120,11 +121,18 @@ export default function NotificationsScreen({ profileId }: Props): React.ReactEl
     // Navigate immediately — never gated on the write above.
     const target = resolveNotificationRoute(item.deeplinkScreen, profile?.role);
     try {
-      navigation.navigate(target, item.deeplinkParams ?? {});
+      // Fresh params per tap; another project's notification switches the
+      // project first, and RoleRouter replays the navigation once it loads.
+      routeDeeplink(target, item.deeplinkParams, {
+        currentProjectId: project?.id,
+        visibleProjectIds: projects.map((p) => p.id),
+        setActiveProject,
+        navigate: (screen, params) => navigation.navigate(screen, params),
+      });
     } catch {
       // Route not in current role's nav — stay on Notifikasi (no-op).
     }
-  }, [navigation, profile?.role]);
+  }, [navigation, profile?.role, project?.id, projects, setActiveProject]);
 
   return (
     <View style={styles.container}>

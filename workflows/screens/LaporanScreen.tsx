@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, Modal, Platform } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,11 +15,13 @@ import MandorSetupScreen from './MandorSetupScreen';
 import OpnameScreen from './OpnameScreen';
 import AttendanceScreen from './AttendanceScreen';
 import ClientReportBuilderScreen from './ClientReportBuilderScreen';
+import ProgressClaimPanel from './progressClaim/ProgressClaimPanel';
 import { MilestonePanel } from './MilestoneScreen';
 import MilestoneFormScreen from './MilestoneFormScreen';
 import MilestoneAiDraftScreen from './MilestoneAiDraftScreen';
 import MilestoneAiReviewScreen from './MilestoneAiReviewScreen';
 import { useProject } from '../hooks/useProject';
+import { queueDeeplink } from '../pendingDeeplink';
 import { useToast } from '../components/Toast';
 import { isPositiveNumber, isNonEmpty, sanitizeText } from '../../tools/validation';
 import { pickAndUploadPhoto } from '../../tools/storage';
@@ -34,7 +36,7 @@ import { canManageTeamMember } from '../../tools/rolePermissions';
 import { type UserRoleType } from '../../tools/constants';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
-type Section = 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'katalog' | 'mandor' | 'opname' | 'attendance' | 'client-report';
+type Section = 'overview' | 'mtn' | 'baseline' | 'gate2' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'katalog' | 'mandor' | 'opname' | 'attendance' | 'client-report' | 'klaim';
 
 // ── Report preview renderers ──────────────────────────────────────────────────
 
@@ -52,7 +54,7 @@ function formatReportTimestamp(value: string) {
 
 export default function LaporanScreen() {
   const route = useRoute<any>();
-  const { project, profile, boqItems, purchaseOrders, defects, milestones, refresh } = useProject();
+  const { project, projects, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
   const { show: toast } = useToast();
   // Estimators manage team membership here (migration 037), but principal
   // members are out of reach (migration 090): only a principal actor may add
@@ -74,12 +76,28 @@ export default function LaporanScreen() {
     onOrder: number;
   } | null>(null);
 
+  // Route params apply once per navigation. Every navigate hands over a new
+  // params object, so opening the same section again after a manual tab
+  // switch still lands. Claim deeplinks also carry projectId and reload the
+  // claim panel.
+  const [claimReloadKey, setClaimReloadKey] = useState(0);
+  const appliedParams = useRef<unknown>(null);
   useEffect(() => {
-    const nextSection = route.params?.initialSection as Section | undefined;
-    if (nextSection) {
-      setActiveSection(nextSection);
+    const params = route.params as { initialSection?: Section; projectId?: string } | undefined;
+    if (!params || appliedParams.current === params) return;
+    appliedParams.current = params;
+    // Notification taps switch projects before navigating
+    // (workflows/pendingDeeplink.ts). A link opened any other way switches
+    // here; the switch unmounts this screen, so the route is queued for
+    // RoleRouter to open again once the new project has loaded.
+    if (params.projectId && params.projectId !== project?.id && projects.some((p) => p.id === params.projectId)) {
+      queueDeeplink(route.name, { ...params });
+      setActiveProject(params.projectId);
+      return;
     }
-  }, [route.params?.initialSection]);
+    if (params.initialSection) setActiveSection(params.initialSection);
+    if (params.initialSection === 'klaim') setClaimReloadKey((k) => k + 1);
+  }, [route.params, route.name, project?.id, projects, setActiveProject]);
 
   useEffect(() => {
     if (route.params?.contractId) {
@@ -158,7 +176,6 @@ export default function LaporanScreen() {
   const [mtnReason, setMtnReason] = useState('');
   const [mtnPhotos, setMtnPhotos] = useState<string[]>([]);
   const [mtnBalances, setMtnBalances] = useState<Array<{ id: string; name: string; unit: string; on_site: number }>>([]);
-  const { projects } = useProject();
 
   // Report metrics
   // Task 3.2: volume-weighted over active, planned>0 items (tools/progressMath.ts)
@@ -444,6 +461,19 @@ export default function LaporanScreen() {
               <StatTile value={openDefects} label="Perubahan Open" color={COLORS.critical} />
             </View>
 
+            {isSupervisor && project && (
+              <Card title="Klaim Progres Mingguan" subtitle="Isi progres per area kerja dan kirim mingguan untuk diverifikasi estimator.">
+                <TouchableOpacity
+                  style={styles.claimBtn}
+                  onPress={() => setActiveSection('klaim')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Buka klaim progres"
+                >
+                  <Text style={styles.claimBtnText}>Buka klaim progres</Text>
+                </TouchableOpacity>
+              </Card>
+            )}
+
             {/* Material status */}
             <Card title="Status Material">
               <View style={styles.metricRow}>
@@ -721,6 +751,13 @@ export default function LaporanScreen() {
           </>
         )}
 
+        {activeSection === 'klaim' && project && (
+          <>
+            <Text style={styles.sectionHead}>Klaim Progres Mingguan</Text>
+            <ProgressClaimPanel projectId={project.id} role={profile?.role} boqItems={boqItems} reloadKey={claimReloadKey} toast={toast} />
+          </>
+        )}
+
         {activeSection === 'jadwal' && (
           <MilestonePanel
             embedded
@@ -831,6 +868,8 @@ const styles = StyleSheet.create({
   tabActive:     { borderBottomWidth: 2, borderBottomColor: COLORS.primary },
   tabText:       { fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', color: COLORS.textSec },
   tabTextActive: { color: COLORS.primary },
+  claimBtn:      { minHeight: 44, marginTop: SPACE.sm, borderRadius: RADIUS, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center', paddingHorizontal: SPACE.base },
+  claimBtnText:  { fontSize: TYPE.sm, lineHeight: Math.round(TYPE.sm * 1.45), fontFamily: FONTS.semibold, color: COLORS.textInverse, textTransform: 'uppercase' },
 
   sectionHead: {
     fontSize: TYPE.xs, fontFamily: FONTS.bold, letterSpacing: 1,

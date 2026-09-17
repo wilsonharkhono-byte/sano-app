@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Modal, useWindowDimensions } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,6 +12,7 @@ import MilestoneFormScreen from '../../workflows/screens/MilestoneFormScreen';
 import MilestoneAiDraftScreen from '../../workflows/screens/MilestoneAiDraftScreen';
 import MilestoneAiReviewScreen from '../../workflows/screens/MilestoneAiReviewScreen';
 import { useProject } from '../../workflows/hooks/useProject';
+import { queueDeeplink } from '../../workflows/pendingDeeplink';
 import { useToast } from '../../workflows/components/Toast';
 import { getSiteChangeSummary, type SiteChangeSummary } from '../../tools/siteChanges';
 import { getLaborPaymentSummary, type LaborPaymentSummary } from '../../tools/opnameRpc';
@@ -22,6 +23,8 @@ import type { MandorAttendance, KasbonAging } from '../../tools/types';
 import { generateReport, recordReportExport, type ReportPayload, type ReportType, type ReportFilters } from '../../tools/reports';
 import { ReportPreview } from '../../workflows/components/ReportPreview';
 import ClientReportBuilderScreen from '../../workflows/screens/ClientReportBuilderScreen';
+import ProgressClaimVerifyPanel from './progressClaim/ProgressClaimVerifyPanel';
+import { countSubmittedClaims } from '../../tools/progressClaims/claims';
 import { getMaterialDrift } from '../../tools/envelopes';
 import { aggregateDriftRollup, formatRollupTile, type DriftRollup } from '../../tools/planDrift';
 import { computeOverallProgress } from '../../tools/progressMath';
@@ -32,20 +35,49 @@ function formatTs(v: string) {
   return new Date(v).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-type Section = 'overview' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'client-report';
+type Section = 'overview' | 'jadwal' | 'jadwal-form' | 'jadwal-ai-draft' | 'jadwal-ai-review' | 'client-report' | 'klaim';
 
 export default function OfficeReportsScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
-  const { project, profile, boqItems, purchaseOrders, defects, milestones } = useProject();
+  const { projects, project, profile, boqItems, purchaseOrders, defects, milestones, refresh, setActiveProject } = useProject();
   const { show: toast } = useToast();
   const [activeSection, setActiveSection] = useState<Section>(route.params?.initialSection ?? 'overview');
   const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
 
+  // Route params apply once per navigation. Every navigate hands over a new
+  // params object, so opening Klaim again after a manual tab switch still
+  // lands. A claim notification (migration 104) also names its project and
+  // reloads the verification panel and the badge.
+  const [claimReloadKey, setClaimReloadKey] = useState(0);
+  const appliedParams = useRef<unknown>(null);
   useEffect(() => {
-    const nextSection = route.params?.initialSection as Section | undefined;
-    if (nextSection) setActiveSection(nextSection);
-  }, [route.params?.initialSection]);
+    const params = route.params as { initialSection?: Section; projectId?: string } | undefined;
+    if (!params || appliedParams.current === params) return;
+    appliedParams.current = params;
+    // Notification taps switch projects before navigating
+    // (workflows/pendingDeeplink.ts). A link opened any other way switches
+    // here; the switch unmounts this screen, so the route is queued for
+    // RoleRouter to open again once the new project has loaded.
+    if (params.projectId && params.projectId !== project?.id && projects.some((p) => p.id === params.projectId)) {
+      queueDeeplink(route.name, { ...params });
+      setActiveProject(params.projectId);
+      return;
+    }
+    if (params.initialSection) setActiveSection(params.initialSection);
+    if (params.initialSection === 'klaim') setClaimReloadKey((k) => k + 1);
+  }, [route.params, route.name, project?.id, projects, setActiveProject]);
+
+  // Claims waiting for verification on the active project, for the Klaim tab badge.
+  const [pendingClaims, setPendingClaims] = useState(0);
+  useEffect(() => {
+    if (!project) return;
+    let alive = true;
+    countSubmittedClaims(project.id)
+      .then((n) => { if (alive) setPendingClaims(n); })
+      .catch(() => { if (alive) setPendingClaims(0); });
+    return () => { alive = false; };
+  }, [project, activeSection, claimReloadKey]);
   const { width } = useWindowDimensions();
   const isTablet  = width >= BREAKPOINTS.tablet;
   const isDesktop = width >= BREAKPOINTS.desktop;
@@ -161,9 +193,10 @@ export default function OfficeReportsScreen() {
     return <ClientReportBuilderScreen onBack={() => setActiveSection('overview')} />;
   }
 
-  const sectionTabs: Array<{ key: Section; label: string; icon: string }> = [
+  const sectionTabs: Array<{ key: Section; label: string; icon: string; badge?: number }> = [
     { key: 'overview', label: 'Ringkasan', icon: 'stats-chart' },
     { key: 'jadwal', label: 'Jadwal', icon: 'calendar' },
+    { key: 'klaim', label: 'Klaim', icon: 'clipboard', badge: pendingClaims },
   ];
 
   return (
@@ -182,6 +215,11 @@ export default function OfficeReportsScreen() {
           >
             <Ionicons name={tab.icon as any} size={16} color={activeSection === tab.key ? COLORS.primary : COLORS.textSec} />
             <Text style={[styles.tabText, activeSection === tab.key && styles.tabTextActive]}>{tab.label}</Text>
+            {tab.badge ? (
+              <View style={styles.tabBadge} accessibilityLabel={`${tab.badge} klaim menunggu verifikasi`}>
+                <Text style={styles.tabBadgeText}>{tab.badge}</Text>
+              </View>
+            ) : null}
           </TouchableOpacity>
         ))}
       </View>
@@ -196,6 +234,20 @@ export default function OfficeReportsScreen() {
             }}
             onOpenAiDraft={() => setActiveSection('jadwal-ai-draft')}
             onOpenAiReview={() => setActiveSection('jadwal-ai-review')}
+          />
+        )}
+
+        {activeSection === 'klaim' && project && (
+          <ProgressClaimVerifyPanel
+            projectId={project.id}
+            profile={profile ? { id: profile.id, role: profile.role } : null}
+            boqItems={boqItems}
+            reloadKey={claimReloadKey}
+            toast={toast}
+            onVerified={() => { void refresh(); }}
+            onChanged={() => {
+              countSubmittedClaims(project.id).then(setPendingClaims).catch(() => undefined);
+            }}
           />
         )}
 
@@ -720,6 +772,8 @@ const styles = StyleSheet.create({
   },
   tabText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, textTransform: 'uppercase', color: COLORS.textSec },
   tabTextActive: { color: COLORS.primary },
+  tabBadge: { minWidth: 18, height: 18, paddingHorizontal: 4, borderRadius: 9, backgroundColor: COLORS.critical, alignItems: 'center', justifyContent: 'center' },
+  tabBadgeText: { fontSize: TYPE.xs, lineHeight: Math.round(TYPE.xs * 1.45), fontFamily: FONTS.bold, color: COLORS.textInverse },
   sectionHead: {
     fontSize: TYPE.sm,
     fontFamily: FONTS.bold,

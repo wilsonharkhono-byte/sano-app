@@ -212,6 +212,13 @@ export interface ClientReportUpdate {
 }
 export interface ClientReportPhoto {
   url: string;
+  /**
+   * Storage path behind `url`, in resolvePhotoUrl's form (bare for the photos
+   * bucket, `site-media:<path>` for the private bucket). Absent on snapshots
+   * frozen before Plan A; tools/clientReportPhotos.ts recovers it from the
+   * signed URL. Renderers re-sign from this, never from the stored URL.
+   */
+  path?: string | null;
   caption: string;
   date: string;
   /**
@@ -274,6 +281,7 @@ export async function assembleClientReportDraft(params: AssembleParams): Promise
   const photos = await Promise.all(
     agg.featuredPhotos.map(async (p: { storage_path: string; caption: string | null; log_date: string; room_id?: string | null }) => ({
       url: await resolvePhotoUrl(p.storage_path),
+      path: p.storage_path,
       caption: p.caption ?? '',
       date: fmtCaptionDate(p.log_date),
       ...(roomMode && p.room_id && roomNames.has(p.room_id) ? { room: roomNames.get(p.room_id)! } : {}),

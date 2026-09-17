@@ -66,6 +66,8 @@ import {
 } from '../../tools/addProjectMaterialLine';
 import type { ImportSession, ImportStagingRow, ImportAnomaly } from '../../tools/types';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
+import StageWeightsPanel from './progressClaim/StageWeightsPanel';
+import { canEditStageWeights } from '../../tools/progressClaims/claimRules';
 import { sourceLocation, sourceContext } from '../../tools/sourceProvenance';
 import { flagExplanation, ACTION_CAPTIONS } from '../../tools/flagExplanation';
 import { groupReviewRows, subGroupByParentBlock, pendingRowIds, FLAG_GROUP_HINTS } from '../../tools/flagGroups';
@@ -309,7 +311,7 @@ export default function BaselineScreen({
   backLabel?: string;
   onGoToJadwal?: () => void;
 }) {
-  const { project, profile, refresh } = useProject();
+  const { project, profile, refresh, boqItems } = useProject();
   const { show: toast } = useToast();
 
   const [view, setView] = useState<ScreenView>('sessions');
@@ -2031,6 +2033,10 @@ export default function BaselineScreen({
                   </View>
                 )}
               </Card>
+            )}
+
+            {project && canEditStageWeights(profile?.role) && (
+              <StageWeightsPanel projectId={project.id} role={profile?.role} boqItems={boqItems} toast={toast} />
             )}
 
             {loading && <Text style={styles.hint}>Memuat sesi import...</Text>}

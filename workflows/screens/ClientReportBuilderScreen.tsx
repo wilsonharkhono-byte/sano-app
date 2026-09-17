@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Image } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
@@ -19,6 +19,9 @@ import {
   type IssuedClientReport,
 } from '../../tools/clientReport';
 import { exportClientReportPdf } from '../../tools/clientReportHtml';
+import { withFreshPhotoUrls } from '../../tools/clientReportPhotos';
+import ReportLinesCard from './clientReport/ReportLinesCard';
+import { backlinkReports, invokeReportLink, listUnlinkedReports } from '../../tools/clientReportLines';
 import { formatRoomLabel } from '../../tools/clientReportRooms';
 import { listRooms } from '../../tools/rooms';
 import { AREA_UMUM_CODE, AREA_UMUM_NAME } from '../../tools/constants';
@@ -68,10 +71,26 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
   const [history, setHistory] = useState<IssuedClientReport[]>([]);
   const [viewing, setViewing] = useState<{ meta: IssuedClientReport; snapshot: ClientReportDraft } | null>(null);
 
+  // Admin and estimator may link reports issued before Plan A (spec §8,
+  // back-linking); the principal reads results and never triggers AI spend.
+  const canBacklink = profile?.role === 'admin' || profile?.role === 'estimator';
+  const [unlinked, setUnlinked] = useState<Array<{ id: string; report_no: number; revision: number }>>([]);
+  const [backlinking, setBacklinking] = useState<{ done: number; total: number } | null>(null);
+  const cancelBacklink = useRef(false);
+  // The AI link run started right after issuing, tied to that report only:
+  // its card shows a banner meanwhile, any other report's card is unaffected,
+  // and the card reloads when the token moves.
+  const [linkingReportId, setLinkingReportId] = useState<string | null>(null);
+  const [linesToken, setLinesToken] = useState(0);
+
+  useEffect(() => () => { cancelBacklink.current = true; }, []);
+
   const loadHistory = useCallback(async () => {
     if (!project) return;
     try { setHistory(await listClientReports(project.id)); } catch { /* list is non-critical */ }
-  }, [project?.id]);
+    if (!canBacklink) return;
+    try { setUnlinked(await listUnlinkedReports(project.id)); } catch { setUnlinked([]); }
+  }, [project?.id, canBacklink]);
 
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
@@ -192,7 +211,8 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
       const path = await pickAndUploadPhoto(`client-report/${project.id}`);
       if (!path) return;
       const url = await resolvePhotoUrl(path);
-      setPhotoList([...photoList, { url, caption: '', date: todayShort() }]);
+      // `path` is what survives the 7-day signed URL (spec §5.2).
+      setPhotoList([...photoList, { url, path, caption: '', date: todayShort() }]);
       toast('Foto ditambahkan', 'ok');
     } catch (err: any) {
       toast(err.message ?? 'Gagal menambah foto', 'critical');
@@ -211,8 +231,11 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
   // ── View / revise issued reports ─────────────────────────────────────────
   const openReport = async (meta: IssuedClientReport) => {
     try {
-      const snapshot = await getClientReportSnapshot(meta.id);
-      if (!snapshot) { toast('Snapshot laporan tidak ditemukan', 'critical'); return; }
+      const raw = await getClientReportSnapshot(meta.id);
+      if (!raw) { toast('Snapshot laporan tidak ditemukan', 'critical'); return; }
+      // Stored URLs expire after 7 days; re-sign from the storage path
+      // (recovered from the URL on snapshots frozen before Plan A).
+      const snapshot = await withFreshPhotoUrls(raw);
       setViewing({ meta, snapshot });
       setDraft(null);
     } catch (err: any) {
@@ -240,7 +263,7 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
 
   const exportPdf = async (d: ClientReportDraft) => {
     try {
-      await exportClientReportPdf(d);
+      await exportClientReportPdf(await withFreshPhotoUrls(d));
     } catch (err: any) {
       toast(err.message ?? 'Gagal mencetak', 'critical');
     }
@@ -249,22 +272,81 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
   const issue = async () => {
     if (!draft || !project || !profile) return;
     setBusy(true);
+    // Toast the number ACTUALLY issued (returned by issueClientReport),
+    // not draft.reportNo/draft.revision — a lost numbering race + retry
+    // inside issueClientReport can bump either past what the draft held,
+    // and toasting the stale pre-retry value tells the user the wrong
+    // report number was issued. Same return covers both the new-issue and
+    // "Buat Revisi" paths.
+    let result: Awaited<ReturnType<typeof issueClientReport>>;
     try {
-      // Toast the number ACTUALLY issued (returned by issueClientReport),
-      // not draft.reportNo/draft.revision — a lost numbering race + retry
-      // inside issueClientReport can bump either past what the draft held,
-      // and toasting the stale pre-retry value tells the user the wrong
-      // report number was issued. Same return covers both the new-issue and
-      // "Buat Revisi" paths.
-      const { reportNo, revision } = await issueClientReport(draft, project.id, profile.id);
-      const rev = revision > 1 ? ` (R${revision})` : '';
-      toast(`Laporan #${String(reportNo).padStart(2, '0')}${rev} diterbitkan`, 'ok');
-      setDraft(null);
-      await loadHistory();
+      result = await issueClientReport(draft, project.id, profile.id);
     } catch (err: any) {
       toast(err.message ?? 'Gagal menerbitkan', 'critical');
-    } finally {
       setBusy(false);
+      return;
+    }
+    const issued = result;
+
+    // The report is issued. These updates land in one batch, so the new card
+    // never renders its empty "Buat tautan (AI)" state, and `busy` is released
+    // exactly once: the link run below must not re-enable a button that a
+    // later generate or issue has taken.
+    const rev = issued.revision > 1 ? ` (R${issued.revision})` : '';
+    // issueClientReport may have bumped the number after a numbering race;
+    // the stored snapshot carries the real one, so the view must too.
+    const issuedDraft: ClientReportDraft = { ...draft, reportNo: issued.reportNo, revision: issued.revision };
+    setDraft(null);
+    setViewing({
+      meta: {
+        id: issued.id, report_no: issued.reportNo, revision: issued.revision, kind: issuedDraft.kind,
+        period_start: issuedDraft.periodStart, period_end: issuedDraft.periodEnd,
+        issued_at: new Date().toISOString(), issued_by_name: profile.full_name ?? null,
+      },
+      snapshot: issuedDraft,
+    });
+    setLinkingReportId(issued.id);
+    setBusy(false);
+    toast(`Laporan #${String(issued.reportNo).padStart(2, '0')}${rev} diterbitkan`, 'ok');
+
+    // Spec §6.1: suggest links right after issue. Never blocks the report —
+    // the card shows a banner while this runs and offers a retry if it fails.
+    // invokeReportLink and loadHistory never throw.
+    try {
+      await loadHistory();
+      const link = await invokeReportLink(issued.id);
+      if (link.ok) {
+        toast(link.code === 'LINKED' ? `AI menyarankan ${link.suggested ?? 0} tautan — silakan konfirmasi` : 'Laporan terbit; tidak ada baris untuk ditautkan', 'ok');
+      } else {
+        toast(link.error ?? 'Tautan AI belum bisa dibuat; jalankan dari kartu Tautan Progres', 'critical');
+      }
+    } finally {
+      // Only clear the flag if it still points at this report.
+      setLinkingReportId((current) => (current === issued.id ? null : current));
+      setLinesToken((t) => t + 1);
+      await loadHistory();
+    }
+  };
+
+  // The loop itself lives in tools/clientReportLines.ts (sequential,
+  // cap-aware, stops on run-level errors); this only drives the button.
+  const backlink = async () => {
+    if (!project || unlinked.length === 0) return;
+    cancelBacklink.current = false;
+    const total = unlinked.length;
+    setBacklinking({ done: 0, total });
+    try {
+      const res = await backlinkReports(unlinked.map((u) => u.id), {
+        onProgress: (done) => setBacklinking({ done, total }),
+        shouldStop: () => cancelBacklink.current,
+      });
+      const summary = `${res.ok}/${total} laporan lama ditautkan${res.skipped > 0 ? `, ${res.skipped} sedang diproses` : ''}`;
+      if (res.stoppedBy && res.stoppedBy !== 'CANCELLED') toast(`${summary} — berhenti: ${res.firstError ?? res.stoppedBy}`, 'critical');
+      else if (res.failed > 0) toast(`${summary} — ${res.failed} gagal: ${res.firstError ?? ''}`, 'critical');
+      else toast(summary, 'ok');
+    } finally {
+      setBacklinking(null);
+      await loadHistory();
     }
   };
 
@@ -289,6 +371,18 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
         {/* Riwayat Laporan — issued reports stay accessible, frozen as sent. */}
         <Card title="Riwayat Laporan" subtitle="Laporan terbit tersimpan permanen. Ketuk untuk melihat atau membuat revisi.">
           {history.length === 0 && <Text style={styles.hint}>Belum ada laporan terbit.</Text>}
+          {canBacklink && unlinked.length > 0 && (
+            <TouchableOpacity
+              style={[styles.secondaryBtn, { alignSelf: 'flex-start', marginBottom: SPACE.sm }, backlinking && { opacity: 0.6 }]}
+              disabled={!!backlinking}
+              onPress={backlink}
+            >
+              <Ionicons name="sparkles-outline" size={16} color={COLORS.primary} />
+              <Text style={styles.secondaryText}>
+                {backlinking ? `Menautkan ${backlinking.done}/${backlinking.total}…` : `Tautkan laporan lama (${unlinked.length})`}
+              </Text>
+            </TouchableOpacity>
+          )}
           {history.map((r) => (
             <TouchableOpacity key={r.id} style={styles.histRow} onPress={() => openReport(r)}>
               <Ionicons name="document-text-outline" size={18} color={COLORS.primary} />
@@ -305,6 +399,7 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
 
         {/* View mode: re-render the frozen snapshot; never editable in place. */}
         {viewing && (
+          <>
           <Card
             title={`Laporan ${reportLabel(viewing.meta)}`}
             subtitle={`Terbit ${fmtIssuedAt(viewing.meta.issued_at)}${viewing.meta.issued_by_name ? ` oleh ${viewing.meta.issued_by_name}` : ''}. Isi terkunci sesuai yang dikirim ke klien.`}
@@ -337,6 +432,16 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
               </TouchableOpacity>
             </View>
           </Card>
+          <ReportLinesCard
+            key={viewing.meta.id}
+            reportId={viewing.meta.id}
+            boqItems={boqItems}
+            toast={toast}
+            linking={linkingReportId === viewing.meta.id}
+            reloadToken={linesToken}
+            canRunAi={profile?.role !== 'principal'}
+          />
+          </>
         )}
 
         {draft && (

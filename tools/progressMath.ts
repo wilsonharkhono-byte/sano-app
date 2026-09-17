@@ -36,14 +36,16 @@
 //
 // Edge case: Σ planned = 0 (no active item has planned > 0) → 0.
 //
-// Reviewer note: tools/reports.ts feeds this formula a derived `installed`
-// (summed from progress_entries), while every screen surface (Beranda,
-// Laporan, OfficeHomeScreen, OfficeReportsScreen, PrincipalHomeScreen,
-// GlobalAIChatLauncher, schedule.ts computeProjectHealth) feeds it the
-// cached `boq_items.installed` column. Same formula, same source-of-truth
-// module — but if the cache lags behind progress_entries, the two families
-// of callers can still diverge at the data level. Pre-existing, not
-// introduced by this unification.
+// Source of installed (2026-09-14, migration 104): verify_progress_claim is
+// the only writer of boq_items.installed, and it records every change as a
+// progress_entries row (negative for a correction). A claimed row's entries
+// therefore sum to its cached installed column, so callers that derive
+// installed from progress_entries (tools/reports.ts generateProgressSummary,
+// tools/clientReport.ts installedAsOf) and the screens that read the column
+// (Beranda, Laporan, OfficeHomeScreen, OfficeReportsScreen,
+// PrincipalHomeScreen, GlobalAIChatLauncher, schedule.ts) agree. A row whose
+// installed was set before claims existed can still differ until its first
+// verified claim writes the difference.
 
 export interface ProgressAggregable {
   planned: number;

@@ -326,18 +326,39 @@ export async function detectAnomalies(projectId: string): Promise<AnomalyCheck[]
     }
   }
 
-  // 4. No progress entries in 7 days (active project)
-  const { count: recentProgress } = await supabase
-    .from('progress_entries')
-    .select('*', { count: 'exact', head: true })
-    .eq('project_id', projectId)
-    .gte('created_at', sevenDaysAgo);
+  // 4. No progress claimed in 7 days (active project). Since migration 104 a
+  // progress entry appears only when an estimator verifies a weekly claim, so
+  // site activity is a claim line created, a line edited while its claim is
+  // still open, or a claim submitted in the window. Returning or verifying a
+  // claim stamps it too, so neither counts on its own: a verified claim counts
+  // through its submitted_at, a returned one through the lines the site edits
+  // afterwards. A read error (for example 104 not pasted yet) raises no
+  // anomaly rather than a false one.
+  const claimActivity = await Promise.all([
+    supabase
+      .from('progress_claim_lines')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .gte('created_at', sevenDaysAgo),
+    supabase
+      .from('progress_claim_lines')
+      .select('id, progress_claims!inner(status)', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .gte('updated_at', sevenDaysAgo)
+      .in('progress_claims.status', ['DRAFT', 'SUBMITTED', 'RETURNED']),
+    supabase
+      .from('progress_claims')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', projectId)
+      .gte('submitted_at', sevenDaysAgo),
+  ]);
+  const claimActivityReadable = claimActivity.every((r) => !r.error);
 
-  if ((recentProgress ?? 0) === 0) {
+  if (claimActivityReadable && claimActivity.every((r) => (r.count ?? 0) === 0)) {
     anomalies.push({
       type: 'no_progress',
       found: true,
-      description: 'Tidak ada entri progres dalam 7 hari terakhir',
+      description: 'Tidak ada klaim progres dalam 7 hari terakhir',
       entityId: projectId,
       severity: 'WARNING',
     });

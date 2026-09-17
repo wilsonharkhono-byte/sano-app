@@ -1,0 +1,78 @@
+# report-progress-analyze
+
+Plan A of the report-driven progress spec
+(`docs/superpowers/specs/2026-09-13-report-driven-progress-design.md`): links each
+line of an issued client report to a published BoQ work-area row and a stage.
+Stage `link` only; Plan B adds `prefill`.
+
+`validate.ts` is a byte copy of `tools/reportLineDraftValidate.ts` and `cost.ts` a
+byte copy of `../site-event-analyze/cost.ts` (its header therefore still talks
+about `site_event_ai_runs` / `SITE_EVENT_MODEL`; the arithmetic is what is shared).
+Never edit the copies: edit the source, then
+
+    cp tools/reportLineDraftValidate.ts supabase/functions/report-progress-analyze/validate.ts
+    cp supabase/functions/site-event-analyze/cost.ts supabase/functions/report-progress-analyze/cost.ts
+
+`tools/__tests__/reportProgressTwins.test.ts` (jest, which CI runs) fails on drift.
+
+Deno tests: `cd supabase/functions/report-progress-analyze && deno test`. CI does not run them.
+`index.ts` holds only I/O; every rule with a decision in it lives in `context.ts`,
+`prompt.ts`, `validate.ts`, `util.ts` and is tested there.
+
+## Secrets and limits
+
+| Secret | Required | Default | Notes |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | yes | — | shared with site-event-analyze |
+| `REPORT_PROGRESS_MODEL` | no | `claude-opus-5` | must accept a forced tool call and appear in `cost.ts`, else runs are recorded with `cost_usd` unknown |
+| `REPORT_PROGRESS_DAILY_CAP` | no | `60` | link calls per project per Jakarta day, counted from `progress_ai_runs` (failed and rejected runs count: money left) |
+
+## Request and response contract
+
+Request: `{ "stage": "link", "report_id": "<uuid>", "force": false }`.
+
+- The function never writes progress. It writes `client_report_lines.ai_*` and one
+  `progress_ai_runs` row per call. Lines the supervisor already confirmed or
+  dismissed are never touched, `force` or not — every `ai_*` UPDATE carries
+  `status = 'SUGGESTED'` in the statement.
+- `ALREADY_LINKED` means the line rows already exist and no run is in flight. It
+  covers two states the client tells apart by reading the lines: suggestions
+  present (`ai_run_id` set), or a run that failed before writing (`ai_model`
+  NULL — the card shows "Jalankan AI"). **A retry after a failure needs
+  `force: true`**; a forced run only re-suggests lines still SUGGESTED.
+- `LINK_IN_PROGRESS` (409): another call holds the report's lease
+  (`client_progress_reports.link_claimed_at`). A lease older than 2 minutes, or
+  dated more than 2 minutes ahead (the column is member-writable), counts as
+  free. The release only clears the caller's own value. Wait and reload.
+- `CONTEXT` (500) when the lease statement itself fails — never reported as busy.
+- `NO_BOQ`: the project has no published rows; `CONTEXT` (500): a query failed —
+  the two are never conflated.
+- Photos are read only from this project's own folders (`client-report/<projectId>/`,
+  `daily-log/<projectId>/`, `site-media:site-events/<projectId>/`); anything else in
+  the member-editable snapshot is counted as `photos_out_of_scope` and never read.
+- Quotes validate against the frozen `client_report_lines.line_text`, which is also
+  what the prompt shows — a snapshot edited after issue cannot move the target.
+
+Trust order (same as site-event-analyze): CORS → POST → secrets → Authorization →
+caller JWT → the report read through the caller's RLS → `is_project_member` or
+`is_office_role` → only then the service role.
+
+## Deploy
+
+Paste migration 102 (`supabase/migrations/102_client_report_lines.sql`) first: the function inserts into the tables it creates and
+takes the lease column it adds. Then, from a checkout that contains this folder:
+
+    supabase functions deploy report-progress-analyze --project-ref ufntlqvacjhmddwltcxf --use-api
+
+The repo has no `supabase/config.toml`, so `--project-ref` is always required;
+`--use-api` bundles server-side, so no local Docker is needed. `ANTHROPIC_API_KEY`
+is already set for site-event-analyze and secrets are project-wide; the optional
+`REPORT_PROGRESS_MODEL` / `REPORT_PROGRESS_DAILY_CAP` go in with
+`supabase secrets set --env-file <file> --project-ref ufntlqvacjhmddwltcxf`.
+Never set `SUPABASE_URL`, `SUPABASE_ANON_KEY` or `SUPABASE_SERVICE_ROLE_KEY`: the
+platform injects them.
+
+**Deploy before merging to main.** The app on main (Vercel web, and any APK or
+EAS update built from it) reads `client_report_lines` on every report open and
+calls this function after every issue; without 102 and this function live,
+those show red error toasts, though viewing, printing and revising still work.
