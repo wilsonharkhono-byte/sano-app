@@ -4,7 +4,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import Card from '../components/Card';
-import { getSiteEvent, type SiteEventWithMedia } from '../../tools/siteEvents';
+import { getSiteEvent, getSiteEventResult, type SiteEventWithMedia } from '../../tools/siteEvents';
 import { gateChipLabel, listGateRefs, listGateStepRefs, stepChipLabel } from '../../tools/gateRefs';
 import { todayIsoLocal } from '../../tools/siteEventRules';
 import { SITE_EVENT_STATUS_LABELS, SITE_EVENT_TYPE_LABELS } from '../../tools/constants';
@@ -48,6 +48,7 @@ export default function SiteEventDetailScreen() {
   const [gates, setGates] = useState<GateRef[]>([]);
   const [steps, setSteps] = useState<GateStepRef[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
   const [showTranscript, setShowTranscript] = useState(false);
   /** null = no related event, or its row is missing/unreadable (guarded below to id-only, no link). */
@@ -55,7 +56,16 @@ export default function SiteEventDetailScreen() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [ev, gateRows, stepRows] = await Promise.all([getSiteEvent(params.eventId ?? ''), listGateRefs(), listGateStepRefs()]);
+    const [evResult, gateRows, stepRows] = await Promise.all([
+      getSiteEventResult(params.eventId ?? ''),
+      listGateRefs(),
+      listGateStepRefs(),
+    ]);
+    // A network failure is not "kejadian tidak ditemukan" (CLAUDE.md §12) —
+    // keep the not-found copy for a genuine 404 and show a distinct retry
+    // state for a dropped connection.
+    setLoadError(evResult.error ?? null);
+    const ev = evResult.event;
     setEvent(ev);
     setGates(gateRows);
     setSteps(stepRows);
@@ -104,7 +114,16 @@ export default function SiteEventDetailScreen() {
           </Card>
         ) : null}
 
-        {!loading && !event ? (
+        {!loading && !event && loadError ? (
+          <Card borderColor={COLORS.critical}>
+            <Text style={s.errorText}>Gagal memuat. Periksa koneksi lalu coba lagi.</Text>
+            <TouchableOpacity style={s.secondaryBtn} onPress={() => void load()} accessibilityRole="button">
+              <Text style={s.secondaryText}>Coba lagi</Text>
+            </TouchableOpacity>
+          </Card>
+        ) : null}
+
+        {!loading && !event && !loadError ? (
           <Card borderColor={COLORS.critical}>
             <Text style={s.errorText}>Kejadian tidak ditemukan atau Anda tidak punya akses.</Text>
           </Card>

@@ -40,6 +40,7 @@ import {
   discardSiteEvent,
   getRoomLastGate,
   getSiteEvent,
+  getSiteEventResult,
   insertSiteEvent,
   invokeSiteEventAnalysis,
   isDuplicateUploadError,
@@ -445,6 +446,49 @@ describe('getSiteEvent', () => {
     );
     const r = await getSiteEvent(EVENT);
     expect(r?.closed_by_name).toBeNull();
+  });
+});
+
+describe('getSiteEventResult', () => {
+  // getSiteEvent collapsed a query error and "no such row" into the same
+  // null, so a caller could not tell a dropped connection from a real 404.
+  // getSiteEventResult keeps them apart; getSiteEvent (tested above) stays a
+  // thin wrapper that discards the distinction for callers outside this pass.
+  it('reports a query error distinctly, and warns', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mocked.from.mockImplementationOnce(() => makeChain({ data: null, error: { message: 'network down' } }));
+    await expect(getSiteEventResult(EVENT)).resolves.toEqual({ event: null, error: 'network down' });
+    expect(warn).toHaveBeenCalledWith('getSiteEvent failed:', 'network down');
+    warn.mockRestore();
+  });
+
+  it('reports notFound: true, distinct from an error, when there is no row', async () => {
+    mocked.from.mockImplementationOnce(() => makeChain({ data: null, error: null }));
+    await expect(getSiteEventResult(EVENT)).resolves.toEqual({ event: null, notFound: true });
+  });
+
+  it('shapes the row into `event` on success, matching getSiteEvent', async () => {
+    mocked.from.mockImplementationOnce(() =>
+      makeChain({
+        data: {
+          id: EVENT,
+          project_id: PROJECT,
+          title: 'Retak acian',
+          status: 'open',
+          site_event_media: [{ id: 'm1', sort_order: 0 }],
+          rooms: { room_name: 'Kamar 1', floor: 'Lt 2' },
+          owner: { full_name: 'Owner Satu' },
+          reporter: { full_name: 'Reporter Satu' },
+          closer: null,
+        },
+        error: null,
+      }),
+    );
+    const r = await getSiteEventResult(EVENT);
+    expect(r.event?.room_name).toBe('Kamar 1');
+    expect(r.event?.media).toHaveLength(1);
+    expect('error' in r).toBe(false);
+    expect('notFound' in r).toBe(false);
   });
 });
 

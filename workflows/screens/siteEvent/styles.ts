@@ -1,5 +1,5 @@
 import { StyleSheet } from 'react-native';
-import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../theme';
+import { COLORS, FAB_CLEARANCE, FONTS, RADIUS, SPACE, TYPE } from '../../theme';
 
 /** Shared by the capture, confirm and detail screens and their components. */
 export const formStyles = StyleSheet.create({
@@ -52,15 +52,11 @@ export const formStyles = StyleSheet.create({
   },
   saranText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.info },
   // Extra bottom clearance for the two screens whose primary button would
-  // otherwise sit under GlobalAIChatLauncher's floating sparkle button (it is
-  // rendered as an unconditional sibling of the navigator, not route-scoped:
-  // workflows/App.tsx renders it once for the whole app). The FAB floats at
-  // bottom: max(insets.bottom + 78, 92) with height 52, so its top edge sits
-  // at least 144dp above the screen bottom — and a LARGER safe-area inset
-  // pushes the FAB further up, shrinking the margin below this fixed 200
-  // padding (not growing it). 200 still clears every real-world inset (they
-  // rarely exceed ~40dp) with margin to spare.
-  contentFabClear: { paddingBottom: 200 },
+  // otherwise sit under GlobalAIChatLauncher's floating sparkle button.
+  // FAB_CLEARANCE (workflows/theme.ts) carries the derivation from the
+  // launcher's own bottom offset + size — shared so every screen that needs
+  // clearance from the fab agrees on the same number.
+  contentFabClear: { paddingBottom: FAB_CLEARANCE },
   periksa: {
     alignSelf: 'flex-start', marginTop: SPACE.xs, paddingVertical: 2, paddingHorizontal: SPACE.sm,
     borderRadius: RADIUS, backgroundColor: COLORS.warningBg,

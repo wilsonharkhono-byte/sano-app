@@ -1,16 +1,15 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, Platform, Linking } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
 import Header from '../components/Header';
 import Card from '../components/Card';
 import PhotoGalleryField from '../components/PhotoGalleryField';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
-import { listRooms } from '../../tools/rooms';
+import { listRoomsResult } from '../../tools/rooms';
 import { listGateRefs } from '../../tools/gateRefs';
-import { pickPhoto } from '../../tools/storage';
+import { PhotoPermissionError, pickPhoto } from '../../tools/storage';
 import { getRoomLastGate, newSiteEventId, workGroupHints } from '../../tools/siteEvents';
 import { enqueueNewCapture } from '../../tools/captureQueueStore';
 import { triggerDrain } from '../../tools/captureQueueWorker';
@@ -50,6 +49,7 @@ export default function SiteEventCaptureScreen() {
   const project = projects.find((p) => p.id === params.projectId) ?? null;
 
   const [room, setRoom] = useState<Room | null>(null);
+  const [roomLoadError, setRoomLoadError] = useState<string | null>(null);
   const [gates, setGates] = useState<GateRef[]>([]);
   const [loading, setLoading] = useState(true);
   const [eventId] = useState(() => newSiteEventId());
@@ -65,33 +65,49 @@ export default function SiteEventCaptureScreen() {
   const [cameraDenied, setCameraDenied] = useState(false);
   const sendingRef = useRef(false);
 
+  const alive = useRef(true);
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      setLoading(true);
-      if (!project || !params.roomId) {
-        if (alive) setLoading(false);
-        return;
-      }
-      const [rooms, gateRows, lastGate] = await Promise.all([
-        listRooms(project.id, { includeInactive: true }),
-        listGateRefs({ activeOnly: true }),
-        getRoomLastGate(params.roomId),
-      ]);
-      if (!alive) return;
-      setRoom(rooms.find((r) => r.id === params.roomId) ?? null);
-      setGates(gateRows);
-      // Spec §5.2: the room's last tagged gate is a suggestion, not a pick —
-      // it renders as a dashed "Saran AI" chip (GateChipRow's hintCode), and
-      // only lands in the payload if the supervisor never taps a chip of
-      // their own (see buildNewSiteEvent's gateCode ?? gateHint fallback).
-      setGateHint(lastGate && gateRows.some((g) => g.code === lastGate) ? lastGate : null);
-      setLoading(false);
-    })();
+    alive.current = true;
     return () => {
-      alive = false;
+      alive.current = false;
     };
+  }, []);
+
+  const loadRoom = useCallback(async () => {
+    setLoading(true);
+    if (!project || !params.roomId) {
+      if (alive.current) setLoading(false);
+      return;
+    }
+    const [roomsResult, gateRows, lastGate] = await Promise.all([
+      listRoomsResult(project.id, { includeInactive: true }),
+      listGateRefs({ activeOnly: true }),
+      getRoomLastGate(params.roomId),
+    ]);
+    if (!alive.current) return;
+    if (roomsResult.rooms === null) {
+      // A failed read is not "ruangan tidak ditemukan" (CLAUDE.md §12) — that
+      // sends a supervisor standing in a real room to re-scan a label that
+      // isn't the problem. Offer a retry instead.
+      setRoomLoadError('Gagal memuat ruangan. Periksa koneksi lalu coba lagi.');
+      setRoom(null);
+      setLoading(false);
+      return;
+    }
+    setRoomLoadError(null);
+    setRoom(roomsResult.rooms.find((r) => r.id === params.roomId) ?? null);
+    setGates(gateRows);
+    // Spec §5.2: the room's last tagged gate is a suggestion, not a pick —
+    // it renders as a dashed "Saran AI" chip (GateChipRow's hintCode), and
+    // only lands in the payload if the supervisor never taps a chip of
+    // their own (see buildNewSiteEvent's gateCode ?? gateHint fallback).
+    setGateHint(lastGate && gateRows.some((g) => g.code === lastGate) ? lastGate : null);
+    setLoading(false);
   }, [project, params.roomId]);
+
+  useEffect(() => {
+    void loadRoom();
+  }, [loadRoom]);
 
   const takePhoto = async (): Promise<CapturePhoto | null> => {
     try {
@@ -100,14 +116,11 @@ export default function SiteEventCaptureScreen() {
       return photo ? { id: newSiteEventId(), photo } : null;
     } catch (err) {
       toast((err as Error).message, 'critical');
-      // pickPhoto (tools/storage.ts) throws a bare Error on denial and
-      // discards `canAskAgain` from requestCameraPermissionsAsync. Recover
-      // it with a read-only re-check rather than touching that file.
-      // TODO(storage.ts): have pickPhoto surface canAskAgain itself.
-      if (Platform.OS !== 'web') {
-        const perm = await ImagePicker.getCameraPermissionsAsync();
-        setCameraDenied(perm.granted === false && perm.canAskAgain === false);
-      }
+      // pickPhoto (tools/storage.ts) throws a typed PhotoPermissionError on
+      // denial, carrying canAskAgain directly — no need to re-query the
+      // permission here. Any other error clears cameraDenied: reaching this
+      // catch past the permission check means the permission was granted.
+      setCameraDenied(err instanceof PhotoPermissionError ? !err.canAskAgain : false);
       return null;
     }
   };
@@ -187,13 +200,15 @@ export default function SiteEventCaptureScreen() {
 
   const refusal = loading
     ? null
-    : !project
-      ? 'Anda tidak ditugaskan ke proyek ini.'
-      : !room
-        ? 'Ruangan tidak ditemukan. Pindai ulang labelnya.'
-        : !room.active
-          ? 'Ruangan ini sudah tidak aktif. Hubungi kantor.'
-          : null;
+    : roomLoadError
+      ? null // rendered separately below, with a retry
+      : !project
+        ? 'Anda tidak ditugaskan ke proyek ini.'
+        : !room
+          ? 'Ruangan tidak ditemukan. Pindai ulang labelnya.'
+          : !room.active
+            ? 'Ruangan ini sudah tidak aktif. Hubungi kantor.'
+            : null;
 
   const sendDisabled = !contextPhoto || sending || voiceBusy;
 
@@ -217,13 +232,22 @@ export default function SiteEventCaptureScreen() {
           </Card>
         ) : null}
 
+        {!loading && roomLoadError ? (
+          <Card borderColor={COLORS.critical}>
+            <Text style={s.errorText}>{roomLoadError}</Text>
+            <TouchableOpacity style={s.secondaryBtn} onPress={() => void loadRoom()} accessibilityRole="button">
+              <Text style={s.secondaryText}>Coba lagi</Text>
+            </TouchableOpacity>
+          </Card>
+        ) : null}
+
         {refusal ? (
           <Card borderColor={COLORS.critical}>
             <Text style={s.errorText}>{refusal}</Text>
           </Card>
         ) : null}
 
-        {!loading && !refusal && project && room ? (
+        {!loading && !roomLoadError && !refusal && project && room ? (
           <>
             <Card>
               <Text style={s.title}>{room.room_name}</Text>

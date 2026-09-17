@@ -23,6 +23,25 @@ const photoUrlCache = new Map<string, { url: string; expiresAt: number }>();
  */
 export const SITE_MEDIA_PATH_PREFIX = `${SITE_MEDIA_BUCKET}:`;
 
+/**
+ * Thrown by `pickPhoto` when the camera permission (native) or media library
+ * permission (web) is denied, carrying `canAskAgain` from the picker's own
+ * permission response so a caller can tell a re-askable denial from a
+ * permanent one without re-querying the permission itself. On web,
+ * `requestMediaLibraryPermissionsAsync` always resolves granted (there is no
+ * real permission gate on a file-input picker), so this branch is mostly
+ * future-proofing/parity rather than something a browser denies today.
+ * `pickAndUploadPhoto` is unchanged and still throws a bare `Error`.
+ */
+export class PhotoPermissionError extends Error {
+  canAskAgain: boolean;
+  constructor(message: string, canAskAgain: boolean) {
+    super(message);
+    this.name = 'PhotoPermissionError';
+    this.canAskAgain = canAskAgain;
+  }
+}
+
 export type StorageTarget =
   | { kind: 'local'; uri: string }
   | { kind: 'bucket'; bucket: string; path: string; allowPublicFallback: boolean };
@@ -186,11 +205,17 @@ export async function pickPhoto(): Promise<PreparedPhoto | null> {
   let result: ImagePicker.ImagePickerResult;
 
   if (Platform.OS === 'web') {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      // canAskAgain is always present on the typed response, but a defensive
+      // fallback keeps this branch honest if a future/host picker omits it.
+      throw new PhotoPermissionError('Izin galeri diperlukan untuk memilih foto.', permission.canAskAgain ?? true);
+    }
     result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7, allowsEditing: false });
   } else {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
-      throw new Error('Izin kamera diperlukan untuk mengambil foto.');
+      throw new PhotoPermissionError('Izin kamera diperlukan untuk mengambil foto.', permission.canAskAgain);
     }
     result = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.7, allowsEditing: false });
   }

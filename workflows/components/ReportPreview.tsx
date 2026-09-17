@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, TYPE } from '../theme';
 import type { ReportPayload } from '../../tools/reports';
 import { formatDriftPct } from '../../tools/planDrift';
+import { buildSiteEventAiUsageDisplay, formatUsd } from '../../tools/siteEventAiUsageDisplay';
 
 function RRow({ label, value, color }: { label: string; value: string | number; color?: string }) {
   return (
@@ -342,6 +343,7 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
 
   if (payload.type === 'ai_usage_summary') {
     const fmtTokens = (value: number) => value.toLocaleString('id-ID');
+    const siteEvents = buildSiteEventAiUsageDisplay(d.site_events);
     return (
       <>
         <SLabel>Ringkasan</SLabel>
@@ -382,6 +384,46 @@ export function ReportPreview({ payload }: { payload: ReportPayload }) {
             </Text>
           </View>
         ))}
+        {siteEvents ? (
+          <>
+            <SLabel>Kejadian ruangan (AI)</SLabel>
+            {siteEvents.error ? (
+              <Text style={{ fontSize: 13, color: COLORS.warning, lineHeight: 19, marginBottom: 8 }}>
+                Data AI kejadian ruangan belum bisa dibaca: {siteEvents.error}
+              </Text>
+            ) : (
+              <>
+                <RRow label="Total Proses" value={siteEvents.totalRuns} />
+                <RRow label="Total Token" value={fmtTokens(siteEvents.totalTokens)} />
+                <RRow label="Total Biaya" value={formatUsd(siteEvents.totalCostUsd)} color={COLORS.accentDark} />
+                {siteEvents.stages.map((stage, index) => (
+                  <View key={index} style={{ marginBottom: 10, borderBottomWidth: 1, borderBottomColor: COLORS.borderSub, paddingBottom: 8 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '600' }}>{stage.label}</Text>
+                    <Text style={{ fontSize: 12, color: COLORS.textSec }}>
+                      {stage.runCount} proses · Token masuk {fmtTokens(stage.inputTokens)} · Token keluar {fmtTokens(stage.outputTokens)}
+                    </Text>
+                    <Text style={{ fontSize: 12, color: COLORS.textSec }}>
+                      Biaya: {formatUsd(stage.costUsd)}
+                    </Text>
+                  </View>
+                ))}
+                {siteEvents.stages.length === 0 && (
+                  <Text style={{ fontSize: 13, color: COLORS.textSec }}>Belum ada kejadian ruangan AI pada filter ini.</Text>
+                )}
+                {siteEvents.unknownCostNote ? (
+                  <Text style={{ fontSize: 12, color: COLORS.warning, lineHeight: 18, marginTop: 4 }}>
+                    {siteEvents.unknownCostNote}
+                  </Text>
+                ) : null}
+                {siteEvents.unknownTokenNote ? (
+                  <Text style={{ fontSize: 12, color: COLORS.warning, lineHeight: 18, marginTop: 4 }}>
+                    {siteEvents.unknownTokenNote}
+                  </Text>
+                ) : null}
+              </>
+            )}
+          </>
+        ) : null}
       </>
     );
   }

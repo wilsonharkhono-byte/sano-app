@@ -1,11 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import Card from '../components/Card';
 import { useProject } from '../hooks/useProject';
-import { listRooms } from '../../tools/rooms';
+import { listRoomsResult } from '../../tools/rooms';
 import { listGateRefs, gateChipLabel } from '../../tools/gateRefs';
 import { normalizeRoomCode } from '../../tools/roomCodes';
 import { AREA_TYPE_LABELS, PROJECT_PHASE_LABELS } from '../../tools/constants';
@@ -15,12 +15,17 @@ import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../theme';
 import OpenEventsList from './siteEvent/OpenEventsList';
 import RoomTimeline from './siteEvent/RoomTimeline';
 
-type Refusal = 'not-assigned' | 'not-found' | 'inactive';
+type Refusal = 'not-assigned' | 'not-found' | 'inactive' | 'read-failed';
 
 const REFUSAL_COPY: Record<Refusal, string> = {
   'not-assigned': 'Anda tidak ditugaskan ke proyek ini.',
   'not-found':    'Ruangan ini tidak ditemukan di proyek tersebut. Periksa labelnya atau hubungi kantor.',
   'inactive':     'Ruangan ini sudah tidak aktif. Hubungi kantor.',
+  // A failed read is not "ruangan tidak ditemukan" (CLAUDE.md §12) — that
+  // sends a supervisor standing in a real room to re-scan a label that isn't
+  // the problem. This is the only refusal offering "Coba lagi" instead of
+  // "Pilih ruangan lain".
+  'read-failed':  'Gagal memuat ruangan. Periksa koneksi lalu coba lagi.',
 };
 
 /**
@@ -51,29 +56,41 @@ export default function RoomScreen() {
     if (target && target.id !== project?.id) setActiveProject(target.id);
   }, [target, project?.id, setActiveProject]);
 
+  const alive = useRef(true);
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      setLoading(true);
-      setRefusal(null);
-      if (!target) {
-        if (alive) { setRefusal('not-assigned'); setLoading(false); }
-        return;
-      }
-      const [all, g] = await Promise.all([
-        listRooms(target.id, { includeInactive: true }),
-        listGateRefs({ activeOnly: true }),
-      ]);
-      if (!alive) return;
-      const found = all.find((r) => r.room_code === wantedCode) ?? null;
-      setRoom(found);
-      setGates(g);
-      if (!found) setRefusal('not-found');
-      else if (!found.active) setRefusal('inactive');
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setRefusal(null);
+    if (!target) {
+      if (alive.current) { setRefusal('not-assigned'); setLoading(false); }
+      return;
+    }
+    const [roomsResult, g] = await Promise.all([
+      listRoomsResult(target.id, { includeInactive: true }),
+      listGateRefs({ activeOnly: true }),
+    ]);
+    if (!alive.current) return;
+    if (roomsResult.rooms === null) {
+      setRoom(null);
+      setRefusal('read-failed');
       setLoading(false);
-    })();
-    return () => { alive = false; };
+      return;
+    }
+    const found = roomsResult.rooms.find((r) => r.room_code === wantedCode) ?? null;
+    setRoom(found);
+    setGates(g);
+    if (!found) setRefusal('not-found');
+    else if (!found.active) setRefusal('inactive');
+    setLoading(false);
   }, [target, wantedCode]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   // Falls back to the database default until migration 096 is pasted:
   // select('*') on a projects row with no phase column yields undefined at
@@ -99,15 +116,17 @@ export default function RoomScreen() {
         {!loading && refusal && (
           <Card borderColor={COLORS.critical}>
             <Text style={styles.refusal}>{REFUSAL_COPY[refusal]}</Text>
-            <Text style={styles.refusalMeta}>
-              Kode dipindai: {params.projectCode ?? '—'} / {wantedCode || '—'}
-            </Text>
+            {refusal !== 'read-failed' && (
+              <Text style={styles.refusalMeta}>
+                Kode dipindai: {params.projectCode ?? '—'} / {wantedCode || '—'}
+              </Text>
+            )}
             <TouchableOpacity
               style={styles.primaryBtn}
-              onPress={() => navigation.navigate('RoomScan')}
+              onPress={() => (refusal === 'read-failed' ? void load() : navigation.navigate('RoomScan'))}
               accessibilityRole="button"
             >
-              <Text style={styles.primaryText}>Pilih ruangan lain</Text>
+              <Text style={styles.primaryText}>{refusal === 'read-failed' ? 'Coba lagi' : 'Pilih ruangan lain'}</Text>
             </TouchableOpacity>
           </Card>
         )}

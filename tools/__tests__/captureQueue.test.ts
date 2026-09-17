@@ -16,7 +16,6 @@ import {
   markUnrecoverable,
   markUploaded,
   nextStep,
-  queueBadgeText,
   recordFailure,
   retryEntry,
   toNewSiteEvent,
@@ -368,18 +367,5 @@ describe('Beranda selectors', () => {
     expect(waitingCount(all)).toBe(3); // queued, uploading, flagged(failed)
     expect(draftReadyCount(all)).toBe(1); // ready
     expect(attentionCount(all)).toBe(1); // flagged
-  });
-
-  it('builds the exact Indonesian badge line, hiding whichever part is zero, and null when both are', () => {
-    expect(queueBadgeText([])).toBeNull();
-    const waitingOnly = [fresh()];
-    expect(queueBadgeText(waitingOnly)).toBe('Antrean: 1 menunggu sinyal');
-    let ready = fresh();
-    ready = markUploaded(ready, 'm1', 1, NOW);
-    ready = markUploaded(ready, 'm2', 1, NOW);
-    ready = markInserted(ready, NOW);
-    ready = markAnalysisRequested(ready, NOW);
-    expect(queueBadgeText([ready])).toBe('Antrean: 1 draf siap dikonfirmasi');
-    expect(queueBadgeText([fresh(), ready])).toBe('Antrean: 1 menunggu sinyal, 1 draf siap dikonfirmasi');
   });
 });

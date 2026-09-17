@@ -26,7 +26,7 @@ jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
 import { supabase } from '../supabase';
 import {
   parseRoomPaste, roomsToDatumAreas, createRoom, ensureAreaUmum,
-  updateRoom, setRoomActive, markRoomsPrinted,
+  updateRoom, setRoomActive, markRoomsPrinted, listRooms, listRoomsResult,
 } from '../rooms';
 import type { Room } from '../types';
 
@@ -422,5 +422,61 @@ describe('markRoomsPrinted (Supabase mocked)', () => {
       bulkUpdateChain({ data: null, error: { message: 'boom' } }),
     );
     await expect(markRoomsPrinted(['r1', 'r2'])).resolves.toEqual({ error: 'boom' });
+  });
+});
+
+describe('listRoomsResult / listRooms (Supabase mocked)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  /** select().eq().not().order().order().order()[.eq()] - awaited directly, like a real PostgrestFilterBuilder. */
+  function listChain(result: { data: unknown; error: { message: string } | null }) {
+    const chain: Record<string, unknown> = {
+      select: jest.fn(() => chain),
+      eq: jest.fn(() => chain),
+      not: jest.fn(() => chain),
+      order: jest.fn(() => chain),
+      then: (resolve: (v: typeof result) => unknown, reject?: (e: unknown) => unknown) =>
+        Promise.resolve(result).then(resolve, reject),
+    };
+    return chain;
+  }
+
+  it('returns the rows on success', async () => {
+    const rows = [room({ id: 'r1' }), room({ id: 'r2' })];
+    (mockSupabase.from as jest.Mock).mockReturnValue(listChain({ data: rows, error: null }));
+    await expect(listRoomsResult('p1')).resolves.toEqual({ rooms: rows });
+  });
+
+  it('filters to active rooms by default, and skips that filter with includeInactive', async () => {
+    const chainActive = listChain({ data: [], error: null });
+    (mockSupabase.from as jest.Mock).mockReturnValueOnce(chainActive);
+    await listRoomsResult('p1');
+    expect(chainActive.eq).toHaveBeenCalledWith('active', true);
+
+    const chainAll = listChain({ data: [], error: null });
+    (mockSupabase.from as jest.Mock).mockReturnValueOnce(chainAll);
+    await listRoomsResult('p1', { includeInactive: true });
+    expect((chainAll.eq as jest.Mock).mock.calls.some((c) => c[0] === 'active')).toBe(false);
+  });
+
+  it('reports a read failure distinctly rather than an empty list, and warns', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    (mockSupabase.from as jest.Mock).mockReturnValue(listChain({ data: null, error: { message: 'nope' } }));
+    await expect(listRoomsResult('p1')).resolves.toEqual({ rooms: null, error: 'nope' });
+    expect(warnSpy).toHaveBeenCalledWith('listRooms failed:', 'nope');
+    warnSpy.mockRestore();
+  });
+
+  it('listRooms wraps listRoomsResult and returns [] on a read failure, for untouched callers', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    (mockSupabase.from as jest.Mock).mockReturnValue(listChain({ data: null, error: { message: 'nope' } }));
+    await expect(listRooms('p1')).resolves.toEqual([]);
+    warnSpy.mockRestore();
+  });
+
+  it('listRooms returns the same rows as listRoomsResult on success', async () => {
+    const rows = [room({ id: 'r1' })];
+    (mockSupabase.from as jest.Mock).mockReturnValue(listChain({ data: rows, error: null }));
+    await expect(listRooms('p1', { includeInactive: true })).resolves.toEqual(rows);
   });
 });

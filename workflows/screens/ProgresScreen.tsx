@@ -14,7 +14,7 @@ import DailyLogScreen from './DailyLogScreen';
 import ProgressClaimPanel from './progressClaim/ProgressClaimPanel';
 import { getDailyLog } from '../../tools/dailySiteLogs';
 import { supabase } from '../../tools/supabase';
-import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
+import { COLORS, FAB_CLEARANCE, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import { getSiteChangeSummary, type SiteChangeSummary } from '../../tools/siteChanges';
 
 type SubModule = 'home' | 'progress' | 'perubahan' | 'daily-log';
@@ -342,7 +342,10 @@ export default function ProgresScreen() {
 const styles = StyleSheet.create({
   flex:    { flex: 1, backgroundColor: COLORS.bg },
   scroll:  { flex: 1 },
-  content: { padding: SPACE.base, paddingBottom: SPACE.xxxl },
+  // paddingBottom: FAB_CLEARANCE, not SPACE.xxxl — GlobalAIChatLauncher's fab
+  // (workflows/theme.ts) can cover the "Tambah Progres" submit button and the
+  // hub grid at the bottom of this screen's single ScrollView.
+  content: { padding: SPACE.base, paddingBottom: FAB_CLEARANCE },
 
   sectionHead: {
     fontSize: TYPE.xs, fontFamily: FONTS.bold, letterSpacing: 0.8,

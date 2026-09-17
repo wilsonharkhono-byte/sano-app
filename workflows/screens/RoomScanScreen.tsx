@@ -8,7 +8,7 @@ import RoomPicker from './components/RoomPicker';
 import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { parseRoomUrl } from '../../tools/roomLinks';
-import { listRooms } from '../../tools/rooms';
+import { listRoomsResult } from '../../tools/rooms';
 import type { Room } from '../../tools/types';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../theme';
 
@@ -30,6 +30,7 @@ export default function RoomScanScreen() {
   const { show: toast } = useToast();
   const [permission, requestPermission] = useCameraPermissions();
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   // One scan per visit: CameraView fires onBarcodeScanned on every frame.
   const handled = useRef(false);
   const invalidScanTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -51,10 +52,24 @@ export default function RoomScanScreen() {
     }, []),
   );
 
-  useEffect(() => {
-    if (!project) return;
-    void listRooms(project.id).then(setRooms);
+  const loadRooms = useCallback(async () => {
+    if (!project) { setRooms([]); setLoadError(null); return; }
+    const result = await listRoomsResult(project.id);
+    if (result.rooms === null) {
+      // A failed read is not "no rooms" (CLAUDE.md §12): the picker's own
+      // "Tidak ada ruangan yang cocok" would otherwise look like a genuinely
+      // empty project rather than a dropped connection.
+      setLoadError(result.error);
+      setRooms([]);
+    } else {
+      setLoadError(null);
+      setRooms(result.rooms);
+    }
   }, [project]);
+
+  useEffect(() => {
+    void loadRooms();
+  }, [loadRooms]);
 
   const goToRoom = useCallback((projectCode: string, roomCode: string) => {
     navigation.navigate('Room', { projectCode, roomCode });
@@ -127,11 +142,23 @@ export default function RoomScanScreen() {
         )}
 
         <View style={styles.pickerBox}>
-          <RoomPicker
-            rooms={rooms}
-            note={pickerNote}
-            onSelect={(r) => project && goToRoom(project.code, r.room_code)}
-          />
+          {loadError ? (
+            <View style={styles.permBox}>
+              <Ionicons name="alert-circle-outline" size={28} color={COLORS.critical} />
+              <Text style={[styles.permText, { color: COLORS.critical }]}>
+                Daftar ruangan gagal dimuat. Periksa koneksi lalu coba lagi.
+              </Text>
+              <TouchableOpacity style={styles.primaryBtn} onPress={() => void loadRooms()} accessibilityRole="button">
+                <Text style={styles.primaryText}>Coba lagi</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <RoomPicker
+              rooms={rooms}
+              note={pickerNote}
+              onSelect={(r) => project && goToRoom(project.code, r.room_code)}
+            />
+          )}
         </View>
       </View>
     </View>
