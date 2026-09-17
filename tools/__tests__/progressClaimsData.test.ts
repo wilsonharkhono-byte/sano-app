@@ -155,8 +155,9 @@ describe('writes', () => {
   it('keeps the refusal code and the server text for the screen', async () => {
     rpc.mockResolvedValueOnce({ data: null, error: { message: 'CLAIM_REGRESS_REASON: baris T1-001 turun dari progres terverifikasi' } });
     await expect(verifyClaim('c1', [])).rejects.toMatchObject({
-      message: 'Penurunan progres wajib disertai alasan.',
+      message: 'T1-001: Penurunan progres wajib disertai alasan.',
       code: 'CLAIM_REGRESS_REASON',
+      rowCode: 'T1-001',
       detail: 'CLAIM_REGRESS_REASON: baris T1-001 turun dari progres terverifikasi',
     });
   });

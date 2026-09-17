@@ -7,6 +7,7 @@ import React, { useMemo, useState } from 'react';
 import { Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import PhotoGalleryField from '../../components/PhotoGalleryField';
 import { pickAndUploadPhoto } from '../../../tools/storage';
+import { isStaleClaimRefusal } from '../../../tools/progressClaims/claimRules';
 import { removeClaimLine, saveClaimLine, type SaveClaimLineResult } from '../../../tools/progressClaims/claims';
 import {
   formatFraction, formatPercent, formatQty, pctInputs, readPctInputs, regressedStages, stageKeyLabel, weightSourceLabel,
@@ -29,13 +30,16 @@ interface Props {
   editable: boolean;
   onSaved: (result: SaveClaimLineResult) => void;
   onRemoved: () => void;
+  /** A refusal showed the claim, row or weights on screen are out of date: the panel reloads. */
+  onStale?: () => void;
   onClose: () => void;
   toast: (msg: string, type?: 'ok' | 'warning' | 'critical') => void;
 }
 
-export default function StageClaimForm({ projectId, row, editable, onSaved, onRemoved, onClose, toast }: Props) {
+export default function StageClaimForm({ projectId, row, editable, onSaved, onRemoved, onStale, onClose, toast }: Props) {
   const { weights, item } = row;
-  const [inputs, setInputs] = useState<Record<string, string>>(() => pctInputs(weights, row.claimedPct ?? row.prevPct));
+  // A claim saved before the weights changed shape cannot fill these stages: start from the verified figures.
+  const [inputs, setInputs] = useState<Record<string, string>>(() => pctInputs(weights, row.claimNeedsRefill ? row.prevPct : row.claimedPct ?? row.prevPct));
   const [photos, setPhotos] = useState<string[]>(row.photoRefs);
   const [note, setNote] = useState(row.note ?? '');
   const [reason, setReason] = useState(row.regressReason ?? '');
@@ -93,10 +97,11 @@ export default function StageClaimForm({ projectId, row, editable, onSaved, onRe
         photoRefs: photos,
         regressReason: needsReason ? reason.trim() : null,
       });
-      toast(`${item.code} disimpan ke klaim minggu ini.`, 'ok');
+      toast(`${item.code} disimpan ke klaim.`, 'ok');
       onSaved(result);
     } catch (err) {
       toast((err as Error)?.message ?? 'Gagal menyimpan.', 'critical');
+      if (isStaleClaimRefusal((err as { code?: string | null })?.code)) onStale?.();
     } finally {
       setBusy(false);
     }
@@ -107,10 +112,11 @@ export default function StageClaimForm({ projectId, row, editable, onSaved, onRe
     setBusy(true);
     try {
       await removeClaimLine(row.lineId);
-      toast(`${item.code} dihapus dari klaim minggu ini.`, 'warning');
+      toast(`${item.code} dihapus dari klaim.`, 'warning');
       onRemoved();
     } catch (err) {
       toast((err as Error)?.message ?? 'Gagal menghapus.', 'critical');
+      if (isStaleClaimRefusal((err as { code?: string | null })?.code)) onStale?.();
     } finally {
       setBusy(false);
     }
@@ -119,6 +125,9 @@ export default function StageClaimForm({ projectId, row, editable, onSaved, onRe
   return (
     <View style={styles.box} testID={`claim-form-${item.id}`}>
       <Text style={styles.meta}>{weightSourceLabel(row.source, row.referenceClass)}</Text>
+      {row.claimNeedsRefill && (
+        <Text style={styles.warn}>Bobot baris ini berubah setelah diklaim. Isi ulang persentasenya lalu simpan.</Text>
+      )}
 
       {stagesOf(weights).map((stage) => (
         <View key={stage} style={styles.stage}>

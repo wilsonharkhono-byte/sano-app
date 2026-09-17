@@ -6,7 +6,10 @@ jest.mock('../../../../tools/progressClaims/claims', () => ({
   listStageWeights: jest.fn(),
   seedReferenceWeights: jest.fn(),
   getOpenClaim: jest.fn(),
+  getLatestClaim: jest.fn(),
   listClaimLines: jest.fn(),
+  listClaimRows: jest.fn(),
+  removeClaimLine: jest.fn(),
   listVerifiedStagePct: jest.fn(),
   countLinkedLinesByRow: jest.fn(),
   listEntryTotals: jest.fn(),
@@ -29,8 +32,8 @@ jest.mock('../StageClaimForm', () => {
 });
 
 import {
-  countLinkedLinesByRow, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, seedReferenceWeights,
-  submitClaim,
+  countLinkedLinesByRow, getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct,
+  removeClaimLine, seedReferenceWeights, submitClaim,
 } from '../../../../tools/progressClaims/claims';
 import ProgressClaimPanel from '../ProgressClaimPanel';
 
@@ -67,6 +70,9 @@ beforeEach(() => {
   (seedReferenceWeights as jest.Mock).mockResolvedValue(1);
   (getOpenClaim as jest.Mock).mockResolvedValue(claim('DRAFT'));
   (listClaimLines as jest.Mock).mockResolvedValue([line]);
+  (getLatestClaim as jest.Mock).mockResolvedValue(null);
+  (listClaimRows as jest.Mock).mockResolvedValue(new Map());
+  (removeClaimLine as jest.Mock).mockResolvedValue({ claim_id: 'c1', lines_left: 1 });
   (listVerifiedStagePct as jest.Mock).mockResolvedValue(new Map([['k1', { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }]]));
   (countLinkedLinesByRow as jest.Mock).mockResolvedValue(new Map([['k1', 2]]));
   (listEntryTotals as jest.Mock).mockResolvedValue(new Map([['k1', 32.6]]));
@@ -81,7 +87,7 @@ describe('ProgressClaimPanel', () => {
     const { findByText, getByText } = renderPanel();
     expect(await findByText('Belum dikirim')).toBeTruthy();
     expect(seedReferenceWeights).toHaveBeenCalledWith('p1', [{ boq_item_id: 'pc1', reference_class: 'PILECAP_SLOOF_PLAT_DASAR' }]);
-    expect(getByText('Minggu ini 61,8%')).toBeTruthy();
+    expect(getByText('Diklaim 61,8%')).toBeTruthy();
     expect(getByText('Terverifikasi 32,6%')).toBeTruthy();
     expect(getByText('0 foto · 2 baris laporan')).toBeTruthy();
     expect(countLinkedLinesByRow).toHaveBeenCalledWith('p1', '2026-09-14');
@@ -146,6 +152,52 @@ describe('ProgressClaimPanel', () => {
     expect(getByLabelText('Kirim klaim')).toBeTruthy();
     fireEvent.press(getByLabelText('T1-001 Lantai 1 ; Kolom'));
     expect(getByText('editable')).toBeTruthy();
+  });
+
+  it('lists a claimed row that left the BoQ, lets the supervisor remove it, and holds Kirim until then', async () => {
+    const gone = { ...line, id: 'l2', boq_item_id: 'old1' };
+    (listClaimLines as jest.Mock).mockResolvedValue([line, gone]);
+    (listClaimRows as jest.Mock).mockResolvedValue(new Map([['old1', { ...item('old1', 'T1-009', 'Lantai 3 ; Balok', 9), superseded_at: '2026-09-16T00:00:00Z' }]]));
+    const { findByText, getByText, queryByLabelText, getByLabelText, toast } = renderPanel();
+    expect(await findByText('Baris ini tidak ada lagi di BoQ terbitan terbaru.')).toBeTruthy();
+    expect(getByText('T1-009')).toBeTruthy();
+    expect(listClaimRows).toHaveBeenCalledWith(['old1']);
+    expect(queryByLabelText('Kirim klaim')).toBeNull();
+    expect(getByText('Hapus baris yang tidak berlaku lagi (di bawah) sebelum mengirim klaim.')).toBeTruthy();
+    (listClaimLines as jest.Mock).mockResolvedValue([line]);
+    fireEvent.press(getByLabelText('Hapus T1-009 dari klaim'));
+    await waitFor(() => expect(removeClaimLine).toHaveBeenCalledWith('l2'));
+    expect(toast).toHaveBeenCalledWith('T1-009 dihapus dari klaim.', 'warning');
+    expect(await findByText('Kirim klaim')).toBeTruthy();
+  });
+
+  it('holds Kirim while a claimed row needs its percents again after its weights changed shape', async () => {
+    (listStageWeights as jest.Mock).mockResolvedValue([
+      { ...kolomWeights, weights: { SINGLE: 1 }, source: 'manual', reference_class: null },
+      { boq_item_id: 'pc1', weights: kolom, source: 'reference', reference_class: 'PILECAP_SLOOF_PLAT_DASAR', updated_at: 'x' },
+    ]);
+    const { findByText, queryByLabelText, getByText } = renderPanel();
+    expect(await findByText('Diklaim: isi ulang')).toBeTruthy();
+    expect(queryByLabelText('Kirim klaim')).toBeNull();
+    expect(getByText('Isi ulang 1 baris yang bobotnya berubah sebelum mengirim klaim.')).toBeTruthy();
+  });
+
+  it('shows how the last claim ended, with the verifier note, when nothing is open', async () => {
+    (getOpenClaim as jest.Mock).mockResolvedValue(null);
+    (getLatestClaim as jest.Mock).mockResolvedValue(claim('VERIFIED', { verified_at: '2026-09-16T03:00:00Z', verifier_note: 'Pembesian K3 belum lengkap, dihitung 50%.' }));
+    const { findByText, getByText } = renderPanel();
+    expect(await findByText('Terverifikasi')).toBeTruthy();
+    expect(getByText('Catatan verifikasi: Pembesian K3 belum lengkap, dihitung 50%.')).toBeTruthy();
+    expect(getByText('Klaim terakhir di atas. Simpan progres di baris mana pun untuk membuka klaim baru.')).toBeTruthy();
+  });
+
+  it('reloads after a refusal that shows the claim moved on', async () => {
+    (submitClaim as jest.Mock).mockRejectedValueOnce(Object.assign(new Error('Status klaim sudah berubah. Muat ulang halaman.'), { code: 'CLAIM_STATE' }));
+    const { findByLabelText, getByLabelText, toast } = renderPanel();
+    fireEvent.press(await findByLabelText('Kirim klaim'));
+    fireEvent.press(getByLabelText('Ya, kirim'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Status klaim sudah berubah. Muat ulang halaman.', 'critical'));
+    await waitFor(() => expect(getOpenClaim).toHaveBeenCalledTimes(2));
   });
 
   it('reloads when asked to, as a notification tap does', async () => {

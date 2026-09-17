@@ -12,14 +12,14 @@ import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View 
 import Card from '../../../workflows/components/Card';
 import Badge from '../../../workflows/components/Badge';
 import StoragePhoto from '../../../workflows/components/StoragePhoto';
-import { canVerifyClaim, canVerifyClaimAs, regressReasonRowCode } from '../../../tools/progressClaims/claimRules';
+import { canVerifyClaim, canVerifyClaimAs, claimChangedSince, regressReasonRowCode } from '../../../tools/progressClaims/claimRules';
 import {
   getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
   type ProgressClaim, type ProgressClaimLine, type VerifyLineInput,
 } from '../../../tools/progressClaims/claims';
 import {
-  claimStatusSummary, formatFraction, formatPercent, formatQty, pctInputs, readPctInputs, regressedStages, stageKeyLabel,
-  weightSourceLabel, zeroPct, type ClaimableItem, type PctRead,
+  claimStatusSummary, formatFraction, formatPercent, formatQty, inactiveRowReason, pctInputs, pctMatchesWeights, readPctInputs,
+  regressedStages, stageKeyLabel, weightSourceLabel, zeroPct, type ClaimableItem, type PctRead,
 } from '../../../tools/progressClaims/claimView';
 import { deltaFromInstalled, rowFraction, type StagePct } from '../../../tools/progressClaims/stageMath';
 import {
@@ -79,6 +79,10 @@ interface LineCheck {
   regressed: StageKey[];
   needsReason: boolean;
   ledgerBefore: number;
+  /** Why submit or verify refuses this row now (superseded, planned 0, deleted), or null. */
+  inactive: string | null;
+  /** The row's weights changed shape after the line was saved, so its claimed percents no longer apply. */
+  refill: boolean;
 }
 
 const EMPTY_INPUT: LineInput = { inputs: {}, reason: '' };
@@ -167,9 +171,14 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     const code = item?.code ?? '—';
     const ledgerBefore = loaded.ledger.get(line.boq_item_id) ?? 0;
     const rowWeights = loaded.weights.get(line.boq_item_id) ?? null;
+    const inactive = inactiveRowReason(item ?? null);
     if (!rowWeights) {
-      return { code, item, rowWeights: null, prev: {}, read: null, prevFraction: 0, next: null, delta: null, regressed: [], needsReason: false, ledgerBefore };
+      return {
+        code, item, rowWeights: null, prev: {}, read: null, prevFraction: 0, next: null, delta: null, regressed: [], needsReason: false, ledgerBefore,
+        inactive, refill: false,
+      };
     }
+    const refill = !pctMatchesWeights(rowWeights.weights, line.claimed_pct);
     const prev = loaded.verified.get(line.boq_item_id) ?? line.prev_verified ?? zeroPct(rowWeights.weights);
     const read = readPctInputs(rowWeights.weights, state.inputs);
     const prevFraction = rowFraction(rowWeights.weights, prev);
@@ -177,7 +186,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     const delta = next != null ? deltaFromInstalled(item?.planned ?? 0, ledgerBefore, next).deltaQuantity : null;
     const regressed = read.ok ? regressedStages(rowWeights.weights, prev, read.pct) : [];
     return {
-      code, item, rowWeights, prev, read, prevFraction, next, delta, regressed, ledgerBefore,
+      code, item, rowWeights, prev, read, prevFraction, next, delta, regressed, ledgerBefore, inactive, refill,
       needsReason: regressed.length > 0 || (delta != null && delta < 0) || forcedReasons.has(line.id),
     };
   };
@@ -197,8 +206,16 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     for (const line of current.lines) {
       const state = lineInputs[line.id] ?? EMPTY_INPUT;
       const c = check(current, line, state);
+      if (c.inactive) {
+        toast(`${c.code}: ${c.inactive} Kembalikan klaim agar pengawas menghapus baris ini.`, 'critical');
+        return;
+      }
       if (!c.rowWeights) {
         toast(`${c.code}: bobot tahapan belum diatur.`, 'critical');
+        return;
+      }
+      if (c.refill) {
+        toast(`${c.code}: bobot baris berubah setelah diklaim. Kembalikan klaim agar pengawas mengisi ulang.`, 'critical');
         return;
       }
       if (!c.read || !c.read.ok) {
@@ -214,6 +231,14 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     }
     setBusy(true);
     try {
+      // Line ids survive edits, so the RPC cannot tell a claim that was returned,
+      // corrected and sent again while this page stayed open. Re-read it first.
+      const [storedClaim, storedLines] = await Promise.all([getOpenClaim(projectId), listClaimLines(current.claim.id)]);
+      if (claimChangedSince({ claim: current.claim, lines: current.lines }, { claim: storedClaim, lines: storedLines })) {
+        toast('Klaim berubah sejak halaman ini dimuat. Angka terbaru sudah dimuat; periksa lagi lalu verifikasi.', 'warning');
+        await load();
+        return;
+      }
       const result = await verifyClaim(current.claim.id, payload, verifierNote.trim() || null);
       toast(`Klaim diverifikasi. ${result.entries} entri progres dicatat.`, 'ok');
       onVerified?.();
@@ -246,8 +271,9 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
     }
     setBusy(true);
     try {
-      await returnClaim(current.claim.id, note);
-      toast('Klaim dikembalikan ke pengawas.', 'ok');
+      const result = await returnClaim(current.claim.id, note);
+      if (result.notified > 0) toast('Klaim dikembalikan ke pengawas.', 'ok');
+      else toast('Klaim dikembalikan, tetapi tidak ada yang diberi tahu: pengirimnya tidak lagi ditugaskan ke proyek ini. Kabari tim lapangan langsung.', 'warning');
       onChanged?.();
       await load();
     } catch (err) {
@@ -301,6 +327,13 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
       {current.lines.map((line) => {
         const state = lineInputs[line.id] ?? EMPTY_INPUT;
         const c = check(current, line, state);
+        if (c.inactive) {
+          return (
+            <Card key={line.id} title={c.code} subtitle={c.item?.label}>
+              <Text style={styles.error}>{`${c.inactive} Kembalikan klaim agar pengawas menghapus baris ini dari klaim.`}</Text>
+            </Card>
+          );
+        }
         if (!c.rowWeights) {
           return (
             <Card key={line.id} title={c.code} subtitle={c.item?.label}>
@@ -328,7 +361,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
               <View key={stage} style={styles.tableRow}>
                 <Text style={styles.cellStage}>{stageKeyLabel(stage)}</Text>
                 <Text style={styles.cell}>{formatPercent(c.prev[stage] ?? 0)}</Text>
-                <Text style={styles.cell}>{formatPercent(line.claimed_pct[stage] ?? 0)}</Text>
+                <Text style={styles.cell}>{c.refill ? '—' : formatPercent(line.claimed_pct[stage] ?? 0)}</Text>
                 <TextInput
                   style={[styles.cellInput, styles.input, !actionable && styles.inputDisabled]}
                   value={state.inputs[stage] ?? ''}
@@ -339,12 +372,17 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
                 />
               </View>
             ))}
+            {c.refill && (
+              <Text style={styles.error}>
+                Bobot baris ini berubah setelah diklaim, jadi angka klaim lama tidak berlaku. Kembalikan klaim agar pengawas mengisi ulang.
+              </Text>
+            )}
             {c.read && c.read.ok && c.next != null && c.delta != null ? (
               <Text style={styles.preview}>
                 {`Progres baris ${formatFraction(c.prevFraction)} menjadi ${formatFraction(c.next)} (perkiraan ${c.delta > 0 ? '+' : ''}${formatQty(c.delta, c.item?.unit ?? '')})`}
               </Text>
             ) : (
-              <Text style={styles.error}>{c.read && !c.read.ok ? c.read.reason : ''}</Text>
+              <Text style={styles.error}>{c.read && !c.read.ok && !c.refill ? c.read.reason : ''}</Text>
             )}
             {mismatch && c.item && (
               <Text style={styles.hint}>

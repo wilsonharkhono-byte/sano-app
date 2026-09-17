@@ -1,6 +1,7 @@
 // tools/__tests__/progressClaimsView.test.ts
 import {
-  buildRowViews, claimStatusSummary, claimableRows, countLinesByRow, formatPercent, formatQty, latestRevisionReportIds,
+  buildRowViews, claimStatusSummary, claimableRows, countLinesByRow, formatPercent, formatQty, inactiveRowReason, latestRevisionReportIds,
+  orphanClaimLines, pctMatchesWeights,
   missingWeightSeeds, parsePercentInput, pctInputs, readPctInputs, readWeightPercentInputs,
   regressedStages, stageKeyLabel, weightPercentInputs, weightSourceLabel, type ClaimableItem,
 } from '../progressClaims/claimView';
@@ -165,5 +166,40 @@ describe('percent inputs', () => {
     expect(formatQty(41.0875, 'm³')).toBe('41,09 m³');
     expect(formatQty(-9.72, 'm³')).toBe('-9,72 m³');
     expect(formatQty(38, 'm³')).toBe('38 m³');
+  });
+});
+
+describe('claims that no longer fit the BoQ', () => {
+  it('accepts percents for exactly the stages of the weights, each 0 to 100', () => {
+    expect(pctMatchesWeights(kolom, { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 })).toBe(true);
+    expect(pctMatchesWeights({ SINGLE: 1 }, { SINGLE: 40 })).toBe(true);
+    expect(pctMatchesWeights({ SINGLE: 1 }, { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 })).toBe(false);
+    expect(pctMatchesWeights(kolom, { SINGLE: 40 })).toBe(false);
+    expect(pctMatchesWeights(kolom, { BEKISTING: 100, PEMBESIAN: 120, PENGECORAN: 0 })).toBe(false);
+    expect(pctMatchesWeights(kolom, null)).toBe(false);
+  });
+
+  it('marks a claimed row whose weights changed shape for a refill instead of showing 0%', () => {
+    const k1 = row({ id: 'k1', code: 'T1-001', label: 'Lantai 1 ; Kolom' });
+    const claimed = { id: 'l1', boq_item_id: 'k1', prev_verified: {}, note: null, regress_reason: null, evidence: null };
+    const [changed] = buildRowViews([k1], [{ boq_item_id: 'k1', weights: { SINGLE: 1 }, source: 'manual', reference_class: null }], new Map(), [
+      { ...claimed, claimed_pct: { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 } },
+    ]);
+    expect(changed.claimNeedsRefill).toBe(true);
+    expect(changed.claimedFraction).toBeNull();
+    const [same] = buildRowViews([k1], [{ boq_item_id: 'k1', weights: { SINGLE: 1 }, source: 'manual', reference_class: null }], new Map(), [
+      { ...claimed, claimed_pct: { SINGLE: 40 } },
+    ]);
+    expect(same.claimNeedsRefill).toBe(false);
+    expect(same.claimedFraction).toBe(0.4);
+  });
+
+  it('finds lines whose row can no longer be claimed, and says why', () => {
+    const lines = [{ id: 'l1', boq_item_id: 'k1' }, { id: 'l2', boq_item_id: 'gone' }];
+    expect(orphanClaimLines(lines, [{ id: 'k1' }])).toEqual([{ id: 'l2', boq_item_id: 'gone' }]);
+    expect(inactiveRowReason(null)).toBe('Baris BoQ ini sudah dihapus.');
+    expect(inactiveRowReason({ superseded_at: '2026-09-16T00:00:00Z', planned: 10 })).toBe('Baris ini tidak ada lagi di BoQ terbitan terbaru.');
+    expect(inactiveRowReason({ superseded_at: null, planned: 0 })).toBe('Volume rencana baris ini sekarang 0.');
+    expect(inactiveRowReason({ superseded_at: null, planned: 12 })).toBeNull();
   });
 });

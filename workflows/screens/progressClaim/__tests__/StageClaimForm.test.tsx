@@ -47,6 +47,7 @@ const makeRow = (over: Partial<WeightedRowView> = {}): WeightedRowView => ({
   linkedLines: 0,
   installedLedger: 32.6,
   installedMismatch: false,
+  claimNeedsRefill: false,
   ...over,
 });
 
@@ -152,6 +153,25 @@ describe('StageClaimForm', () => {
     fireEvent.press(getByLabelText('Hapus T1-001 dari klaim'));
     await waitFor(() => expect(removeClaimLine).toHaveBeenCalledWith('l1'));
     expect(onRemoved).toHaveBeenCalled();
+  });
+
+  it('asks for the percents again when the weights changed shape after the claim', () => {
+    const { getByText } = setup({
+      weights: { SINGLE: 1 }, prevPct: { SINGLE: 0 }, prevFraction: 0, lineId: 'l1',
+      claimedPct: { BEKISTING: 100, PEMBESIAN: 60, PENGECORAN: 0 }, claimNeedsRefill: true,
+    });
+    expect(getByText('Bobot baris ini berubah setelah diklaim. Isi ulang persentasenya lalu simpan.')).toBeTruthy();
+  });
+
+  it('asks the panel to reload when the server says the claim moved on', async () => {
+    (saveClaimLine as jest.Mock).mockRejectedValueOnce(Object.assign(new Error('Klaim sedang diverifikasi. Tunggu hasilnya sebelum menambah progres.'), { code: 'CLAIM_LOCKED' }));
+    const onStale = jest.fn();
+    const { getByLabelText } = render(
+      <StageClaimForm projectId="p1" row={makeRow({ photoRefs: ['progress/p1/0.jpg'] })} editable onSaved={jest.fn()} onRemoved={jest.fn()} onStale={onStale} onClose={jest.fn()} toast={jest.fn()} />,
+    );
+    fireEvent.changeText(getByLabelText('Persentase Pembesian'), '10');
+    fireEvent.press(getByLabelText('Simpan progres T1-001'));
+    await waitFor(() => expect(onStale).toHaveBeenCalled());
   });
 
   it('only reads when the claim is waiting for verification', () => {
