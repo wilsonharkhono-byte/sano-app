@@ -11,7 +11,7 @@ import { isPositiveNumber, isNonEmpty, sanitizeText } from '../../tools/validati
 import { pickAndUploadPhoto } from '../../tools/storage';
 import { signOut, updateProfile } from '../../tools/auth';
 import { supabase } from '../../tools/supabase';
-import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
+import { COLORS, FAB_CLEARANCE, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 
 export default function LainnyaScreen() {
   const { project, profile, refresh } = useProject();
@@ -259,7 +259,10 @@ export default function LainnyaScreen() {
 const styles = StyleSheet.create({
   flex:         { flex: 1, backgroundColor: COLORS.bg },
   scroll:       { flex: 1 },
-  content:      { padding: SPACE.base, paddingBottom: SPACE.xxxl },
+  // paddingBottom: FAB_CLEARANCE, not SPACE.xxxl — GlobalAIChatLauncher's
+  // floating sparkle button (rendered app-wide, workflows/App.tsx) sits over
+  // the bottom-right corner and would otherwise cover the Logout button.
+  content:      { padding: SPACE.base, paddingBottom: FAB_CLEARANCE },
   sectionHead:  { fontSize: TYPE.xs, fontFamily: FONTS.bold, letterSpacing: 1, textTransform: 'uppercase', color: COLORS.textSec, marginBottom: SPACE.sm + 2, marginTop: SPACE.base },
   label:        { fontSize: TYPE.sm, fontFamily: FONTS.medium, marginBottom: 6, marginTop: SPACE.sm + 2 },
   req:          { color: COLORS.critical },

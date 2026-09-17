@@ -93,6 +93,18 @@ export const SPACE = {
 // WCAG 2.5.5: minimum 44×44dp for all interactive targets
 export const TOUCH_TARGET = 44;
 
+// GlobalAIChatLauncher (workflows/components/GlobalAIChatLauncher.tsx) floats
+// bottom-right over every screen — it is an unconditional sibling of the
+// navigator (workflows/App.tsx), not route-scoped. Its fab floats at
+// bottom: max(insets.bottom + 78, 92) with height 52, so its top edge sits at
+// least 144dp above the screen bottom — and a LARGER safe-area inset pushes
+// the fab further up, shrinking the margin below this fixed clearance (not
+// growing it). 200 still clears every real-world inset (they rarely exceed
+// ~40dp) with margin to spare. Any screen with a bottom-anchored action row
+// or list that can scroll under the fab should use this as scroll content's
+// paddingBottom so the last item/button isn't hidden behind it.
+export const FAB_CLEARANCE = 200;
+
 // ── Responsive Breakpoints ────────────────────────────────────────────────────
 // Used with useWindowDimensions() for phone / tablet / desktop layouts.
 // Desktop dashboard is a derivative of mobile — same components, wider canvas.

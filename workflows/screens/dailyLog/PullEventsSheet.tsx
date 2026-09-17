@@ -61,7 +61,7 @@ export default function PullEventsSheet(props: {
 
       {error ? (
         <>
-          <Text style={[styles.note, { color: COLORS.warning }]}>{error}</Text>
+          <Text style={[styles.note, { color: COLORS.critical }]}>{error}</Text>
           <View style={styles.actions}>
             <TouchableOpacity style={styles.ghostBtn} onPress={onCancel}>
               <Text style={styles.ghostText}>Tutup</Text>

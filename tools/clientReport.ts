@@ -5,9 +5,9 @@
 // never routes through generateReport()/exportReportToPdf().
 
 import { supabase } from './supabase';
-import type { MilestoneStatus, ProjectPhase } from './types';
+import type { MilestoneStatus, ProjectPhase, Room } from './types';
 import { aggregatePeriod } from './dailySiteLogs';
-import { listRooms } from './rooms';
+import { listRoomsResult } from './rooms';
 import { listGateRefs } from './gateRefs';
 import { tagLinesByRoom, roomNameById } from './clientReportRooms';
 import { resolvePhotoUrl } from './storage';
@@ -256,6 +256,15 @@ export interface ClientReportDraft {
   phase?: ProjectPhase;
 }
 
+/**
+ * Thrown by assembleClientReportDraft when the room read fails (see below).
+ * ClientReportBuilderScreen.tsx's `generate()` already wraps this call in a
+ * try/catch that shows `err.message` via `toast(..., 'critical')`, so
+ * throwing here reaches the curator through the screen's existing failure
+ * path rather than needing a new one.
+ */
+export const CLIENT_REPORT_ROOMS_READ_FAILED = 'Gagal memuat data ruangan. Coba lagi sebelum membuat draf laporan.';
+
 function fmtCaptionDate(iso: string): string {
   if (!iso) return '';
   // "2026-06-14" -> "14 Jun" (Indonesian short month)
@@ -273,9 +282,15 @@ export async function assembleClientReportDraft(params: AssembleParams): Promise
 
   // Rooms and gates are read ONLY in a room phase: a Struktur project makes
   // exactly the two queries it made before this change.
-  const [rooms, gates] = roomMode
-    ? await Promise.all([listRooms(params.projectId, { includeInactive: true }), listGateRefs()])
-    : [[], []];
+  const [roomsResult, gates] = roomMode
+    ? await Promise.all([listRoomsResult(params.projectId, { includeInactive: true }), listGateRefs()])
+    : [{ rooms: [] as Room[] }, []];
+  // A transient read failure must never silently produce a client-facing
+  // report with blank room labels (CLAUDE.md §12) — refuse to assemble the
+  // draft instead of guessing. `listRooms`'s old `?? []` fallback is exactly
+  // the failure mode this guards against.
+  if (roomsResult.rooms === null) throw new Error(CLIENT_REPORT_ROOMS_READ_FAILED);
+  const rooms = roomsResult.rooms;
   const roomNames = roomNameById(rooms);
 
   const photos = await Promise.all(

@@ -489,14 +489,3 @@ export function draftReadyCount(entries: ReadonlyArray<CaptureQueueEntry>): numb
 export function attentionCount(entries: ReadonlyArray<CaptureQueueEntry>): number {
   return entries.filter((e) => e.needsAttention).length;
 }
-
-/** "Antrean: N menunggu sinyal, M draf siap dikonfirmasi" (spec §7), each part hidden when zero, or null when both are. */
-export function queueBadgeText(entries: ReadonlyArray<CaptureQueueEntry>): string | null {
-  const waiting = waitingCount(entries);
-  const ready = draftReadyCount(entries);
-  if (waiting === 0 && ready === 0) return null;
-  const parts: string[] = [];
-  if (waiting > 0) parts.push(`${waiting} menunggu sinyal`);
-  if (ready > 0) parts.push(`${ready} draf siap dikonfirmasi`);
-  return `Antrean: ${parts.join(', ')}`;
-}

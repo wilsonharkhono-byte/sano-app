@@ -1,11 +1,11 @@
-import React, { useEffect, useState } from 'react';
-import { ScrollView, View, Text, StyleSheet } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ScrollView, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import Header from '../../workflows/components/Header';
 import Card from '../../workflows/components/Card';
 import RoomTimeline from '../../workflows/screens/siteEvent/RoomTimeline';
 import { useProject } from '../../workflows/hooks/useProject';
-import { listRooms } from '../../tools/rooms';
+import { listRoomsResult } from '../../tools/rooms';
 import { normalizeRoomCode } from '../../tools/roomCodes';
 import { buildRoomUrl } from '../../tools/roomLinks';
 import { AREA_TYPE_LABELS, PROJECT_PHASE_LABELS } from '../../tools/constants';
@@ -29,6 +29,7 @@ export default function RoomDetailScreen() {
   const params = (route.params ?? {}) as { projectCode?: string; roomCode?: string };
 
   const [room, setRoom] = useState<Room | null>(null);
+  const [roomLoadError, setRoomLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const wantedCode = normalizeRoomCode(params.roomCode ?? '');
@@ -40,18 +41,34 @@ export default function RoomDetailScreen() {
   // runtime, even though Project.phase is typed required.
   const phase = target?.phase ?? 'STRUKTUR';
 
+  const alive = useRef(true);
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      setLoading(true);
-      if (!target) { if (alive) { setRoom(null); setLoading(false); } return; }
-      const all = await listRooms(target.id, { includeInactive: true });
-      if (!alive) return;
-      setRoom(all.find((r) => r.room_code === wantedCode) ?? null);
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setRoomLoadError(null);
+    if (!target) { if (alive.current) { setRoom(null); setLoading(false); } return; }
+    const result = await listRoomsResult(target.id, { includeInactive: true });
+    if (!alive.current) return;
+    if (result.rooms === null) {
+      // A failed read is not "ruangan tidak ada di proyek" (CLAUDE.md §12) —
+      // offer a retry instead of sending someone to "Kelola ruangan" to fix a
+      // room that is actually fine.
+      setRoomLoadError('Gagal memuat ruangan. Periksa koneksi lalu coba lagi.');
+      setRoom(null);
       setLoading(false);
-    })();
-    return () => { alive = false; };
+      return;
+    }
+    setRoom(result.rooms.find((r) => r.room_code === wantedCode) ?? null);
+    setLoading(false);
   }, [target, wantedCode]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   return (
     <View style={styles.flex}>
@@ -67,7 +84,16 @@ export default function RoomDetailScreen() {
           </Card>
         )}
 
-        {!loading && target && !room && (
+        {!loading && target && roomLoadError && (
+          <Card borderColor={COLORS.critical}>
+            <Text style={styles.body}>{roomLoadError}</Text>
+            <TouchableOpacity onPress={() => void load()} accessibilityRole="button">
+              <Text style={styles.retry}>Coba lagi</Text>
+            </TouchableOpacity>
+          </Card>
+        )}
+
+        {!loading && target && !roomLoadError && !room && (
           <Card borderColor={COLORS.critical}>
             <Text style={styles.body}>
               Ruangan {wantedCode || '—'} tidak ada di proyek {target.name}. Periksa di "Kelola ruangan".
@@ -111,6 +137,7 @@ const styles = StyleSheet.create({
   scroll: { flex: 1 },
   content: { padding: SPACE.base, paddingBottom: SPACE.xxxl },
   body: { fontSize: TYPE.base, fontFamily: FONTS.regular, color: COLORS.textSec, lineHeight: 20 },
+  retry: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.critical, marginTop: SPACE.sm },
   row: { fontSize: TYPE.sm, fontFamily: FONTS.regular, color: COLORS.text, paddingVertical: 2 },
   url: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textMuted, marginTop: SPACE.sm },
   note: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.md, lineHeight: 16 },
