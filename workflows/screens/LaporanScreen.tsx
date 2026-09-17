@@ -450,7 +450,7 @@ export default function LaporanScreen() {
         ))}
       </View>
 
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {activeSection === 'overview' && (
           <>
             <Text style={styles.sectionHead}>Gate 5 — Laporan & Rekonsiliasi</Text>
