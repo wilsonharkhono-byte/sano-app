@@ -1,7 +1,8 @@
 // tools/__tests__/progressClaimsRules.test.ts
 import {
   CLAIM_RPC_ERROR_COPY, canEditStageWeights, canSaveClaimLine, canVerifyClaim, canVerifyClaimAs, claimLineView, isClaimEditable,
-  ClaimRpcError, claimRpcErrorCode, isRegression, mapClaimRpcError, regressReasonRowCode, validateClaimPct,
+  ClaimRpcError, claimChangedSince, claimRpcErrorCode, claimRpcRowCode, isRegression, isStaleClaimRefusal, mapClaimRpcError,
+  regressReasonRowCode, validateClaimPct,
 } from '../progressClaims/claimRules';
 
 const split = { BEKISTING: 0.368, PEMBESIAN: 0.38, PENGECORAN: 0.252 };
@@ -109,5 +110,46 @@ describe('refusal codes', () => {
     expect(regressReasonRowCode('CLAIM_REGRESS_REASON: baris IV.A.2.7 turun dari progres terverifikasi')).toBe('IV.A.2.7');
     expect(regressReasonRowCode('CLAIM_LOCKED: x')).toBeNull();
     expect(regressReasonRowCode(null)).toBeNull();
+  });
+});
+
+describe('refusals that name a row, and claims that changed', () => {
+  it('reads the BoQ code a refusal names, never an id', () => {
+    expect(claimRpcRowCode('CLAIM_ROW: baris T1-003 sudah tidak berlaku')).toBe('T1-003');
+    expect(claimRpcRowCode('CLAIM_PCT: persentase baris IV.A.2.7 tidak cocok dengan bobotnya')).toBe('IV.A.2.7');
+    expect(claimRpcRowCode('CLAIM_NO_PLANNED: volume rencana baris T1-004 adalah 0')).toBe('T1-004');
+    expect(claimRpcRowCode('CLAIM_NO_WEIGHTS: baris T1-005 belum punya bobot tahapan')).toBe('T1-005');
+    expect(claimRpcRowCode('CLAIM_ROW: baris 3f2a1b4c-1111-4222-8333-444455556666 tidak ditemukan')).toBeNull();
+    expect(claimRpcRowCode('CLAIM_NOT_FOUND: baris klaim 3f2a1b4c-1111-4222-8333-444455556666 tidak ditemukan')).toBeNull();
+    expect(claimRpcRowCode('CLAIM_LOCKED: klaim x sedang menunggu verifikasi')).toBeNull();
+    expect(claimRpcRowCode(null)).toBeNull();
+  });
+
+  it('puts the row in front of the sentence', () => {
+    const err = new ClaimRpcError('CLAIM_PCT: persentase baris T1-003 tidak cocok dengan bobotnya');
+    expect(err.message).toBe(`T1-003: ${mapClaimRpcError('CLAIM_PCT: x')}`);
+    expect(err.rowCode).toBe('T1-003');
+    expect(new ClaimRpcError('CLAIM_LOCKED: klaim x sedang menunggu verifikasi').rowCode).toBeNull();
+  });
+
+  it('knows which refusals mean the screen is out of date', () => {
+    for (const code of ['CLAIM_STATE', 'CLAIM_LOCKED', 'CLAIM_NOT_FOUND', 'CLAIM_ROW', 'CLAIM_PCT', 'CLAIM_NO_WEIGHTS', 'CLAIM_NO_PLANNED', 'CLAIM_LINES']) {
+      expect(isStaleClaimRefusal(code)).toBe(true);
+    }
+    for (const code of ['CLAIM_REGRESS_REASON', 'CLAIM_EVIDENCE', 'CLAIM_AUTH', null, undefined]) {
+      expect(isStaleClaimRefusal(code)).toBe(false);
+    }
+  });
+
+  it('sees a claim that was returned and sent again, or edited, since the page loaded', () => {
+    const claim = { id: 'c1', status: 'SUBMITTED', submitted_at: '2026-09-17T01:00:00Z', updated_at: '2026-09-17T01:00:00Z' };
+    const lines = [{ id: 'l1', updated_at: '2026-09-16T10:00:00Z' }];
+    const loaded = { claim, lines };
+    expect(claimChangedSince(loaded, { claim, lines })).toBe(false);
+    expect(claimChangedSince(loaded, { claim: null, lines: [] })).toBe(true);
+    expect(claimChangedSince(loaded, { claim: { ...claim, status: 'RETURNED' }, lines })).toBe(true);
+    expect(claimChangedSince(loaded, { claim: { ...claim, submitted_at: '2026-09-17T03:00:00Z', updated_at: '2026-09-17T03:00:00Z' }, lines })).toBe(true);
+    expect(claimChangedSince(loaded, { claim, lines: [{ id: 'l1', updated_at: '2026-09-17T02:00:00Z' }] })).toBe(true);
+    expect(claimChangedSince(loaded, { claim, lines: [...lines, { id: 'l2', updated_at: '2026-09-17T02:00:00Z' }] })).toBe(true);
   });
 });

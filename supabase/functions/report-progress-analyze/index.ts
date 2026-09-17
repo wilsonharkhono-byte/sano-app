@@ -19,7 +19,7 @@ import {
   leaseFreeFilter, linesFromSnapshot, photoRefsFromSnapshot, promptLinesFromFrozen, recentFromRows, storageTarget, type FrozenLine,
 } from './context.ts';
 import {
-  AI_QUOTA_MESSAGE, TIMEOUT_ERROR, bytesToBase64, fetchWithTimeout, isTimeoutError, isUuid, isoDaysBefore,
+  AI_QUOTA_MESSAGE, TIMEOUT_ERROR, bytesToBase64, fetchWithTimeout, isAccountLevelProviderError, isTimeoutError, isUuid, isoDaysBefore,
   jakartaTodayLabel, parseDailyCap, sanitizeJsonForPostgres, sha256Hex, startOfJakartaDayUtcIso, truncate,
 } from './util.ts';
 
@@ -360,7 +360,7 @@ async function linkLeased(
   };
   const started = Date.now();
 
-  const fail = async (status: 'rejected' | 'error', message: string, output: unknown, usage: ClaudeUsage | null, runError?: string) => {
+  const fail = async (status: 'rejected' | 'error', message: string, output: unknown, usage: ClaudeUsage | null, runError?: string, code?: string) => {
     const safeMessage = sanitizeJsonForPostgres(message);
     await writeRun(admin, {
       project_id: report.project_id, report_id: report.id, claim_id: null, stage: 'link', model: MODEL,
@@ -369,7 +369,7 @@ async function linkLeased(
       cost_usd: claudeCostUsd(MODEL, usage), latency_ms: Date.now() - started,
       status, error: truncate(runError ?? safeMessage, 500),
     });
-    return json({ ok: false, code: status === 'rejected' ? 'LINK_REJECTED' : 'LINK_ERROR', error: safeMessage, lines: existingLines.length });
+    return json({ ok: false, code: code ?? (status === 'rejected' ? 'LINK_REJECTED' : 'LINK_ERROR'), error: safeMessage, lines: existingLines.length });
   };
 
   if (remainingMs() < MIN_PROVIDER_BUDGET_MS) {
@@ -407,6 +407,11 @@ async function linkLeased(
   const usage = (data as { usage?: ClaudeUsage } | null)?.usage ?? null;
   if (!resp.ok) {
     const apiMessage = (data as { error?: { message?: string } } | null)?.error?.message ?? 'tanpa pesan';
+    if (isAccountLevelProviderError(resp.status, data)) {
+      // A bad key, a missing permission or no credit fails every report the
+      // same way; CONFIG stops the app's back-link run at the first one.
+      return await fail('error', truncate(`Kunci API AI ditolak (HTTP ${resp.status}): ${apiMessage} Admin perlu memperbarui ANTHROPIC_API_KEY di Supabase.`, 300), data, usage, undefined, 'CONFIG');
+    }
     return await fail('error', truncate(`Tautan AI gagal (HTTP ${resp.status}): ${apiMessage}`, 300), data, usage);
   }
 

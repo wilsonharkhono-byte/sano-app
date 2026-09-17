@@ -167,7 +167,8 @@ describe('ProgressClaimVerifyPanel', () => {
     fireEvent.press(getByLabelText('Verifikasi klaim'));
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Penurunan progres wajib disertai alasan.', 'critical'));
     expect(await findByText('Verifikasi')).toBeTruthy();
-    expect(getOpenClaim).toHaveBeenCalledTimes(2);
+    // Loaded, re-read just before verifying, reloaded after the refusal.
+    expect(getOpenClaim).toHaveBeenCalledTimes(3);
     expect(getByText('Progres baris ini turun dari yang tercatat. Isi alasan sebelum verifikasi.')).toBeTruthy();
     expect(getByLabelText('Verifikasi Pembesian T1-001').props.value).toBe('55');
     fireEvent.changeText(getByLabelText('Alasan penurunan T1-001'), 'Volume rencana direvisi');
@@ -175,6 +176,45 @@ describe('ProgressClaimVerifyPanel', () => {
     await waitFor(() => expect(verifyClaim).toHaveBeenLastCalledWith('c1', [
       { line_id: 'l1', verified_pct: { BEKISTING: 100, PEMBESIAN: 55, PENGECORAN: 0 }, regress_reason: 'Volume rencana direvisi' },
     ], null));
+  });
+
+  it('blocks a line whose row left the BoQ and says to return the claim', async () => {
+    (listClaimRows as jest.Mock).mockResolvedValue(new Map([['k1', { ...K1, superseded_at: '2026-09-16T00:00:00Z' }]]));
+    const { findByText, getByLabelText, toast } = renderPanel();
+    expect(await findByText('Baris ini tidak ada lagi di BoQ terbitan terbaru. Kembalikan klaim agar pengawas menghapus baris ini dari klaim.')).toBeTruthy();
+    fireEvent.press(getByLabelText('Verifikasi klaim'));
+    expect(toast).toHaveBeenCalledWith('T1-001: Baris ini tidak ada lagi di BoQ terbitan terbaru. Kembalikan klaim agar pengawas menghapus baris ini.', 'critical');
+    expect(verifyClaim).not.toHaveBeenCalled();
+  });
+
+  it('marks a line whose weights changed shape after it was claimed, instead of showing 0%', async () => {
+    (listStageWeights as jest.Mock).mockResolvedValue([weightRow('k1', { SINGLE: 1 }, 'manual', null)]);
+    (listVerifiedStagePct as jest.Mock).mockResolvedValue(new Map());
+    const { findByText, getByLabelText, toast } = renderPanel();
+    expect(await findByText('Bobot baris ini berubah setelah diklaim, jadi angka klaim lama tidak berlaku. Kembalikan klaim agar pengawas mengisi ulang.')).toBeTruthy();
+    fireEvent.press(getByLabelText('Verifikasi klaim'));
+    expect(toast).toHaveBeenCalledWith('T1-001: bobot baris berubah setelah diklaim. Kembalikan klaim agar pengawas mengisi ulang.', 'critical');
+    expect(verifyClaim).not.toHaveBeenCalled();
+  });
+
+  it('reloads instead of verifying when the claim was returned and sent again after the page loaded', async () => {
+    const { findByLabelText, getByLabelText, toast } = renderPanel();
+    await findByLabelText('Verifikasi Pembesian T1-001');
+    (getOpenClaim as jest.Mock).mockResolvedValue({ ...claim('SUBMITTED'), submitted_at: 'later', updated_at: 'later' });
+    (listClaimLines as jest.Mock).mockResolvedValue([line({ claimed_pct: { BEKISTING: 100, PEMBESIAN: 80, PENGECORAN: 0 }, updated_at: 'later' })]);
+    fireEvent.press(getByLabelText('Verifikasi klaim'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Klaim berubah sejak halaman ini dimuat. Angka terbaru sudah dimuat; periksa lagi lalu verifikasi.', 'warning'));
+    expect(verifyClaim).not.toHaveBeenCalled();
+    await waitFor(() => expect(getByLabelText('Verifikasi Pembesian T1-001').props.value).toBe('80'));
+  });
+
+  it('warns when a returned claim reached nobody', async () => {
+    (returnClaim as jest.Mock).mockResolvedValue({ claim_id: 'c1', status: 'RETURNED', notified: 0 });
+    const { findByLabelText, getByLabelText, toast } = renderPanel();
+    fireEvent.press(await findByLabelText('Kembalikan klaim'));
+    fireEvent.changeText(getByLabelText('Alasan pengembalian'), 'Foto kurang');
+    fireEvent.press(getByLabelText('Kirim pengembalian'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Klaim dikembalikan, tetapi tidak ada yang diberi tahu: pengirimnya tidak lagi ditugaskan ke proyek ini. Kabari tim lapangan langsung.', 'warning'));
   });
 
   it('returns the claim with a note, and refuses an empty one', async () => {

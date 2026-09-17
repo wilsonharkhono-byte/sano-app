@@ -21,7 +21,7 @@ import {
 import { exportClientReportPdf } from '../../tools/clientReportHtml';
 import { withFreshPhotoUrls } from '../../tools/clientReportPhotos';
 import ReportLinesCard from './clientReport/ReportLinesCard';
-import { backlinkReports, invokeReportLink, listUnlinkedReports } from '../../tools/clientReportLines';
+import { backlinkReports, invokeReportLink, listUnlinkedReports, type BacklinkCandidate } from '../../tools/clientReportLines';
 import { formatRoomLabel } from '../../tools/clientReportRooms';
 import { listRooms } from '../../tools/rooms';
 import { AREA_UMUM_CODE, AREA_UMUM_NAME } from '../../tools/constants';
@@ -74,7 +74,7 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
   // Admin and estimator may link reports issued before Plan A (spec §8,
   // back-linking); the principal reads results and never triggers AI spend.
   const canBacklink = profile?.role === 'admin' || profile?.role === 'estimator';
-  const [unlinked, setUnlinked] = useState<Array<{ id: string; report_no: number; revision: number }>>([]);
+  const [unlinked, setUnlinked] = useState<BacklinkCandidate[]>([]);
   const [backlinking, setBacklinking] = useState<{ done: number; total: number } | null>(null);
   const cancelBacklink = useRef(false);
   // The AI link run started right after issuing, tied to that report only:
@@ -336,7 +336,7 @@ export default function ClientReportBuilderScreen({ onBack }: { onBack: () => vo
     const total = unlinked.length;
     setBacklinking({ done: 0, total });
     try {
-      const res = await backlinkReports(unlinked.map((u) => u.id), {
+      const res = await backlinkReports(unlinked, {
         onProgress: (done) => setBacklinking({ done, total }),
         shouldStop: () => cancelBacklink.current,
       });

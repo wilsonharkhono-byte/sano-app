@@ -119,27 +119,40 @@ export async function invokeReportLink(reportId: string, opts: { force?: boolean
   return data ?? { ok: false, code: 'EMPTY', error: 'Server tidak mengembalikan jawaban.' };
 }
 
+/** A report the office back-link button runs. `force` re-runs a report whose line rows exist but the AI never reached. */
+export interface BacklinkCandidate {
+  id: string;
+  report_no: number;
+  revision: number;
+  force: boolean;
+}
+
 /**
- * Issued reports that have at least one update line and no line rows yet.
- * Used by the office back-link button. A report with zero updates can never
- * be linked, so it is not "unlinked".
+ * Issued reports that have at least one update line and either no line rows
+ * yet, or line rows the AI never reached (every line still SUGGESTED without a
+ * model, as after a rejected AI key). The second kind needs `force`: once the
+ * rows exist a plain run answers ALREADY_LINKED. A report with zero updates can
+ * never be linked, so it is not offered.
  */
-export async function listUnlinkedReports(projectId: string): Promise<Array<{ id: string; report_no: number; revision: number }>> {
+export async function listUnlinkedReports(projectId: string): Promise<BacklinkCandidate[]> {
   const { data, error } = await supabase
     .from('client_progress_reports')
-    .select('id, report_no, revision, updates:snapshot->updates, client_report_lines(count)')
+    .select('id, report_no, revision, updates:snapshot->updates, client_report_lines(status, ai_model)')
     .eq('project_id', projectId)
     .order('report_no');
   if (error) throw error;
+  type LineState = { status?: unknown; ai_model?: unknown };
   type Row = { id: string; report_no: number; revision: number | null; updates: unknown; client_report_lines: unknown };
-  const lineCount = (v: unknown): number => {
-    if (!Array.isArray(v)) return 0;
-    const first = v[0] as { count?: unknown } | undefined;
-    return typeof first?.count === 'number' ? first.count : v.length;
-  };
-  return ((data ?? []) as Row[])
-    .filter((r) => Array.isArray(r.updates) && r.updates.length > 0 && lineCount(r.client_report_lines) === 0)
-    .map((r) => ({ id: r.id, report_no: r.report_no, revision: r.revision ?? 1 }));
+  const candidates: BacklinkCandidate[] = [];
+  for (const r of (data ?? []) as Row[]) {
+    if (!Array.isArray(r.updates) || r.updates.length === 0) continue;
+    const lines = (Array.isArray(r.client_report_lines) ? r.client_report_lines : []) as LineState[];
+    const aiNeverRan = lines.length > 0 && lines.every((l) => l.status === 'SUGGESTED' && !l.ai_model);
+    if (lines.length === 0 || aiNeverRan) {
+      candidates.push({ id: r.id, report_no: r.report_no, revision: r.revision ?? 1, force: aiNeverRan });
+    }
+  }
+  return candidates;
 }
 
 /** Codes that mean the whole run should stop, not just this report. */
@@ -161,13 +174,16 @@ export interface BacklinkResult {
  * and the lease. Stops on the first error that is not specific to one report.
  */
 export async function backlinkReports(
-  reportIds: string[],
+  reports: ReadonlyArray<string | { id: string; force?: boolean }>,
   opts: { onProgress?: (done: number, total: number) => void; shouldStop?: () => boolean } = {},
 ): Promise<BacklinkResult> {
   const result: BacklinkResult = { ok: 0, failed: 0, skipped: 0, stoppedBy: null, firstError: null };
-  for (let i = 0; i < reportIds.length; i += 1) {
+  for (let i = 0; i < reports.length; i += 1) {
     if (opts.shouldStop?.()) { result.stoppedBy = 'CANCELLED'; break; }
-    const res = await invokeReportLink(reportIds[i]);
+    const report = reports[i];
+    const res = typeof report === 'string'
+      ? await invokeReportLink(report)
+      : await invokeReportLink(report.id, { force: report.force === true });
     if (res.ok) result.ok += 1;
     else if (res.code === 'LINK_IN_PROGRESS') result.skipped += 1;
     else {
@@ -175,7 +191,7 @@ export async function backlinkReports(
       if (!result.firstError) result.firstError = res.error ?? res.code ?? null;
       if (res.code && BACKLINK_STOP_CODES.has(res.code)) { result.stoppedBy = res.code; break; }
     }
-    opts.onProgress?.(i + 1, reportIds.length);
+    opts.onProgress?.(i + 1, reports.length);
   }
   return result;
 }

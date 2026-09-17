@@ -100,7 +100,7 @@ export async function pickAndUploadPhoto(folder: string): Promise<string | null>
   } else {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
-      throw new Error('Camera permission required');
+      throw new Error('Izin kamera diperlukan untuk mengambil foto. Aktifkan izin kamera untuk SANO di pengaturan HP.');
     }
 
     result = await ImagePicker.launchCameraAsync({

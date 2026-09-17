@@ -9,13 +9,14 @@ import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View } from 'rea
 import Card from '../../components/Card';
 import Badge from '../../components/Badge';
 import StageClaimForm, { type WeightedRowView } from './StageClaimForm';
-import { canSaveClaimLine, isClaimEditable } from '../../../tools/progressClaims/claimRules';
+import { canSaveClaimLine, isClaimEditable, isStaleClaimRefusal } from '../../../tools/progressClaims/claimRules';
 import {
-  countLinkedLinesByRow, getOpenClaim, listClaimLines, listEntryTotals, listStageWeights, listVerifiedStagePct, seedReferenceWeights, submitClaim,
+  countLinkedLinesByRow, getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct,
+  removeClaimLine, seedReferenceWeights, submitClaim,
   type ProgressClaim, type ProgressClaimLine, type StageWeightRow,
 } from '../../../tools/progressClaims/claims';
 import {
-  buildRowViews, claimStatusSummary, claimableRows, formatFraction, missingWeightSeeds,
+  buildRowViews, claimStatusSummary, claimableRows, formatFraction, inactiveRowReason, missingWeightSeeds, orphanClaimLines,
   type ClaimRowView, type ClaimableItem,
 } from '../../../tools/progressClaims/claimView';
 import type { StagePct } from '../../../tools/progressClaims/stageMath';
@@ -43,6 +44,10 @@ interface Loaded {
   verified: Map<string, StagePct>;
   linked: Map<string, number>;
   ledger: Map<string, number>;
+  /** With no claim open, the last claim (how it ended, and the verifier's note). */
+  lastClaim: ProgressClaim | null;
+  /** The rows of lines this screen cannot list (superseded, planned 0, gone), read fresh. */
+  orphanRows: Map<string, ClaimableItem>;
 }
 
 export default function ProgressClaimPanel({ projectId, role, boqItems, initialRowId, reloadKey = 0, toast }: Props) {
@@ -55,6 +60,7 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
   const [expandedId, setExpandedId] = useState<string | null>(initialRowId ?? null);
   const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [removingId, setRemovingId] = useState<string | null>(null);
   const seq = useRef(0);
 
   const load = useCallback(async () => {
@@ -72,13 +78,18 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
         }
       }
       const claim = await getOpenClaim(projectId);
-      const [lines, verified, linked, ledger] = await Promise.all([
+      const [lines, verified, linked, ledger, lastClaim] = await Promise.all([
         claim ? listClaimLines(claim.id) : Promise.resolve([] as ProgressClaimLine[]),
         listVerifiedStagePct(projectId),
         countLinkedLinesByRow(projectId, claim?.week_start ?? weekStartWIB()),
         listEntryTotals(projectId),
+        claim ? Promise.resolve(null) : getLatestClaim(projectId),
       ]);
-      if (mine === seq.current) setData({ projectId, claim, lines, weights, verified, linked, ledger });
+      // A re-publish can supersede a claimed row, or zero its planned volume.
+      // Submit refuses such a line, so read those rows to list them for removal.
+      const orphanIds = orphanClaimLines(lines, rows).map((l) => l.boq_item_id);
+      const orphanRows = orphanIds.length > 0 ? await listClaimRows(orphanIds) : new Map<string, ClaimableItem>();
+      if (mine === seq.current) setData({ projectId, claim, lines, weights, verified, linked, ledger, lastClaim, orphanRows });
     } catch (err) {
       if (mine === seq.current) setError((err as Error)?.message ?? 'Klaim progres gagal dimuat.');
     }
@@ -105,9 +116,15 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
   );
 
   const claim = current?.claim ?? null;
-  const summary = claimStatusSummary(claim);
+  // With nothing open, the header shows how the last claim ended.
+  const lastClaim = claim ? null : current?.lastClaim ?? null;
+  const summary = claimStatusSummary(claim ?? lastClaim);
   const editable = canSave && (claim === null || isClaimEditable(claim.status));
   const lineCount = current?.lines.length ?? 0;
+  const orphans = current ? orphanClaimLines(current.lines, rows) : [];
+  const blockingOrphans = orphans.filter((l) => inactiveRowReason(current?.orphanRows.get(l.boq_item_id)) != null).length;
+  const refills = views.filter((v) => v.claimNeedsRefill).length;
+  const canSend = blockingOrphans === 0 && refills === 0;
 
   const submit = async () => {
     if (!claim) return;
@@ -125,6 +142,10 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
       await load();
     } catch (err) {
       toast((err as Error)?.message ?? 'Gagal mengirim klaim.', 'critical');
+      if (isStaleClaimRefusal((err as { code?: string | null })?.code)) {
+        setConfirming(false);
+        await load();
+      }
     } finally {
       setSubmitting(false);
     }
@@ -141,6 +162,19 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
   const afterLineChange = () => {
     setExpandedId(null);
     void load();
+  };
+
+  const removeOrphan = async (line: ProgressClaimLine, code: string) => {
+    setRemovingId(line.id);
+    try {
+      await removeClaimLine(line.id);
+      toast(`${code} dihapus dari klaim.`, 'warning');
+    } catch (err) {
+      toast((err as Error)?.message ?? 'Gagal menghapus.', 'critical');
+    } finally {
+      setRemovingId(null);
+      await load();
+    }
   };
 
   if (switching) {
@@ -176,15 +210,25 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
     <View>
       <Card title="Klaim Progres Mingguan" rightAction={<Badge flag={summary.flag} label={summary.label} />}>
         <Text style={styles.detail}>{summary.detail}</Text>
+        {lastClaim?.verifier_note ? <Text style={styles.note}>{`Catatan verifikasi: ${lastClaim.verifier_note}`}</Text> : null}
         <Text style={styles.hint}>
-          {`${lineCount} baris diklaim. Progres proyek baru bertambah setelah estimator memverifikasi klaim.`}
+          {lastClaim
+            ? 'Klaim terakhir di atas. Simpan progres di baris mana pun untuk membuka klaim baru.'
+            : `${lineCount} baris diklaim. Progres proyek baru bertambah setelah estimator memverifikasi klaim.`}
         </Text>
         {claim?.status === 'SUBMITTED' && (
           <Text style={styles.banner}>
             Menunggu verifikasi estimator. Baris baru bisa ditambah setelah klaim diverifikasi atau dikembalikan.
           </Text>
         )}
-        {editable && claim && lineCount > 0 && !confirming && (
+        {editable && claim && lineCount > 0 && !canSend && (
+          <Text style={styles.warnText}>
+            {blockingOrphans > 0
+              ? 'Hapus baris yang tidak berlaku lagi (di bawah) sebelum mengirim klaim.'
+              : `Isi ulang ${refills} baris yang bobotnya berubah sebelum mengirim klaim.`}
+          </Text>
+        )}
+        {editable && claim && lineCount > 0 && canSend && !confirming && (
           <TouchableOpacity style={styles.primaryBtn} onPress={() => setConfirming(true)} accessibilityRole="button" accessibilityLabel="Kirim klaim">
             <Text style={styles.primaryBtnText}>Kirim klaim</Text>
           </TouchableOpacity>
@@ -211,6 +255,38 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
         )}
       </Card>
 
+      {orphans.length > 0 && (
+        <Card title="Baris yang tidak berlaku lagi">
+          <Text style={styles.hint}>Baris ini masih ada di klaim, tetapi tidak bisa diklaim lagi. Hapus dari klaim sebelum mengirim.</Text>
+          {orphans.map((l) => {
+            const row = current.orphanRows.get(l.boq_item_id);
+            const code = row?.code ?? 'Baris';
+            return (
+              <View key={l.id} style={styles.orphan}>
+                <View style={styles.rowMain}>
+                  <Text style={styles.rowCode}>{row?.code ?? '—'}</Text>
+                  {row?.label ? <Text style={styles.rowLabel}>{row.label}</Text> : null}
+                  <Text style={[styles.rowSub, styles.rowSubWarn]}>
+                    {inactiveRowReason(row) ?? 'Baris ini tidak lagi termasuk baris yang bisa diklaim.'}
+                  </Text>
+                </View>
+                {editable && (
+                  <TouchableOpacity
+                    style={[styles.ghostBtn, removingId === l.id && styles.btnBusy]}
+                    onPress={() => void removeOrphan(l, code)}
+                    disabled={removingId != null}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Hapus ${code} dari klaim`}
+                  >
+                    <Text style={styles.ghostBtnText}>{removingId === l.id ? 'Menghapus...' : 'Hapus dari klaim'}</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            );
+          })}
+        </Card>
+      )}
+
       {views.map((view) => (
         <View key={view.item.id} style={styles.rowWrap}>
           <TouchableOpacity
@@ -228,8 +304,8 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
             </View>
             <View style={styles.rowFigures}>
               <Text style={styles.figure}>{`Terverifikasi ${formatFraction(view.weights ? view.prevFraction : null)}`}</Text>
-              <Text style={[styles.figure, view.claimedFraction != null && styles.figureClaimed]}>
-                {`Minggu ini ${formatFraction(view.claimedFraction)}`}
+              <Text style={[styles.figure, view.claimedFraction != null && styles.figureClaimed, view.claimNeedsRefill && styles.rowSubWarn]}>
+                {view.claimNeedsRefill ? 'Diklaim: isi ulang' : `Diklaim ${formatFraction(view.claimedFraction)}`}
               </Text>
             </View>
           </TouchableOpacity>
@@ -241,6 +317,7 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
               editable={editable}
               onSaved={afterLineChange}
               onRemoved={afterLineChange}
+              onStale={afterLineChange}
               onClose={() => setExpandedId(null)}
               toast={toast}
             />
@@ -256,6 +333,12 @@ const styles = StyleSheet.create({
   detail: { fontSize: TYPE.sm, lineHeight: lh(TYPE.sm), fontFamily: FONTS.semibold, color: COLORS.text },
   hint: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs },
   error: { fontSize: TYPE.sm, lineHeight: lh(TYPE.sm), fontFamily: FONTS.regular, color: COLORS.critical },
+  note: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.text, marginTop: SPACE.xs },
+  warnText: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.warning, marginTop: SPACE.sm },
+  orphan: {
+    flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: SPACE.sm, paddingVertical: SPACE.sm,
+    borderTopWidth: 1, borderTopColor: COLORS.borderSub,
+  },
   banner: {
     fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.info, marginTop: SPACE.sm,
     padding: SPACE.sm, borderRadius: RADIUS, backgroundColor: COLORS.infoBg,

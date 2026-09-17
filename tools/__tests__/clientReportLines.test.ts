@@ -96,6 +96,23 @@ describe('backlinkReports', () => {
     expect(await backlinkReports(['r1', 'r2'])).toEqual({ ok: 1, failed: 0, skipped: 1, stoppedBy: null, firstError: null });
   });
 
+  it('forces a re-run for a report whose lines the AI never reached', async () => {
+    (supabase.functions.invoke as jest.Mock).mockClear();
+    (supabase.functions.invoke as jest.Mock).mockResolvedValue({ data: { ok: true, code: 'LINKED' }, error: null });
+    await backlinkReports([{ id: 'r1', force: true }, 'r2']);
+    expect((supabase.functions.invoke as jest.Mock).mock.calls.map((c) => c[1].body)).toEqual([
+      { stage: 'link', report_id: 'r1', force: true },
+      { stage: 'link', report_id: 'r2', force: false },
+    ]);
+  });
+
+  it('stops at the first report when the AI key is rejected', async () => {
+    (supabase.functions.invoke as jest.Mock).mockClear();
+    (supabase.functions.invoke as jest.Mock).mockResolvedValue({ data: { ok: false, code: 'CONFIG', error: 'Kunci API AI ditolak (HTTP 401)' }, error: null });
+    expect(await backlinkReports(['r1', 'r2', 'r3'])).toEqual({ ok: 0, failed: 1, skipped: 0, stoppedBy: 'CONFIG', firstError: 'Kunci API AI ditolak (HTTP 401)' });
+    expect(supabase.functions.invoke).toHaveBeenCalledTimes(1);
+  });
+
   it('stops on a run-level error such as DAILY_CAP or AUTH, and on cancel', async () => {
     (supabase.functions.invoke as jest.Mock).mockResolvedValue({ data: { ok: false, code: 'DAILY_CAP', error: 'habis' }, error: null });
     expect(await backlinkReports(['r1', 'r2'])).toEqual({ ok: 0, failed: 1, skipped: 0, stoppedBy: 'DAILY_CAP', firstError: 'habis' });
@@ -149,18 +166,24 @@ describe('writes', () => {
     expect(chain.update.mock.calls[0][0]).toMatchObject({ boq_item_id: null, stage: null, activity_state: null, status: 'DISMISSED' });
   });
 
-  it('listUnlinkedReports keeps only reports with at least one update and zero lines', async () => {
+  it('listUnlinkedReports offers reports never linked, and forces a re-run where the AI never reached the lines', async () => {
+    const update = [{ area: 'a', note: 'b' }];
     const chain = {
       select: jest.fn().mockReturnThis(), eq: jest.fn().mockReturnThis(), order: jest.fn().mockResolvedValue({
         data: [
-          { id: 'r1', report_no: 1, revision: 1, updates: [{ area: 'a', note: 'b' }], client_report_lines: [{ count: 0 }] },
-          { id: 'r2', report_no: 2, revision: 1, updates: [{ area: 'a', note: 'b' }], client_report_lines: [{ count: 3 }] },
-          { id: 'r3', report_no: 3, revision: 1, updates: [], client_report_lines: [{ count: 0 }] },
+          { id: 'r1', report_no: 1, revision: 1, updates: update, client_report_lines: [] },
+          { id: 'r2', report_no: 2, revision: 1, updates: update, client_report_lines: [{ status: 'SUGGESTED', ai_model: 'claude-opus-5' }] },
+          { id: 'r3', report_no: 3, revision: 1, updates: [], client_report_lines: [] },
+          { id: 'r4', report_no: 4, revision: 2, updates: update, client_report_lines: [{ status: 'SUGGESTED', ai_model: null }, { status: 'SUGGESTED', ai_model: null }] },
+          { id: 'r5', report_no: 5, revision: 1, updates: update, client_report_lines: [{ status: 'CONFIRMED', ai_model: null }, { status: 'SUGGESTED', ai_model: null }] },
         ], error: null,
       }),
     };
     (supabase.from as jest.Mock).mockReturnValue(chain);
-    expect(await listUnlinkedReports('p1')).toEqual([{ id: 'r1', report_no: 1, revision: 1 }]);
-    expect(chain.select).toHaveBeenCalledWith('id, report_no, revision, updates:snapshot->updates, client_report_lines(count)');
+    expect(await listUnlinkedReports('p1')).toEqual([
+      { id: 'r1', report_no: 1, revision: 1, force: false },
+      { id: 'r4', report_no: 4, revision: 2, force: true },
+    ]);
+    expect(chain.select).toHaveBeenCalledWith('id, report_no, revision, updates:snapshot->updates, client_report_lines(status, ai_model)');
   });
 });

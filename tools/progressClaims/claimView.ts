@@ -153,13 +153,43 @@ export interface ClaimRowView {
   photoRefs: string[];
   /** 0..1; 0 when the row has no usable weights. */
   prevFraction: number;
-  /** 0..1; null when this claim has no line for the row. */
+  /** 0..1; null when this claim has no line for the row, or its percents no longer fit the weights. */
   claimedFraction: number | null;
+  /** The row's weights changed shape after the line was saved: its stage percents must be entered again. */
+  claimNeedsRefill: boolean;
   linkedLines: number;
   /** What the row's progress entries sum to; verification writes the difference from this. */
   installedLedger: number;
   /** boq_items.installed differs from the entries (legacy data); verification follows the entries. */
   installedMismatch: boolean;
+}
+
+/** Percents for exactly the stages of these weights, each a number from 0 to 100. */
+export function pctMatchesWeights(weights: StageWeights, pct: StagePct | null | undefined): boolean {
+  if (!pct || typeof pct !== 'object') return false;
+  const stages = stagesOf(weights);
+  if (Object.keys(pct).length !== stages.length) return false;
+  return stages.every((s) => {
+    const v = (pct as Record<string, unknown>)[s];
+    return typeof v === 'number' && v >= 0 && v <= 100;
+  });
+}
+
+/** Lines of a claim whose row is not among the rows that can be claimed now. */
+export function orphanClaimLines<L extends { boq_item_id: string }>(lines: L[], rows: ReadonlyArray<{ id: string }>): L[] {
+  const ids = new Set(rows.map((r) => r.id));
+  return lines.filter((l) => !ids.has(l.boq_item_id));
+}
+
+/**
+ * Why submit and verify will refuse a claimed row (CLAIM_ROW, CLAIM_NO_PLANNED),
+ * or null when the row is still live with a planned volume.
+ */
+export function inactiveRowReason(row: Pick<ClaimableItem, 'superseded_at' | 'planned'> | null | undefined): string | null {
+  if (!row) return 'Baris BoQ ini sudah dihapus.';
+  if (row.superseded_at) return 'Baris ini tidak ada lagi di BoQ terbitan terbaru.';
+  if (!(Number(row.planned) > 0)) return 'Volume rencana baris ini sekarang 0.';
+  return null;
 }
 
 export function zeroPct(weights: StageWeights): StagePct {
@@ -183,6 +213,7 @@ export function buildRowViews(
     const line = lineByRow.get(item.id) ?? null;
     const prevPct = verified.get(item.id) ?? line?.prev_verified ?? (usable ? zeroPct(usable) : {});
     const refs = line?.evidence?.photo_refs;
+    const refill = !!usable && !!line && !pctMatchesWeights(usable, line.claimed_pct);
     return {
       item,
       weights: usable,
@@ -195,7 +226,8 @@ export function buildRowViews(
       regressReason: line?.regress_reason ?? null,
       photoRefs: Array.isArray(refs) ? refs.filter((r): r is string => typeof r === 'string') : [],
       prevFraction: usable ? rowFraction(usable, prevPct) : 0,
-      claimedFraction: usable && line ? rowFraction(usable, line.claimed_pct) : null,
+      claimedFraction: usable && line && !refill ? rowFraction(usable, line.claimed_pct) : null,
+      claimNeedsRefill: refill,
       linkedLines: linked.get(item.id) ?? 0,
       installedLedger: ledger ? ledger.get(item.id) ?? 0 : Number(item.installed) || 0,
       installedMismatch: ledger ? Math.abs((Number(item.installed) || 0) - (ledger.get(item.id) ?? 0)) > 0.0001 : false,

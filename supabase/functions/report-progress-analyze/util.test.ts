@@ -1,7 +1,7 @@
 // supabase/functions/report-progress-analyze/util.test.ts
 import { assertEquals } from 'std/assert';
 import {
-  isoDaysBefore, isUuid, jakartaTodayLabel, parseDailyCap, photoPathFromSignedUrl,
+  isAccountLevelProviderError, isoDaysBefore, isUuid, jakartaTodayLabel, parseDailyCap, photoPathFromSignedUrl,
   sanitizeJsonForPostgres, startOfJakartaDayUtcIso, truncate, DAILY_CAP_DEFAULT,
 } from './util.ts';
 
@@ -56,4 +56,13 @@ Deno.test('sanitizeJsonForPostgres replaces unpaired surrogates and NUL, leaves 
 Deno.test('truncate appends an ellipsis only when it cuts', () => {
   assertEquals(truncate('abc', 5), 'abc');
   assertEquals(truncate('abcdef', 4), 'abc…');
+});
+
+Deno.test('isAccountLevelProviderError stops a batch on a bad key, a missing permission or no credit, not on one bad request', () => {
+  assertEquals(isAccountLevelProviderError(401, { type: 'error', error: { type: 'authentication_error', message: 'API key is invalid.' } }), true);
+  assertEquals(isAccountLevelProviderError(403, null), true);
+  assertEquals(isAccountLevelProviderError(400, { error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } }), true);
+  assertEquals(isAccountLevelProviderError(400, { error: { type: 'invalid_request_error', message: 'messages: text content blocks must be non-empty' } }), false);
+  assertEquals(isAccountLevelProviderError(529, { error: { type: 'overloaded_error', message: 'Overloaded' } }), false);
+  assertEquals(isAccountLevelProviderError(500, 'not json'), false);
 });

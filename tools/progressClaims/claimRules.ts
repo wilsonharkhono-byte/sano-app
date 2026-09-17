@@ -92,7 +92,7 @@ export const CLAIM_RPC_ERROR_COPY: ReadonlyArray<[string, string]> = [
   ['CLAIM_NOT_FOUND', 'Klaim tidak ditemukan. Muat ulang halaman.'],
   ['CLAIM_ROW', 'Baris BoQ bukan milik proyek ini atau sudah tidak berlaku.'],
   ['CLAIM_NO_WEIGHTS', 'Bobot tahapan baris ini belum diatur. Minta estimator menerapkan bobot di Baseline.'],
-  ['CLAIM_PCT', 'Persentase tahap tidak valid.'],
+  ['CLAIM_PCT', 'Persentase tahap tidak cocok dengan bobot baris. Buka baris itu dan isi ulang persentasenya.'],
   ['CLAIM_LOCKED', 'Klaim sedang diverifikasi. Tunggu hasilnya sebelum menambah progres.'],
   ['CLAIM_STATE', 'Status klaim sudah berubah. Muat ulang halaman.'],
   ['CLAIM_EMPTY', 'Klaim belum berisi baris progres.'],
@@ -126,17 +126,22 @@ export function claimRpcErrorCode(message: string | null | undefined): string | 
 }
 
 /**
- * A refused claim RPC. `message` is the Indonesian sentence for the user,
- * `code` the refusal code a screen can act on, and `detail` the server's text.
+ * A refused claim RPC. `message` is the Indonesian sentence for the user, led
+ * by the BoQ code when the server named one; `code` is the refusal code a
+ * screen can act on, `rowCode` that BoQ code, and `detail` the server's text.
  */
 export class ClaimRpcError extends Error {
   readonly code: string | null;
+  readonly rowCode: string | null;
   readonly detail: string;
 
   constructor(detail: string | null | undefined) {
-    super(mapClaimRpcError(detail));
+    const rowCode = claimRpcRowCode(detail);
+    const sentence = mapClaimRpcError(detail);
+    super(rowCode ? `${rowCode}: ${sentence}` : sentence);
     this.name = 'ClaimRpcError';
     this.code = claimRpcErrorCode(detail);
+    this.rowCode = rowCode;
     this.detail = detail ?? '';
     Object.setPrototypeOf(this, ClaimRpcError.prototype);
   }
@@ -146,4 +151,45 @@ export class ClaimRpcError extends Error {
 export function regressReasonRowCode(detail: string | null | undefined): string | null {
   const match = /CLAIM_REGRESS_REASON: baris (.+?) turun dari progres terverifikasi/.exec(detail ?? '');
   return match ? match[1] : null;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The BoQ code a refusal names, as 103 and 104 raise it ("baris T1-003 sudah
+ * tidak berlaku"), or null when it names none or only a row id.
+ */
+export function claimRpcRowCode(detail: string | null | undefined): string | null {
+  const match = /\bbaris (\S+) (?:sudah|bukan|belum|adalah|turun|tidak)\b/.exec(detail ?? '');
+  if (!match || match[1] === '-' || UUID_RE.test(match[1])) return null;
+  return match[1];
+}
+
+/** Refusals that mean the screen shows an outdated claim, row or weights: reload it. */
+const STALE_CLAIM_CODES: ReadonlySet<string> = new Set([
+  'CLAIM_STATE', 'CLAIM_LOCKED', 'CLAIM_NOT_FOUND', 'CLAIM_ROW', 'CLAIM_PCT', 'CLAIM_NO_WEIGHTS', 'CLAIM_NO_PLANNED', 'CLAIM_LINES',
+]);
+
+export function isStaleClaimRefusal(code: string | null | undefined): boolean {
+  return !!code && STALE_CLAIM_CODES.has(code);
+}
+
+interface ClaimStamp { id: string; status: string; submitted_at: string | null; updated_at: string }
+interface LineStamp { id: string; updated_at: string }
+
+/**
+ * The claim a verifier loaded is no longer the one stored: it stopped waiting
+ * for verification, was returned and sent again, or a line changed. Line ids
+ * survive edits, so verify_progress_claim alone cannot tell.
+ */
+export function claimChangedSince(
+  loaded: { claim: ClaimStamp; lines: ReadonlyArray<LineStamp> },
+  now: { claim: ClaimStamp | null; lines: ReadonlyArray<LineStamp> },
+): boolean {
+  const claim = now.claim;
+  if (!claim || claim.id !== loaded.claim.id || claim.status !== 'SUBMITTED') return true;
+  if (claim.submitted_at !== loaded.claim.submitted_at || claim.updated_at !== loaded.claim.updated_at) return true;
+  if (now.lines.length !== loaded.lines.length) return true;
+  const before = new Map(loaded.lines.map((l) => [l.id, l.updated_at]));
+  return now.lines.some((l) => before.get(l.id) !== l.updated_at);
 }

@@ -149,7 +149,7 @@ export default function ProgresScreen() {
   return (
     <View style={styles.flex}>
       <Header />
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 
         {/* ── HOME: Hub landing ── */}
         {activeModule === 'home' && (
