@@ -155,3 +155,16 @@ function sanitizeSurrogates(text: string): string {
   }
   return changed ? out : text;
 }
+
+/**
+ * A provider refusal no other report or retry can fix: the API key is wrong
+ * or revoked, it lacks permission, or the account has no credit. A back-link
+ * run should stop at the first one instead of failing every report the same way.
+ */
+export function isAccountLevelProviderError(status: number, payload: unknown): boolean {
+  if (status === 401 || status === 403) return true;
+  const error = (payload as { error?: { type?: unknown; message?: unknown } } | null)?.error;
+  const type = typeof error?.type === 'string' ? error.type : '';
+  const message = typeof error?.message === 'string' ? error.message : '';
+  return type === 'authentication_error' || type === 'permission_error' || /credit balance/i.test(message);
+}
