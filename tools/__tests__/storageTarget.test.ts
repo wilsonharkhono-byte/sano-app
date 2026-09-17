@@ -8,6 +8,7 @@
 jest.mock('../supabase', () => ({ supabase: { storage: { from: jest.fn() } } }));
 jest.mock('expo-image-picker', () => ({
   requestCameraPermissionsAsync: jest.fn(),
+  requestMediaLibraryPermissionsAsync: jest.fn(),
   launchCameraAsync: jest.fn(),
   launchImageLibraryAsync: jest.fn(),
 }));
@@ -119,7 +120,9 @@ describe('resolvePhotoUrl', () => {
  */
 describe('pickPhoto', () => {
   const requestCameraPermissionsAsync = ImagePicker.requestCameraPermissionsAsync as jest.Mock;
+  const requestMediaLibraryPermissionsAsync = ImagePicker.requestMediaLibraryPermissionsAsync as jest.Mock;
   const launchCameraAsync = ImagePicker.launchCameraAsync as jest.Mock;
+  const launchImageLibraryAsync = ImagePicker.launchImageLibraryAsync as jest.Mock;
   const manipulate = manipulateAsync as jest.Mock;
 
   afterEach(() => {
@@ -160,5 +163,45 @@ describe('pickPhoto', () => {
     launchCameraAsync.mockResolvedValue({ canceled: true, assets: [] });
 
     await expect(pickPhoto()).resolves.toBeNull();
+  });
+
+  // The web branch (library picker) never checked a permission at all before
+  // this fix, so a denial fell straight through to {canceled: true} instead
+  // of the typed, canAskAgain-carrying error the native branch already gives.
+  describe('web (library) branch', () => {
+    it('throws a PhotoPermissionError, not a silent cancel, when the media library permission is denied', async () => {
+      Platform.OS = 'web';
+      requestMediaLibraryPermissionsAsync.mockResolvedValue({ granted: false, canAskAgain: true });
+
+      const err: unknown = await pickPhoto().catch((e) => e);
+      expect(err).toBeInstanceOf(PhotoPermissionError);
+      expect(err).toMatchObject({ canAskAgain: true, message: 'Izin galeri diperlukan untuk memilih foto.' });
+      expect(launchImageLibraryAsync).not.toHaveBeenCalled();
+    });
+
+    it('falls back to canAskAgain: true when the picker response omits it', async () => {
+      Platform.OS = 'web';
+      requestMediaLibraryPermissionsAsync.mockResolvedValue({ granted: false });
+
+      const err: unknown = await pickPhoto().catch((e) => e);
+      expect((err as PhotoPermissionError).canAskAgain).toBe(true);
+    });
+
+    it('proceeds to the library and returns a prepared photo once permission is granted', async () => {
+      Platform.OS = 'web';
+      requestMediaLibraryPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: true });
+      launchImageLibraryAsync.mockResolvedValue({ canceled: false, assets: [{ uri: 'file:///web-in.jpg', width: 100, height: 100 }] });
+      manipulate.mockResolvedValue({ uri: 'file:///web-out.jpg' });
+
+      await expect(pickPhoto()).resolves.toMatchObject({ uri: 'file:///web-out.jpg', contentType: 'image/jpeg', ext: 'jpg' });
+    });
+
+    it('returns null, not an error, when the picker is canceled', async () => {
+      Platform.OS = 'web';
+      requestMediaLibraryPermissionsAsync.mockResolvedValue({ granted: true, canAskAgain: true });
+      launchImageLibraryAsync.mockResolvedValue({ canceled: true, assets: [] });
+
+      await expect(pickPhoto()).resolves.toBeNull();
+    });
   });
 });
