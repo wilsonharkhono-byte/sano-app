@@ -11,7 +11,6 @@ import { getProjectTeamResult, type TeamMember } from '../../tools/projectManage
 import {
   confirmSiteEvent,
   discardSiteEvent,
-  getSiteEvent,
   getSiteEventResult,
   invokeSiteEventAnalysis,
   listOpenEventsForRoom,
@@ -36,6 +35,7 @@ import VoAndRelatedBlock from './siteEvent/VoAndRelatedBlock';
 import {
   clearFieldErrors,
   initialConfirmForm,
+  manualConfirmGate,
   relatedSuggestion,
   staleVoQuotes,
   survivingVoQuotes,
@@ -53,6 +53,9 @@ const PENDING_POLL_MS = 10_000;
 
 /** A manual confirm cannot proceed once the model's draft has landed (see onConfirm). */
 const DRAFT_ARRIVED_MESSAGE = 'Draf AI baru saja tiba. Muat ulang untuk melihatnya.';
+
+/** A manual confirm cannot proceed when the re-check read itself fails (see onConfirm). */
+const DRAFT_RECHECK_FAILED_MESSAGE = 'Gagal memeriksa draf terbaru. Periksa koneksi lalu coba lagi.';
 
 /**
  * The only writer of human-facing fields (spec §1.1 rule 2, §5.4). Everything
@@ -229,10 +232,26 @@ export default function SiteEventConfirmScreen() {
       // draft landed while the supervisor was typing, confirming "manually"
       // would record that no AI was used AND let the RPC write
       // vo_flag = 'rejected' for a VO suggestion they were never shown.
+      // manualConfirmGate (confirmModel.ts) turns the three-way read outcome
+      // into the right action so a failed re-check is never silently read as
+      // "no draft arrived" (CLAUDE.md §12).
       if (manual) {
-        const fresh = await getSiteEvent(event.id);
+        const freshResult = await getSiteEventResult(event.id);
         if (!alive.current) return;
-        if (fresh?.ai_draft) {
+        const gate = manualConfirmGate(freshResult);
+        if (gate === 'block-read-failed') {
+          setErrors([DRAFT_RECHECK_FAILED_MESSAGE]);
+          toast(DRAFT_RECHECK_FAILED_MESSAGE, 'critical');
+          return;
+        }
+        if (gate === 'block-not-found') {
+          // Same as load()'s own notFound handling: clear the event so the
+          // "Kejadian tidak ditemukan..." card renders instead of guessing.
+          setEvent(null);
+          setLoadError(null);
+          return;
+        }
+        if (gate === 'block-draft-arrived') {
           await load();
           if (!alive.current) return;
           setErrors([DRAFT_ARRIVED_MESSAGE]);

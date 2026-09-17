@@ -11,6 +11,7 @@
 import {
   clearFieldErrors,
   initialConfirmForm,
+  manualConfirmGate,
   relatedSuggestion,
   staleVoQuotes,
   survivingVoQuotes,
@@ -22,6 +23,7 @@ import {
 } from '../screens/siteEvent/confirmModel';
 import { CONFIRM_ERRORS } from '../../tools/siteEventRules';
 import type { SiteEventDraft } from '../../tools/types';
+import type { SiteEventResult, SiteEventWithMedia } from '../../tools/siteEvents';
 
 const TODAY = '2026-09-10';
 const STEPS = [{ code: 'A2', gate_code: 'A' }];
@@ -240,5 +242,30 @@ describe('clearFieldErrors', () => {
     const errors = [CONFIRM_ERRORS.titleRequired];
     expect(clearFieldErrors(errors, ['summary'])).toBe(errors);
     expect(clearFieldErrors([], ['title'])).toEqual([]);
+  });
+});
+
+describe('manualConfirmGate', () => {
+  // onConfirm's manual-draft re-check must never treat a failed read as "no
+  // draft arrived" — a silent-wrong-write CLAUDE.md §12 exists to prevent.
+  const eventResult = (ai_draft: SiteEventDraft | null): SiteEventResult =>
+    ({ event: { ai_draft } as unknown as SiteEventWithMedia }) as SiteEventResult;
+
+  it('blocks (read-failed) on a transport error, even though event is null just like notFound', () => {
+    const result: SiteEventResult = { event: null, error: 'network error' };
+    expect(manualConfirmGate(result)).toBe('block-read-failed');
+  });
+
+  it('blocks (not-found) when the row genuinely no longer exists or is inaccessible', () => {
+    const result: SiteEventResult = { event: null, notFound: true };
+    expect(manualConfirmGate(result)).toBe('block-not-found');
+  });
+
+  it('blocks (draft-arrived) when the read succeeds and a draft landed', () => {
+    expect(manualConfirmGate(eventResult(draft()))).toBe('block-draft-arrived');
+  });
+
+  it('proceeds only when the read succeeded AND there is still no draft', () => {
+    expect(manualConfirmGate(eventResult(null))).toBe('proceed');
   });
 });

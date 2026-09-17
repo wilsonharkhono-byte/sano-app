@@ -14,6 +14,7 @@ import {
 } from '../../../tools/siteEventRules';
 import { isLiteralQuote } from '../../../tools/siteEventDraftValidate';
 import type { SiteEvent, SiteEventDraft, SiteEventType } from '../../../tools/types';
+import type { SiteEventResult } from '../../../tools/siteEvents';
 
 export type ConfirmSource = Pick<
   SiteEvent,
@@ -121,6 +122,33 @@ export function toConfirmInput(
     mismatchAcknowledged: form.mismatchAcknowledged,
     today,
   };
+}
+
+/**
+ * onConfirm's manual-draft re-check (spec §5.3): before a manual confirm is
+ * sent, the screen re-reads the event to see whether the AI draft landed
+ * while the supervisor was typing. A manual confirm sends `draft: null` and
+ * `ai_used: false`, so submitting past a draft that actually arrived would
+ * misrecord that no AI was used and let the RPC write `vo_flag = 'rejected'`
+ * for a VO suggestion the supervisor was never shown.
+ *
+ * `getSiteEventResult` distinguishes three outcomes and this function turns
+ * each into the right action, so a transport failure can never be silently
+ * read as "no draft arrived" (CLAUDE.md §12):
+ *  - `error`  -> `block-read-failed`: the read itself failed, so nothing is
+ *    known about whether a draft arrived. Must NOT submit.
+ *  - `notFound` -> `block-not-found`: the event is gone/inaccessible; the
+ *    confirm can't proceed either way.
+ *  - success with `ai_draft` set -> `block-draft-arrived`: a real draft
+ *    landed; the caller should reload and let the supervisor see it.
+ *  - success with `ai_draft` null -> `proceed`: the read succeeded and there
+ *    is still no draft, so the manual confirm is safe to submit.
+ */
+export type ManualConfirmGate = 'proceed' | 'block-read-failed' | 'block-not-found' | 'block-draft-arrived';
+
+export function manualConfirmGate(result: SiteEventResult): ManualConfirmGate {
+  if (result.event === null) return result.notFound ? 'block-not-found' : 'block-read-failed';
+  return result.event.ai_draft ? 'block-draft-arrived' : 'proceed';
 }
 
 /** "Mungkin terkait": the AI's suggestion, only while that event is still open in the room. */
