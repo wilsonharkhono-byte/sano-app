@@ -11,7 +11,7 @@ import { signOut } from '../../tools/auth';
 import { supabase } from '../../tools/supabase';
 import { useToast } from '../../workflows/components/Toast';
 import {
-  createProject, deleteProject, getProjectTeam, listAllProfiles, addUserToProject, removeUserFromProject,
+  createProject, deleteProject, getProjectTeamResult, listAllProfiles, addUserToProject, removeUserFromProject,
   inviteUser, updateUserRole,
   type TeamMember, type ProfileOption, ROLE_LABELS,
 } from '../../tools/projectManagement';
@@ -142,6 +142,7 @@ export default function PrincipalHomeScreen() {
   const [npStart,    setNpStart]    = useState('');
   const [creating,   setCreating]   = useState(false);
   const [team,        setTeam]        = useState<TeamMember[]>([]);
+  const [teamError,   setTeamError]   = useState<string | null>(null);
   const [allProfiles, setAllProfiles] = useState<ProfileOption[]>([]);
   const [loadingTeam, setLoadingTeam] = useState(false);
 
@@ -392,11 +393,20 @@ export default function PrincipalHomeScreen() {
   const loadTeam = useCallback(async () => {
     if (!project) return;
     setLoadingTeam(true);
-    const [members, profiles] = await Promise.all([
-      getProjectTeam(project.id),
+    const [teamResult, profiles] = await Promise.all([
+      getProjectTeamResult(project.id),
       listAllProfiles(),
     ]);
-    setTeam(members);
+    if (teamResult.team === null) {
+      // A failed read is not "belum ada anggota" (CLAUDE.md §12) — that copy
+      // is reassuring precisely when it must not be: a dropped connection,
+      // not a project with genuinely nobody assigned.
+      setTeamError('Tim proyek gagal dimuat. Coba lagi.');
+      setTeam([]);
+    } else {
+      setTeamError(null);
+      setTeam(teamResult.team);
+    }
     setAllProfiles(profiles);
     setLoadingTeam(false);
   }, [project]);
@@ -1263,6 +1273,13 @@ export default function PrincipalHomeScreen() {
             <Card title={`Tim — ${project?.name ?? ''}`}>
               {loadingTeam ? (
                 <Text style={styles.hint}>Memuat...</Text>
+              ) : teamError ? (
+                <View>
+                  <Text style={styles.teamErrorText}>{teamError}</Text>
+                  <TouchableOpacity onPress={() => void loadTeam()} accessibilityRole="button">
+                    <Text style={styles.teamErrorRetry}>Coba lagi</Text>
+                  </TouchableOpacity>
+                </View>
               ) : team.length === 0 ? (
                 <Text style={styles.hint}>Belum ada anggota tercatat.</Text>
               ) : (
@@ -1791,6 +1808,8 @@ const styles = StyleSheet.create({
   eligibleBox: { padding: SPACE.md, borderRadius: RADIUS },
   eligibleLabel: { fontSize: TYPE.sm, fontFamily: FONTS.bold, letterSpacing: 0.5 },
   hint: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 2 },
+  teamErrorText: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.critical, marginTop: 2 },
+  teamErrorRetry: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.critical, marginTop: SPACE.xs },
   milestoneRow: {
     flexDirection: 'row',
     alignItems: 'center',
