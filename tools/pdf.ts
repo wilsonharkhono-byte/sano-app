@@ -494,17 +494,19 @@ async function buildAIUsageSummary(sd: SanoDoc, d: AIUsageData): Promise<void> {
         sd.gap(4);
         sd.table(
           [
-            { header: 'Tahap', width: 0.30 },
-            { header: 'Proses', width: 0.14, align: 'right' },
-            { header: 'Token In', width: 0.18, align: 'right' },
-            { header: 'Token Out', width: 0.18, align: 'right' },
-            { header: 'Biaya', width: 0.20, align: 'right' },
+            { header: 'Tahap', width: 0.24 },
+            { header: 'Proses', width: 0.12, align: 'right' },
+            { header: 'Token In', width: 0.15, align: 'right' },
+            { header: 'Token Out', width: 0.15, align: 'right' },
+            { header: 'Total Token', width: 0.16, align: 'right' },
+            { header: 'Biaya', width: 0.18, align: 'right' },
           ],
           siteEvents.stages.map((s) => [
             s.label,
             String(s.runCount),
             String(s.inputTokens),
             String(s.outputTokens),
+            String(s.totalTokens),
             formatUsd(s.costUsd),
           ]),
         );

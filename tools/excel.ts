@@ -591,30 +591,41 @@ export function buildAIUsageSummary(wb: XLSX.WorkBook, d: AIUsageData) {
   // tools/siteEventAiUsageDisplay.ts for the absent-vs-empty distinction).
   const siteEvents = buildSiteEventAiUsageDisplay(d.site_events);
   if (siteEvents) {
-    const siteSummaryRows: string[][] = [
-      ['Indikator', 'Nilai'],
-      ['Total Proses', String(siteEvents.totalRuns)],
-      ['Total Token', String(siteEvents.totalTokens)],
-      ['Total Biaya (USD)', formatUsd(siteEvents.totalCostUsd)],
-    ];
-    if (siteEvents.error) siteSummaryRows.push(['Error', siteEvents.error]);
-    if (siteEvents.unknownCostNote) siteSummaryRows.push(['Catatan Biaya', siteEvents.unknownCostNote]);
-    if (siteEvents.unknownTokenNote) siteSummaryRows.push(['Catatan Token', siteEvents.unknownTokenNote]);
+    // Truth contract (CLAUDE.md §12): when the read itself failed, show the
+    // error — never confident-looking zero totals next to it. Mirrors the
+    // siteEvents.error branching in ReportPreview.tsx and tools/pdf.ts: on
+    // error, only the heading row + the error row are written, and the
+    // per-stage sheet is skipped entirely (no zero-row table implying "we
+    // checked and there was no AI spend").
+    const siteSummaryRows: string[][] = [['Indikator', 'Nilai']];
+    if (siteEvents.error) {
+      siteSummaryRows.push(['Error', siteEvents.error]);
+    } else {
+      siteSummaryRows.push(
+        ['Total Proses', String(siteEvents.totalRuns)],
+        ['Total Token', String(siteEvents.totalTokens)],
+        ['Total Biaya (USD)', formatUsd(siteEvents.totalCostUsd)],
+      );
+      if (siteEvents.unknownCostNote) siteSummaryRows.push(['Catatan Biaya', siteEvents.unknownCostNote]);
+      if (siteEvents.unknownTokenNote) siteSummaryRows.push(['Catatan Token', siteEvents.unknownTokenNote]);
+    }
     const wsSiteSummary = XLSX.utils.aoa_to_sheet(siteSummaryRows);
     wsSiteSummary['!cols'] = colWidths(siteSummaryRows);
     applyHeaderStyle(wsSiteSummary, 0, 2);
     XLSX.utils.book_append_sheet(wb, wsSiteSummary, 'AI Kejadian Ruangan');
 
-    const stageHeader = ['Tahap', 'Proses', 'Token Input', 'Token Output', 'Total Token', 'Biaya (USD)'];
-    const stageRows: SheetRow[] = siteEvents.stages.map((s) => [
-      s.label,
-      String(s.runCount),
-      String(s.inputTokens),
-      String(s.outputTokens),
-      String(s.totalTokens),
-      formatUsd(s.costUsd),
-    ]);
-    appendSheet(wb, 'AI Kejadian per Tahap', stageHeader, stageRows);
+    if (!siteEvents.error) {
+      const stageHeader = ['Tahap', 'Proses', 'Token Input', 'Token Output', 'Total Token', 'Biaya (USD)'];
+      const stageRows: SheetRow[] = siteEvents.stages.map((s) => [
+        s.label,
+        String(s.runCount),
+        String(s.inputTokens),
+        String(s.outputTokens),
+        String(s.totalTokens),
+        formatUsd(s.costUsd),
+      ]);
+      appendSheet(wb, 'AI Kejadian per Tahap', stageHeader, stageRows);
+    }
   }
 }
 

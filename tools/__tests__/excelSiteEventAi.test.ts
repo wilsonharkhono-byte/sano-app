@@ -110,5 +110,14 @@ describe('excel.ts buildAIUsageSummary — Kejadian ruangan (AI)', () => {
     });
     const summaryRows = sheetRows(wb, 'AI Kejadian Ruangan');
     expect(summaryRows).toContainEqual(['Error', 'permission denied for table site_event_ai_runs']);
+    // Truth contract (CLAUDE.md §12): a read error must not be accompanied by
+    // confident-looking zero totals next to it — those rows must be absent,
+    // not present-and-zero, when the read itself failed.
+    expect(summaryRows.some((row) => row[0] === 'Total Proses')).toBe(false);
+    expect(summaryRows.some((row) => row[0] === 'Total Token')).toBe(false);
+    expect(summaryRows.some((row) => row[0] === 'Total Biaya (USD)')).toBe(false);
+    // Mirrors ReportPreview.tsx/pdf.ts: no per-stage table is rendered
+    // alongside an unreadable summary either.
+    expect(wb.SheetNames).not.toContain('AI Kejadian per Tahap');
   });
 });
