@@ -88,7 +88,8 @@
       "node_modules/(?!(react-native|@react-native|@testing-library/react-native|react-native-reanimated|react-native-gesture-handler|react-native-screens|react-native-safe-area-context|react-native-svg|@expo|expo|expo-modules-core)/)"
     ],
     "moduleNameMapper": {
-      "^@/(.*)$": "<rootDir>/$1"
+      "^@/(.*)$": "<rootDir>/$1",
+      "^react-native-svg$": "<rootDir>/jest.svgMock.js"
     },
     "setupFiles": [
       "./jest.setup.js",

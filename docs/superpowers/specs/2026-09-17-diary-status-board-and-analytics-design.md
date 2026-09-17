@@ -75,9 +75,10 @@ project percentages, verification and corrections work exactly as in Plan B1.
 - Input: CONFIRMED `client_report_lines` of the project, joined to their report
   (`report_no`, `revision`, `period_end`), latest revision of each `report_no` only
   (spec 2026-09-13 §17), paged.
-- Window per work area: lines whose report `period_end` is after the area's last
-  verification date (`progress_claim_latest_verified.verified_at`); all lines when it
-  was never verified. A week without a claim is never lost, and nothing verified is
+- Window per work area: lines whose report was issued (`issued_at`) after the area's
+  last verification (`progress_claim_latest_verified.verified_at`); all lines when it
+  was never verified. The issue time, not the report's day, so a report issued on the
+  evening of a verification day still counts for the next claim. A week without a claim is never lost, and nothing verified is
   counted again.
 - Per work area and weight-bearing stage, the **latest** line by report date decides:
   MULAI or LANJUT → BERJALAN, SELESAI → SELESAI. A later "Lanjut" after a "Selesai"
@@ -111,9 +112,9 @@ project percentages, verification and corrections work exactly as in Plan B1.
 - Advisory chips from `tools/progressClaims/claimFlags.ts` (pure), none blocking:
   `NO_EVIDENCE` (rise with no diary line and no photo), `STAGE_ORDER` (Pengecoran
   above Pembesian or Bekisting), `DIARY_MISMATCH` (diary and claim disagree on a
-  stage's status), `REFERENCE_WEIGHTS`, and `MATERIAL_BEHIND` once Part 2's coverage
-  exists (claimed Pembesian credit above the share of planned besi ever requested for
-  that work area).
+  stage's status), `REFERENCE_WEIGHTS`, and `MATERIAL_BEHIND` (claimed Pembesian
+  credit more than 10 points above the share of planned besi ever requested for that
+  work area; silent when material cannot be read).
 - The "Cek" inputs stay numeric, so the estimator can verify an exact figure.
 
 ## 5. Part 2 — Analitik Proyek on every Beranda
@@ -122,7 +123,8 @@ project percentages, verification and corrections work exactly as in Plan B1.
 
 One component, `workflows/components/analytics/ProjectAnalytics.tsx`, mounted on
 `BerandaScreen` (supervisor), `OfficeHomeScreen` (admin, estimator) and
-`PrincipalHomeScreen` (where the S-curve card replaces the Progres vs Jadwal bar).
+`PrincipalHomeScreen` (right after Progres vs Jadwal, which stays for its milestone
+counts). The block reads again each time the screen comes back into view.
 Same cards, same numbers. The S-curve card is always open; the other three expand on
 tap, start collapsed on narrow screens, and load their data when first opened. Reads
 go through RLS, so each role sees the projects it already can.
@@ -138,12 +140,14 @@ bars, meter. One y-axis per chart; series differ by colour and dash.
 1. **`sCurve.ts` — Kurva-S.** Plan: `100 × (3t² − 2t³)` with `t` the elapsed share of
    start→end. Actual: `progress_entries` summed per work area by week, capped at the
    area's planned volume, divided by total planned (the `computeOverallProgress`
-   formula, as of each week). Projection: mean weekly gain over the last four weeks
-   that have a verified change, extended to 100 %, reported as a date and as weeks
-   from the planned end. A crew strip (average tukang per report day, per week) sits
+   formula, as of each week). Projection: the gain over the last four calendar weeks
+   (fewer when verified progress is younger) divided by those weeks, so idle weeks
+   slow the pace; extended to 100 %, reported as a date and as weeks from the planned
+   end. A crew strip (average tukang per report day, per week) sits
    underneath.
-2. **`materialCoverage.ts` — Material vs progres.** Per material group (besi, semen,
-   readymix, bekisting sheet, pasangan) and per work area: quantity requested and
+2. **`materialCoverage.ts` — Material vs progres.** Per catalogue category and unit
+   (`material_catalog.category`, so quantities are only added within one unit; assets
+   and Peralatan left out) and per work area: quantity requested and
    approved (`material_request_lines`, allocations) against the plan
    (`project_material_master_lines`). Lag: days from a request to the first diary line
    of the matching work type. Flags: "material diminta, pekerjaan belum mulai" after

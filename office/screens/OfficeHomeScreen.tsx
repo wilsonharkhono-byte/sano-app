@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, Platform, useWindowDimensions } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header      from '../../workflows/components/Header';
 import Card        from '../../workflows/components/Card';
@@ -18,6 +18,7 @@ import {
 import { assignableRoles, canManageTeamMember } from '../../tools/rolePermissions';
 import { UserRole, type UserRoleType } from '../../tools/constants';
 import { computeOverallProgress } from '../../tools/progressMath';
+import ProjectAnalytics from '../../workflows/components/analytics/ProjectAnalytics';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE, BREAKPOINTS, MAX_CONTENT_WIDTH } from '../../workflows/theme';
 
 interface PendingCounts {
@@ -30,6 +31,13 @@ export default function OfficeHomeScreen() {
   const navigation = useNavigation<any>();
   const { projects, project, setActiveProject, profile, boqItems, defects, milestones, refresh } = useProject();
   const { show: toast } = useToast();
+  // Analitik Proyek reads again each time this screen comes back into view.
+  const [analyticsKey, setAnalyticsKey] = useState(0);
+  const firstFocus = useRef(true);
+  useFocusEffect(useCallback(() => {
+    if (firstFocus.current) { firstFocus.current = false; return; }
+    setAnalyticsKey((k) => k + 1);
+  }, []));
   const [pending, setPending]     = useState<PendingCounts>({ mtn: 0, perubahan: 0, requests: 0 });
   const { width } = useWindowDimensions();
 
@@ -577,6 +585,9 @@ export default function OfficeHomeScreen() {
             <StatTile value={openDefects}             label="Perubahan Open"   color={COLORS.critical} context={criticalDefects > 0 ? `${criticalDefects} berat` : undefined} />
             <StatTile value={atRiskMilestones}        label="Milestone Risiko" color={COLORS.warning}  context={`dari ${milestones.length} total`} />
           </View>
+
+          {/* Analitik Proyek: the same graphs every role sees, full width */}
+          <ProjectAnalytics project={project} boqItems={boqItems} role={profile?.role} wide={isDesktop} reloadKey={analyticsKey} onProjectChanged={() => void refresh()} toast={toast} />
 
           {isDesktop ? (
             /* ── Desktop: 2-column dashboard ─────────────────────────────── */

@@ -12,6 +12,8 @@ import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View 
 import Card from '../../../workflows/components/Card';
 import Badge from '../../../workflows/components/Badge';
 import StoragePhoto from '../../../workflows/components/StoragePhoto';
+import { loadMaterialData } from '../../../tools/analytics/data';
+import { coverageByRow } from '../../../tools/analytics/materialCoverage';
 import { CLAIM_FLAG_LABELS, claimFlags } from '../../../tools/progressClaims/claimFlags';
 import { canVerifyClaim, canVerifyClaimAs, claimChangedSince, regressReasonRowCode } from '../../../tools/progressClaims/claimRules';
 import {
@@ -67,6 +69,8 @@ interface Loaded {
   ledger: Map<string, number>;
   /** Confirmed daily-report lines per work area since it was last verified. */
   diary: Map<string, DiaryLine[]>;
+  /** Besi planned and requested per work area; empty when it could not be read (the flag is advisory). */
+  besi: Map<string, { planned: number; requested: number; approved: number }>;
 }
 
 interface LineInput {
@@ -118,7 +122,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
       const claim = (await getOpenClaim(projectId)) ?? (await getLatestClaim(projectId));
       if (!claim || claim.status !== 'SUBMITTED') {
         if (mine === seq.current) {
-          setData({ projectId, claim, lines: [], rows: new Map(), weights: new Map(), verified: new Map(), ledger: new Map(), diary: new Map() });
+          setData({ projectId, claim, lines: [], rows: new Map(), weights: new Map(), verified: new Map(), ledger: new Map(), diary: new Map(), besi: new Map() });
           setLineInputs({});
           setForcedReasons(new Set());
         }
@@ -133,13 +137,14 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
         listDiaryLines(projectId),
         listVerifiedAtByRow(projectId),
       ]);
+      const besi = await loadMaterialData(projectId).then((m) => coverageByRow(m, 'Struktur', 'kg')).catch(() => new Map());
       const weights = new Map<string, RowWeights>();
       for (const w of weightRows) {
         const checked = validateStageWeights(w.weights);
         if (checked.ok) weights.set(w.boq_item_id, { weights: checked.weights, source: w.source, referenceClass: w.reference_class });
       }
       if (mine !== seq.current) return;
-      setData({ projectId, claim, lines, rows, weights, verified, ledger, diary: linesByRowSince(diaryRead.lines, verifiedAt) });
+      setData({ projectId, claim, lines, rows, weights, verified, ledger, diary: linesByRowSince(diaryRead.lines, verifiedAt), besi });
       const claimed = (l: ProgressClaimLine): LineInput => {
         const w = weights.get(l.boq_item_id)?.weights;
         return { inputs: w ? pctInputs(w, l.claimed_pct) : {}, reason: l.regress_reason ?? '' };
@@ -357,7 +362,7 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
         // Advisory only: nothing here blocks Verifikasi.
         const flags = c.refill ? [] : claimFlags({
           weights: c.rowWeights.weights, source: c.rowWeights.source, prevPct: c.prev, claimedPct: line.claimed_pct,
-          photoCount: refs.length, diaryLines, proposal,
+          photoCount: refs.length, diaryLines, proposal, besi: current.besi.get(line.boq_item_id) ?? null,
         });
         const mismatch = !!c.item && Math.abs((Number(c.item.installed) || 0) - c.ledgerBefore) > 0.0001;
         return (

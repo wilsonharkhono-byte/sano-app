@@ -1,9 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   ScrollView, View, Text, TouchableOpacity,
   StyleSheet, Alert, Platform,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header      from '../components/Header';
 import Card        from '../components/Card';
@@ -13,6 +13,7 @@ import { useProject } from '../hooks/useProject';
 import { signOut }    from '../../tools/auth';
 import { getRecentCriticalAnomalies } from '../../tools/audit';
 import { computeOverallProgress } from '../../tools/progressMath';
+import ProjectAnalytics from '../components/analytics/ProjectAnalytics';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import DraftEventsCard from './siteEvent/DraftEventsCard';
 import CaptureQueueCard from './siteEvent/CaptureQueueCard';
@@ -39,8 +40,15 @@ function relativeTime(isoDate: string): string {
 
 export default function BerandaScreen() {
   const navigation = useNavigation<any>();
-  const { boqItems, purchaseOrders, defects, milestones, activityLog, project, profile } = useProject();
+  const { boqItems, purchaseOrders, defects, milestones, activityLog, project, profile, refresh } = useProject();
   const [criticalAnomalies, setCriticalAnomalies] = useState(0);
+  // Analitik Proyek reads again each time this screen comes back into view.
+  const [analyticsKey, setAnalyticsKey] = useState(0);
+  const firstFocus = useRef(true);
+  useFocusEffect(useCallback(() => {
+    if (firstFocus.current) { firstFocus.current = false; return; }
+    setAnalyticsKey((k) => k + 1);
+  }, []));
 
   useEffect(() => {
     if (!project || profile?.role === 'supervisor') return;
@@ -142,6 +150,9 @@ export default function BerandaScreen() {
             <View style={[styles.progressFill, { width: `${overallProgress}%` as any }]} />
           </View>
         </Card>
+
+        {/* ── Analitik Proyek: the same graphs every role sees ─────────── */}
+        <ProjectAnalytics project={project} boqItems={boqItems} role={profile?.role} reloadKey={analyticsKey} onProjectChanged={() => void refresh()} />
 
         {/* ── Scan ruangan ──────────────────────────────────────────────── */}
         <Card title="Ruangan" borderColor={COLORS.info}>

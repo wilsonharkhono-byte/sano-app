@@ -30,9 +30,17 @@ describe('claimFlags (advisory, spec 2026-09-17 §4.4)', () => {
     expect(claimFlags({ ...base, claimedPct: { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }, diaryLines: lines, proposal })).toEqual([]);
   });
 
+  it('flags rebar progress well ahead of the besi ever requested for the work area', () => {
+    const claimedPct = { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 };
+    expect(claimFlags({ ...base, claimedPct, besi: { planned: 1000, requested: 300 } })).toEqual(['MATERIAL_BEHIND']);
+    expect(claimFlags({ ...base, claimedPct, besi: { planned: 1000, requested: 450 } })).toEqual([]);
+    expect(claimFlags({ ...base, claimedPct, besi: { planned: 0, requested: 0 } })).toEqual([]);
+    expect(claimFlags({ ...base, claimedPct, besi: null })).toEqual([]);
+  });
+
   it('flags reference weights, and every flag has a label', () => {
     expect(claimFlags({ ...base, source: 'reference', claimedPct: prev })).toEqual(['REFERENCE_WEIGHTS']);
-    for (const flag of ['NO_EVIDENCE', 'STAGE_ORDER', 'DIARY_MISMATCH', 'REFERENCE_WEIGHTS'] as const) {
+    for (const flag of ['NO_EVIDENCE', 'STAGE_ORDER', 'DIARY_MISMATCH', 'MATERIAL_BEHIND', 'REFERENCE_WEIGHTS'] as const) {
       expect(CLAIM_FLAG_LABELS[flag].length).toBeGreaterThan(5);
     }
   });
