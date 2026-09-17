@@ -9,6 +9,7 @@ import { encode } from 'base64-arraybuffer';
 import type { ReportPayload } from './reports';
 import { formatDriftPct } from './planDrift';
 import { needsProcurement, isShortOnSite } from './materialThresholds';
+import { buildSiteEventAiUsageDisplay, formatUsd } from './siteEventAiUsageDisplay';
 import type {
   ProgressSummaryData,
   MaterialBalanceData,
@@ -541,7 +542,9 @@ function buildWeeklyDigest(wb: XLSX.WorkBook, d: WeeklyDigestData) {
 
 // Restored (post-3.4): AI Usage Summary — live principal report. Excel builder
 // added to satisfy the surviving-type invariant (was meta-sheet-only before).
-function buildAIUsageSummary(wb: XLSX.WorkBook, d: AIUsageData) {
+// Exported for direct testing (see excelReportRedaction.test.ts pattern) —
+// the sheet content is asserted with real SheetJS, no mocking of our own code.
+export function buildAIUsageSummary(wb: XLSX.WorkBook, d: AIUsageData) {
   const summaryRows: string[][] = [
     ['Indikator', 'Nilai'],
     ['Total Interaksi', String(d.summary?.total_interactions ?? 0)],
@@ -581,6 +584,38 @@ function buildAIUsageSummary(wb: XLSX.WorkBook, d: AIUsageData) {
     String(row.total_tokens ?? 0),
   ]);
   appendSheet(wb, 'Tren Harian', dayHeader, dayRows);
+
+  // Plan 4 Task 8 (D18) follow-up: site-event voice/photo AI runs. A separate
+  // section — different table (site_event_ai_runs), no user_id — omitted
+  // entirely on payloads generated before this field existed (see
+  // tools/siteEventAiUsageDisplay.ts for the absent-vs-empty distinction).
+  const siteEvents = buildSiteEventAiUsageDisplay(d.site_events);
+  if (siteEvents) {
+    const siteSummaryRows: string[][] = [
+      ['Indikator', 'Nilai'],
+      ['Total Proses', String(siteEvents.totalRuns)],
+      ['Total Token', String(siteEvents.totalTokens)],
+      ['Total Biaya (USD)', formatUsd(siteEvents.totalCostUsd)],
+    ];
+    if (siteEvents.error) siteSummaryRows.push(['Error', siteEvents.error]);
+    if (siteEvents.unknownCostNote) siteSummaryRows.push(['Catatan Biaya', siteEvents.unknownCostNote]);
+    if (siteEvents.unknownTokenNote) siteSummaryRows.push(['Catatan Token', siteEvents.unknownTokenNote]);
+    const wsSiteSummary = XLSX.utils.aoa_to_sheet(siteSummaryRows);
+    wsSiteSummary['!cols'] = colWidths(siteSummaryRows);
+    applyHeaderStyle(wsSiteSummary, 0, 2);
+    XLSX.utils.book_append_sheet(wb, wsSiteSummary, 'AI Kejadian Ruangan');
+
+    const stageHeader = ['Tahap', 'Proses', 'Token Input', 'Token Output', 'Total Token', 'Biaya (USD)'];
+    const stageRows: SheetRow[] = siteEvents.stages.map((s) => [
+      s.label,
+      String(s.runCount),
+      String(s.inputTokens),
+      String(s.outputTokens),
+      String(s.totalTokens),
+      formatUsd(s.costUsd),
+    ]);
+    appendSheet(wb, 'AI Kejadian per Tahap', stageHeader, stageRows);
+  }
 }
 
 // Task 3.4: launched report — Approval SLA per User (input tables are live:

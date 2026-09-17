@@ -8,8 +8,9 @@
  * generator in reports.ts.
  */
 
-// Re-export the one already defined in reports.ts
-export type { ProgressSummaryData } from './reports';
+// Re-export the ones already defined in reports.ts
+export type { ProgressSummaryData, SiteEventAiUsage } from './reports';
+import type { SiteEventAiUsage } from './reports';
 
 // ── Shared photo shape ─────────────────────────────────────────────
 export interface ReportPhoto {
@@ -235,6 +236,12 @@ export interface AIUsageData {
     output_tokens: number;
     total_tokens: number;
   }>;
+  // Plan 4 Task 8 (D18): the second, unrelated source of AI usage — site-event
+  // voice/photo runs (site_event_ai_runs, no user_id, so it can't join `users`
+  // above). Optional/undefined on report payloads generated before this field
+  // existed; renderers must treat that as "render nothing", not "zero spend"
+  // (see tools/siteEventAiUsageDisplay.ts).
+  site_events?: SiteEventAiUsage;
   date_range: { from: string | null; to: string | null };
 }
 

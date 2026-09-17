@@ -25,6 +25,7 @@ import type {
 import { SanoDoc, C, FS, PDF } from './pdf-layout';
 import { formatDriftPct } from './planDrift';
 import { needsProcurement, isShortOnSite } from './materialThresholds';
+import { buildSiteEventAiUsageDisplay, formatUsd } from './siteEventAiUsageDisplay';
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -472,6 +473,51 @@ async function buildAIUsageSummary(sd: SanoDoc, d: AIUsageData): Promise<void> {
         String(row.total_tokens ?? 0),
       ]),
     );
+  }
+
+  // Plan 4 Task 8 (D18) follow-up: site-event voice/photo AI runs — a second,
+  // unrelated source (site_event_ai_runs has no user_id, can't join `users`
+  // above). Omitted entirely when absent (older payloads); a present-but-empty
+  // block still renders with zero counts. See tools/siteEventAiUsageDisplay.ts.
+  const siteEvents = buildSiteEventAiUsageDisplay(d.site_events);
+  if (siteEvents) {
+    sd.gap(6);
+    sd.sectionTitle('Kejadian Ruangan (AI)');
+    if (siteEvents.error) {
+      sd.text(`Data AI kejadian ruangan belum bisa dibaca: ${siteEvents.error}`, { color: C.warning, size: FS.sm });
+    } else {
+      sd.metricRow('Total Proses', String(siteEvents.totalRuns));
+      sd.metricRow('Total Token', String(siteEvents.totalTokens));
+      sd.metricRow('Total Biaya', formatUsd(siteEvents.totalCostUsd), { valueColor: C.accent });
+
+      if (siteEvents.stages.length > 0) {
+        sd.gap(4);
+        sd.table(
+          [
+            { header: 'Tahap', width: 0.30 },
+            { header: 'Proses', width: 0.14, align: 'right' },
+            { header: 'Token In', width: 0.18, align: 'right' },
+            { header: 'Token Out', width: 0.18, align: 'right' },
+            { header: 'Biaya', width: 0.20, align: 'right' },
+          ],
+          siteEvents.stages.map((s) => [
+            s.label,
+            String(s.runCount),
+            String(s.inputTokens),
+            String(s.outputTokens),
+            formatUsd(s.costUsd),
+          ]),
+        );
+      }
+
+      if (siteEvents.unknownCostNote) {
+        sd.gap(2);
+        sd.text(siteEvents.unknownCostNote, { color: C.warning, size: FS.sm });
+      }
+      if (siteEvents.unknownTokenNote) {
+        sd.text(siteEvents.unknownTokenNote, { color: C.warning, size: FS.sm });
+      }
+    }
   }
 }
 
