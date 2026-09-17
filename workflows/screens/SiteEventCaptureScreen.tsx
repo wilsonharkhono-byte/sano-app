@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, Platform, Linking } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
 import Header from '../components/Header';
 import Card from '../components/Card';
 import PhotoGalleryField from '../components/PhotoGalleryField';
@@ -10,7 +9,7 @@ import { useProject } from '../hooks/useProject';
 import { useToast } from '../components/Toast';
 import { listRooms } from '../../tools/rooms';
 import { listGateRefs } from '../../tools/gateRefs';
-import { pickPhoto } from '../../tools/storage';
+import { PhotoPermissionError, pickPhoto } from '../../tools/storage';
 import { getRoomLastGate, newSiteEventId, workGroupHints } from '../../tools/siteEvents';
 import { enqueueNewCapture } from '../../tools/captureQueueStore';
 import { triggerDrain } from '../../tools/captureQueueWorker';
@@ -100,14 +99,11 @@ export default function SiteEventCaptureScreen() {
       return photo ? { id: newSiteEventId(), photo } : null;
     } catch (err) {
       toast((err as Error).message, 'critical');
-      // pickPhoto (tools/storage.ts) throws a bare Error on denial and
-      // discards `canAskAgain` from requestCameraPermissionsAsync. Recover
-      // it with a read-only re-check rather than touching that file.
-      // TODO(storage.ts): have pickPhoto surface canAskAgain itself.
-      if (Platform.OS !== 'web') {
-        const perm = await ImagePicker.getCameraPermissionsAsync();
-        setCameraDenied(perm.granted === false && perm.canAskAgain === false);
-      }
+      // pickPhoto (tools/storage.ts) throws a typed PhotoPermissionError on
+      // denial, carrying canAskAgain directly — no need to re-query the
+      // permission here. Any other error clears cameraDenied: reaching this
+      // catch past the permission check means the permission was granted.
+      setCameraDenied(err instanceof PhotoPermissionError ? !err.canAskAgain : false);
       return null;
     }
   };
