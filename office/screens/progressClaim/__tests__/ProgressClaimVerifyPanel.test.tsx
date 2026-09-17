@@ -7,6 +7,8 @@ jest.mock('../../../../tools/progressClaims/claims', () => ({
   getLatestClaim: jest.fn(),
   listClaimLines: jest.fn(),
   listClaimRows: jest.fn(),
+  listDiaryLines: jest.fn(),
+  listVerifiedAtByRow: jest.fn(),
   listStageWeights: jest.fn(),
   listVerifiedStagePct: jest.fn(),
   listEntryTotals: jest.fn(),
@@ -14,6 +16,7 @@ jest.mock('../../../../tools/progressClaims/claims', () => ({
   returnClaim: jest.fn(),
 }));
 jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
+jest.mock('../../../../tools/analytics/data', () => ({ loadMaterialData: jest.fn() }));
 jest.mock('../../../../workflows/components/StoragePhoto', () => {
   const ReactLocal = require('react');
   const { Text } = require('react-native');
@@ -24,8 +27,10 @@ jest.mock('../../../../workflows/components/StoragePhoto', () => {
 });
 
 import {
-  getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
+  getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listDiaryLines, listEntryTotals, listStageWeights, listVerifiedAtByRow, listVerifiedStagePct,
+  returnClaim, verifyClaim,
 } from '../../../../tools/progressClaims/claims';
+import { loadMaterialData } from '../../../../tools/analytics/data';
 import ProgressClaimVerifyPanel from '../ProgressClaimVerifyPanel';
 
 // Rendering suites run slowly beside the full jest run; the 5 s default flakes.
@@ -62,6 +67,9 @@ beforeEach(() => {
   (getLatestClaim as jest.Mock).mockResolvedValue(null);
   (listClaimLines as jest.Mock).mockResolvedValue([line()]);
   (listClaimRows as jest.Mock).mockResolvedValue(new Map([['k1', K1], ['b1', B1]]));
+  (listDiaryLines as jest.Mock).mockResolvedValue({ readable: true, lines: [] });
+  (listVerifiedAtByRow as jest.Mock).mockResolvedValue(new Map());
+  (loadMaterialData as jest.Mock).mockResolvedValue({ planned: [], requests: [], catalog: new Map() });
   (listStageWeights as jest.Mock).mockResolvedValue([weightRow('k1', kolom)]);
   (listVerifiedStagePct as jest.Mock).mockResolvedValue(new Map([['k1', { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }]]));
   (listEntryTotals as jest.Mock).mockResolvedValue(new Map([['k1', 32.6]]));
@@ -215,6 +223,40 @@ describe('ProgressClaimVerifyPanel', () => {
     fireEvent.changeText(getByLabelText('Alasan pengembalian'), 'Foto kurang');
     fireEvent.press(getByLabelText('Kirim pengembalian'));
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Klaim dikembalikan, tetapi tidak ada yang diberi tahu: pengirimnya tidak lagi ditugaskan ke proyek ini. Kabari tim lapangan langsung.', 'warning'));
+  });
+
+  it('shows the daily-report lines behind a claimed row, and flags a claim that disagrees with them', async () => {
+    (listDiaryLines as jest.Mock).mockResolvedValue({ readable: true, lines: [{
+      id: 'd1', boq_item_id: 'k1', stage: 'PEMBESIAN', activity_state: 'SELESAI', line_text: 'Kolom K1-K8 :: besi selesai', line_index: 0,
+      report_id: 'r14', report_no: 14, revision: 1, period_end: '2026-09-15', issued_at: '2026-09-15T10:00:00Z',
+    }] });
+    const { findByText, getByText } = renderPanel();
+    expect(await findByText('15 Sep · #14 · Pembesian · Selesai: Kolom K1-K8 :: besi selesai')).toBeTruthy();
+    expect(getByText('Dari laporan #14: Pembesian selesai')).toBeTruthy();
+    expect(getByText('Berbeda dari laporan harian')).toBeTruthy();
+  });
+
+  it('flags a rise with neither a photo nor a diary line, and pouring ahead of rebar', async () => {
+    (listClaimLines as jest.Mock).mockResolvedValue([line({ claimed_pct: { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 50 }, evidence: { photo_refs: [] } })]);
+    const { findByText, getByText } = renderPanel();
+    expect(await findByText('Naik tanpa foto atau laporan')).toBeTruthy();
+    expect(getByText('Pengecoran mendahului besi/bekisting')).toBeTruthy();
+    expect(getByText('Tidak ada baris laporan harian untuk baris ini sejak verifikasi terakhir.')).toBeTruthy();
+  });
+
+  it('flags rebar claimed well ahead of the besi requested for the work area, and carries on when material cannot be read', async () => {
+    (loadMaterialData as jest.Mock).mockResolvedValue({
+      planned: [{ material_id: 'besi', boq_item_id: 'k1', planned_quantity: 1000 }],
+      requests: [{ material_id: 'besi', quantity: 100, status: 'APPROVED', created_at: '2026-09-01T00:00:00Z', allocations: [{ boq_item_id: 'k1', allocated_quantity: 100 }] }],
+      catalog: new Map([['besi', { name: 'Besi beton ulir 13 mm', category: 'Struktur', unit: 'kg', is_asset: false }]]),
+    });
+    const first = renderPanel();
+    expect(await first.findByText('Pembesian melebihi besi yang diminta')).toBeTruthy();
+    first.unmount();
+    (loadMaterialData as jest.Mock).mockRejectedValue(new Error('boom'));
+    const second = renderPanel();
+    expect(await second.findByLabelText('Verifikasi Pembesian T1-001')).toBeTruthy();
+    expect(second.queryByText('Pembesian melebihi besi yang diminta')).toBeNull();
   });
 
   it('returns the claim with a note, and refuses an empty one', async () => {

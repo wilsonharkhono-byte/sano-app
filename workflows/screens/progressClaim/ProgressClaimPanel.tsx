@@ -11,7 +11,7 @@ import Badge from '../../components/Badge';
 import StageClaimForm, { type WeightedRowView } from './StageClaimForm';
 import { canSaveClaimLine, isClaimEditable, isStaleClaimRefusal } from '../../../tools/progressClaims/claimRules';
 import {
-  countLinkedLinesByRow, getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct,
+  getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listDiaryLines, listEntryTotals, listStageWeights, listVerifiedAtByRow, listVerifiedStagePct,
   removeClaimLine, seedReferenceWeights, submitClaim,
   type ProgressClaim, type ProgressClaimLine, type StageWeightRow,
 } from '../../../tools/progressClaims/claims';
@@ -19,8 +19,8 @@ import {
   buildRowViews, claimStatusSummary, claimableRows, formatFraction, inactiveRowReason, missingWeightSeeds, orphanClaimLines,
   type ClaimRowView, type ClaimableItem,
 } from '../../../tools/progressClaims/claimView';
+import { diarySummary, linesByRowSince, proposeFromDiary, type DiaryLine, type DiaryProposal } from '../../../tools/progressClaims/diaryEvidence';
 import type { StagePct } from '../../../tools/progressClaims/stageMath';
-import { weekStartWIB } from '../../../tools/progressClaims/week';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../theme';
 
 const lh = (size: number) => Math.round(size * 1.45);
@@ -42,7 +42,9 @@ interface Loaded {
   lines: ProgressClaimLine[];
   weights: StageWeightRow[];
   verified: Map<string, StagePct>;
-  linked: Map<string, number>;
+  /** Confirmed daily-report lines per work area since it was last verified. */
+  diary: Map<string, DiaryLine[]>;
+  diaryReadable: boolean;
   ledger: Map<string, number>;
   /** With no claim open, the last claim (how it ended, and the verifier's note). */
   lastClaim: ProgressClaim | null;
@@ -78,18 +80,20 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
         }
       }
       const claim = await getOpenClaim(projectId);
-      const [lines, verified, linked, ledger, lastClaim] = await Promise.all([
+      const [lines, verified, diaryRead, verifiedAt, ledger, lastClaim] = await Promise.all([
         claim ? listClaimLines(claim.id) : Promise.resolve([] as ProgressClaimLine[]),
         listVerifiedStagePct(projectId),
-        countLinkedLinesByRow(projectId, claim?.week_start ?? weekStartWIB()),
+        listDiaryLines(projectId),
+        listVerifiedAtByRow(projectId),
         listEntryTotals(projectId),
         claim ? Promise.resolve(null) : getLatestClaim(projectId),
       ]);
+      const diary = linesByRowSince(diaryRead.lines, verifiedAt);
       // A re-publish can supersede a claimed row, or zero its planned volume.
       // Submit refuses such a line, so read those rows to list them for removal.
       const orphanIds = orphanClaimLines(lines, rows).map((l) => l.boq_item_id);
       const orphanRows = orphanIds.length > 0 ? await listClaimRows(orphanIds) : new Map<string, ClaimableItem>();
-      if (mine === seq.current) setData({ projectId, claim, lines, weights, verified, linked, ledger, lastClaim, orphanRows });
+      if (mine === seq.current) setData({ projectId, claim, lines, weights, verified, diary, diaryReadable: diaryRead.readable, ledger, lastClaim, orphanRows });
     } catch (err) {
       if (mine === seq.current) setError((err as Error)?.message ?? 'Klaim progres gagal dimuat.');
     }
@@ -110,10 +114,24 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
 
   // Never render another project's claim, with its Kirim still live.
   const current = data && data.projectId === projectId ? data : null;
-  const views = useMemo(
-    () => (current ? buildRowViews(rows, current.weights, current.verified, current.lines, current.linked, current.ledger) : []),
-    [current, rows],
-  );
+  const views = useMemo(() => {
+    if (!current) return [];
+    const linked = new Map([...current.diary].map(([rowId, lines]) => [rowId, lines.length]));
+    return buildRowViews(rows, current.weights, current.verified, current.lines, linked, current.ledger);
+  }, [current, rows]);
+  // What the diary proposes per work area; status credit, never below the verified figure.
+  const proposals = useMemo(() => {
+    const map = new Map<string, DiaryProposal>();
+    for (const v of views) {
+      const p = v.weights ? proposeFromDiary(v.weights, v.prevPct, current?.diary.get(v.item.id) ?? []) : null;
+      if (p) map.set(v.item.id, p);
+    }
+    return map;
+  }, [views, current]);
+  // Work areas the diary moved and nobody has claimed yet come first.
+  const moved = (v: ClaimRowView) => !v.lineId && proposals.get(v.item.id)?.changed === true;
+  const ordered = useMemo(() => [...views.filter(moved), ...views.filter((v) => !moved(v))], [views, proposals]);
+  const movedCount = views.filter(moved).length;
 
   const claim = current?.claim ?? null;
   // With nothing open, the header shows how the last claim ended.
@@ -216,6 +234,9 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
             ? 'Klaim terakhir di atas. Simpan progres di baris mana pun untuk membuka klaim baru.'
             : `${lineCount} baris diklaim. Progres proyek baru bertambah setelah estimator memverifikasi klaim.`}
         </Text>
+        {!current.diaryReadable && (
+          <Text style={styles.warnText}>Laporan harian belum bisa dibaca. Isi status tiap tahap secara manual.</Text>
+        )}
         {claim?.status === 'SUBMITTED' && (
           <Text style={styles.banner}>
             Menunggu verifikasi estimator. Baris baru bisa ditambah setelah klaim diverifikasi atau dikembalikan.
@@ -287,8 +308,10 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
         </Card>
       )}
 
-      {views.map((view) => (
+      {ordered.map((view, index) => (
         <View key={view.item.id} style={styles.rowWrap}>
+          {index === 0 && movedCount > 0 && <Text style={styles.groupHead}>Ada kegiatan di laporan harian</Text>}
+          {index === movedCount && movedCount > 0 && <Text style={styles.groupHead}>Baris lainnya</Text>}
           <TouchableOpacity
             style={[styles.row, expandedId === view.item.id && styles.rowActive]}
             onPress={() => openRow(view)}
@@ -301,6 +324,9 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
               <Text style={[styles.rowSub, !view.weights && styles.rowSubWarn]}>
                 {view.weights ? `${view.photoRefs.length} foto · ${view.linkedLines} baris laporan` : 'Bobot belum diatur'}
               </Text>
+              {diarySummary(proposals.get(view.item.id)) ? (
+                <Text style={styles.rowDiary}>{diarySummary(proposals.get(view.item.id))}</Text>
+              ) : null}
             </View>
             <View style={styles.rowFigures}>
               <Text style={styles.figure}>{`Terverifikasi ${formatFraction(view.weights ? view.prevFraction : null)}`}</Text>
@@ -315,6 +341,7 @@ export default function ProgressClaimPanel({ projectId, role, boqItems, initialR
               projectId={projectId}
               row={view as WeightedRowView}
               editable={editable}
+              diary={proposals.get(view.item.id) ?? null}
               onSaved={afterLineChange}
               onRemoved={afterLineChange}
               onStale={afterLineChange}
@@ -334,6 +361,8 @@ const styles = StyleSheet.create({
   hint: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs },
   error: { fontSize: TYPE.sm, lineHeight: lh(TYPE.sm), fontFamily: FONTS.regular, color: COLORS.critical },
   note: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.text, marginTop: SPACE.xs },
+  groupHead: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.bold, color: COLORS.textSec, textTransform: 'uppercase', marginTop: SPACE.md, marginBottom: SPACE.xs },
+  rowDiary: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.medium, color: COLORS.info, marginTop: 2 },
   warnText: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.warning, marginTop: SPACE.sm },
   orphan: {
     flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: SPACE.sm, paddingVertical: SPACE.sm,

@@ -2,7 +2,8 @@
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn(), rpc: jest.fn() } }));
 import { supabase } from '../supabase';
 import {
-  countLinkedLinesByRow, countSubmittedClaims, getOpenClaim, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct, removeClaimLine,
+  countSubmittedClaims, getOpenClaim, listClaimRows, listDiaryLines, listEntryTotals, listStageWeights, listVerifiedAtByRow,
+  listVerifiedStagePct, removeClaimLine,
   resetStageWeights,
   returnClaim, saveClaimLine, seedReferenceWeights, setStageWeights, submitClaim, verifyClaim,
 } from '../progressClaims/claims';
@@ -105,20 +106,31 @@ describe('reads', () => {
     expect(from).not.toHaveBeenCalled();
   });
 
-  it('counts linked report lines from the latest revision since the week start', async () => {
-    from
-      .mockReturnValueOnce(chain({ data: [{ id: 'r1v1', report_no: 1, revision: 1 }, { id: 'r1v2', report_no: 1, revision: 2 }] }))
-      .mockReturnValueOnce(chain({ data: [{ boq_item_id: 'k1', report_id: 'r1v2' }] }));
-    await expect(countLinkedLinesByRow('p1', '2026-09-14')).resolves.toEqual(new Map([['k1', 1]]));
-    expect(from.mock.calls.map((c) => c[0])).toEqual(['client_progress_reports', 'client_report_lines']);
+  it('reads when each row was last verified', async () => {
+    const q = chain({ data: [{ boq_item_id: 'k1', verified_at: '2026-09-08T12:00:00Z' }] });
+    from.mockReturnValueOnce(q);
+    await expect(listVerifiedAtByRow('p1')).resolves.toEqual(new Map([['k1', '2026-09-08T12:00:00Z']]));
+    expect(from).toHaveBeenCalledWith('progress_claim_latest_verified');
   });
 
-  it('treats unreadable report lines as no evidence rather than an error', async () => {
+  it('reads the confirmed diary lines of the project, latest revision only, with their report', async () => {
+    const report = (no: number, rev: number) => ({ project_id: 'p1', report_no: no, revision: rev, period_end: '2026-09-10', issued_at: '2026-09-10T10:00:00Z' });
+    const q = chain({ data: [
+      { id: 'a', boq_item_id: 'k1', stage: 'BEKISTING', activity_state: 'SELESAI', line_text: 'x', line_index: 0, report_id: 'r1v1', client_progress_reports: report(1, 1) },
+      { id: 'b', boq_item_id: 'k1', stage: 'BEKISTING', activity_state: 'SELESAI', line_text: 'x', line_index: 0, report_id: 'r1v2', client_progress_reports: report(1, 2) },
+    ] });
+    from.mockReturnValueOnce(q);
+    const res = await listDiaryLines('p1');
+    expect(res.readable).toBe(true);
+    expect(res.lines).toEqual([{ id: 'b', boq_item_id: 'k1', stage: 'BEKISTING', activity_state: 'SELESAI', line_text: 'x', line_index: 0, report_id: 'r1v2', report_no: 1, revision: 2, period_end: '2026-09-10', issued_at: '2026-09-10T10:00:00Z' }]);
+    expect(from).toHaveBeenCalledWith('client_report_lines');
+    expect(q.calls).toEqual(expect.arrayContaining([['eq', ['status', 'CONFIRMED']], ['eq', ['client_progress_reports.project_id', 'p1']], ['range', [0, 999]]]));
+  });
+
+  it('treats an unreadable diary as no evidence, and says so', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
-    from
-      .mockReturnValueOnce(chain({ data: [{ id: 'r1', report_no: 1, revision: 1 }] }))
-      .mockReturnValueOnce(chain({ error: { message: 'relation "client_report_lines" does not exist' } }));
-    await expect(countLinkedLinesByRow('p1', '2026-09-14')).resolves.toEqual(new Map());
+    from.mockReturnValueOnce(chain({ error: { message: 'relation "client_report_lines" does not exist' } }));
+    await expect(listDiaryLines('p1')).resolves.toEqual({ lines: [], readable: false });
     warn.mockRestore();
   });
 });

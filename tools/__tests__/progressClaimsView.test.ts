@@ -1,6 +1,6 @@
 // tools/__tests__/progressClaimsView.test.ts
 import {
-  buildRowViews, claimStatusSummary, claimableRows, countLinesByRow, formatPercent, formatQty, inactiveRowReason, latestRevisionReportIds,
+  buildRowViews, claimStatusSummary, claimableRows, formatPercent, formatQty, inactiveRowReason,
   orphanClaimLines, pctMatchesWeights,
   missingWeightSeeds, parsePercentInput, pctInputs, readPctInputs, readWeightPercentInputs,
   regressedStages, stageKeyLabel, weightPercentInputs, weightSourceLabel, type ClaimableItem,
@@ -70,23 +70,6 @@ describe('weights', () => {
     expect(short.ok).toBe(false);
     expect(!short.ok && short.reason).toBe('Jumlah bobot 99%, harus 100%.');
     expect(readWeightPercentInputs({ BEKISTING: '30', PEMBESIAN: 'x', PENGECORAN: '70' }).ok).toBe(false);
-  });
-});
-
-describe('verified figures and report evidence', () => {
-  it('counts confirmed lines of the latest revision of each report only', () => {
-    const ids = latestRevisionReportIds([
-      { id: 'r1v1', report_no: 1, revision: 1 },
-      { id: 'r1v2', report_no: 1, revision: 2 },
-      { id: 'r2', report_no: 2, revision: 1 },
-    ]);
-    expect([...ids].sort()).toEqual(['r1v2', 'r2']);
-    expect(countLinesByRow([
-      { boq_item_id: 'k1', report_id: 'r1v1' },
-      { boq_item_id: 'k1', report_id: 'r1v2' },
-      { boq_item_id: 'k1', report_id: 'r2' },
-      { boq_item_id: null, report_id: 'r2' },
-    ], ids)).toEqual(new Map([['k1', 2]]));
   });
 });
 

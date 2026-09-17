@@ -7,7 +7,8 @@
 import { fetchAllPaged } from '../queryHelpers';
 import { supabase } from '../supabase';
 import { ClaimRpcError, type ClaimStatus } from './claimRules';
-import { countLinesByRow, latestRevisionReportIds, type ClaimableItem } from './claimView';
+import type { ClaimableItem } from './claimView';
+import { latestRevisionLines, type DiaryLine } from './diaryEvidence';
 import type { StagePct } from './stageMath';
 import type { StageWeights, WeightSource } from './stageWeights';
 import type { WorkAreaClass } from './workAreaClass';
@@ -132,6 +133,57 @@ export async function listVerifiedStagePct(projectId: string): Promise<Map<strin
   return new Map(rows.map((r) => [r.boq_item_id, r.verified_pct]));
 }
 
+/** When each row was last verified (migration 104 view); rows never verified are absent. */
+export async function listVerifiedAtByRow(projectId: string): Promise<Map<string, string>> {
+  const rows = await fetchAllPaged<{ boq_item_id: string; verified_at: string }>((from, to) =>
+    supabase
+      .from('progress_claim_latest_verified')
+      .select('boq_item_id, verified_at')
+      .eq('project_id', projectId)
+      .order('boq_item_id')
+      .range(from, to));
+  return new Map(rows.map((r) => [r.boq_item_id, r.verified_at]));
+}
+
+interface DiaryLineRow {
+  id: string;
+  boq_item_id: string | null;
+  stage: string | null;
+  activity_state: string | null;
+  line_text: string;
+  line_index: number;
+  report_id: string;
+  client_progress_reports: { report_no: number; revision: number | null; period_end: string; issued_at: string | null };
+}
+
+/**
+ * The project's CONFIRMED report lines with their report, from the latest
+ * revision of each report only (spec 2026-09-17 §4.2). The diary is evidence:
+ * when it cannot be read, `readable` is false and the claim screens carry on
+ * from the verified figures.
+ */
+export async function listDiaryLines(projectId: string): Promise<{ lines: DiaryLine[]; readable: boolean }> {
+  try {
+    const rows = await fetchAllPaged<DiaryLineRow>((from, to) =>
+      supabase
+        .from('client_report_lines')
+        .select('id, boq_item_id, stage, activity_state, line_text, line_index, report_id, client_progress_reports!inner(project_id, report_no, revision, period_end, issued_at)')
+        .eq('status', 'CONFIRMED')
+        .eq('client_progress_reports.project_id', projectId)
+        .order('id')
+        .range(from, to) as unknown as PromiseLike<{ data: DiaryLineRow[] | null; error: { message?: string } | null }>);
+    const lines = rows.map((r): DiaryLine => ({
+      id: r.id, boq_item_id: r.boq_item_id, stage: r.stage, activity_state: r.activity_state, line_text: r.line_text, line_index: r.line_index,
+      report_id: r.report_id, report_no: r.client_progress_reports.report_no, revision: r.client_progress_reports.revision ?? 1,
+      period_end: r.client_progress_reports.period_end, issued_at: r.client_progress_reports.issued_at,
+    }));
+    return { lines: latestRevisionLines(lines), readable: true };
+  } catch (err) {
+    console.warn('listDiaryLines failed:', (err as { message?: string })?.message ?? err);
+    return { lines: [], readable: false };
+  }
+}
+
 /** What each row's progress entries sum to, one row per BoQ item (migration 104 view). Verification writes the difference from this. */
 export async function listEntryTotals(projectId: string): Promise<Map<string, number>> {
   const rows = await fetchAllPaged<{ boq_item_id: string; installed_total: number | string }>((from, to) =>
@@ -175,36 +227,6 @@ export async function listClaimRows(boqItemIds: ReadonlyArray<string>): Promise<
     }
   }
   return rows;
-}
-
-/**
- * Confirmed Blueprint report lines per row since a date, from the latest
- * revision of each report only. Evidence is advisory: when the lines cannot
- * be read (for example migration 102 not pasted yet) this returns an empty
- * map instead of failing the claim screen.
- */
-export async function countLinkedLinesByRow(projectId: string, sinceDate: string): Promise<Map<string, number>> {
-  try {
-    const { data: reports, error } = await supabase
-      .from('client_progress_reports')
-      .select('id, report_no, revision')
-      .eq('project_id', projectId)
-      .gte('period_start', sinceDate)
-      .not('issued_at', 'is', null);
-    if (error) throw error;
-    const reportIds = latestRevisionReportIds((reports ?? []) as Array<{ id: string; report_no: number; revision: number }>);
-    if (reportIds.size === 0) return new Map();
-    const { data: lines, error: linesError } = await supabase
-      .from('client_report_lines')
-      .select('boq_item_id, report_id')
-      .in('report_id', [...reportIds])
-      .eq('status', 'CONFIRMED');
-    if (linesError) throw linesError;
-    return countLinesByRow((lines ?? []) as Array<{ boq_item_id: string | null; report_id: string }>, reportIds);
-  } catch (err) {
-    console.warn('countLinkedLinesByRow failed:', (err as { message?: string })?.message ?? err);
-    return new Map();
-  }
 }
 
 // ── Stage weights (migration 103) ────────────────────────────────────────

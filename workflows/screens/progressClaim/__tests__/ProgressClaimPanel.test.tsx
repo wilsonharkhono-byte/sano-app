@@ -11,7 +11,8 @@ jest.mock('../../../../tools/progressClaims/claims', () => ({
   listClaimRows: jest.fn(),
   removeClaimLine: jest.fn(),
   listVerifiedStagePct: jest.fn(),
-  countLinkedLinesByRow: jest.fn(),
+  listDiaryLines: jest.fn(),
+  listVerifiedAtByRow: jest.fn(),
   listEntryTotals: jest.fn(),
   submitClaim: jest.fn(),
 }));
@@ -21,18 +22,19 @@ jest.mock('../StageClaimForm', () => {
   const { Text, TouchableOpacity, View } = require('react-native');
   return {
     __esModule: true,
-    default: (props: { row: { item: { id: string } }; editable: boolean; onSaved: () => void }) =>
+    default: (props: { row: { item: { id: string } }; editable: boolean; diary?: { pct: Record<string, number> } | null; onSaved: () => void }) =>
       ReactLocal.createElement(
         View,
         { testID: `claim-form-${props.row.item.id}` },
         ReactLocal.createElement(Text, null, props.editable ? 'editable' : 'read-only'),
+        ReactLocal.createElement(Text, null, props.diary ? `diary ${JSON.stringify(props.diary.pct)}` : 'no diary'),
         ReactLocal.createElement(TouchableOpacity, { onPress: props.onSaved, accessibilityLabel: 'Simulasi simpan' }, ReactLocal.createElement(Text, null, 'Simulasi simpan')),
       ),
   };
 });
 
 import {
-  countLinkedLinesByRow, getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct,
+  getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listDiaryLines, listEntryTotals, listStageWeights, listVerifiedAtByRow, listVerifiedStagePct,
   removeClaimLine, seedReferenceWeights, submitClaim,
 } from '../../../../tools/progressClaims/claims';
 import ProgressClaimPanel from '../ProgressClaimPanel';
@@ -58,6 +60,10 @@ const line = {
   row_pct_new: null, installed_before: null, delta_quantity: null, regress_reason: null, note: null, evidence: { photo_refs: [] },
   created_by: 'sup', updated_by: 'sup', created_at: 'x', updated_at: 'x',
 };
+const diary = (id: string, rowId: string, stage: string, state: string, over: Record<string, unknown> = {}) => ({
+  id, boq_item_id: rowId, stage, activity_state: state, line_text: 'Kolom :: pasang besi', line_index: 0, report_id: 'r14', report_no: 14, revision: 1,
+  period_end: '2026-09-15', issued_at: '2026-09-15T10:00:00Z', ...over,
+});
 const renderPanel = (over: Partial<React.ComponentProps<typeof ProgressClaimPanel>> = {}) => {
   const toast = jest.fn();
   const props = { projectId: 'p1', role: 'supervisor', boqItems: ITEMS, toast, ...over };
@@ -74,7 +80,8 @@ beforeEach(() => {
   (listClaimRows as jest.Mock).mockResolvedValue(new Map());
   (removeClaimLine as jest.Mock).mockResolvedValue({ claim_id: 'c1', lines_left: 1 });
   (listVerifiedStagePct as jest.Mock).mockResolvedValue(new Map([['k1', { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }]]));
-  (countLinkedLinesByRow as jest.Mock).mockResolvedValue(new Map([['k1', 2]]));
+  (listDiaryLines as jest.Mock).mockResolvedValue({ readable: true, lines: [diary('d1', 'k1', 'PEMBESIAN', 'LANJUT'), diary('d2', 'k1', 'CURING', 'LANJUT')] });
+  (listVerifiedAtByRow as jest.Mock).mockResolvedValue(new Map());
   (listEntryTotals as jest.Mock).mockResolvedValue(new Map([['k1', 32.6]]));
   (submitClaim as jest.Mock).mockResolvedValue({ claim_id: 'c1', status: 'SUBMITTED', lines: 1, notified: 2, verifiers_notified: 2 });
 });
@@ -90,7 +97,7 @@ describe('ProgressClaimPanel', () => {
     expect(getByText('Diklaim 61,8%')).toBeTruthy();
     expect(getByText('Terverifikasi 32,6%')).toBeTruthy();
     expect(getByText('0 foto · 2 baris laporan')).toBeTruthy();
-    expect(countLinkedLinesByRow).toHaveBeenCalledWith('p1', '2026-09-14');
+    expect(listDiaryLines).toHaveBeenCalledWith('p1');
     expect(listEntryTotals).toHaveBeenCalledWith('p1');
   });
 
@@ -198,6 +205,32 @@ describe('ProgressClaimPanel', () => {
     fireEvent.press(getByLabelText('Ya, kirim'));
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Status klaim sudah berubah. Muat ulang halaman.', 'critical'));
     await waitFor(() => expect(getOpenClaim).toHaveBeenCalledTimes(2));
+  });
+
+  it('puts work areas the diary moved first, says what the diary says, and hands it to the form', async () => {
+    (getOpenClaim as jest.Mock).mockResolvedValue(null);
+    (listClaimLines as jest.Mock).mockResolvedValue([]);
+    (listStageWeights as jest.Mock).mockResolvedValue([kolomWeights, { ...kolomWeights, boq_item_id: 'pc1', reference_class: 'PILECAP_SLOOF_PLAT_DASAR' }]);
+    (listDiaryLines as jest.Mock).mockResolvedValue({ readable: true, lines: [diary('d1', 'pc1', 'BEKISTING', 'SELESAI')] });
+    const { findByText, getAllByRole, getByLabelText, getByText } = renderPanel();
+    expect(await findByText('Ada kegiatan di laporan harian')).toBeTruthy();
+    expect(getByText('Dari laporan #14: Bekisting selesai')).toBeTruthy();
+    const rows = getAllByRole('button').map((b) => b.props.accessibilityLabel).filter((l: string) => /^T1-/.test(l));
+    expect(rows).toEqual(['T1-002 Lantai 1 ; Pile Cap', 'T1-001 Lantai 1 ; Kolom']);
+    fireEvent.press(getByLabelText('T1-002 Lantai 1 ; Pile Cap'));
+    expect(getByText('diary {"BEKISTING":100,"PEMBESIAN":0,"PENGECORAN":0}')).toBeTruthy();
+  });
+
+  it('ignores diary lines from before the work area was last verified', async () => {
+    (listVerifiedAtByRow as jest.Mock).mockResolvedValue(new Map([['k1', '2026-09-16T00:00:00Z']]));
+    const { findByText } = renderPanel();
+    expect(await findByText('0 foto · 0 baris laporan')).toBeTruthy();
+  });
+
+  it('carries on without the diary when it cannot be read', async () => {
+    (listDiaryLines as jest.Mock).mockResolvedValue({ readable: false, lines: [] });
+    const { findByText } = renderPanel();
+    expect(await findByText('Laporan harian belum bisa dibaca. Isi status tiap tahap secara manual.')).toBeTruthy();
   });
 
   it('reloads when asked to, as a notification tap does', async () => {

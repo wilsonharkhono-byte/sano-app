@@ -107,29 +107,6 @@ export function missingWeightSeeds(
     .map((r) => ({ boq_item_id: r.id, reference_class: classes.get(r.id) ?? 'LAINNYA' }));
 }
 
-/** Spec §17: only the latest revision of each report number counts, so a re-issued report never counts twice. */
-export function latestRevisionReportIds(reports: Array<{ id: string; report_no: number; revision: number }>): Set<string> {
-  const best = new Map<number, { id: string; revision: number }>();
-  for (const r of reports) {
-    const current = best.get(r.report_no);
-    if (!current || r.revision > current.revision) best.set(r.report_no, { id: r.id, revision: r.revision });
-  }
-  return new Set([...best.values()].map((v) => v.id));
-}
-
-export function countLinesByRow(
-  lines: Array<{ boq_item_id: string | null; report_id: string }>,
-  reportIds: Set<string>,
-): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const l of lines) {
-    if (!l.boq_item_id || !reportIds.has(l.report_id)) continue;
-    counts.set(l.boq_item_id, (counts.get(l.boq_item_id) ?? 0) + 1);
-  }
-  return counts;
-}
-
-/** A progress_claim_lines row as the screens need it. */
 export interface ClaimLineLike {
   id: string;
   boq_item_id: string;

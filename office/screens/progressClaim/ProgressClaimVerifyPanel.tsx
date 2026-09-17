@@ -12,16 +12,23 @@ import { ActivityIndicator, StyleSheet, Text, TextInput, TouchableOpacity, View 
 import Card from '../../../workflows/components/Card';
 import Badge from '../../../workflows/components/Badge';
 import StoragePhoto from '../../../workflows/components/StoragePhoto';
+import { loadMaterialData } from '../../../tools/analytics/data';
+import { coverageByRow } from '../../../tools/analytics/materialCoverage';
+import { CLAIM_FLAG_LABELS, claimFlags } from '../../../tools/progressClaims/claimFlags';
 import { canVerifyClaim, canVerifyClaimAs, claimChangedSince, regressReasonRowCode } from '../../../tools/progressClaims/claimRules';
 import {
-  getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listEntryTotals, listStageWeights, listVerifiedStagePct, returnClaim, verifyClaim,
+  getLatestClaim, getOpenClaim, listClaimLines, listClaimRows, listDiaryLines, listEntryTotals, listStageWeights, listVerifiedAtByRow, listVerifiedStagePct,
+  returnClaim, verifyClaim,
   type ProgressClaim, type ProgressClaimLine, type VerifyLineInput,
 } from '../../../tools/progressClaims/claims';
 import {
   claimStatusSummary, formatFraction, formatPercent, formatQty, inactiveRowReason, pctInputs, pctMatchesWeights, readPctInputs,
   regressedStages, stageKeyLabel, weightSourceLabel, zeroPct, type ClaimableItem, type PctRead,
 } from '../../../tools/progressClaims/claimView';
+import { diarySummary, linesByRowSince, proposeFromDiary, type DiaryLine } from '../../../tools/progressClaims/diaryEvidence';
+import { activityStateLabel, stageLabel } from '../../../tools/progressClaims/stages';
 import { deltaFromInstalled, rowFraction, type StagePct } from '../../../tools/progressClaims/stageMath';
+import { shortDateId } from '../../../tools/progressClaims/week';
 import {
   stagesOf, validateStageWeights, type StageKey, type StageWeights, type WeightSource,
 } from '../../../tools/progressClaims/stageWeights';
@@ -29,6 +36,7 @@ import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../../workflows/theme';
 
 const lh = (size: number) => Math.round(size * 1.45);
 const QUANTITY_DROP = 'Volume terpasang turun karena bobot atau volume rencana berubah sejak verifikasi terakhir.';
+const MAX_DIARY_LINES = 6;
 const RECORDED_DROP = 'Progres baris ini turun dari yang tercatat. Isi alasan sebelum verifikasi.';
 
 interface Props {
@@ -59,6 +67,10 @@ interface Loaded {
   weights: Map<string, RowWeights>;
   verified: Map<string, StagePct>;
   ledger: Map<string, number>;
+  /** Confirmed daily-report lines per work area since it was last verified. */
+  diary: Map<string, DiaryLine[]>;
+  /** Besi planned and requested per work area; empty when it could not be read (the flag is advisory). */
+  besi: Map<string, { planned: number; requested: number; approved: number }>;
 }
 
 interface LineInput {
@@ -110,26 +122,29 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
       const claim = (await getOpenClaim(projectId)) ?? (await getLatestClaim(projectId));
       if (!claim || claim.status !== 'SUBMITTED') {
         if (mine === seq.current) {
-          setData({ projectId, claim, lines: [], rows: new Map(), weights: new Map(), verified: new Map(), ledger: new Map() });
+          setData({ projectId, claim, lines: [], rows: new Map(), weights: new Map(), verified: new Map(), ledger: new Map(), diary: new Map(), besi: new Map() });
           setLineInputs({});
           setForcedReasons(new Set());
         }
         return;
       }
       const lines = await listClaimLines(claim.id);
-      const [rows, weightRows, verified, ledger] = await Promise.all([
+      const [rows, weightRows, verified, ledger, diaryRead, verifiedAt] = await Promise.all([
         listClaimRows(lines.map((l) => l.boq_item_id)),
         listStageWeights(projectId),
         listVerifiedStagePct(projectId),
         listEntryTotals(projectId),
+        listDiaryLines(projectId),
+        listVerifiedAtByRow(projectId),
       ]);
+      const besi = await loadMaterialData(projectId).then((m) => coverageByRow(m, 'Struktur', 'kg')).catch(() => new Map());
       const weights = new Map<string, RowWeights>();
       for (const w of weightRows) {
         const checked = validateStageWeights(w.weights);
         if (checked.ok) weights.set(w.boq_item_id, { weights: checked.weights, source: w.source, referenceClass: w.reference_class });
       }
       if (mine !== seq.current) return;
-      setData({ projectId, claim, lines, rows, weights, verified, ledger });
+      setData({ projectId, claim, lines, rows, weights, verified, ledger, diary: linesByRowSince(diaryRead.lines, verifiedAt), besi });
       const claimed = (l: ProgressClaimLine): LineInput => {
         const w = weights.get(l.boq_item_id)?.weights;
         return { inputs: w ? pctInputs(w, l.claimed_pct) : {}, reason: l.regress_reason ?? '' };
@@ -342,15 +357,26 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
           );
         }
         const refs = (line.evidence?.photo_refs ?? []).filter((r): r is string => typeof r === 'string');
+        const diaryLines = current.diary.get(line.boq_item_id) ?? [];
+        const proposal = proposeFromDiary(c.rowWeights.weights, c.prev, diaryLines);
+        // Advisory only: nothing here blocks Verifikasi.
+        const flags = c.refill ? [] : claimFlags({
+          weights: c.rowWeights.weights, source: c.rowWeights.source, prevPct: c.prev, claimedPct: line.claimed_pct,
+          photoCount: refs.length, diaryLines, proposal, besi: current.besi.get(line.boq_item_id) ?? null,
+        });
         const mismatch = !!c.item && Math.abs((Number(c.item.installed) || 0) - c.ledgerBefore) > 0.0001;
         return (
           <Card
             key={line.id}
             title={c.code}
             subtitle={c.item?.label}
-            rightAction={c.rowWeights.source === 'reference' ? <Badge flag="WARNING" label="Bobot referensi" /> : undefined}
           >
             <Text style={styles.hint}>{weightSourceLabel(c.rowWeights.source, c.rowWeights.referenceClass)}</Text>
+            {flags.length > 0 && (
+              <View style={styles.flagRow}>
+                {flags.map((f) => <Badge key={f} flag="WARNING" label={CLAIM_FLAG_LABELS[f]} />)}
+              </View>
+            )}
             <View style={[styles.tableRow, styles.tableHead]}>
               <Text style={[styles.cellStage, styles.headText]} numberOfLines={1}>Tahap</Text>
               <Text style={[styles.cell, styles.headText]} numberOfLines={1}>Lalu</Text>
@@ -406,6 +432,20 @@ export default function ProgressClaimVerifyPanel({ projectId, profile, boqItems,
                   placeholderTextColor={COLORS.textMuted}
                   accessibilityLabel={`Alasan penurunan ${c.code}`}
                 />
+              </>
+            )}
+            <Text style={styles.evidenceHead}>Laporan harian</Text>
+            {diaryLines.length === 0 ? (
+              <Text style={styles.hint}>Tidak ada baris laporan harian untuk baris ini sejak verifikasi terakhir.</Text>
+            ) : (
+              <>
+                {diarySummary(proposal) ? <Text style={styles.diary}>{diarySummary(proposal)}</Text> : null}
+                {(proposal?.lines ?? diaryLines).slice(0, MAX_DIARY_LINES).map((l) => (
+                  <Text key={l.id} style={styles.hint}>
+                    {`${shortDateId(l.period_end)} · #${l.report_no} · ${stageLabel(l.stage)} · ${activityStateLabel(l.activity_state)}: ${l.line_text}`}
+                  </Text>
+                ))}
+                {diaryLines.length > MAX_DIARY_LINES ? <Text style={styles.hint}>{`+${diaryLines.length - MAX_DIARY_LINES} baris laporan lainnya`}</Text> : null}
               </>
             )}
             {line.note ? <Text style={styles.note}>{`Catatan pengawas: ${line.note}`}</Text> : null}
@@ -494,6 +534,9 @@ const styles = StyleSheet.create({
   loading: { marginTop: SPACE.lg },
   detail: { fontSize: TYPE.sm, lineHeight: lh(TYPE.sm), fontFamily: FONTS.semibold, color: COLORS.text },
   hint: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: SPACE.xs },
+  flagRow: { flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.xs, marginTop: SPACE.sm },
+  evidenceHead: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.bold, color: COLORS.textSec, textTransform: 'uppercase', marginTop: SPACE.md },
+  diary: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.info, marginTop: SPACE.xs },
   note: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.text, marginTop: SPACE.sm },
   error: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.critical, marginTop: SPACE.xs },
   warn: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.warning, marginTop: SPACE.sm },

@@ -26,6 +26,7 @@ jest.mock('../../../components/PhotoGalleryField', () => {
 import { removeClaimLine, saveClaimLine } from '../../../../tools/progressClaims/claims';
 import { pickAndUploadPhoto } from '../../../../tools/storage';
 import StageClaimForm, { type WeightedRowView } from '../StageClaimForm';
+import { proposeFromDiary, type DiaryLine, type DiaryProposal } from '../../../../tools/progressClaims/diaryEvidence';
 
 // Rendering suites run slowly beside the full jest run; the 5 s default flakes.
 jest.setTimeout(20000);
@@ -51,11 +52,22 @@ const makeRow = (over: Partial<WeightedRowView> = {}): WeightedRowView => ({
   ...over,
 });
 
-const setup = (over: Partial<WeightedRowView> = {}, editable = true) => {
+const setup = (over: Partial<WeightedRowView> = {}, editable = true, diary: DiaryProposal | null = null) => {
   const props = { onSaved: jest.fn(), onRemoved: jest.fn(), onClose: jest.fn(), toast: jest.fn() };
-  const utils = render(<StageClaimForm projectId="p1" row={makeRow(over)} editable={editable} {...props} />);
+  const utils = render(<StageClaimForm projectId="p1" row={makeRow(over)} editable={editable} diary={diary} {...props} />);
   return { ...utils, ...props };
 };
+
+/** Types an exact figure, opening "Angka persis" first when the percent fields are hidden. */
+const typePct = (u: ReturnType<typeof setup>, stage: string, value: string) => {
+  if (!u.queryByLabelText(`Persentase ${stage}`)) fireEvent.press(u.getByLabelText('Angka persis'));
+  fireEvent.changeText(u.getByLabelText(`Persentase ${stage}`), value);
+};
+
+const diaryLine = (stage: string, state: string, over: Partial<DiaryLine> = {}): DiaryLine => ({
+  id: `${stage}-${state}`, boq_item_id: 'k1', stage, activity_state: state, line_text: 'Kolom K1-K8 :: pasang besi', line_index: 0,
+  report_id: 'r14', report_no: 14, revision: 1, period_end: '2026-09-10', issued_at: '2026-09-10T10:00:00Z', ...over,
+});
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -64,17 +76,54 @@ beforeEach(() => {
 });
 
 describe('StageClaimForm', () => {
-  it('starts from the verified figures and previews what the row becomes', () => {
-    const { getByLabelText, getByText } = setup();
-    expect(getByLabelText('Persentase Bekisting').props.value).toBe('100');
+  it('starts from the verified status and previews what a tap makes the row', () => {
+    const { getByLabelText, getByText, queryByLabelText } = setup();
+    expect(getByLabelText('Bekisting Selesai').props.accessibilityState.selected).toBe(true);
+    expect(getByLabelText('Pembesian Belum').props.accessibilityState.selected).toBe(true);
+    expect(queryByLabelText('Persentase Bekisting')).toBeNull();
     expect(getByText('Bobot referensi (Kolom)')).toBeTruthy();
-    fireEvent.changeText(getByLabelText('Persentase Pembesian'), '60');
-    expect(getByText('Progres baris 32,6% menjadi 61,8% (+29,16 m³)')).toBeTruthy();
+    fireEvent.press(getByLabelText('Pembesian Berjalan'));
+    expect(getByLabelText('Pembesian Berjalan').props.accessibilityState.selected).toBe(true);
+    expect(getByText('Progres baris 32,6% menjadi 56,9% (+24,3 m³)')).toBeTruthy();
+  });
+
+  it('keeps an exact figure one tap away, and shows a typed figure on the running chip', () => {
+    const u = setup();
+    typePct(u, 'Pembesian', '60');
+    expect(u.getByText('Progres baris 32,6% menjadi 61,8% (+29,16 m³)')).toBeTruthy();
+    expect(u.getByText('Berjalan · 60%')).toBeTruthy();
+  });
+
+  it('opens from the diary when nothing is saved yet, says so, and saves nothing by itself', () => {
+    const lines = [diaryLine('PEMBESIAN', 'LANJUT')];
+    const diary = proposeFromDiary(kolom, { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }, lines);
+    const { getByLabelText, getByText } = setup({}, true, diary);
+    expect(getByLabelText('Pembesian Berjalan').props.accessibilityState.selected).toBe(true);
+    expect(getByText('Dari laporan #14: Pembesian berjalan. Periksa lalu simpan.')).toBeTruthy();
+    expect(getByText('10 Sep · #14 · Pembesian · Lanjut: Kolom K1-K8 :: pasang besi')).toBeTruthy();
+    expect(saveClaimLine).not.toHaveBeenCalled();
+  });
+
+  it('keeps the saved figures over the diary, and still shows what the diary says', () => {
+    const diary = proposeFromDiary(kolom, { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }, [diaryLine('PEMBESIAN', 'SELESAI')]);
+    const { getByLabelText, getByText } = setup({ lineId: 'l1', claimedPct: { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 } }, true, diary);
+    expect(getByLabelText('Pembesian Berjalan').props.accessibilityState.selected).toBe(true);
+    expect(getByText('Dari laporan #14: Pembesian selesai')).toBeTruthy();
+  });
+
+  it('accepts confirmed diary lines as evidence for a rise, without a photo', async () => {
+    const diary = proposeFromDiary(kolom, { BEKISTING: 100, PEMBESIAN: 0, PENGECORAN: 0 }, [diaryLine('PEMBESIAN', 'LANJUT')]);
+    const { getByLabelText, toast } = setup({}, true, diary);
+    fireEvent.press(getByLabelText('Simpan progres T1-001'));
+    await waitFor(() => expect(saveClaimLine).toHaveBeenCalledWith(expect.objectContaining({
+      claimedPct: { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 }, photoRefs: [],
+    })));
+    expect(toast).not.toHaveBeenCalledWith('Tambahkan minimal satu foto sebagai bukti.', 'critical');
   });
 
   it('saves the stage percents, note and photos into this week claim', async () => {
     const { findByText, getByLabelText, onSaved } = setup();
-    fireEvent.press(getByLabelText('Pembesian 50 persen'));
+    fireEvent.press(getByLabelText('Pembesian Berjalan'));
     fireEvent.changeText(getByLabelText('Catatan progres'), 'Begel K1-K8');
     fireEvent.press(getByLabelText('Tambah foto'));
     // Save only once the uploaded photo is in the form, or the save races it.
@@ -90,15 +139,16 @@ describe('StageClaimForm', () => {
 
   it('asks for a photo before saving an increase', async () => {
     const { getByLabelText, toast } = setup();
-    fireEvent.changeText(getByLabelText('Persentase Pembesian'), '60');
+    fireEvent.press(getByLabelText('Pembesian Berjalan'));
     fireEvent.press(getByLabelText('Simpan progres T1-001'));
-    expect(toast).toHaveBeenCalledWith('Tambahkan minimal satu foto sebagai bukti.', 'critical');
+    expect(toast).toHaveBeenCalledWith('Tambahkan minimal satu foto atau konfirmasi baris laporan harian sebagai bukti.', 'critical');
     expect(saveClaimLine).not.toHaveBeenCalled();
   });
 
   it('asks for a reason before saving a figure below the verified one', async () => {
-    const { getByLabelText, toast } = setup({ prevPct: { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 }, prevFraction: 0.5204, installedLedger: 52.04 });
-    fireEvent.changeText(getByLabelText('Persentase Bekisting'), '90');
+    const u = setup({ prevPct: { BEKISTING: 100, PEMBESIAN: 40, PENGECORAN: 0 }, prevFraction: 0.5204, installedLedger: 52.04 });
+    const { getByLabelText, toast } = u;
+    typePct(u, 'Bekisting', '90');
     fireEvent.press(getByLabelText('Simpan progres T1-001'));
     expect(toast).toHaveBeenCalledWith('Penurunan progres wajib disertai alasan.', 'critical');
     fireEvent.changeText(getByLabelText('Alasan penurunan'), 'Bekisting K3 dibongkar ulang');
@@ -132,8 +182,9 @@ describe('StageClaimForm', () => {
   });
 
   it('refuses an invalid percent with the reason', () => {
-    const { getByLabelText, getByText, toast } = setup();
-    fireEvent.changeText(getByLabelText('Persentase Pengecoran'), '120');
+    const u = setup();
+    const { getByLabelText, getByText, toast } = u;
+    typePct(u, 'Pengecoran', '120');
     expect(getByText('Persentase pengecoran harus angka 0 sampai 100.')).toBeTruthy();
     fireEvent.press(getByLabelText('Simpan progres T1-001'));
     expect(toast).toHaveBeenCalledWith('Persentase pengecoran harus angka 0 sampai 100.', 'critical');
@@ -141,8 +192,9 @@ describe('StageClaimForm', () => {
 
   it('shows the server refusal sentence', async () => {
     (saveClaimLine as jest.Mock).mockRejectedValueOnce(new Error('Klaim sedang diverifikasi. Tunggu hasilnya sebelum menambah progres.'));
-    const { getByLabelText, toast } = setup({ photoRefs: ['progress/p1/0.jpg'] });
-    fireEvent.changeText(getByLabelText('Persentase Pembesian'), '10');
+    const u = setup({ photoRefs: ['progress/p1/0.jpg'] });
+    const { getByLabelText, toast } = u;
+    typePct(u, 'Pembesian', '10');
     fireEvent.press(getByLabelText('Simpan progres T1-001'));
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Klaim sedang diverifikasi. Tunggu hasilnya sebelum menambah progres.', 'critical'));
   });
@@ -169,7 +221,7 @@ describe('StageClaimForm', () => {
     const { getByLabelText } = render(
       <StageClaimForm projectId="p1" row={makeRow({ photoRefs: ['progress/p1/0.jpg'] })} editable onSaved={jest.fn()} onRemoved={jest.fn()} onStale={onStale} onClose={jest.fn()} toast={jest.fn()} />,
     );
-    fireEvent.changeText(getByLabelText('Persentase Pembesian'), '10');
+    fireEvent.press(getByLabelText('Pembesian Berjalan'));
     fireEvent.press(getByLabelText('Simpan progres T1-001'));
     await waitFor(() => expect(onStale).toHaveBeenCalled());
   });
@@ -178,7 +230,7 @@ describe('StageClaimForm', () => {
     const { getByLabelText, queryByLabelText, getByText } = setup({ photoRefs: ['a', 'b'] }, false);
     expect(getByLabelText('Persentase Bekisting').props.editable).toBe(false);
     expect(queryByLabelText('Simpan progres T1-001')).toBeNull();
-    expect(queryByLabelText('Bekisting 100 persen')).toBeNull();
+    expect(queryByLabelText('Bekisting Selesai')).toBeNull();
     expect(getByText('2 foto terlampir')).toBeTruthy();
   });
 });

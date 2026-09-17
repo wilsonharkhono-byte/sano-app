@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, Platform, useWindowDimensions, Modal, Image } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header      from '../../workflows/components/Header';
 import Card        from '../../workflows/components/Card';
@@ -19,6 +19,7 @@ import { assignableRoles, canManageTeamMember } from '../../tools/rolePermission
 import { UserRole, type UserRoleType } from '../../tools/constants';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE, BREAKPOINTS, MAX_CONTENT_WIDTH } from '../../workflows/theme';
 import { computeOverallProgress } from '../../tools/progressMath';
+import ProjectAnalytics from '../../workflows/components/analytics/ProjectAnalytics';
 import { getKasbonAging, kasbonStatusLabel } from '../../tools/kasbon';
 import type { KasbonAging } from '../../tools/types';
 import { formatRp } from '../../tools/opname';
@@ -114,6 +115,13 @@ export default function PrincipalHomeScreen() {
   const navigation = useNavigation<any>();
   const { projects, project, setActiveProject, profile, boqItems, defects, milestones, purchaseOrders, refresh } = useProject();
   const { show: toast } = useToast();
+  // Analitik Proyek reads again each time this screen comes back into view.
+  const [analyticsKey, setAnalyticsKey] = useState(0);
+  const firstFocus = useRef(true);
+  useFocusEffect(useCallback(() => {
+    if (firstFocus.current) { firstFocus.current = false; return; }
+    setAnalyticsKey((k) => k + 1);
+  }, []));
   const [pending, setPending]       = useState<PendingCounts>({ perubahan: 0, mtn: 0 });
   const [aiUsage, setAiUsage]       = useState<AIUsageSnapshot>({ totalChats: 0, activeUsers: 0, totalTokens: 0, sonnetChats: 0, topUserName: null });
   const [agingKasbon, setAgingKasbon] = useState<KasbonAging[]>([]);
@@ -917,6 +925,11 @@ export default function PrincipalHomeScreen() {
     </Card>
   );
 
+  // ── Analitik Proyek: the same graphs every role sees ──
+  const analyticsBlock = (
+    <ProjectAnalytics project={project} boqItems={boqItems} role={profile?.role} wide={isDesktop} reloadKey={analyticsKey} onProjectChanged={() => void refresh()} toast={toast} />
+  );
+
   // ── Section 6: Progres vs Jadwal ──
   const completedMilestones = milestones.filter(m => m.status === 'COMPLETE');
   const progressVsScheduleCard = (
@@ -1418,6 +1431,7 @@ export default function PrincipalHomeScreen() {
               {statRowBlock}
               {todayPulseCard}
               {progressVsScheduleCard}
+              {analyticsBlock}
               {claimWeekCard}
               {allClearCard}
               {pendingCard}
@@ -1446,6 +1460,7 @@ export default function PrincipalHomeScreen() {
             {statRowBlock}
             {todayPulseCard}
             {progressVsScheduleCard}
+            {analyticsBlock}
             {claimWeekCard}
             {allClearCard}
             {pendingCard}
