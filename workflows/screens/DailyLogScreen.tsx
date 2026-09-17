@@ -12,7 +12,7 @@ import { sanitizeText } from '../../tools/validation';
 import { getDailyLog, upsertDailyLog, toggleFeaturedPhoto, type DailyLogHighlight, type DailyLogPhoto } from '../../tools/dailySiteLogs';
 import PullEventsSheet from './dailyLog/PullEventsSheet';
 import { listConfirmedEventsForDay } from '../../tools/siteEvents';
-import { listRooms } from '../../tools/rooms';
+import { listRoomsResult } from '../../tools/rooms';
 import {
   mergePulledHighlights, proposeHighlightsFromEvents, proposePhotosFromEvents,
   type ProposedHighlight, type ProposedPhoto,
@@ -108,9 +108,9 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
     setPullLoading(true);
     setPullError(null);
     try {
-      const [eventsResult, rooms] = await Promise.all([
+      const [eventsResult, roomsResult] = await Promise.all([
         listConfirmedEventsForDay(project.id, logDate),
-        listRooms(project.id, { includeInactive: true }),
+        listRoomsResult(project.id, { includeInactive: true }),
       ]);
       if (!eventsResult.events) {
         // A read failure is not the same claim as "nothing happened today" —
@@ -118,13 +118,20 @@ export default function DailyLogScreen({ onBack, initialDate }: { onBack: () => 
         setPullError('Gagal memuat kejadian hari ini. Periksa koneksi lalu coba lagi.');
         return;
       }
+      if (roomsResult.rooms === null) {
+        // Same rule for the room lookup: without it every proposal's room
+        // label would silently go blank, which reads as "no room", not as a
+        // failed read (CLAUDE.md §12).
+        setPullError('Gagal memuat daftar ruangan. Periksa koneksi lalu coba lagi.');
+        return;
+      }
       // Anything already on this log is excluded, so re-opening the sheet after
       // a pull never offers the same event or photo twice. A previously
       // removed event is still offered (resurrection is fine) but flagged.
       const pulledEvents = highlights.map((h) => h.source_event_id).filter((v): v is string => !!v);
       const pulledMedia = photos.map((p) => p.source_media_id).filter((v): v is string => !!v);
-      setPullH(proposeHighlightsFromEvents(eventsResult.events, rooms, pulledEvents, dismissedEventIds));
-      setPullP(proposePhotosFromEvents(eventsResult.events, rooms, pulledMedia));
+      setPullH(proposeHighlightsFromEvents(eventsResult.events, roomsResult.rooms, pulledEvents, dismissedEventIds));
+      setPullP(proposePhotosFromEvents(eventsResult.events, roomsResult.rooms, pulledMedia));
     } catch (err: any) {
       setPullError(err.message ?? 'Gagal memuat kejadian hari ini.');
     } finally {
