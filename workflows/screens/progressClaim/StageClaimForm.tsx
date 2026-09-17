@@ -1,7 +1,10 @@
 // workflows/screens/progressClaim/StageClaimForm.tsx
-// SANO — the supervisor's stage claim for one work-area row (spec §16). It
-// expands under the tapped row (project convention: inline, never a modal)
-// and saves one line of the project's claim in progress through
+// SANO — the supervisor's stage claim for one work-area row (spec §16, and
+// 2026-09-17 §4.3). Each stage is a tap: Belum, Berjalan or Selesai, worth 0,
+// 50 or 100 percent; "Angka persis" opens the percent fields. The form opens
+// from the saved line, else from what the daily reports say, else from the
+// verified figures, and nothing is saved before Simpan. It expands under the
+// tapped row (project convention: inline, never a modal) and saves through
 // save_progress_claim_line, which re-checks every rule on the server.
 import React, { useMemo, useState } from 'react';
 import { Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
@@ -10,15 +13,19 @@ import { pickAndUploadPhoto } from '../../../tools/storage';
 import { isStaleClaimRefusal } from '../../../tools/progressClaims/claimRules';
 import { removeClaimLine, saveClaimLine, type SaveClaimLineResult } from '../../../tools/progressClaims/claims';
 import {
-  formatFraction, formatPercent, formatQty, pctInputs, readPctInputs, regressedStages, stageKeyLabel, weightSourceLabel,
+  formatFraction, formatPercent, formatQty, parsePercentInput, pctInputs, readPctInputs, regressedStages, stageKeyLabel, weightSourceLabel,
   type ClaimRowView,
 } from '../../../tools/progressClaims/claimView';
+import { diarySummary, type DiaryProposal } from '../../../tools/progressClaims/diaryEvidence';
+import { activityStateLabel, stageLabel } from '../../../tools/progressClaims/stages';
+import { STAGE_STATUSES, pctOfStatus, stageStatusLabel, statusOfPct } from '../../../tools/progressClaims/statusCredit';
+import { shortDateId } from '../../../tools/progressClaims/week';
 import { deltaFromInstalled, rowFraction } from '../../../tools/progressClaims/stageMath';
 import { stagesOf, weightOf, type StageWeights } from '../../../tools/progressClaims/stageWeights';
 import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../theme';
 
 export const MAX_CLAIM_PHOTOS = 12;
-const QUICK_PCT = [0, 25, 50, 75, 100];
+const MAX_DIARY_LINES = 5;
 const lh = (size: number) => Math.round(size * 1.45);
 
 export type WeightedRowView = ClaimRowView & { weights: StageWeights };
@@ -28,6 +35,8 @@ interface Props {
   row: WeightedRowView;
   /** False while the claim waits for verification, or for a role that only reads. */
   editable: boolean;
+  /** What the confirmed daily-report lines say about this work area since it was last verified. */
+  diary?: DiaryProposal | null;
   onSaved: (result: SaveClaimLineResult) => void;
   onRemoved: () => void;
   /** A refusal showed the claim, row or weights on screen are out of date: the panel reloads. */
@@ -36,10 +45,15 @@ interface Props {
   toast: (msg: string, type?: 'ok' | 'warning' | 'critical') => void;
 }
 
-export default function StageClaimForm({ projectId, row, editable, onSaved, onRemoved, onStale, onClose, toast }: Props) {
+export default function StageClaimForm({ projectId, row, editable, diary = null, onSaved, onRemoved, onStale, onClose, toast }: Props) {
   const { weights, item } = row;
-  // A claim saved before the weights changed shape cannot fill these stages: start from the verified figures.
-  const [inputs, setInputs] = useState<Record<string, string>>(() => pctInputs(weights, row.claimNeedsRefill ? row.prevPct : row.claimedPct ?? row.prevPct));
+  // Saved line first, else what the diary says, else the verified figures. A
+  // claim saved before the weights changed shape cannot fill these stages.
+  const savedPct = row.claimNeedsRefill ? null : row.claimedPct;
+  const fromDiary = !savedPct && !!diary?.changed;
+  const [inputs, setInputs] = useState<Record<string, string>>(() => pctInputs(weights, savedPct ?? (fromDiary ? diary!.pct : row.prevPct)));
+  // The percent fields open by themselves when a figure is not a plain status credit, and for readers.
+  const [exact, setExact] = useState(() => !editable || stagesOf(weights).some((st) => statusOfPct(parsePercentInput(inputs[st] ?? '')).exact));
   const [photos, setPhotos] = useState<string[]>(row.photoRefs);
   const [note, setNote] = useState(row.note ?? '');
   const [reason, setReason] = useState(row.regressReason ?? '');
@@ -83,8 +97,9 @@ export default function StageClaimForm({ projectId, row, editable, onSaved, onRe
       return;
     }
     const rises = !!preview && preview.next > row.prevFraction;
-    if (rises && photos.length === 0 && Platform?.OS !== 'web') {
-      toast('Tambahkan minimal satu foto sebagai bukti.', 'critical');
+    // The daily report counts as evidence: a confirmed line for this work area, or a photo.
+    if (rises && photos.length === 0 && (diary?.lines.length ?? 0) === 0 && Platform?.OS !== 'web') {
+      toast('Tambahkan minimal satu foto atau konfirmasi baris laporan harian sebagai bukti.', 'critical');
       return;
     }
     setBusy(true);
@@ -129,41 +144,79 @@ export default function StageClaimForm({ projectId, row, editable, onSaved, onRe
         <Text style={styles.warn}>Bobot baris ini berubah setelah diklaim. Isi ulang persentasenya lalu simpan.</Text>
       )}
 
-      {stagesOf(weights).map((stage) => (
-        <View key={stage} style={styles.stage}>
-          <View style={styles.stageHead}>
-            <Text style={styles.stageName}>
-              {stageKeyLabel(stage)}{stage === 'SINGLE' ? '' : ` (bobot ${formatFraction(weightOf(weights, stage))})`}
-            </Text>
-            <Text style={styles.prev}>Terverifikasi {formatPercent(row.prevPct[stage] ?? 0)}</Text>
-          </View>
-          <View style={styles.inputRow}>
-            <TextInput
-              style={[styles.input, !editable && styles.inputDisabled]}
-              value={inputs[stage] ?? ''}
-              onChangeText={(v) => setStage(stage, v)}
-              editable={editable}
-              keyboardType="decimal-pad"
-              placeholder="0-100"
-              placeholderTextColor={COLORS.textMuted}
-              accessibilityLabel={`Persentase ${stageKeyLabel(stage)}`}
-            />
-            <Text style={styles.pctSign}>%</Text>
-            {editable && QUICK_PCT.map((q) => (
-              <TouchableOpacity
-                key={q}
-                style={styles.chip}
-                onPress={() => setStage(stage, String(q))}
-                accessibilityRole="button"
-                accessibilityLabel={`${stageKeyLabel(stage)} ${q} persen`}
-                hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
-              >
-                <Text style={styles.chipText}>{q}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
+      {diary && diarySummary(diary) ? (
+        <Text style={styles.diary}>{fromDiary ? `${diarySummary(diary)}. Periksa lalu simpan.` : diarySummary(diary)}</Text>
+      ) : null}
+      {(diary?.lines ?? []).slice(0, MAX_DIARY_LINES).map((l) => (
+        <Text key={l.id} style={styles.diaryLine}>
+          {`${shortDateId(l.period_end)} · #${l.report_no} · ${stageLabel(l.stage)} · ${activityStateLabel(l.activity_state)}: ${l.line_text}`}
+        </Text>
       ))}
+      {diary && diary.lines.length > MAX_DIARY_LINES ? (
+        <Text style={styles.diaryLine}>{`+${diary.lines.length - MAX_DIARY_LINES} baris laporan lainnya`}</Text>
+      ) : null}
+
+      {stagesOf(weights).map((stage) => {
+        const typed = parsePercentInput(inputs[stage] ?? '');
+        const current = statusOfPct(typeof typed === 'number' && !Number.isNaN(typed) ? typed : 0);
+        return (
+          <View key={stage} style={styles.stage}>
+            <View style={styles.stageHead}>
+              <Text style={styles.stageName}>
+                {stageKeyLabel(stage)}{stage === 'SINGLE' ? '' : ` (bobot ${formatFraction(weightOf(weights, stage))})`}
+              </Text>
+              <Text style={styles.prev}>Terverifikasi {formatPercent(row.prevPct[stage] ?? 0)}</Text>
+            </View>
+            {editable && (
+              <View style={styles.statusRow}>
+                {STAGE_STATUSES.map((status) => {
+                  const selected = current.status === status;
+                  return (
+                    <TouchableOpacity
+                      key={status}
+                      style={[styles.statusChip, selected && styles.statusChipOn]}
+                      onPress={() => setStage(stage, String(pctOfStatus(status)))}
+                      accessibilityRole="button"
+                      accessibilityLabel={`${stageKeyLabel(stage)} ${stageStatusLabel(status)}`}
+                      accessibilityState={{ selected }}
+                    >
+                      <Text style={[styles.statusChipText, selected && styles.statusChipTextOn]}>
+                        {selected && current.exact ? `${stageStatusLabel(status)} · ${formatPercent(typed as number)}` : stageStatusLabel(status)}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+            {exact && (
+              <View style={styles.inputRow}>
+                <TextInput
+                  style={[styles.input, !editable && styles.inputDisabled]}
+                  value={inputs[stage] ?? ''}
+                  onChangeText={(v) => setStage(stage, v)}
+                  editable={editable}
+                  keyboardType="decimal-pad"
+                  placeholder="0-100"
+                  placeholderTextColor={COLORS.textMuted}
+                  accessibilityLabel={`Persentase ${stageKeyLabel(stage)}`}
+                />
+                <Text style={styles.pctSign}>%</Text>
+              </View>
+            )}
+          </View>
+        );
+      })}
+      {editable && (
+        <TouchableOpacity
+          style={styles.exactToggle}
+          onPress={() => setExact((v) => !v)}
+          accessibilityRole="button"
+          accessibilityLabel={exact ? 'Sembunyikan angka persis' : 'Angka persis'}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Text style={styles.exactToggleText}>{exact ? 'Sembunyikan angka persis' : 'Angka persis (opsional)'}</Text>
+        </TouchableOpacity>
+      )}
 
       {preview ? (
         <Text style={styles.preview}>
@@ -276,11 +329,18 @@ const styles = StyleSheet.create({
   inputDisabled: { backgroundColor: COLORS.surfaceAlt, color: COLORS.textSec },
   textarea: { minHeight: 64, textAlignVertical: 'top', alignSelf: 'stretch', marginTop: SPACE.xs },
   pctSign: { fontSize: TYPE.sm, lineHeight: lh(TYPE.sm), fontFamily: FONTS.semibold, color: COLORS.textSec, marginRight: SPACE.xs },
-  chip: {
-    minWidth: 40, minHeight: 36, paddingHorizontal: SPACE.sm, borderRadius: RADIUS, borderWidth: 1,
+  statusRow: { flexDirection: 'row', gap: SPACE.xs, marginTop: SPACE.xs },
+  statusChip: {
+    flex: 1, minHeight: 44, paddingHorizontal: SPACE.xs, borderRadius: RADIUS, borderWidth: 1,
     borderColor: COLORS.border, backgroundColor: COLORS.surface, alignItems: 'center', justifyContent: 'center',
   },
-  chipText: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.text },
+  statusChipOn: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  statusChipText: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.text, textAlign: 'center' },
+  statusChipTextOn: { color: COLORS.textInverse },
+  exactToggle: { alignSelf: 'flex-start', marginTop: SPACE.sm, minHeight: 32, justifyContent: 'center' },
+  exactToggleText: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.medium, color: COLORS.info, textDecorationLine: 'underline' },
+  diary: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.info, marginTop: SPACE.sm },
+  diaryLine: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 2 },
   preview: { fontSize: TYPE.sm, lineHeight: lh(TYPE.sm), fontFamily: FONTS.semibold, color: COLORS.accentDark, marginTop: SPACE.md },
   error: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.regular, color: COLORS.critical, marginTop: SPACE.sm },
   warn: { fontSize: TYPE.xs, lineHeight: lh(TYPE.xs), fontFamily: FONTS.semibold, color: COLORS.warning, marginTop: SPACE.sm },
