@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1200" role="img" aria-labelledby="processdecodesvg-t">
+<title id="processdecodesvg-t">process/decode.svg — placeholder artwork, awaiting WHA Studio photography</title>
+<desc>Abstract architectural placeholder. Replace with real project photography.</desc>
+
+<defs>
+  <linearGradient id="processdecodesvg-g" x1="0" y1="0" x2="0.85" y2="1">
+    <stop offset="0" stop-color="#1E1D1A"/>
+    <stop offset="1" stop-color="#302f2c"/>
+  </linearGradient>
+  <linearGradient id="shaftGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F4F1EA" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#F4F1EA" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+<rect width="1600" height="1200" fill="url(#processdecodesvg-g)"/>
+
+<g stroke="#8B877E" stroke-width="1" opacity="0.2"><line x1="0" y1="86" x2="1600" y2="86"/><line x1="0" y1="171" x2="1600" y2="171"/><line x1="0" y1="257" x2="1600" y2="257"/><line x1="0" y1="343" x2="1600" y2="343"/><line x1="0" y1="429" x2="1600" y2="429"/><line x1="0" y1="514" x2="1600" y2="514"/><line x1="0" y1="600" x2="1600" y2="600"/><line x1="0" y1="686" x2="1600" y2="686"/><line x1="0" y1="771" x2="1600" y2="771"/><line x1="0" y1="857" x2="1600" y2="857"/><line x1="0" y1="943" x2="1600" y2="943"/><line x1="0" y1="1029" x2="1600" y2="1029"/><line x1="0" y1="1114" x2="1600" y2="1114"/></g><g stroke="#8B877E" stroke-width="1" opacity="0.2"><line x1="114" y1="0" x2="114" y2="1200"/><line x1="229" y1="0" x2="229" y2="1200"/><line x1="343" y1="0" x2="343" y2="1200"/><line x1="457" y1="0" x2="457" y2="1200"/><line x1="571" y1="0" x2="571" y2="1200"/><line x1="686" y1="0" x2="686" y2="1200"/><line x1="800" y1="0" x2="800" y2="1200"/><line x1="914" y1="0" x2="914" y2="1200"/><line x1="1029" y1="0" x2="1029" y2="1200"/><line x1="1143" y1="0" x2="1143" y2="1200"/><line x1="1257" y1="0" x2="1257" y2="1200"/><line x1="1371" y1="0" x2="1371" y2="1200"/><line x1="1486" y1="0" x2="1486" y2="1200"/></g>
+<path d="M 160 1020 Q 800 60 1440 1020" fill="none" stroke="#C9C2B4" stroke-width="5"/>
+<circle cx="800" cy="540" r="192" fill="#8B877E" opacity="0.5"/>
+<filter id="processdecodesvg-n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<rect width="1600" height="1200" filter="url(#processdecodesvg-n)" opacity="0.05"/>
+<text x="48" y="1165" font-family="Helvetica, Arial, sans-serif" font-size="14" letter-spacing="2.0" fill="rgba(244,241,234,0.5)">PLACEHOLDER · SITE STUDY</text>
+</svg>

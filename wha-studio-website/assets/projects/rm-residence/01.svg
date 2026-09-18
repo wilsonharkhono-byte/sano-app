@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 1250" role="img" aria-labelledby="projectsrmresidence01svg-t">
+<title id="projectsrmresidence01svg-t">rm-residence — placeholder artwork, awaiting WHA Studio photography</title>
+<desc>Abstract architectural placeholder. Replace with real project photography.</desc>
+
+<defs>
+  <linearGradient id="projectsrmresidence01svg-g" x1="0" y1="0" x2="0.85" y2="1">
+    <stop offset="0" stop-color="#26251F"/>
+    <stop offset="1" stop-color="#383731"/>
+  </linearGradient>
+  <linearGradient id="shaftGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F4F1EA" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#F4F1EA" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+<rect width="2000" height="1250" fill="url(#projectsrmresidence01svg-g)"/>
+
+<rect x="0" y="525" width="2000" height="200" fill="#C9C2B4" opacity="0.9"/>
+<rect x="240" y="375" width="1240" height="150" fill="#A8875A" opacity="0.85"/>
+<rect x="1100" y="725" width="900" height="125" fill="#26251F" opacity="0.5"/>
+<line x1="0" y1="525" x2="2000" y2="525" stroke="#A8875A" stroke-width="3"/>
+<g stroke="#C9C2B4" stroke-width="1" opacity="0.14"><line x1="0" y1="57" x2="2000" y2="57"/><line x1="0" y1="114" x2="2000" y2="114"/><line x1="0" y1="170" x2="2000" y2="170"/><line x1="0" y1="227" x2="2000" y2="227"/><line x1="0" y1="284" x2="2000" y2="284"/><line x1="0" y1="341" x2="2000" y2="341"/><line x1="0" y1="398" x2="2000" y2="398"/><line x1="0" y1="455" x2="2000" y2="455"/><line x1="0" y1="511" x2="2000" y2="511"/><line x1="0" y1="568" x2="2000" y2="568"/><line x1="0" y1="625" x2="2000" y2="625"/><line x1="0" y1="682" x2="2000" y2="682"/><line x1="0" y1="739" x2="2000" y2="739"/><line x1="0" y1="795" x2="2000" y2="795"/><line x1="0" y1="852" x2="2000" y2="852"/><line x1="0" y1="909" x2="2000" y2="909"/><line x1="0" y1="966" x2="2000" y2="966"/><line x1="0" y1="1023" x2="2000" y2="1023"/><line x1="0" y1="1080" x2="2000" y2="1080"/><line x1="0" y1="1136" x2="2000" y2="1136"/><line x1="0" y1="1193" x2="2000" y2="1193"/></g>
+<filter id="projectsrmresidence01svg-n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<rect width="2000" height="1250" filter="url(#projectsrmresidence01svg-n)" opacity="0.05"/>
+<text x="60" y="1206" font-family="Helvetica, Arial, sans-serif" font-size="17" letter-spacing="2.4" fill="rgba(244,241,234,0.5)">PLACEHOLDER · RM RESIDENCE PHOTOGRAPHY</text>
+</svg>

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1200" role="img" aria-labelledby="processdistillsvg-t">
+<title id="processdistillsvg-t">process/distill.svg — placeholder artwork, awaiting WHA Studio photography</title>
+<desc>Abstract architectural placeholder. Replace with real project photography.</desc>
+
+<defs>
+  <linearGradient id="processdistillsvg-g" x1="0" y1="0" x2="0.85" y2="1">
+    <stop offset="0" stop-color="#26251F"/>
+    <stop offset="1" stop-color="#383731"/>
+  </linearGradient>
+  <linearGradient id="shaftGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F4F1EA" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#F4F1EA" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+<rect width="1600" height="1200" fill="url(#processdistillsvg-g)"/>
+
+<rect x="0" y="504" width="1600" height="192" fill="#C9C2B4" opacity="0.9"/>
+<rect x="192" y="360" width="992" height="144" fill="#A8875A" opacity="0.85"/>
+<rect x="880.0000000000001" y="696" width="720" height="120" fill="#26251F" opacity="0.5"/>
+<line x1="0" y1="504" x2="1600" y2="504" stroke="#A8875A" stroke-width="3"/>
+<g stroke="#C9C2B4" stroke-width="1" opacity="0.14"><line x1="0" y1="55" x2="1600" y2="55"/><line x1="0" y1="109" x2="1600" y2="109"/><line x1="0" y1="164" x2="1600" y2="164"/><line x1="0" y1="218" x2="1600" y2="218"/><line x1="0" y1="273" x2="1600" y2="273"/><line x1="0" y1="327" x2="1600" y2="327"/><line x1="0" y1="382" x2="1600" y2="382"/><line x1="0" y1="436" x2="1600" y2="436"/><line x1="0" y1="491" x2="1600" y2="491"/><line x1="0" y1="545" x2="1600" y2="545"/><line x1="0" y1="600" x2="1600" y2="600"/><line x1="0" y1="655" x2="1600" y2="655"/><line x1="0" y1="709" x2="1600" y2="709"/><line x1="0" y1="764" x2="1600" y2="764"/><line x1="0" y1="818" x2="1600" y2="818"/><line x1="0" y1="873" x2="1600" y2="873"/><line x1="0" y1="927" x2="1600" y2="927"/><line x1="0" y1="982" x2="1600" y2="982"/><line x1="0" y1="1036" x2="1600" y2="1036"/><line x1="0" y1="1091" x2="1600" y2="1091"/><line x1="0" y1="1145" x2="1600" y2="1145"/></g>
+<filter id="processdistillsvg-n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<rect width="1600" height="1200" filter="url(#processdistillsvg-n)" opacity="0.05"/>
+<text x="48" y="1165" font-family="Helvetica, Arial, sans-serif" font-size="14" letter-spacing="2.0" fill="rgba(244,241,234,0.5)">PLACEHOLDER · CONCEPT DRAWING</text>
+</svg>
