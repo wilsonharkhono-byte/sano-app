@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Material vs progres — mockup alternatives</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  body { margin: 0; background: #D2D0C4; font-family: 'Space Grotesk', system-ui, sans-serif; color: #141210; }
+  .page { max-width: 1240px; margin: 0 auto; padding: 24px 16px 48px; }
+  .page h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  .page p.sub { font-size: 13px; color: #524E49; margin: 0 0 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 24px; align-items: start; }
+  .alt { display: flex; flex-direction: column; gap: 10px; }
+  .alt .name { font-size: 14px; font-weight: 600; color: #141210; }
+  .alt .name span { display: inline-block; width: 22px; height: 22px; border-radius: 11px; background: #141210; color: #FDFAF6; text-align: center; line-height: 22px; font-size: 12px; margin-right: 8px; }
+  .alt .desc { font-size: 12px; color: #524E49; margin: -4px 0 4px; }
+  .phone { width: 360px; box-sizing: border-box; background: #D2D0C4; border: 1px solid #B5AFA8; border-radius: 24px; padding: 12px; }
+  .phone .bar { height: 20px; display: flex; justify-content: space-between; font-size: 11px; color: #524E49; padding: 0 10px 6px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Material vs progres — target mockup (spec 2026-09-20)</h1>
+  <p class="sub">Placeholder data from Bukit Darmo (besi requested/approved are real; installed and diary figures are illustrative). Chips, legend items and “Lihat tren mingguan” work. Installed and diary figures are illustrative.</p>
+  <div class="grid">
+<script>
+window.MOCK = {
+  project: 'Bukit Darmo Golf D-18',
+  today: '2026-09-18',
+  thisWeekIndex: 8,
+  weeks: ['2026-07-20','2026-07-27','2026-08-03','2026-08-10','2026-08-17','2026-08-24','2026-08-31','2026-09-07','2026-09-14','2026-09-21','2026-09-28','2026-10-05','2026-10-12','2026-10-19','2026-10-26','2026-11-02'],
+  weekLabels: ['20 Jul','27 Jul','3 Agu','10 Agu','17 Agu','24 Agu','31 Agu','7 Sep','14 Sep','21 Sep','28 Sep','5 Okt','12 Okt','19 Okt','26 Okt','2 Nov'],
+  groups: [
+    {
+      key: 'besi', label: 'Besi', category: 'Struktur', unit: 'kg', work: 'Pembesian', planned: 233700,
+      requested: [0, 2.3, 2.3, 2.3, 43.3, 43.3, 43.3, 43.3, 43.3, null, null, null, null, null, null, null],
+      approved:  [0, 2.1, 2.1, 2.1, 30.9, 30.9, 30.9, 30.9, 30.9, null, null, null, null, null, null, null],
+      verified:  [null, null, null, 1.0, 2.5, 4.8, 7.5, 10.6, 13.0, null, null, null, null, null, null, null],
+      diary:     [null, null, 0.8, 2.0, 4.0, 6.5, 9.5, 13.0, 16.0, null, null, null, null, null, null, null],
+      projected: [null, null, null, null, null, null, null, null, 13.0, 15.1, 17.1, 19.2, 21.2, 23.3, 25.3, 27.4],
+      activity:  [0, 0, 2, 3, 5, 4, 6, 5, 3, null, null, null, null, null, null, null],
+      relation: { stockPts: 17.9, stockQty: '41,8 t', leadWeeks: 4, coverWeeks: 9, pacePerWeek: 2.05, firstRequest: '27 Jul', firstMention: '3 Agu', lagDays: 7 }
+    },
+    {
+      key: 'bekisting', label: 'Bekisting', category: 'Kayu & Bekisting', unit: 'lbr', work: 'Bekisting', planned: 1200,
+      requested: [0, 0, 0, 0, 0, 0, 12.5, 12.5, 12.5, null, null, null, null, null, null, null],
+      approved:  [0, 0, 0, 0, 0, 0, 12.5, 12.5, 12.5, null, null, null, null, null, null, null],
+      verified:  [null, null, null, 1.5, 3.0, 5.0, 6.5, 8.0, 9.0, null, null, null, null, null, null, null],
+      diary:     [null, null, 1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 12.0, null, null, null, null, null, null, null],
+      projected: [null, null, null, null, null, null, null, null, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0],
+      activity:  [0, 1, 3, 4, 4, 3, 4, 3, 2, null, null, null, null, null, null, null],
+      relation: { stockPts: 3.5, stockQty: '42 lbr', leadWeeks: 2, coverWeeks: 3, pacePerWeek: 1.0, firstRequest: '31 Agu', firstMention: '3 Agu', lagDays: -28 }
+    },
+    {
+      key: 'beton', label: 'Semen', category: 'Material Beton', unit: 'zak', work: 'Pengecoran', planned: 2000,
+      requested: [0, 0, 0, 0, 0, 0, 10.0, 10.0, 10.0, null, null, null, null, null, null, null],
+      approved:  [0, 0, 0, 0, 0, 0, 10.0, 10.0, 10.0, null, null, null, null, null, null, null],
+      verified:  [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+      diary:     [null, null, null, null, null, null, 1.0, 2.0, 3.0, null, null, null, null, null, null, null],
+      projected: [null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+      activity:  [0, 0, 0, 0, 0, 0, 1, 2, 2, null, null, null, null, null, null, null],
+      relation: { stockPts: null, stockQty: null, leadWeeks: null, coverWeeks: null, pacePerWeek: null, firstRequest: '31 Agu', firstMention: '31 Agu', lagDays: 0 }
+    }
+  ],
+  series: [
+    { key: 'requested', label: 'Diminta', note: 'kumulatif, minggu permintaan dibuat' },
+    { key: 'approved', label: 'Disetujui', note: 'kumulatif, minggu keputusan' },
+    { key: 'verified', label: 'Terpasang (terverifikasi)', note: '% terverifikasi × rencana per area' },
+    { key: 'diary', label: 'Menurut laporan harian', note: 'belum diverifikasi: Berjalan 50 · Selesai 100' },
+    { key: 'projected', label: 'Proyeksi laju 4 minggu', note: 'dari titik terverifikasi terakhir' }
+  ]
+};
+</script>
+<div class="alt"><div class="name"><span>E</span>Material vs progres — radial + tren mingguan</div><div class="phone"><div class="bar"><span>09:41</span><span>SANO</span></div>
+<style>
+#alt-e{font-family:'Space Grotesk',system-ui,sans-serif;color:#141210}
+#alt-e *{box-sizing:border-box}
+#alt-e .e-card{width:100%;max-width:360px;background:#FDFAF6;border:.5px solid rgba(148,148,148,.18);border-radius:12px;padding:14px}
+#alt-e .e-lbl{font-size:11px;font-weight:700;letter-spacing:.5px;color:#524E49}
+#alt-e .e-title{font-size:15px;font-weight:600;margin:6px 0 2px}
+#alt-e .e-sub{font-size:11px;color:#524E49}
+#alt-e .e-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+#alt-e .e-chip{height:32px;border-radius:16px;border:1px solid #B5AFA8;background:transparent;color:#524E49;font:400 12px 'Space Grotesk',system-ui,sans-serif;padding:0 10px;cursor:pointer;white-space:nowrap}
+#alt-e .e-chip.e-on{background:rgba(178,159,134,.10);border-color:#7A6B56;color:#141210}
+#alt-e .e-ringwrap{position:relative;width:264px;height:240px;margin:8px auto 0}
+#alt-e #e-ring{display:block;width:264px;height:240px}
+#alt-e .e-hero{position:absolute;left:50%;top:132px;transform:translate(-50%,-50%);width:118px;text-align:center}
+#alt-e .e-hero-v{font-size:22px;font-weight:600;color:#141210;line-height:1.1}
+#alt-e .e-hero-l{font-size:11px;line-height:1.25;color:#524E49;margin-top:3px}
+#alt-e .e-vals{max-width:264px;margin:2px auto 0;display:flex;flex-direction:column;gap:6px}
+#alt-e .e-vrow{display:flex;align-items:center;gap:8px}
+#alt-e .e-vk{flex:0 0 10px;line-height:0}
+#alt-e .e-vl{flex:1;min-width:0;font-size:11px;color:#524E49}
+#alt-e .e-vv{font-size:13px;font-weight:600;color:#141210;white-space:nowrap}
+#alt-e .e-legend{display:flex;flex-wrap:wrap;gap:7px 14px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(148,148,148,.18)}
+#alt-e .e-li{display:inline-flex;align-items:center;gap:6px;background:none;border:0;padding:0;cursor:pointer;font:400 11px 'Space Grotesk',system-ui,sans-serif;color:#524E49;text-align:left}
+#alt-e .e-li.e-off{opacity:.4}
+#alt-e .e-tiles{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+#alt-e .e-tile{flex:1 1 138px;min-width:110px;background:#F2EFE9;border-radius:8px;padding:8px 10px}
+#alt-e .e-tl{font-size:11px;color:#524E49}
+#alt-e .e-tv{font-size:15px;font-weight:600;color:#141210;margin-top:2px;overflow-wrap:break-word}
+#alt-e .e-ts{font-size:11px;color:#524E49;margin-top:2px;overflow-wrap:break-word}
+#alt-e .e-ghost{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;height:44px;border-radius:8px;border:1px solid #B5AFA8;background:transparent;color:#524E49;font:500 13px 'Space Grotesk',system-ui,sans-serif;letter-spacing:.3px;cursor:pointer;margin-top:14px}
+#alt-e .e-chev{display:inline-block;font-size:15px;line-height:1;transition:transform .15s ease}
+#alt-e .e-chev.e-up{transform:rotate(180deg)}
+#alt-e .e-detail{display:none}
+#alt-e .e-detail.e-open{display:block}
+#alt-e .e-dsub{font-size:11px;color:#524E49;margin:12px 0 2px}
+#alt-e #e-chart{margin-top:2px}
+#alt-e #e-chart svg{display:block;font-family:'Space Grotesk',system-ui,sans-serif}
+#alt-e .e-lag{font-size:13px;color:#524E49;margin-top:14px}
+#alt-e .e-cap{font-size:11px;color:#524E49;margin-top:6px}
+#alt-e .e-hint{font-size:11px;color:#524E49;margin-top:8px}
+</style>
+
+<section id="alt-e">
+  <div class="e-card">
+    <div class="e-lbl">MATERIAL VS PROGRES</div>
+    <div class="e-title">Material vs progres</div>
+    <div class="e-sub">Posisi minggu ini, % dari rencana BoQ</div>
+    <div class="e-chips" id="e-chips"></div>
+    <div class="e-ringwrap">
+      <svg id="e-ring" viewBox="0 0 220 200" role="img" aria-label="Posisi minggu ini"></svg>
+      <div class="e-hero" id="e-hero"></div>
+    </div>
+    <div class="e-vals" id="e-vals"></div>
+    <div class="e-legend" id="e-rlegend"></div>
+    <div class="e-tiles" id="e-tiles"></div>
+    <button type="button" class="e-ghost" id="e-toggle">
+      <span id="e-toggle-txt">LIHAT TREN MINGGUAN</span><span class="e-chev" id="e-chev">&#8964;</span>
+    </button>
+    <div class="e-detail" id="e-detail">
+      <div class="e-dsub">Kumulatif per minggu, % dari rencana BoQ</div>
+      <div id="e-chart"></div>
+      <div class="e-legend" id="e-llegend" style="border-top:0;padding-top:0;margin-top:8px"></div>
+    </div>
+    <div class="e-lag" id="e-lag"></div>
+    <div class="e-cap" id="e-cap"></div>
+    <div class="e-hint">Diminta dan disetujui dari permintaan material; terpasang dari klaim terverifikasi &times; rencana material per area. Angka terpasang &amp; laporan harian di mockup ini: ilustrasi.</div>
+  </div>
+</section>
+
+<script>
+(function () {
+  var M = window.MOCK, root = document.getElementById('alt-e');
+  var ST = {
+    requested: { c: '#D9662B', d: '', w: 2, o: .40 },
+    approved:  { c: '#D9662B', d: '', w: 2, o: 1 },
+    verified:  { c: '#1565C0', d: '', w: 2, o: 1 },
+    diary:     { c: '#1baf7a', d: '', w: 1.5, o: 1 },
+    projected: { c: '#1565C0', d: '2 4', w: 2, o: 1 }
+  };
+  var KEYS = ['requested', 'approved', 'verified', 'diary'];
+  var RR = { proc: 100, verified: 84, diary: 68 };
+  var VL = { diary: 'Menurut laporan harian (belum diverifikasi)' };
+  var LAB = {}; M.series.forEach(function (s) { LAB[s.key] = s.label; });
+  var gi = 0, hideRing = {}, hideLine = { requested: true, diary: true }, open = false, boxes = [];
+
+  function fmt(n, d) { return n == null ? '—' : n.toLocaleString('id-ID', { minimumFractionDigits: d, maximumFractionDigits: d }); }
+  function lastOf(a) { for (var i = a.length - 1; i >= 0; i--) if (a[i] != null) return { v: a[i], i: i }; return null; }
+  function swatch(k, off) {
+    var s = ST[k], m = '<rect x="0" y="0" width="10" height="10" rx="2" fill="' + s.c + '"' + (s.o < 1 ? ' opacity="' + s.o + '"' : '') + '/>';
+    if (off) m += '<line x1="0.5" y1="9.5" x2="9.5" y2="0.5" stroke="#847E78" stroke-width="1"/>';
+    return '<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">' + m + '</svg>';
+  }
+  function lineKey(k, off) {
+    var s = ST[k], m = '<line x1="0" y1="7" x2="14" y2="7" stroke="' + s.c + '" stroke-width="' + s.w + '"' +
+      (s.d ? ' stroke-dasharray="' + s.d + '"' : '') + (s.o < 1 ? ' opacity="' + s.o + '"' : '') + '/>';
+    if (k === 'verified') m += '<circle cx="7" cy="7" r="3.2" fill="#1565C0" stroke="#FDFAF6" stroke-width="1.6"/>';
+    if (off) m += '<line x1="1" y1="13" x2="13" y2="1" stroke="#847E78" stroke-width="1"/>';
+    return '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">' + m + '</svg>';
+  }
+
+  // ---- radial: 270° band, open quarter at the bottom (start 7:30, end 4:30) ----
+  var A0 = 225, SWEEP = 270, CX = 110, CY = 110, SW = 10, GAP = 12; // GAP = 2px seen + two square caps
+  function polar(r, deg) { var a = deg * Math.PI / 180; return [CX + r * Math.sin(a), CY - r * Math.cos(a)]; }
+  function arc(r, a0, a1) {
+    var p = polar(r, a0), q = polar(r, a1);
+    return 'M ' + p[0].toFixed(2) + ' ' + p[1].toFixed(2) + ' A ' + r + ' ' + r + ' 0 ' + ((a1 - a0) > 180 ? 1 : 0) + ' 1 ' + q[0].toFixed(2) + ' ' + q[1].toFixed(2);
+  }
+  function track(r) { return '<path d="' + arc(r, A0, A0 + SWEEP) + '" stroke="rgba(20,18,16,0.08)" stroke-width="' + SW + '" fill="none" stroke-linecap="square"/>'; }
+  function seg(r, a0, a1, c, o) {
+    return '<path d="' + arc(r, a0, a1) + '" stroke="' + c + '" stroke-width="' + SW + '" fill="none" stroke-linecap="square"' + (o < 1 ? ' opacity="' + o + '"' : '') + '/>';
+  }
+  function ang(v) { return SWEEP * Math.max(0, Math.min(100, v)) / 100; }
+  function ring(g) {
+    var p = [], la = lastOf(g.approved), lr = lastOf(g.requested), lv = lastOf(g.verified), ld = lastOf(g.diary);
+    if (!hideRing.requested || !hideRing.approved) {            // ring 1 — pengadaan
+      p.push(track(RR.proc));
+      var aA = la ? ang(la.v) : 0;
+      if (!hideRing.approved && aA > 0) p.push(seg(RR.proc, A0, A0 + aA, '#D9662B', 1));
+      if (!hideRing.requested && lr) {
+        var rA = ang(lr.v), s0 = A0 + aA + GAP / RR.proc * 180 / Math.PI;
+        if (rA > aA && s0 < A0 + rA) p.push(seg(RR.proc, s0, A0 + rA, '#D9662B', .40));
+      }
+    }
+    if (!hideRing.verified) {                                    // ring 2 — terpasang
+      p.push(track(RR.verified));
+      if (lv) {
+        var vA = ang(lv.v), e = polar(RR.verified, A0 + vA);
+        if (vA > 0) p.push(seg(RR.verified, A0, A0 + vA, '#1565C0', 1));
+        p.push('<circle cx="' + e[0].toFixed(2) + '" cy="' + e[1].toFixed(2) + '" r="4" fill="#1565C0" stroke="#FDFAF6" stroke-width="2"/>');
+      }
+    }
+    if (!hideRing.diary) {                                       // ring 3 — laporan harian
+      p.push(track(RR.diary));
+      if (ld && ang(ld.v) > 0) p.push(seg(RR.diary, A0, A0 + ang(ld.v), '#1baf7a', 1));
+    }
+    p.push('<text x="39" y="194" text-anchor="middle" font-size="9.2" fill="#847E78">0 %</text>');
+    p.push('<text x="181" y="194" text-anchor="middle" font-size="9.2" fill="#847E78">100 %</text>');
+    root.querySelector('#e-ring').innerHTML = p.join('');
+    root.querySelector('#e-hero').innerHTML = '<div class="e-hero-v">' + (lv ? fmt(lv.v, 1) + ' %' : '—') + '</div>' +
+      '<div class="e-hero-l">' + (lv ? 'terpasang, terverifikasi' : 'belum ada progres terverifikasi') + '</div>';
+    root.querySelector('#e-hero').style.opacity = hideRing.verified ? '.4' : '1';
+    root.querySelector('#e-vals').innerHTML = KEYS.map(function (k) {
+      var l = lastOf(g[k]);
+      return '<div class="e-vrow" style="opacity:' + (hideRing[k] ? .4 : 1) + '"><span class="e-vk">' + swatch(k, false) +
+        '</span><span class="e-vl">' + (VL[k] || LAB[k]) + '</span><span class="e-vv">' + (l ? fmt(l.v, 1) + ' %' : '—') + '</span></div>';
+    }).join('');
+  }
+
+  // ---- detail: the weekly trend chart ----
+  function L(x1, y1, x2, y2, c, w, d, o) {
+    return '<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1) + '" x2="' + x2.toFixed(1) + '" y2="' + y2.toFixed(1) +
+      '" stroke="' + c + '" stroke-width="' + w + '"' + (d ? ' stroke-dasharray="' + d + '"' : '') + (o ? ' opacity="' + o + '"' : '') + '/>';
+  }
+  function T(x, y, s, a, f, halo) {
+    return '<text x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" text-anchor="' + (a || 'middle') + '" font-size="11" fill="' + (f || '#847E78') + '"' +
+      (halo ? ' paint-order="stroke" stroke="#FDFAF6" stroke-width="3" stroke-linejoin="round"' : '') + '>' + s + '</text>';
+  }
+  function bx(x, y, s) { var w = s.length * 5.6 + 4; return [x - w / 2, y - 8, x + w / 2, y + 2]; }
+  function hit(b) { for (var i = 0; i < boxes.length; i++) { var o = boxes[i]; if (b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]) return true; } return false; }
+  function lastIdx(a) { for (var i = a.length - 1; i >= 0; i--) if (a[i] != null) return i; return -1; }
+  function dOf(a, X, Y) {
+    var d = '', pen = false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] == null) { pen = false; continue; }
+      d += (pen ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(a[i]).toFixed(1) + ' '; pen = true;
+    }
+    return d;
+  }
+  function chart() {
+    var g = M.groups[gi], host = root.querySelector('#e-chart');
+    var W = Math.round(host.clientWidth || 0); if (W < 200) W = 332;
+    var padL = 28, padR = 10, padT = 12, padB = 20, H = 180, n = M.weeks.length;
+    var step = (W - padL - padR) / (n - 1), Ht = padT + H + padB;
+    function X(i) { return padL + i * step; }
+    function Y(v) { return padT + H * (1 - v / 100); }
+    var u = [], a = [], i; boxes = [];
+
+    [0, 25, 50, 75, 100].forEach(function (v) {
+      u.push(L(padL, Y(v), W - padR, Y(v), '#E6E2DB', 1));
+      u.push(T(padL - 6, Y(v) + 3.6, String(v), 'end'));
+    });
+    var tx = X(M.thisWeekIndex);
+    u.push(L(tx, padT, tx, padT + H, '#B5AFA8', 1));
+    u.push(T(tx - 4, padT + 9, 'minggu ini', 'end'));
+
+    // ribbon: the wash between Disetujui (top) and Terpasang (bottom)
+    var wash = !hideLine.approved && !hideLine.verified, wide = -1, run = [];
+    if (wash) for (i = 0; i <= n; i++) {
+      if (i < n && g.approved[i] != null && g.verified[i] != null) { run.push(i); continue; }
+      if (run.length > 1) {
+        var top = '', bot = '';
+        run.forEach(function (j) { top += (top ? 'L' : 'M') + X(j).toFixed(1) + ' ' + Y(g.approved[j]).toFixed(1) + ' '; });
+        run.slice().reverse().forEach(function (j) { bot += 'L' + X(j).toFixed(1) + ' ' + Y(g.verified[j]).toFixed(1) + ' '; });
+        u.push('<path d="' + top + bot + 'Z" fill="#D9662B" opacity=".10"/>');
+        run.forEach(function (j) { if (wide < 0 || g.approved[j] - g.verified[j] > g.approved[wide] - g.verified[wide]) wide = j; });
+      }
+      run = [];
+    }
+    // lead bracket, at today's verified level
+    var vi = lastIdx(g.verified), from = -1, r = g.relation;
+    if (r.leadWeeks != null && vi >= 0 && !hideLine.verified) {
+      for (i = 0; i <= vi; i++) if (g.approved[i] != null && g.approved[i] >= g.verified[vi]) { from = i; break; }
+      if (from >= 0 && from < vi) {
+        var by = Y(g.verified[vi]), x1 = X(from), x2 = X(vi), bl = '~' + r.leadWeeks + ' minggu', bby = by - 9;
+        a.push('<path d="M' + x1.toFixed(1) + ' ' + (by - 4).toFixed(1) + 'V' + by.toFixed(1) + 'H' + x2.toFixed(1) + 'V' + (by - 4).toFixed(1) + '" fill="none" stroke="#847E78" stroke-width="1"/>');
+        boxes.push(bx((x1 + x2) / 2, bby, bl));
+        a.push(T((x1 + x2) / 2, bby, bl, 'middle', '#524E49', 1));
+      }
+    }
+    // ribbon label, once, near the widest point
+    var tall = function (j) { return g.approved[j] != null && g.verified[j] != null && (g.approved[j] - g.verified[j]) / 100 * H >= 16; };
+    if (wide >= 0 && tall(wide)) {
+      var lo = wide, hi = wide, lw = 'stok teoretis'.length * 5.6 + 4;
+      while (lo > 0 && tall(lo - 1)) lo--;
+      while (hi < n - 1 && tall(hi + 1)) hi++;
+      var rx = X(hi) - X(lo) >= lw ? Math.min(Math.max(X(wide), X(lo) + lw / 2), X(hi) - lw / 2) : (X(lo) + X(hi)) / 2;
+      rx = Math.min(Math.max(rx, padL + lw / 2), W - padR - lw / 2);
+      var at = g.approved[Math.round((rx - padL) / step)];
+      var ry = Y(at == null ? g.approved[wide] : at) + 11, rb = bx(rx, ry, 'stok teoretis');
+      if (!hit(rb)) { boxes.push(rb); a.push(T(rx, ry, 'stok teoretis', 'middle', '#524E49', 1)); }
+    }
+    // cover: dotted run forward at the Disetujui level
+    if (r.coverWeeks != null && !hideLine.approved && !hideLine.projected && g.approved[M.thisWeekIndex] != null) {
+      var cy = Y(g.approved[M.thisWeekIndex]), cx2 = X(Math.min(M.thisWeekIndex + r.coverWeeks, n - 1));
+      a.push(L(tx, cy, cx2, cy, '#D9662B', 1, '2 3', .75));
+      var cl = 'cukup ~' + r.coverWeeks + ' minggu', cx = Math.min(Math.max((tx + cx2) / 2, padL + cl.length * 2.8), W - padR - cl.length * 2.8), cyy = cy - 7, k;
+      for (k = 0; k < 3 && hit(bx(cx, cyy, cl)); k++) cyy -= 12;
+      boxes.push(bx(cx, cyy, cl));
+      a.push(T(cx, cyy, cl, 'middle', '#524E49', 1));
+    }
+
+    ['requested', 'diary', 'approved', 'verified', 'projected'].forEach(function (k) {
+      if (hideLine[k]) return;
+      var d = dOf(g[k], X, Y); if (!d) return;
+      var s = ST[k];
+      u.push('<path d="' + d + '" fill="none" stroke="' + s.c + '" stroke-width="' + s.w + '"' + (s.d ? ' stroke-dasharray="' + s.d + '"' : '') +
+        (s.o < 1 ? ' opacity="' + s.o + '"' : '') + ' stroke-linejoin="round" stroke-linecap="round"/>');
+    });
+    if (!hideLine.verified) for (i = 0; i < n; i++) if (g.verified[i] != null)
+      u.push('<circle cx="' + X(i).toFixed(1) + '" cy="' + Y(g.verified[i]).toFixed(1) + '" r="4" fill="#1565C0" stroke="#FDFAF6" stroke-width="2"/>');
+
+    for (i = 0; i < n; i += 3) {
+      var lx = X(i), lbw = M.weekLabels[i].length * 5.6, an = 'middle';
+      if (lx + lbw / 2 > W) { lx = W; an = 'end'; } else if (lx - lbw / 2 < 0) { lx = 0; an = 'start'; }
+      u.push(T(lx, padT + H + 14, M.weekLabels[i], an));
+    }
+    host.innerHTML = '<svg width="' + W + '" height="' + Ht + '" viewBox="0 0 ' + W + ' ' + Ht + '" role="img" aria-label="Tren mingguan">' + u.join('') + a.join('') + '</svg>';
+  }
+
+  function tile(lab, val, sub) {
+    return '<div class="e-tile"><div class="e-tl">' + lab + '</div><div class="e-tv">' + val + '</div><div class="e-ts">' + sub + '</div></div>';
+  }
+  function render() {
+    var g = M.groups[gi], r = g.relation;
+    root.querySelector('#e-chips').innerHTML = M.groups.map(function (x, i) {
+      return '<button type="button" class="e-chip' + (i === gi ? ' e-on' : '') + '" data-i="' + i + '">' + x.label + ' (' + x.unit + ') → ' + x.work + '</button>';
+    }).join('');
+    ring(g);
+    root.querySelector('#e-rlegend').innerHTML = KEYS.map(function (k) {
+      return '<button type="button" class="e-li' + (hideRing[k] ? ' e-off' : '') + '" data-r="' + k + '">' + swatch(k, !!hideRing[k]) + LAB[k] + '</button>';
+    }).join('');
+    root.querySelector('#e-llegend').innerHTML = M.series.map(function (s) {
+      return '<button type="button" class="e-li' + (hideLine[s.key] ? ' e-off' : '') + '" data-l="' + s.key + '">' + lineKey(s.key, !!hideLine[s.key]) +
+        s.label + (s.key === 'projected' ? ' (titik-titik)' : '') + '</button>';
+    }).join('');
+    root.querySelector('#e-tiles').innerHTML =
+      tile('Stok teoretis', r.stockQty || '—', r.stockQty ? 'disetujui − terpasang · ' + fmt(r.stockPts, 1) + ' poin' : 'belum ada progres terverifikasi') +
+      tile('Jeda material → pekerjaan', r.leadWeeks != null ? '~' + r.leadWeeks + ' minggu' : '—', r.leadWeeks != null ? 'disetujui sebelum terpasang' : 'belum bisa dihitung') +
+      tile('Cukup untuk', r.coverWeeks != null ? '~' + r.coverWeeks + ' minggu' : '—', r.pacePerWeek != null ? 'pada laju ' + fmt(r.pacePerWeek, 2) + ' poin/minggu' : 'belum ada laju');
+    root.querySelector('#e-lag').textContent = r.lagDays >= 0
+      ? 'Diminta pertama ' + r.firstRequest + '; ' + g.work.toLowerCase() + ' muncul di laporan harian ' + r.lagDays + ' hari kemudian.'
+      : g.work + ' sudah berjalan ' + (-r.lagDays) + ' hari sebelum permintaan pertama (' + r.firstRequest + ').';
+    root.querySelector('#e-cap').textContent = 'Rencana ' + fmt(g.planned, 0) + ' ' + g.unit;
+    if (open) chart();
+  }
+
+  function up(node, cls) { while (node && node !== root) { if (node.classList && node.classList.contains(cls)) return node; node = node.parentNode; } return null; }
+  root.addEventListener('click', function (e) {
+    var t = e.target, c;
+    if (up(t, 'e-ghost')) {
+      open = !open;
+      root.querySelector('#e-detail').classList.toggle('e-open', open);
+      root.querySelector('#e-chev').classList.toggle('e-up', open);
+      root.querySelector('#e-toggle-txt').textContent = open ? 'SEMBUNYIKAN TREN' : 'LIHAT TREN MINGGUAN';
+      if (open) chart();
+      return;
+    }
+    if ((c = up(t, 'e-chip'))) { gi = +c.getAttribute('data-i'); render(); return; }
+    if ((c = up(t, 'e-li'))) {
+      var rk = c.getAttribute('data-r');
+      if (rk) hideRing[rk] = !hideRing[rk]; else { var lk = c.getAttribute('data-l'); hideLine[lk] = !hideLine[lk]; }
+      render();
+    }
+  });
+  window.addEventListener('resize', function () { if (open) chart(); });
+  render();
+})();
+</script>
+</div></div>
+  </div>
+</div>
+</body>
+</html>
