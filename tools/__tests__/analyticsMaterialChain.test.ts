@@ -72,3 +72,81 @@ describe('buildMaterialChain procurement series', () => {
     expect(g.projectionNote).toBe('Belum ada progres terverifikasi.');
   });
 });
+
+const verifiedLines = [
+  vline('k1', { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 }, '2026-08-26'),
+  vline('k1', { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 0 }, '2026-09-02'),
+  vline('k2', { SINGLE: 25 }, '2026-09-09'),
+  vline('zz', { SINGLE: 100 }, '2026-09-09'),
+];
+
+describe('buildMaterialChain installed series', () => {
+  it('reads each row’s stage percent as of the week, split rows by the group’s stage and single rows as a whole', () => {
+    const g = buildMaterialChain(input({ verifiedLines })).groups[0];
+    // k1: 50 % pembesian × 1 000 kg from the week of 24 Aug, 100 % from 31 Aug; k2 (SINGLE) 25 % × 3 000 kg from 7 Sep; zz is not in the plan.
+    expect(g.verified.slice(0, 6)).toEqual([0, 0, 12.5, 25, 43.8, 43.8]);
+    expect(g.today.verified).toBe(43.8);
+  });
+
+  it('projects the last weeks’ verified pace to 100 and extends the axis to the finish', () => {
+    const g = buildMaterialChain(input({ verifiedLines })).groups[0];
+    expect(g.relation).toMatchObject({ pacePerWeek: 10.4, windowWeeks: 3 });
+    expect(g.weeks).toHaveLength(12);
+    expect(g.weeks[11]).toBe('2026-10-26');
+    expect(g.projected.slice(4)).toEqual([null, 43.8, 54.2, 64.6, 75, 85.4, 95.8, 100]);
+    expect(g.verified.slice(6)).toEqual([null, null, null, null, null, null]);
+    expect(g.projectionNote).toBeNull();
+  });
+
+  it('needs verified progress in two different weeks before it projects', () => {
+    const g = buildMaterialChain(input({ verifiedLines: verifiedLines.slice(0, 1) })).groups[0];
+    expect(g.projectionNote).toBe('Belum cukup data: proyeksi butuh progres terverifikasi di dua minggu berbeda.');
+    expect(g.projected.every((v) => v === null)).toBe(true);
+    expect(g.relation.coverNote).toBe('belum ada laju');
+  });
+
+  it('turns confirmed diary lines into Berjalan 50 / Selesai 100 on the group’s stage, floored at verified', () => {
+    const lines = [
+      dline('l1', 'k1', 'PEMBESIAN', 'SELESAI', '2026-08-20', 3),
+      dline('l2', 'k1', 'BEKISTING', 'SELESAI', '2026-08-21', 4),
+      dline('l3', 'k2', 'BEKISTING', 'MULAI', '2026-09-10', 9),
+    ];
+    const g = buildMaterialChain(input({ verifiedLines, diary: { lines, readable: true } })).groups[0];
+    // 17 Aug: k1 selesai → 1 000 of 4 000. 7 Sep: k1 verified 100 %, k2 (single) mulai → 50 % of 3 000, above its verified 25 %.
+    expect(g.diary.slice(0, 6)).toEqual([0, 25, 25, 25, 62.5, 62.5]);
+    expect(g.today.diary).toBe(62.5);
+    expect(g.diaryReadable).toBe(true);
+  });
+
+  it('draws no diary series when the diary cannot be read, and none before any diary or verified row exists', () => {
+    const unreadable = buildMaterialChain(input({ verifiedLines, diary: { lines: [], readable: false } })).groups[0];
+    expect(unreadable.diary.every((v) => v === null)).toBe(true);
+    expect(unreadable.diaryReadable).toBe(false);
+    const empty = buildMaterialChain(input()).groups[0];
+    expect(empty.diary.every((v) => v === null)).toBe(true);
+    expect(empty.verified.every((v) => v === null)).toBe(true);
+  });
+});
+
+describe('buildMaterialChain relation', () => {
+  it('reports stock, lead and cover when approvals run ahead of installation', () => {
+    const more = [...requests, req('besi16', 2000, 'APPROVED', '2026-08-17', '2026-08-19')];
+    const g = buildMaterialChain(input({ requests: more, verifiedLines })).groups[0];
+    expect(g.approved.slice(0, 6)).toEqual([12.5, 62.5, 62.5, 62.5, 62.5, 62.5]);
+    expect(g.requested.slice(0, 6)).toEqual([12.5, 85, 85, 85, 85, 85]);
+    expect(g.relation).toMatchObject({ stockPts: 18.7, stockQty: 748, stockNote: null, leadWeeks: 4, leadWeekIndex: 1, leadNote: null, coverWeeks: 2, coverNote: null });
+    expect(g.warnings).toEqual([]);
+  });
+
+  it('shows a negative stock and warns when installation outruns what was approved', () => {
+    const g = buildMaterialChain(input({ verifiedLines })).groups[0];
+    expect(g.relation).toMatchObject({ stockPts: -31.3, stockQty: -1252, leadWeeks: null, leadNote: 'belum bisa dihitung', coverWeeks: null, coverNote: 'tidak ada stok tersisa' });
+    expect(g.warnings).toEqual(['Pekerjaan melebihi material yang disetujui: terpasang 43,8 %, disetujui 12,5 %.']);
+  });
+
+  it('says why each number is missing when nothing is verified', () => {
+    const g = buildMaterialChain(input()).groups[0];
+    expect(g.relation).toMatchObject({ stockPts: null, stockQty: null, stockNote: 'belum ada progres terverifikasi', leadNote: 'belum bisa dihitung', coverNote: 'belum ada laju', pacePerWeek: null });
+    expect(g.warnings).toEqual([]);
+  });
+});

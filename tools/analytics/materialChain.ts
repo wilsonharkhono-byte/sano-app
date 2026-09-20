@@ -220,10 +220,10 @@ function buildGroup(
   else if (verifiedWeeks.length < 2) projectionNote = 'Belum cukup data: proyeksi butuh progres terverifikasi di dua minggu berbeda.';
   else if ((now.verified as number) < 100) {
     // A const so the closure below keeps the narrowing `windowWeeks` (a `let`) loses.
-    const window = Math.max(1, Math.min(PACE_WINDOW_WEEKS, Math.round(daysBetween(verifiedWeeks[0], thisWeek) / 7)));
-    windowWeeks = window;
-    const before = series.find((s) => s.week === addCalendarDays(thisWeek, -7 * window))?.verified ?? 0;
-    const p = round1(((now.verified as number) - before) / window);
+    const paceWindow = Math.max(1, Math.min(PACE_WINDOW_WEEKS, Math.round(daysBetween(verifiedWeeks[0], thisWeek) / 7)));
+    windowWeeks = paceWindow;
+    const before = series.find((s) => s.week === addCalendarDays(thisWeek, -7 * paceWindow))?.verified ?? 0;
+    const p = round1(((now.verified as number) - before) / paceWindow);
     if (p > 0) pace = p; else projectionNote = `Tidak ada kenaikan progres terverifikasi dalam ${PACE_WINDOW_WEEKS} minggu terakhir.`;
   }
   const stepsToFull = pace ? Math.min(PROJECTION_MAX_WEEKS, Math.ceil((100 - (now.verified as number)) / pace)) : 0;
