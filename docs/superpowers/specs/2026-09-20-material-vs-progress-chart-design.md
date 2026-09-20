@@ -215,8 +215,9 @@ names the window it measured ("dalam 3 minggu terakhir"); a group at 100 % says 
 Let A = Disetujui(this week), T = Terpasang(this week), D = Diminta(this week), P = the
 group's plan.
 
-- Stok teoretis: A − T in points; in the group's unit it is the approved quantity minus the
-  installed quantity, from the unrounded sums (a tonne when kg ≥ 1 000).
+- Stok teoretis: the approved quantity minus the installed quantity, from the unrounded
+  sums, shown in the group's unit (a tonne when kg ≥ 1 000) and as points of the plan;
+  both from the same difference, so they always agree.
   Null with the reason "belum ada progres terverifikasi" when nothing is verified for the
   group; shown as a negative stock ("−3,2 t") when T > A.
 - Jeda: the first week w₀ with Disetujui(w₀) ≥ T; jeda = weeks from w₀ to this week. Null

@@ -1418,7 +1418,7 @@ describe('MaterialChainCard', () => {
     expect(getByText('85 %')).toBeTruthy();
     expect(getByText('62,5 %')).toBeTruthy();
     expect(getByText('750 kg')).toBeTruthy();
-    expect(getByText('disetujui − terpasang · 18,7 poin')).toBeTruthy();
+    expect(getByText('disetujui − terpasang · 18,8 poin')).toBeTruthy();
     expect(getByText('~4 minggu')).toBeTruthy();
     expect(getByText('~2 minggu')).toBeTruthy();
     expect(getByText('pada laju 10,4 poin/minggu')).toBeTruthy();
