@@ -46,3 +46,47 @@ export function labelIndices(count: number, max: number): number[] {
   for (let k = 0; k < max; k += 1) picked.add(Math.round((k * (count - 1)) / (max - 1)));
   return [...picked].sort((a, b) => a - b);
 }
+
+/** A point on a circle; `deg` runs clockwise from 12 o'clock. */
+export function polar(cx: number, cy: number, r: number, deg: number): { x: number; y: number } {
+  const rad = ((deg - 90) * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+}
+
+/** SVG path of the clockwise arc from `a0` to `a1` degrees; empty when a1 ≤ a0. Sweeps past 360° are capped just under a full circle. */
+export function arcPath(cx: number, cy: number, r: number, a0: number, a1: number): string {
+  if (!(a1 > a0)) return '';
+  const sweep = Math.min(359.99, a1 - a0);
+  const s = polar(cx, cy, r, a0);
+  const e = polar(cx, cy, r, a0 + sweep);
+  return `M ${s.x.toFixed(2)} ${s.y.toFixed(2)} A ${r} ${r} 0 ${sweep > 180 ? 1 : 0} 1 ${e.x.toFixed(2)} ${e.y.toFixed(2)}`;
+}
+
+/** The area between series `a` (top edge, drawn forward) and `b` (bottom edge, drawn back), one polygon per run where both are numbers. */
+export function bandPath(a: ReadonlyArray<number | null>, b: ReadonlyArray<number | null>, yMax: number, area: { x0: number; x1: number; y0: number; y1: number }): string {
+  const parts: string[] = [];
+  let run: number[] = [];
+  const pt = (i: number, v: number) => `${xAt(i, a.length, area.x0, area.x1).toFixed(1)} ${yAt(v, yMax, area.y0, area.y1).toFixed(1)}`;
+  const flush = () => {
+    if (run.length >= 2) {
+      const fwd = run.map((i) => pt(i, a[i] as number));
+      const back = [...run].reverse().map((i) => pt(i, b[i] as number));
+      parts.push(`M ${fwd[0]} ${fwd.slice(1).map((p) => `L ${p}`).join(' ')} ${back.map((p) => `L ${p}`).join(' ')} Z`);
+    }
+    run = [];
+  };
+  a.forEach((v, i) => { if (typeof v === 'number' && typeof b[i] === 'number') run.push(i); else flush(); });
+  flush();
+  return parts.join(' ');
+}
+
+/** Index where `a` exceeds `b` by the most; null when it never does. */
+export function bandLabelIndex(a: ReadonlyArray<number | null>, b: ReadonlyArray<number | null>): number | null {
+  let best: number | null = null;
+  let gap = 0;
+  a.forEach((v, i) => {
+    const w = b[i];
+    if (typeof v === 'number' && typeof w === 'number' && v - w > gap) { gap = v - w; best = i; }
+  });
+  return best;
+}
