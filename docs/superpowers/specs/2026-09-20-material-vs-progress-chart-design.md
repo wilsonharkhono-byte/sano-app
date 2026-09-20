@@ -259,8 +259,7 @@ its weeks, labels, five series arrays (null where undefined), `today` values,
   0 % / 100 % end labels, `accessibilityLabel`.
 - `workflows/components/charts/LineChart.tsx` gains: per-series `width` and `opacity`;
   `bands: { between: [keyA, keyB], color, opacity, label }[]`; `annotations:
-  { kind: 'bracket' | 'run', level, fromIndex, toIndex, label, color }[]`; `endLabels:
-  string[]` (series keys to label at their last point); `hidden: Set<string>` +
+  { kind: 'bracket' | 'run', level, fromIndex, toIndex, label, color }[]`; per-series `endLabel: boolean` (write the series' last real value at its end); `hidden: Set<string>` +
   `onToggle(key)` so the legend is the switch row; dots get the surface ring. The
   S-curve card keeps working unchanged (new props optional).
 - `workflows/components/analytics/MaterialChainCard.tsx` replaces

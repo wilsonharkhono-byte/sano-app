@@ -7,8 +7,11 @@
 //
 // Upstream contracts: `diary.lines` must already hold the latest revision of
 // each report (`listDiaryLines` does that) and `verifiedLines` must already be
-// the lines of VERIFIED claims only (`loadVerifiedClaimLines` does that); two
-// claim lines sharing a `verified_at` keep their input order (stable sort).
+// the lines of VERIFIED claims only (`loadVerifiedClaimLines` does that). Two
+// claim lines of one row sharing a `verified_at` keep their input order (stable
+// sort): the loader delivers lines in claim chunks ordered by line id, and such
+// a tie needs two claims verified in one transaction, which `now()` per
+// transaction and `progress_claims_one_open` rule out.
 import type { DiaryLine } from '../progressClaims/diaryEvidence';
 import { rowFraction, type StagePct } from '../progressClaims/stageMath';
 import { pctOfStatus, statusOfActivity } from '../progressClaims/statusCredit';

@@ -14,7 +14,7 @@ import { arcPath, polar } from './chartGeometry';
 export interface Ring {
   key: string;
   color: string;
-  /** 0–100; null draws the track only. */
+  /** 0–100; null draws the track only, tint included. To hide just the main arc, pass 0 and anchor the tint with `tint.from`. */
   value: number | null;
   /** A lighter segment from `from` (the value when absent) to `tint.value`, drawn only when it lies beyond the main arc. */
   tint?: { from?: number; value: number; opacity: number } | null;
