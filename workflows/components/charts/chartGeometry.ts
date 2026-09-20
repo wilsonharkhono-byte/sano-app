@@ -4,7 +4,12 @@
 
 export interface Frame { width: number; height: number; left: number; right: number; top: number; bottom: number }
 
-export function plotArea(f: Frame): { x0: number; x1: number; y0: number; y1: number } {
+export interface Area { x0: number; x1: number; y0: number; y1: number }
+
+/** A value the charts can draw: a finite number. */
+export const isDrawable = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+export function plotArea(f: Frame): Area {
   return { x0: f.left, x1: Math.max(f.left, f.width - f.right), y0: f.top, y1: Math.max(f.top, f.height - f.bottom) };
 }
 
@@ -26,11 +31,11 @@ export function yAt(value: number, yMax: number, y0: number, y1: number): number
 }
 
 /** SVG path data for a series with gaps: each run of numbers is its own sub-path; a lone point draws nothing here (the dot shows it). */
-export function linePath(values: ReadonlyArray<number | null>, yMax: number, area: { x0: number; x1: number; y0: number; y1: number }): string {
+export function linePath(values: ReadonlyArray<number | null>, yMax: number, area: Area): string {
   const parts: string[] = [];
   let open = false;
   values.forEach((v, i) => {
-    if (v === null || v === undefined || !Number.isFinite(v)) { open = false; return; }
+    if (!isDrawable(v)) { open = false; return; }
     const point = `${xAt(i, values.length, area.x0, area.x1).toFixed(1)} ${yAt(v, yMax, area.y0, area.y1).toFixed(1)}`;
     parts.push(`${open ? 'L' : 'M'} ${point}`);
     open = true;
@@ -53,20 +58,20 @@ export function polar(cx: number, cy: number, r: number, deg: number): { x: numb
   return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
 }
 
-/** SVG path of the clockwise arc from `a0` to `a1` degrees; empty when a1 ≤ a0. Sweeps past 360° are capped just under a full circle. */
+/** SVG path of the clockwise arc from `a0` to `a1` degrees; empty when a1 ≤ a0. Sweeps of 360° or more are capped just short of a full circle, by enough that the end point differs from the start at any radius. */
 export function arcPath(cx: number, cy: number, r: number, a0: number, a1: number): string {
   if (!(a1 > a0)) return '';
-  const sweep = Math.min(359.99, a1 - a0);
+  const sweep = Math.min(360 - Math.max(0.01, 1.2 / r), a1 - a0);
   const s = polar(cx, cy, r, a0);
   const e = polar(cx, cy, r, a0 + sweep);
   return `M ${s.x.toFixed(2)} ${s.y.toFixed(2)} A ${r} ${r} 0 ${sweep > 180 ? 1 : 0} 1 ${e.x.toFixed(2)} ${e.y.toFixed(2)}`;
 }
 
-/** The area between series `a` (top edge, drawn forward) and `b` (bottom edge, drawn back), one polygon per run where both are numbers. */
-export function bandPath(a: ReadonlyArray<number | null>, b: ReadonlyArray<number | null>, yMax: number, area: { x0: number; x1: number; y0: number; y1: number }): string {
+/** The area between series `a` (top edge, drawn forward) and `b` (bottom edge, drawn back), one polygon per run where both are numbers. `count` is the number of x slots (the chart's label count); it defaults to the longer series. */
+export function bandPath(a: ReadonlyArray<number | null>, b: ReadonlyArray<number | null>, yMax: number, area: Area, count = Math.max(a.length, b.length)): string {
   const parts: string[] = [];
   let run: number[] = [];
-  const pt = (i: number, v: number) => `${xAt(i, a.length, area.x0, area.x1).toFixed(1)} ${yAt(v, yMax, area.y0, area.y1).toFixed(1)}`;
+  const pt = (i: number, v: number) => `${xAt(i, count, area.x0, area.x1).toFixed(1)} ${yAt(v, yMax, area.y0, area.y1).toFixed(1)}`;
   const flush = () => {
     if (run.length >= 2) {
       const fwd = run.map((i) => pt(i, a[i] as number));
@@ -75,7 +80,7 @@ export function bandPath(a: ReadonlyArray<number | null>, b: ReadonlyArray<numbe
     }
     run = [];
   };
-  a.forEach((v, i) => { if (typeof v === 'number' && typeof b[i] === 'number') run.push(i); else flush(); });
+  a.forEach((v, i) => { if (isDrawable(v) && isDrawable(b[i])) run.push(i); else flush(); });
   flush();
   return parts.join(' ');
 }
@@ -86,7 +91,7 @@ export function bandLabelIndex(a: ReadonlyArray<number | null>, b: ReadonlyArray
   let gap = 0;
   a.forEach((v, i) => {
     const w = b[i];
-    if (typeof v === 'number' && typeof w === 'number' && v - w > gap) { gap = v - w; best = i; }
+    if (isDrawable(v) && isDrawable(w) && v - w > gap) { gap = v - w; best = i; }
   });
   return best;
 }

@@ -127,8 +127,9 @@ export const RADIUS_LG = 14;
 
 // ── Chart series colours ─────────────────────────────────────────────────────
 // Validated with the dataviz palette checker on COLORS.surface (all-pairs CVD
-// ΔE 8.9, normal vision 25.9). The aqua sits at 2.71:1, so its label is always
-// drawn beside it. Text never wears a series colour.
+// ΔE 8.9, normal vision 25.9). `diary` (#1baf7a) sits at 2.71:1 on the surface,
+// so its label is always drawn beside it. `installed` aliases COLORS.info:
+// re-run the checker if that token changes. Text never wears a series colour.
 export const CHART = {
   procurement: '#D9662B',   // diminta / disetujui
   installed:   COLORS.info, // terpasang, terverifikasi + proyeksi
