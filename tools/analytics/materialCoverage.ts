@@ -50,7 +50,7 @@ export interface CoverageGroup {
 const round1 = (n: number) => Math.round(n * 10) / 10;
 const counts = (status: string) => status !== 'REJECTED';
 
-/** The (category, unit) group a catalogue material belongs to; null for assets, Peralatan, or an unknown material. */
+/** The (category, unit) group a catalogue material belongs to; null for assets, Peralatan, a material with no category or unit, or an unknown material. */
 export function materialGroupOf(catalog: ReadonlyMap<string, CatalogEntry>, materialId: string | null): { key: string; category: string; unit: string } | null {
   const m = materialId ? catalog.get(materialId) : null;
   if (!m || m.is_asset || !m.category || !m.unit || m.category === 'Peralatan') return null;
