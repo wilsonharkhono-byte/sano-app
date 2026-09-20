@@ -30,7 +30,13 @@ for (const [category, work] of Object.entries(CATEGORY_WORK)) if (isWeightBearin
 
 const SHORT_NAME: Record<string, string> = { Struktur: 'Besi', 'Kayu & Bekisting': 'Bekisting', Dinding: 'Bata', Plumbing: 'Pipa' };
 
-export interface VerifiedClaimLine { boq_item_id: string; verified_pct: unknown; verified_at: string }
+export interface VerifiedClaimLine {
+  boq_item_id: string;
+  verified_pct: unknown;
+  /** progress_claim_lines.weights_snapshot: the stage weights this line was claimed and verified under (migration 104); null on a row verified before it was stored. */
+  weights_snapshot: unknown;
+  verified_at: string;
+}
 export interface StageWeightInput { boq_item_id: string; weights: unknown }
 
 export interface MaterialChainInput {
@@ -107,18 +113,32 @@ function parsePct(raw: unknown): StagePct {
 }
 
 /**
- * The share of a row this group counts: its stage when the row is split and the group feeds a stage; the row as a
- * whole otherwise. A claim stored under the other shape (the row's weights changed after it was verified) still
- * answers: a whole-row figure stands in for the missing stage, and stage figures are combined with the row's
- * current weights — which for a now-single row credit nothing, since the weights they were claimed under are gone.
+ * The share of a row one verified line credits: its stage when the row is split and the group feeds a stage; the
+ * row as a whole otherwise. When the row's weights changed after the line was verified, the line's own snapshot
+ * says which shape it was claimed under, so the figure is still read truthfully — never assumed. A line without a
+ * usable snapshot credits nothing rather than a guess.
  */
-function rowPct(weights: StageWeights, pct: StagePct, stage: WeightBearingStage | null): number {
-  if (isSingle(weights)) return pct.SINGLE ?? rowFraction(weights, pct) * 100;
-  if (stage) return pct[stage] ?? pct.SINGLE ?? 0;
-  return rowFraction(weights, pct) * 100;
+function linePct(current: StageWeights, line: { pct: StagePct; weights: StageWeights | null }, stage: WeightBearingStage | null): number {
+  const { pct, weights: snapshot } = line;
+  const whole = pct.SINGLE;
+  if (isSingle(current)) {
+    if (whole !== undefined) return whole;
+    // Claimed while the row was split: its snapshot carries the weights those stage figures belong to.
+    return snapshot && !isSingle(snapshot) ? rowFraction(snapshot, pct) * 100 : 0;
+  }
+  if (stage) {
+    const atStage = pct[stage];
+    if (atStage !== undefined) return atStage;
+    // Claimed while the row was one stage: that whole-row figure answers for this stage too.
+    return snapshot && isSingle(snapshot) && whole !== undefined ? whole : 0;
+  }
+  return rowFraction(snapshot ?? current, pct) * 100;
 }
 
-interface RowState { planned: number; weights: StageWeights; verified: Array<{ at: string; pct: StagePct }>; diary: DiaryLine[] }
+/** One verified claim line, read once: its percents and the weights it was claimed under. */
+interface VerifiedPoint { row: string; at: string; pct: StagePct; weights: StageWeights | null }
+
+interface RowState { planned: number; weights: StageWeights; verified: VerifiedPoint[]; diary: DiaryLine[] }
 interface GroupPlan { category: string; unit: string; rows: Map<string, RowState>; withoutArea: number }
 interface RequestEvents { requested: Array<[string, number]>; approved: Array<[string, number]> }
 
@@ -173,13 +193,19 @@ export function buildMaterialChain(input: MaterialChainInput): { groups: ChainGr
     if (r.status === 'APPROVED') e.approved.push([weekOf(r.reviewed_at ?? r.created_at), qty]);
   }
 
+  // Every verified line read once: its percents and the weights snapshot it was verified under.
+  const verified: VerifiedPoint[] = input.verifiedLines.map((v) => {
+    const snapshot = validateStageWeights(v.weights_snapshot);
+    return { row: v.boq_item_id, at: v.verified_at, pct: parsePct(v.verified_pct), weights: snapshot.ok ? snapshot.weights : null };
+  });
+
   const groups: ChainGroup[] = [];
   const planWithoutAreaOnly: string[] = [];
   for (const [key, plan] of plans) {
     // A group is charted on its work areas; one planned only for the project as a whole is reported instead.
     if (plan.rows.size === 0) { planWithoutAreaOnly.push(`${plan.category} (${plan.unit}) ${fmt(plan.withoutArea)} ${plan.unit}`); continue; }
     const stage = CATEGORY_STAGE[plan.category] ?? null;
-    for (const v of input.verifiedLines) plan.rows.get(v.boq_item_id)?.verified.push({ at: v.verified_at, pct: parsePct(v.verified_pct) });
+    for (const v of verified) plan.rows.get(v.row)?.verified.push(v);
     for (const l of input.diary.lines) {
       const row = l.boq_item_id ? plan.rows.get(l.boq_item_id) : null;
       if (!row) continue;
@@ -261,9 +287,9 @@ function buildGroup(
   // Cumulative figures at each week's end, up to this week.
   const cum = (list: Array<[string, number]>, w: string) => list.reduce((s, [ew, q]) => (ew <= w ? s + q : s), 0);
   const verifiedAt = (row: RowState, end: string) => {
-    let latest: StagePct | null = null;
-    for (const v of row.verified) { if (dateOf(v.at) <= end) latest = v.pct; else break; }
-    return latest ? rowPct(row.weights, latest, stage) : 0;
+    let latest: VerifiedPoint | null = null;
+    for (const v of row.verified) { if (dateOf(v.at) <= end) latest = v; else break; }
+    return latest ? linePct(row.weights, latest, stage) : 0;
   };
   const diaryAt = (row: RowState, end: string) => {
     let latest: DiaryLine | null = null;

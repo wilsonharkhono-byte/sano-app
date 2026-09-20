@@ -25,8 +25,13 @@ const requests = [
   req('besi16', 300, 'REJECTED', '2026-08-21', '2026-08-22'),
   req('semen', 100, 'APPROVED', '2026-09-01'),
 ];
-const weights = [{ boq_item_id: 'k1', weights: { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 } }];
-const vline = (row: string, pct: Record<string, number>, at: string) => ({ boq_item_id: row, verified_pct: pct, verified_at: `${at}T03:00:00Z` });
+/** The two weight shapes a row (and a claim line's snapshot) can have. */
+const SPLIT = { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 };
+const WHOLE = { SINGLE: 1 };
+const weights = [{ boq_item_id: 'k1', weights: SPLIT }];
+const vline = (row: string, pct: Record<string, number>, at: string, snapshot: unknown = WHOLE) => ({
+  boq_item_id: row, verified_pct: pct, weights_snapshot: snapshot, verified_at: `${at}T03:00:00Z`,
+});
 const dline = (id: string, row: string, stage: string | null, state: string, periodEnd: string, reportNo: number, lineIndex = 0) => ({
   id, boq_item_id: row, stage, activity_state: state, line_text: '', line_index: lineIndex, report_id: `r${reportNo}`, report_no: reportNo, revision: 1, period_end: periodEnd, issued_at: null,
 });
@@ -98,8 +103,8 @@ describe('buildMaterialChain procurement series', () => {
 });
 
 const verifiedLines = [
-  vline('k1', { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 }, '2026-08-26'),
-  vline('k1', { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 0 }, '2026-09-02'),
+  vline('k1', { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 }, '2026-08-26', SPLIT),
+  vline('k1', { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 0 }, '2026-09-02', SPLIT),
   vline('k2', { SINGLE: 25 }, '2026-09-09'),
   vline('zz', { SINGLE: 100 }, '2026-09-09'),
 ];
@@ -123,7 +128,7 @@ describe('buildMaterialChain installed series', () => {
   });
 
   it('names the window it actually measured when the verified figure did not rise', () => {
-    const flat = [vline('k1', { PEMBESIAN: 50 }, '2026-09-09'), vline('k1', { PEMBESIAN: 50 }, '2026-09-16')];
+    const flat = [vline('k1', { PEMBESIAN: 50 }, '2026-09-09', SPLIT), vline('k1', { PEMBESIAN: 50 }, '2026-09-16', SPLIT)];
     const g = buildMaterialChain(input({ verifiedLines: flat })).groups[0];
     // Verified in the weeks of 7 and 14 Sep, so the pace was measured over 1 week, not 4; 12,5 % both weeks.
     expect(g.projectionNote).toBe('Tidak ada kenaikan progres terverifikasi dalam 1 minggu terakhir.');
@@ -131,7 +136,7 @@ describe('buildMaterialChain installed series', () => {
   });
 
   it('says so instead of projecting when the group is fully verified', () => {
-    const done = [vline('k1', { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 100 }, '2026-08-26'), vline('k2', { SINGLE: 100 }, '2026-09-02')];
+    const done = [vline('k1', { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 100 }, '2026-08-26', SPLIT), vline('k2', { SINGLE: 100 }, '2026-09-02')];
     const g = buildMaterialChain(input({ verifiedLines: done })).groups[0];
     expect(g.today.verified).toBe(100);
     expect(g.projectionNote).toBe('Sudah 100 % terverifikasi.');
@@ -173,22 +178,29 @@ describe('buildMaterialChain installed series', () => {
 });
 
 describe('buildMaterialChain verified_pct shapes', () => {
-  it('reads a whole-row figure for a split row whose stage the claim does not carry', () => {
-    // k1's weights were split after the claim was verified whole: 40 % of its 1 000 kg is 10 % of the group's 4 000 kg.
-    const g = buildMaterialChain(input({ verifiedLines: [vline('k1', { SINGLE: 40 }, '2026-08-26')] })).groups[0];
+  it('reads a whole-row figure for a split row whose snapshot says it was claimed as one stage', () => {
+    // k1 was split after this line was verified whole: 40 % of its 1 000 kg is 10 % of the group's 4 000 kg.
+    const g = buildMaterialChain(input({ verifiedLines: [vline('k1', { SINGLE: 40 }, '2026-08-26', WHOLE)] })).groups[0];
     expect(g.today.verified).toBe(10);
   });
 
-  it('counts nothing for a single-stage row whose claim carries only stage figures', () => {
-    // k2 has no weights row, so it is SINGLE; stage figures cannot be combined without the weights they were claimed under.
-    const g = buildMaterialChain(input({ verifiedLines: [vline('k2', { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 100 }, '2026-08-26')] })).groups[0];
-    expect(g.today.verified).toBe(0);
+  it('combines a single-stage row’s stage figures with the weights its own snapshot carries', () => {
+    // k2 is SINGLE now, but this line was verified while it was split: 0,3 × 100 + 0,4 × 50 = 50 % of its 3 000 kg, so 37,5 % of 4 000 kg.
+    const g = buildMaterialChain(input({ verifiedLines: [vline('k2', { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 }, '2026-08-26', SPLIT)] })).groups[0];
+    expect(g.today.verified).toBe(37.5);
+  });
+
+  it('counts nothing when the line carries no usable snapshot to read its shape with', () => {
+    const noSnapshot = [vline('k2', { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 100 }, '2026-08-26', null)];
+    expect(buildMaterialChain(input({ verifiedLines: noSnapshot })).groups[0].today.verified).toBe(0);
+    const invalid = [vline('k2', { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 100 }, '2026-08-26', { BEKISTING: 0.9, PEMBESIAN: 0.9, PENGECORAN: 0.9 })];
+    expect(buildMaterialChain(input({ verifiedLines: invalid })).groups[0].today.verified).toBe(0);
   });
 
   it('reads a split row in a category that feeds no single stage as the whole row', () => {
     const bata = buildMaterialChain(input({
       weights: [...weights, { boq_item_id: 'd1', weights: { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 } }],
-      verifiedLines: [vline('d1', { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 }, '2026-08-26')],
+      verifiedLines: [vline('d1', { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 }, '2026-08-26', SPLIT)],
     })).groups.find((g) => g.key === 'Dinding · pcs');
     // Dinding feeds Pasangan, not a weight-bearing stage, so d1 counts 0,3 × 100 + 0,4 × 50 + 0,3 × 0 = 50 % of its 500 pcs.
     expect(bata?.today.verified).toBe(50);
@@ -196,8 +208,8 @@ describe('buildMaterialChain verified_pct shapes', () => {
 
   it('takes no percent from a claim it cannot read', () => {
     const odd = [
-      { boq_item_id: 'k1', verified_pct: 'lunas', verified_at: '2026-08-26T03:00:00Z' },
-      { boq_item_id: 'k2', verified_pct: { SINGLE: '25' }, verified_at: '2026-09-02T03:00:00Z' },
+      { boq_item_id: 'k1', verified_pct: 'lunas', weights_snapshot: SPLIT, verified_at: '2026-08-26T03:00:00Z' },
+      { boq_item_id: 'k2', verified_pct: { SINGLE: '25' }, weights_snapshot: WHOLE, verified_at: '2026-09-02T03:00:00Z' },
     ];
     const g = buildMaterialChain(input({ verifiedLines: odd })).groups[0];
     expect(g.today.verified).toBe(0);
