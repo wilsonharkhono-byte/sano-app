@@ -109,6 +109,8 @@ describe('loadVerifiedClaimLines and loadChainSupport', () => {
   });
 
   it('bundles the diary lines, the stage weights and the verified lines, keeping a diary read failure soft', async () => {
+    // The soft failure warns on purpose; the test asserts the result instead of printing it.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     from.mockImplementation((table: string) => {
       if (table === 'client_report_lines') return chain({ error: { message: 'no view' } });
       if (table === 'boq_stage_weights') return chain({ data: [{ boq_item_id: 'k1', weights: { SINGLE: 1 }, source: 'reference', reference_class: 'balok', updated_at: 'x' }] });
@@ -119,5 +121,7 @@ describe('loadVerifiedClaimLines and loadChainSupport', () => {
     expect(res.diary).toEqual({ lines: [], readable: false });
     expect(res.weights).toEqual([{ boq_item_id: 'k1', weights: { SINGLE: 1 }, source: 'reference', reference_class: 'balok', updated_at: 'x' }]);
     expect(res.verified).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

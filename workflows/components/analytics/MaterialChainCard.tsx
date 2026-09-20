@@ -36,6 +36,8 @@ const RING_ITEMS: ReadonlyArray<{ key: RingKey; label: string; color: string; op
   { key: 'diary', label: 'Menurut laporan harian (belum diverifikasi)', color: CHART.diary, opacity: 1 },
 ];
 const LINES_OFF_BY_DEFAULT = ['requested', 'diary'];
+/** Only the legend's fallback: without a window there is no pace, so the projection draws nothing to mislabel. */
+const NO_WINDOW_WEEKS = 4;
 
 const pctText = (v: number | null) => (v === null ? '—' : `${qty(v)} %`);
 /** The daily reports only speak when they could be read. */
@@ -81,7 +83,7 @@ export default function MaterialChainCard({ loadMaterial, loadDiary, loadChain, 
     const activity = buildDiaryActivity({ today, reports: diary.reports, links: diary.links });
     const coverage = buildMaterialCoverage({ ...material, firstMentions: activity.firstMentions, today });
     const chains = buildMaterialChain({ today, planned: material.planned, requests: material.requests, catalog: material.catalog, weights: chain.weights, verifiedLines: chain.verified, diary: chain.diary });
-    return { coverage, chains };
+    return { activity, coverage, chains };
   }, [state.status, state.data, today]);
   const group: ChainGroup | null = view ? view.chains.groups.find((g) => g.key === selected) ?? view.chains.groups[0] ?? null : null;
   const cov: CoverageGroup | null = view && group ? view.coverage.groups.find((c) => c.key === group.key) ?? null : null;
@@ -111,7 +113,10 @@ export default function MaterialChainCard({ loadMaterial, loadDiary, loadChain, 
           {view.chains.planWithoutAreaOnly.length > 0 && <Text style={a.note}>{`Rencana hanya di tingkat proyek: ${view.chains.planWithoutAreaOnly.join(', ')}.`}</Text>}
           {view.chains.unplannedRequested.length > 0 && <Text style={a.note}>{`Diminta tanpa rencana di BoQ terbit: ${view.chains.unplannedRequested.join(', ')}.`}</Text>}
           <Text style={a.hint}>
-            {`${group && !group.diaryReadable ? 'Laporan harian belum bisa dibaca. ' : ''}Diminta dan disetujui dari permintaan material; terpasang dari klaim terverifikasi × rencana material per area; laporan harian: Berjalan 50 · Selesai 100, belum diverifikasi. Permintaan yang ditolak tidak dihitung.`}
+            {`${group && !group.diaryReadable ? 'Laporan harian belum bisa dibaca. ' : ''}Diminta dan disetujui dari permintaan material; terpasang dari klaim terverifikasi × rencana material per area; laporan harian: Berjalan 50 · Selesai 100, belum diverifikasi. Permintaan yang ditolak tidak dihitung.${
+              // The lag sentence and the waiting warning read the diary's work types, and an unlinked line's type is a keyword guess: say so wherever those figures show.
+              view.activity.keywordShare > 0 ? ` Jenis pekerjaan di laporan harian: ${view.activity.keywordShare}% masih perkiraan kata kunci.` : ''
+            }`}
           </Text>
         </View>
       )}
@@ -196,8 +201,8 @@ function GroupView({ group, cov, today, hiddenRings, toggleRing, hiddenLines, to
         </View>
         <View style={a.tile}>
           <Text style={a.tileLabel}>Cukup untuk</Text>
-          <Text style={a.tileValue}>{rel.coverWeeks === null ? '—' : rel.coverWeeks > 52 ? '> 52 minggu' : `~${rel.coverWeeks} minggu`}</Text>
-          <Text style={a.tileSub}>{rel.coverWeeks === null ? rel.coverNote : `pada laju ${qty(rel.pacePerWeek ?? 0)} poin/minggu`}</Text>
+          <Text style={a.tileValue}>{rel.coverWeeks === null ? '—' : rel.coverWeeks === 0 ? '< 1 minggu' : rel.coverWeeks > 52 ? '> 52 minggu' : `~${rel.coverWeeks} minggu`}</Text>
+          <Text style={a.tileSub}>{rel.coverWeeks === null ? rel.coverNote : `pada laju ${qty(rel.pacePerWeek ?? 0)} poin/minggu (${rel.windowWeeks} minggu terakhir)`}</Text>
         </View>
       </View>
 
@@ -223,25 +228,36 @@ function GroupView({ group, cov, today, hiddenRings, toggleRing, hiddenLines, to
   );
 }
 
-/** The weekly trend: its series, band and annotations are built only while the chart is open. */
-function Trend({ group, hidden, onToggle }: { group: ChainGroup; hidden: ReadonlySet<string>; onToggle: (key: string) => void }) {
+/**
+ * The trend chart's series, band and annotations for one group. Pure, so what the chart is asked to
+ * draw can be read without rendering it.
+ */
+export function trendModel(group: ChainGroup): { series: LineSeries[]; bands: Band[]; annotations: Annotation[] } {
   const { today: t, relation: rel } = group;
   const series: LineSeries[] = [
     { key: 'requested', label: 'Diminta', color: CHART.procurement, opacity: CHART.tintOpacity, values: group.requested },
     { key: 'approved', label: 'Disetujui', color: CHART.procurement, values: group.approved, endLabel: true },
     { key: 'verified', label: 'Terpasang (terverifikasi)', color: CHART.installed, values: group.verified, dots: true, endLabel: true },
     { key: 'diary', label: 'Menurut laporan harian (belum diverifikasi)', color: CHART.diary, width: 1.5, values: group.diary },
-    { key: 'projected', label: 'Proyeksi laju 4 minggu (titik-titik)', color: CHART.installed, dash: '2 4', values: group.projected },
+    // The legend names the window the pace was measured over, so the dots never claim four weeks of evidence they do not have.
+    { key: 'projected', label: `Proyeksi laju ${rel.windowWeeks ?? NO_WINDOW_WEEKS} minggu (titik-titik)`, color: CHART.installed, dash: '2 4', values: group.projected },
   ];
   const bands: Band[] = [{ key: 'stock', between: ['approved', 'verified'], color: CHART.procurement, opacity: 0.1, label: 'stok teoretis' }];
   const annotations: Annotation[] = [];
   if (rel.leadWeeks !== null && rel.leadWeekIndex !== null && t.verified !== null) {
     annotations.push({ key: 'lead', kind: 'bracket', level: t.verified, fromIndex: rel.leadWeekIndex, toIndex: group.thisWeekIndex, label: `~${rel.leadWeeks} minggu`, requires: ['approved', 'verified'] });
   }
-  // Only when the run fits the weeks drawn: a clamped run would say a cover it does not show. The tile keeps the number.
-  if (rel.coverWeeks !== null && group.thisWeekIndex + rel.coverWeeks <= group.weeks.length - 1) {
+  // Only a run of at least a week that fits the weeks drawn: a zero-length or clamped run would say a
+  // cover it does not show. The tile keeps the number either way.
+  if (rel.coverWeeks !== null && rel.coverWeeks > 0 && group.thisWeekIndex + rel.coverWeeks <= group.weeks.length - 1) {
     annotations.push({ key: 'cover', kind: 'run', level: t.approved, fromIndex: group.thisWeekIndex, toIndex: group.thisWeekIndex + rel.coverWeeks, label: `cukup ~${rel.coverWeeks} minggu`, color: CHART.procurement, requires: ['approved', 'projected'] });
   }
+  return { series, bands, annotations };
+}
+
+/** The weekly trend: its series, band and annotations are built only while the chart is open. */
+function Trend({ group, hidden, onToggle }: { group: ChainGroup; hidden: ReadonlySet<string>; onToggle: (key: string) => void }) {
+  const { series, bands, annotations } = trendModel(group);
   return (
     <View style={styles.trend}>
       <Text style={a.hint}>Kumulatif per minggu, % dari rencana BoQ</Text>

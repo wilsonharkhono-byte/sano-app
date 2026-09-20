@@ -3,7 +3,7 @@
 // Beranda, so the whole team reads the same graphs. The S-curve is always
 // open; the other cards expand on tap, start collapsed on a narrow screen, and
 // read their data only when first opened. Reads are shared between cards.
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Card from '../Card';
@@ -40,14 +40,21 @@ export default function ProjectAnalytics({ project, boqItems, role, wide = false
   const [open, setOpen] = useState<Record<SectionKey, boolean>>({ material: wide, diary: wide, approval: wide });
   // One read per project and kind, shared by the cards; a failed read is forgotten so "Coba lagi" reads again.
   const cache = useRef(new Map<string, Promise<unknown>>());
+  // Every pull-to-refresh and every project adds a set of keys, so drop the ones no loader can ask
+  // for again. Entries of the current project and reloadKey stay: the cards still share them, and a
+  // card whose section is opened later must not read a second time.
+  const prefix = `${projectId}:${reloadKey}:`;
+  useEffect(() => {
+    for (const key of [...cache.current.keys()]) if (!key.startsWith(prefix)) cache.current.delete(key);
+  }, [prefix]);
   const shared = useCallback(<T,>(kind: string, read: (id: string) => Promise<T>) => (): Promise<T> => {
     if (!projectId) return Promise.reject(new Error('Proyek belum dipilih.'));
-    const key = `${projectId}:${reloadKey}:${kind}`;
+    const key = `${prefix}${kind}`;
     if (!cache.current.has(key)) {
       cache.current.set(key, read(projectId).catch((err) => { cache.current.delete(key); throw err; }));
     }
     return cache.current.get(key) as Promise<T>;
-  }, [projectId, reloadKey]);
+  }, [projectId, prefix]);
   const loadEntries = useCallback(shared('entries', loadProgressEntries), [shared]);
   const loadDiary = useCallback(shared('diary', loadDiaryData), [shared]);
   const loadMaterial = useCallback(shared('material', loadMaterialData), [shared]);

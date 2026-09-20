@@ -48,6 +48,15 @@ describe('buildMaterialChain groups', () => {
     expect(unplannedRequested).toEqual([]);
   });
 
+  it('treats a group planned only as zero quantities as one requested without a plan', () => {
+    const { groups, unplannedRequested } = buildMaterialChain(input({
+      planned: [...planned.filter((p) => p.material_id !== 'semen'), { material_id: 'semen', boq_item_id: 'k1', planned_quantity: 0 }],
+    }));
+    // Nothing of the semen is actually planned, so it gets no chip and no denominator — but the 100 zak asked for is still said out loud.
+    expect(groups.map((g) => g.key)).toEqual(['Struktur · kg', 'Dinding · pcs']);
+    expect(unplannedRequested).toEqual(['Material Beton (zak)']);
+  });
+
   it('lists requested groups without a plan instead of charting them', () => {
     const { groups, unplannedRequested } = buildMaterialChain(input({ planned: planned.filter((p) => p.material_id !== 'semen') }));
     expect(groups.map((g) => g.key)).toEqual(['Struktur · kg', 'Dinding · pcs']);
@@ -171,6 +180,25 @@ describe('buildMaterialChain installed series', () => {
     expect(g.diaryReadable).toBe(true);
   });
 
+  it('weighs a split row’s diary lines when the category feeds no single stage, instead of crediting the whole row', () => {
+    const lines = [dline('l1', 'd1', 'BEKISTING', 'SELESAI', '2026-09-10', 9)];
+    const bata = buildMaterialChain(input({
+      weights: [...weights, { boq_item_id: 'd1', weights: SPLIT }],
+      diary: { lines, readable: true },
+    })).groups.find((g) => g.key === 'Dinding · pcs');
+    // Dinding feeds Pasangan, which bears no weight, so a finished bekisting is 0,3 of d1 — 30 % of its 500 pcs, not the whole row.
+    expect(bata?.today.diary).toBe(30);
+  });
+
+  it('takes nothing from a diary line that names no weight-bearing stage on such a row', () => {
+    const lines = [dline('l1', 'd1', null, 'SELESAI', '2026-09-10', 9)];
+    const bata = buildMaterialChain(input({
+      weights: [...weights, { boq_item_id: 'd1', weights: SPLIT }],
+      diary: { lines, readable: true },
+    })).groups.find((g) => g.key === 'Dinding · pcs');
+    expect(bata?.today.diary).toBe(0);
+  });
+
   it('draws no diary series when the diary cannot be read, and none before any diary or verified row exists', () => {
     const unreadable = buildMaterialChain(input({ verifiedLines, diary: { lines: [], readable: false } })).groups[0];
     expect(unreadable.diary.every((v) => v === null)).toBe(true);
@@ -241,6 +269,16 @@ describe('buildMaterialChain relation', () => {
     // 500 kg approved − 1 750 kg verified = −1 250 kg; −1 250 / 4 000 = −31,25, and a half rounds towards +∞, so −31,2 points.
     expect(g.relation).toMatchObject({ stockPts: -31.2, stockQty: -1250, leadWeeks: null, leadNote: 'belum bisa dihitung', coverWeeks: null, coverNote: 'tidak ada stok tersisa' });
     expect(g.warnings).toEqual(['Pekerjaan melebihi material yang disetujui: terpasang 43,8 %, disetujui 12,5 %.']);
+  });
+
+  it('decides whether stock is left on the quantities, and keeps a cover of under half a week at 0', () => {
+    const thin = [...requests, req('besi16', 1251, 'APPROVED', '2026-08-17', '2026-08-19')];
+    const g = buildMaterialChain(input({ requests: thin, verifiedLines })).groups[0];
+    // 1 751 kg approved − 1 750 kg verified = 1 kg. Both round to 43,8 % of the 4 000 kg plan, so the
+    // rounded percents would have said "tidak ada stok tersisa"; the quantities say there is stock,
+    // and 0 points at 10,4 points a week is under half a week, not none.
+    expect(g.today).toMatchObject({ approved: 43.8, verified: 43.8 });
+    expect(g.relation).toMatchObject({ stockQty: 1, stockPts: 0, coverWeeks: 0, coverNote: null, pacePerWeek: 10.4 });
   });
 
   it('says why each number is missing when nothing is verified', () => {

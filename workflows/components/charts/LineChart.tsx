@@ -67,6 +67,19 @@ interface Props {
   onToggle?: (key: string) => void;
 }
 
+/**
+ * The annotations that may be drawn: one whose series are switched off would mark a level nothing
+ * shows, one with an unreadable level has no height, and one whose span falls outside the weeks
+ * drawn (or runs backwards) would be clamped into a bracket that says a span it does not cover.
+ */
+export function visibleAnnotations(annotations: ReadonlyArray<Annotation>, hidden: ReadonlySet<string> | undefined, count: number): Annotation[] {
+  return annotations.filter((an) => {
+    if ((an.requires ?? []).some((k) => hidden?.has(k))) return false;
+    if (!isDrawable(an.level)) return false;
+    return an.fromIndex >= 0 && an.toIndex < count && an.toIndex >= an.fromIndex;
+  });
+}
+
 const TICKS = [0, 0.25, 0.5, 0.75, 1];
 const MIN_BAND_LABEL_PX = 16;
 /** Room an end label needs to its right; with less it goes above the point instead of past the edge. */
@@ -153,10 +166,7 @@ export default function LineChart({ labels, series, yMax, unit = '', height = 19
                   : null))}
               </React.Fragment>
             ))}
-            {annotations.map((an) => {
-              if ((an.requires ?? []).some((k) => !isVisible(k))) return null;
-              if (!isDrawable(an.level)) return null;
-              if (an.fromIndex < 0 || an.toIndex >= labels.length || an.toIndex < an.fromIndex) return null;
+            {visibleAnnotations(annotations, hidden, labels.length).map((an) => {
               const yy = y(an.level);
               const xa = x(an.fromIndex);
               const xb = x(an.toIndex);

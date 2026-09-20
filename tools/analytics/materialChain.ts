@@ -22,10 +22,10 @@ import { CATEGORY_WORK, materialGroupOf, type CatalogEntry, type PlannedLine, ty
 import { dateOf, daysBetween, weekOf, weeksBetween } from './weekBuckets';
 import { WORK_TYPE_LABELS } from './workType';
 
-export const PACE_WINDOW_WEEKS = 4;
-export const PROJECTION_MAX_WEEKS = 16;
+const PACE_WINDOW_WEEKS = 4;
+const PROJECTION_MAX_WEEKS = 16;
 /** Terpasang may run this many points above Disetujui before the card warns (the claim flag's tolerance). */
-export const OVERRUN_TOLERANCE_PTS = 10;
+const OVERRUN_TOLERANCE_PTS = 10;
 
 /** The claim stage a catalogue category feeds: its work type when that is a weight-bearing stage. Other categories feed the row as a whole. */
 const CATEGORY_STAGE: Record<string, WeightBearingStage> = {};
@@ -62,6 +62,7 @@ export interface ChainRelation {
   /** Index in `weeks` where Disetujui first reached today's Terpasang. */
   leadWeekIndex: number | null;
   leadNote: string | null;
+  /** Weeks the approved stock lasts at the pace; 0 when it is less than half a week, never below 0. */
   coverWeeks: number | null;
   coverNote: string | null;
   pacePerWeek: number | null;
@@ -101,7 +102,7 @@ const round1 = (n: number) => Math.round(n * 10) / 10;
 const endOf = (week: string) => addCalendarDays(week, 6);
 const fmt = (n: number) => round1(n).toLocaleString('id-ID');
 
-export function shortGroupName(category: string, unit: string): string {
+function shortGroupName(category: string, unit: string): string {
   if (category === 'Material Beton') return unit === 'zak' ? 'Semen' : unit === 'm3' || unit === 'm³' ? 'Readymix' : 'Beton';
   return SHORT_NAME[category] ?? category;
 }
@@ -263,8 +264,11 @@ function relationOf(series: ReadonlyArray<WeekPoint>, now: WeekPoint, projection
     relation.leadWeekIndex = idx;
     relation.leadWeeks = Math.round(daysBetween(series[idx].week, thisWeek) / 7);
   }
+  // Whether stock is left is decided on the same quantities the stock figure is read from, so the
+  // tile never says "tidak ada stok tersisa" beside a positive stock the rounding produced.
   if (projection.pace === null) relation.coverNote = 'belum ada laju';
-  else if (A <= T) relation.coverNote = 'tidak ada stok tersisa';
+  else if (stock <= 0) relation.coverNote = 'tidak ada stok tersisa';
+  // Less than half a week of stock at this pace rounds to 0, which the card reads as "< 1 minggu".
   else relation.coverWeeks = Math.round((A - T) / projection.pace);
   return relation;
 }
@@ -298,6 +302,17 @@ function buildGroup(
     return latest ? linePct(row.weights, latest, stage) : 0;
   };
   const diaryAt = (row: RowState, end: string) => {
+    // A split row whose category feeds no single stage is credited the way the verified path credits
+    // it: each stage's latest line earns its own weight, never the whole row. A line without a
+    // weight-bearing stage names nothing to weigh, so it contributes nothing.
+    if (!isSingle(row.weights) && !stage) {
+      const pct: StagePct = {};
+      for (const l of row.diary) {
+        if (l.period_end > end) break;
+        if (isWeightBearingStage(l.stage)) pct[l.stage] = pctOfStatus(statusOfActivity(l.activity_state));
+      }
+      return rowFraction(row.weights, pct) * 100;
+    }
     let latest: DiaryLine | null = null;
     for (const l of row.diary) { if (l.period_end <= end) latest = l; else break; }
     return latest ? pctOfStatus(statusOfActivity(latest.activity_state)) : 0;
