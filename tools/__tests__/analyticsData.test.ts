@@ -63,12 +63,14 @@ describe('reads', () => {
       .mockReturnValueOnce(chain({ data: [{ id: 'mm2' }] }))
       .mockReturnValueOnce(chain({ data: [{ material_id: 'besi', boq_item_id: 'k1', planned_quantity: '1000' }] }))
       .mockReturnValueOnce(chain({ data: [{ id: 'besi', name: 'Besi beton ulir 13 mm', category: 'Struktur', unit: 'kg', is_asset: false }] }))
-      .mockReturnValueOnce(chain({ data: [{ id: 'h1', created_at: '2026-08-10T02:00:00Z', overall_status: 'APPROVED' }] }))
+      .mockReturnValueOnce(chain({ data: [{ id: 'h1', created_at: '2026-08-10T02:00:00Z', reviewed_at: '2026-08-12T02:00:00Z', overall_status: 'APPROVED' }] }))
       .mockReturnValueOnce(chain({ data: [{ request_header_id: 'h1', material_id: 'besi', quantity: '500', material_request_line_allocations: [{ boq_item_id: 'k1', allocated_quantity: '500' }] }] }));
     const res = await loadMaterialData('p1');
     expect(res.planned).toEqual([{ material_id: 'besi', boq_item_id: 'k1', planned_quantity: 1000 }]);
     expect(res.catalog.get('besi')).toMatchObject({ category: 'Struktur', unit: 'kg' });
-    expect(res.requests).toEqual([{ material_id: 'besi', quantity: 500, status: 'APPROVED', created_at: '2026-08-10T02:00:00Z', allocations: [{ boq_item_id: 'k1', allocated_quantity: 500 }] }]);
+    expect(res.requests).toEqual([{ material_id: 'besi', quantity: 500, status: 'APPROVED', created_at: '2026-08-10T02:00:00Z', reviewed_at: '2026-08-12T02:00:00Z', allocations: [{ boq_item_id: 'k1', allocated_quantity: 500 }] }]);
+    const headerChain = from.mock.results[3].value as { calls: Array<[string, unknown[]]> };
+    expect(headerChain.calls).toEqual(expect.arrayContaining([['select', ['id, created_at, reviewed_at, overall_status']]]));
   });
 
   it('reads the request headers for the approval flow, and throws a read error', async () => {

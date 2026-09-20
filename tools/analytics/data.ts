@@ -58,8 +58,8 @@ export async function loadMaterialData(projectId: string): Promise<{ planned: Pl
     : [];
   const catalogRows = await fetchAllPaged<CatalogEntry & { id: string }>((from, to) =>
     supabase.from('material_catalog').select('id, name, category, unit, is_asset').order('id').range(from, to) as unknown as Page<CatalogEntry & { id: string }>);
-  const headers = await fetchAllPaged<{ id: string; created_at: string; overall_status: string }>((from, to) =>
-    supabase.from('material_request_headers').select('id, created_at, overall_status').eq('project_id', projectId).order('created_at').order('id').range(from, to) as unknown as Page<{ id: string; created_at: string; overall_status: string }>);
+  const headers = await fetchAllPaged<{ id: string; created_at: string; reviewed_at: string | null; overall_status: string }>((from, to) =>
+    supabase.from('material_request_headers').select('id, created_at, reviewed_at, overall_status').eq('project_id', projectId).order('created_at').order('id').range(from, to) as unknown as Page<{ id: string; created_at: string; reviewed_at: string | null; overall_status: string }>);
   const headerById = new Map(headers.map((h) => [h.id, h]));
   const requests: RequestedLine[] = [];
   for (let i = 0; i < headers.length; i += ID_CHUNK) {
@@ -74,6 +74,7 @@ export async function loadMaterialData(projectId: string): Promise<{ planned: Pl
       if (!header) continue;
       requests.push({
         material_id: l.material_id, quantity: Number(l.quantity) || 0, status: header.overall_status, created_at: header.created_at,
+        reviewed_at: header.reviewed_at ?? null,
         allocations: (l.material_request_line_allocations ?? []).map((a) => ({ boq_item_id: a.boq_item_id, allocated_quantity: Number(a.allocated_quantity) || 0 })),
       });
     }
