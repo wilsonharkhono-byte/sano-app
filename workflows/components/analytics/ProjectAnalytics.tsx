@@ -7,11 +7,11 @@ import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Card from '../Card';
-import { loadApprovalData, loadDiaryData, loadMaterialData, loadProgressEntries } from '../../../tools/analytics/data';
+import { loadApprovalData, loadChainSupport, loadDiaryData, loadMaterialData, loadProgressEntries } from '../../../tools/analytics/data';
 import { COLORS, FONTS, SPACE, TYPE } from '../../theme';
 import ApprovalFlowCard from './ApprovalFlowCard';
 import DiaryActivityCard from './DiaryActivityCard';
-import MaterialCoverageCard from './MaterialCoverageCard';
+import MaterialChainCard from './MaterialChainCard';
 import SCurveCard from './SCurveCard';
 import { lh } from './analyticsStyles';
 
@@ -52,6 +52,7 @@ export default function ProjectAnalytics({ project, boqItems, role, wide = false
   const loadDiary = useCallback(shared('diary', loadDiaryData), [shared]);
   const loadMaterial = useCallback(shared('material', loadMaterialData), [shared]);
   const loadHeaders = useCallback(shared('approval', loadApprovalData), [shared]);
+  const loadChain = useCallback(shared('chain', loadChainSupport), [shared]);
 
   const items = useMemo(() => boqItems.filter((b) => b.project_id == null || b.project_id === projectId), [boqItems, projectId]);
   if (!project) return null;
@@ -74,7 +75,7 @@ export default function ProjectAnalytics({ project, boqItems, role, wide = false
           </TouchableOpacity>
           {open[s.key] && (
             <View style={styles.sectionBody}>
-              {s.key === 'material' && <MaterialCoverageCard loadMaterial={loadMaterial} loadDiary={loadDiary} />}
+              {s.key === 'material' && <MaterialChainCard loadMaterial={loadMaterial} loadDiary={loadDiary} loadChain={loadChain} />}
               {s.key === 'diary' && <DiaryActivityCard loadDiary={loadDiary} loadEntries={loadEntries} items={items} />}
               {s.key === 'approval' && <ApprovalFlowCard loadHeaders={loadHeaders} />}
             </View>

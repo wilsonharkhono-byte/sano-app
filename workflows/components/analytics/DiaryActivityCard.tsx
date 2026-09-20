@@ -10,7 +10,7 @@ import { WORK_TYPE_LABELS, WORK_TYPES, type WorkType } from '../../../tools/anal
 import { todayIsoWIB } from '../../../tools/timeWindow';
 import { COLORS } from '../../theme';
 import LoadBody from './LoadBody';
-import type { DiaryData } from './MaterialCoverageCard';
+import type { DiaryData } from '../../../tools/analytics/data';
 import type { ProgressEntryRow } from './SCurveCard';
 import { a, shortLabel } from './analyticsStyles';
 import { useLoad } from './useLoad';

@@ -7,6 +7,7 @@ jest.mock('../../../../tools/analytics/data', () => ({
   loadDiaryData: jest.fn(),
   loadMaterialData: jest.fn(),
   loadApprovalData: jest.fn(),
+  loadChainSupport: jest.fn(),
   saveProjectDates: jest.fn(),
   validateProjectDates: jest.requireActual('../../../../tools/analytics/data').validateProjectDates,
 }));
@@ -19,7 +20,7 @@ jest.mock('../../DateSelectField', () => {
 });
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 
-import { loadApprovalData, loadDiaryData, loadMaterialData, loadProgressEntries, saveProjectDates } from '../../../../tools/analytics/data';
+import { loadApprovalData, loadChainSupport, loadDiaryData, loadMaterialData, loadProgressEntries, saveProjectDates } from '../../../../tools/analytics/data';
 import ProjectAnalytics from '../ProjectAnalytics';
 import SCurveCard from '../SCurveCard';
 
@@ -35,6 +36,7 @@ beforeEach(() => {
   (loadDiaryData as jest.Mock).mockResolvedValue({ reports: [], links: new Map() });
   (loadMaterialData as jest.Mock).mockResolvedValue({ planned: [], requests: [], catalog: new Map() });
   (loadApprovalData as jest.Mock).mockResolvedValue([]);
+  (loadChainSupport as jest.Mock).mockResolvedValue({ diary: { lines: [], readable: true }, weights: [], verified: [] });
   (saveProjectDates as jest.Mock).mockResolvedValue(undefined);
 });
 
@@ -101,6 +103,7 @@ describe('ProjectAnalytics', () => {
     expect(await findByText('Belum ada progres terverifikasi.')).toBeTruthy();
     expect(loadMaterialData).not.toHaveBeenCalled();
     expect(loadApprovalData).not.toHaveBeenCalled();
+    expect(loadChainSupport).not.toHaveBeenCalled();
     fireEvent.press(getByLabelText('Alur Persetujuan Material'));
     expect(await findByText('Belum ada permintaan material untuk proyek ini.')).toBeTruthy();
     expect(loadApprovalData).toHaveBeenCalledWith('p1');
@@ -113,12 +116,16 @@ describe('ProjectAnalytics', () => {
     });
     (loadMaterialData as jest.Mock).mockResolvedValue({
       planned: [{ material_id: 'besi', boq_item_id: 'a', planned_quantity: 1000 }, { material_id: 'semen', boq_item_id: 'a', planned_quantity: 200 }],
-      requests: [{ material_id: 'besi', quantity: 310, status: 'APPROVED', created_at: '2026-08-24T02:00:00Z', allocations: [] }],
+      requests: [{ material_id: 'besi', quantity: 310, status: 'APPROVED', created_at: '2026-08-24T02:00:00Z', reviewed_at: null, allocations: [] }],
       catalog: new Map([['besi', { name: 'Besi beton ulir 13 mm', category: 'Struktur', unit: 'kg', is_asset: false }], ['semen', { name: 'Semen PCC 40 kg', category: 'Material Beton', unit: 'zak', is_asset: false }]]),
     });
     (loadApprovalData as jest.Mock).mockResolvedValue([{ created_at: '2026-08-24T02:00:00Z', reviewed_at: '2026-08-26T02:00:00Z', overall_status: 'APPROVED' }]);
-    const { findByText, getByText } = block(true);
-    expect(await findByText('310 disetujui (31%) · 310 diminta (31%) · rencana 1.000 kg')).toBeTruthy();
+    const { findByText, getByText, getAllByText } = block(true);
+    expect(await findByText('Besi (kg) → Pembesian')).toBeTruthy();
+    expect(getAllByText('31 %').length).toBeGreaterThanOrEqual(2);
+    expect(getAllByText('belum ada progres terverifikasi').length).toBeGreaterThanOrEqual(1);
+    expect(getByText(/^Rencana 1\.000 kg/)).toBeTruthy();
+    expect(loadChainSupport).toHaveBeenCalledWith('p1');
     expect(getByText('Diminta pertama 24 Agu; pembesian muncul di laporan harian 14 hari kemudian.')).toBeTruthy();
     expect(getByText('Belum pernah diminta: Material Beton (zak).')).toBeTruthy();
     expect(await findByText('2 hari')).toBeTruthy();
