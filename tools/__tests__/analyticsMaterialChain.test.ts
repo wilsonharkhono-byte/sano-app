@@ -143,6 +143,14 @@ describe('buildMaterialChain installed series', () => {
     expect(g.projected.every((v) => v === null)).toBe(true);
   });
 
+  it('says it is done even when the whole group was verified in one week', () => {
+    const oneWeek = [vline('k1', { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 100 }, '2026-08-26', SPLIT), vline('k2', { SINGLE: 100 }, '2026-08-26')];
+    const g = buildMaterialChain(input({ verifiedLines: oneWeek })).groups[0];
+    // Both rows verified in the week of 24 Aug: there is no second week, but there is also nothing left to project.
+    expect(g.today.verified).toBe(100);
+    expect(g.projectionNote).toBe('Sudah 100 % terverifikasi.');
+  });
+
   it('needs verified progress in two different weeks before it projects', () => {
     const g = buildMaterialChain(input({ verifiedLines: verifiedLines.slice(0, 1) })).groups[0];
     expect(g.projectionNote).toBe('Belum cukup data: proyeksi butuh progres terverifikasi di dua minggu berbeda.');
@@ -223,15 +231,15 @@ describe('buildMaterialChain relation', () => {
     const g = buildMaterialChain(input({ requests: more, verifiedLines })).groups[0];
     expect(g.approved.slice(0, 6)).toEqual([12.5, 62.5, 62.5, 62.5, 62.5, 62.5]);
     expect(g.requested.slice(0, 6)).toEqual([12.5, 85, 85, 85, 85, 85]);
-    // Stock is a quantity, not the rounded points: 2 500 kg approved − 1 750 kg verified (1 000 + 750) = 750 kg.
-    expect(g.relation).toMatchObject({ stockPts: 18.7, stockQty: 750, stockNote: null, leadWeeks: 4, leadWeekIndex: 1, leadNote: null, coverWeeks: 2, coverNote: null });
+    // Both stock figures come from the quantities: 2 500 kg approved − 1 750 kg verified (1 000 + 750) = 750 kg, and 750 / 4 000 = 18,75 → 18,8 points.
+    expect(g.relation).toMatchObject({ stockPts: 18.8, stockQty: 750, stockNote: null, leadWeeks: 4, leadWeekIndex: 1, leadNote: null, coverWeeks: 2, coverNote: null });
     expect(g.warnings).toEqual([]);
   });
 
   it('shows a negative stock and warns when installation outruns what was approved', () => {
     const g = buildMaterialChain(input({ verifiedLines })).groups[0];
-    // 500 kg approved − 1 750 kg verified = −1 250 kg (the points, −31,3, round separately).
-    expect(g.relation).toMatchObject({ stockPts: -31.3, stockQty: -1250, leadWeeks: null, leadNote: 'belum bisa dihitung', coverWeeks: null, coverNote: 'tidak ada stok tersisa' });
+    // 500 kg approved − 1 750 kg verified = −1 250 kg; −1 250 / 4 000 = −31,25, and a half rounds towards +∞, so −31,2 points.
+    expect(g.relation).toMatchObject({ stockPts: -31.2, stockQty: -1250, leadWeeks: null, leadNote: 'belum bisa dihitung', coverWeeks: null, coverNote: 'tidak ada stok tersisa' });
     expect(g.warnings).toEqual(['Pekerjaan melebihi material yang disetujui: terpasang 43,8 %, disetujui 12,5 %.']);
   });
 

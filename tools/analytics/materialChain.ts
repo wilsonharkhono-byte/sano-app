@@ -51,7 +51,7 @@ export interface MaterialChainInput {
 }
 
 export interface ChainRelation {
-  /** Disetujui − Terpasang, in points and in the group's unit; null with a note when nothing is verified. */
+  /** Disetujui − Terpasang, in points and in the group's unit; both read from the quantities themselves, so they agree. Null with a note when nothing is verified. */
   stockPts: number | null;
   stockQty: number | null;
   stockNote: string | null;
@@ -116,7 +116,8 @@ function parsePct(raw: unknown): StagePct {
  * The share of a row one verified line credits: its stage when the row is split and the group feeds a stage; the
  * row as a whole otherwise. When the row's weights changed after the line was verified, the line's own snapshot
  * says which shape it was claimed under, so the figure is still read truthfully — never assumed. A line without a
- * usable snapshot credits nothing rather than a guess.
+ * usable snapshot credits nothing rather than a guess. When `verified_pct` carries keys of both shapes, the row's
+ * current shape wins: the snapshot is only consulted for the figure the current shape does not find.
  */
 function linePct(current: StageWeights, line: { pct: StagePct; weights: StageWeights | null }, stage: WeightBearingStage | null): number {
   const { pct, weights: snapshot } = line;
@@ -226,8 +227,9 @@ export function buildMaterialChain(input: MaterialChainInput): { groups: ChainGr
 function projectionOf(series: ReadonlyArray<WeekPoint>, verifiedWeeks: ReadonlyArray<string>, verifiedNow: number | null, thisWeek: string): Projection {
   const none = (note: string) => ({ pace: null, windowWeeks: null, note });
   if (verifiedNow === null) return none('Belum ada progres terverifikasi.');
-  if (verifiedWeeks.length < 2) return none('Belum cukup data: proyeksi butuh progres terverifikasi di dua minggu berbeda.');
+  // Finished first: a group verified to 100 % in a single week has nothing left to project towards.
   if (verifiedNow >= 100) return none('Sudah 100 % terverifikasi.');
+  if (verifiedWeeks.length < 2) return none('Belum cukup data: proyeksi butuh progres terverifikasi di dua minggu berbeda.');
   const windowWeeks = Math.max(1, Math.min(PACE_WINDOW_WEEKS, Math.round(daysBetween(verifiedWeeks[0], thisWeek) / 7)));
   const before = series.find((s) => s.week === addCalendarDays(thisWeek, -7 * windowWeeks))?.verified ?? 0;
   const pace = round1((verifiedNow - before) / windowWeeks);
@@ -236,7 +238,7 @@ function projectionOf(series: ReadonlyArray<WeekPoint>, verifiedWeeks: ReadonlyA
 }
 
 /** The relation between what was approved and what is installed, each number with its reason when it has none. */
-function relationOf(series: ReadonlyArray<WeekPoint>, now: WeekPoint, projection: Projection, thisWeek: string): ChainRelation {
+function relationOf(series: ReadonlyArray<WeekPoint>, now: WeekPoint, projection: Projection, thisWeek: string, pctOfPlan: (q: number) => number): ChainRelation {
   const relation: ChainRelation = {
     stockPts: null, stockQty: null, stockNote: null, leadWeeks: null, leadWeekIndex: null, leadNote: null,
     coverWeeks: null, coverNote: null, pacePerWeek: projection.pace, windowWeeks: projection.windowWeeks,
@@ -248,9 +250,10 @@ function relationOf(series: ReadonlyArray<WeekPoint>, now: WeekPoint, projection
     relation.coverNote = 'belum ada laju';
     return relation;
   }
-  relation.stockPts = round1(A - T);
-  // The quantity comes from the quantities themselves, never from the rounded points.
-  relation.stockQty = round1(approvedQty - verifiedQty);
+  // Both figures come from the quantities themselves, never from the already-rounded percents, so they agree.
+  const stock = approvedQty - verifiedQty;
+  relation.stockPts = pctOfPlan(stock);
+  relation.stockQty = round1(stock);
   if (T <= 0 || A < T) relation.leadNote = 'belum bisa dihitung';
   else {
     const idx = series.findIndex((s) => s.approved >= T);
@@ -336,7 +339,7 @@ function buildGroup(
   const projected = weeks.map((_, i) =>
     pace === null || verifiedNow === null || i < thisWeekIndex ? null : Math.min(100, round1(verifiedNow + (i - thisWeekIndex) * pace)));
 
-  const relation = relationOf(series, now, projection, thisWeek);
+  const relation = relationOf(series, now, projection, thisWeek, pctOfPlan);
   const warnings: string[] = [];
   if (verifiedNow !== null && verifiedNow - now.approved > OVERRUN_TOLERANCE_PTS) {
     warnings.push(`Pekerjaan melebihi material yang disetujui: terpasang ${fmt(verifiedNow)} %, disetujui ${fmt(now.approved)} %.`);
