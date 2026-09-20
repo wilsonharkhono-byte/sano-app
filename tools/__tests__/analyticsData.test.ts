@@ -1,7 +1,7 @@
 // tools/__tests__/analyticsData.test.ts
 jest.mock('../supabase', () => ({ supabase: { from: jest.fn() } }));
 import { supabase } from '../supabase';
-import { loadApprovalData, loadDiaryData, loadMaterialData, loadProgressEntries, saveProjectDates, validateProjectDates } from '../analytics/data';
+import { loadApprovalData, loadChainSupport, loadDiaryData, loadMaterialData, loadProgressEntries, loadVerifiedClaimLines, saveProjectDates, validateProjectDates } from '../analytics/data';
 
 type Result = { data?: unknown; error?: unknown };
 function chain(result: Result) {
@@ -59,16 +59,18 @@ describe('reads', () => {
   });
 
   it('reads the plan of the latest material master, the catalogue, and requests with their allocations', async () => {
+    const headerChain = chain({ data: [{ id: 'h1', created_at: '2026-08-10T02:00:00Z', reviewed_at: '2026-08-12T02:00:00Z', overall_status: 'APPROVED' }] });
     from
       .mockReturnValueOnce(chain({ data: [{ id: 'mm2' }] }))
       .mockReturnValueOnce(chain({ data: [{ material_id: 'besi', boq_item_id: 'k1', planned_quantity: '1000' }] }))
       .mockReturnValueOnce(chain({ data: [{ id: 'besi', name: 'Besi beton ulir 13 mm', category: 'Struktur', unit: 'kg', is_asset: false }] }))
-      .mockReturnValueOnce(chain({ data: [{ id: 'h1', created_at: '2026-08-10T02:00:00Z', overall_status: 'APPROVED' }] }))
+      .mockReturnValueOnce(headerChain)
       .mockReturnValueOnce(chain({ data: [{ request_header_id: 'h1', material_id: 'besi', quantity: '500', material_request_line_allocations: [{ boq_item_id: 'k1', allocated_quantity: '500' }] }] }));
     const res = await loadMaterialData('p1');
     expect(res.planned).toEqual([{ material_id: 'besi', boq_item_id: 'k1', planned_quantity: 1000 }]);
     expect(res.catalog.get('besi')).toMatchObject({ category: 'Struktur', unit: 'kg' });
-    expect(res.requests).toEqual([{ material_id: 'besi', quantity: 500, status: 'APPROVED', created_at: '2026-08-10T02:00:00Z', allocations: [{ boq_item_id: 'k1', allocated_quantity: 500 }] }]);
+    expect(res.requests).toEqual([{ material_id: 'besi', quantity: 500, status: 'APPROVED', created_at: '2026-08-10T02:00:00Z', reviewed_at: '2026-08-12T02:00:00Z', allocations: [{ boq_item_id: 'k1', allocated_quantity: 500 }] }]);
+    expect(headerChain.calls).toEqual(expect.arrayContaining([['select', ['id, created_at, reviewed_at, overall_status']]]));
   });
 
   it('reads the request headers for the approval flow, and throws a read error', async () => {
@@ -76,5 +78,50 @@ describe('reads', () => {
     await expect(loadApprovalData('p1')).resolves.toEqual([{ created_at: 'a', reviewed_at: null, overall_status: 'PENDING' }]);
     from.mockReturnValueOnce(chain({ error: { message: 'boom' } }));
     await expect(loadApprovalData('p1')).rejects.toThrow('boom');
+  });
+});
+
+describe('loadVerifiedClaimLines and loadChainSupport', () => {
+  it('reads the verified claims and their lines in chunks, stamping each line with its claim’s verification time', async () => {
+    from
+      .mockReturnValueOnce(chain({ data: [{ id: 'c1', verified_at: '2026-08-26T03:00:00Z' }, { id: 'c2', verified_at: '2026-09-02T03:00:00Z' }] }))
+      .mockReturnValueOnce(chain({ data: [
+        { claim_id: 'c1', boq_item_id: 'k1', verified_pct: { PEMBESIAN: 50 }, weights_snapshot: { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 } },
+        { claim_id: 'c2', boq_item_id: 'k1', verified_pct: { PEMBESIAN: 100 }, weights_snapshot: null },
+        { claim_id: 'c2', boq_item_id: 'k2', verified_pct: null, weights_snapshot: { SINGLE: 1 } },
+      ] }));
+    await expect(loadVerifiedClaimLines('p1')).resolves.toEqual([
+      { boq_item_id: 'k1', verified_pct: { PEMBESIAN: 50 }, weights_snapshot: { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 }, verified_at: '2026-08-26T03:00:00Z' },
+      { boq_item_id: 'k1', verified_pct: { PEMBESIAN: 100 }, weights_snapshot: null, verified_at: '2026-09-02T03:00:00Z' },
+    ]);
+    expect(from).toHaveBeenNthCalledWith(1, 'progress_claims');
+    expect(from).toHaveBeenNthCalledWith(2, 'progress_claim_lines');
+    const claims = from.mock.results[0].value as { calls: Array<[string, unknown[]]> };
+    expect(claims.calls).toEqual(expect.arrayContaining([['eq', ['project_id', 'p1']], ['eq', ['status', 'VERIFIED']], ['range', [0, 999]]]));
+    const lines = from.mock.results[1].value as { calls: Array<[string, unknown[]]> };
+    expect(lines.calls).toEqual(expect.arrayContaining([['select', ['claim_id, boq_item_id, verified_pct, weights_snapshot']], ['in', ['claim_id', ['c1', 'c2']]]]));
+  });
+
+  it('reads nothing more when there is no verified claim', async () => {
+    from.mockReturnValueOnce(chain({ data: [] }));
+    await expect(loadVerifiedClaimLines('p1')).resolves.toEqual([]);
+    expect(from).toHaveBeenCalledTimes(1);
+  });
+
+  it('bundles the diary lines, the stage weights and the verified lines, keeping a diary read failure soft', async () => {
+    // The soft failure warns on purpose; the test asserts the result instead of printing it.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    from.mockImplementation((table: string) => {
+      if (table === 'client_report_lines') return chain({ error: { message: 'no view' } });
+      if (table === 'boq_stage_weights') return chain({ data: [{ boq_item_id: 'k1', weights: { SINGLE: 1 }, source: 'reference', reference_class: 'balok', updated_at: 'x' }] });
+      if (table === 'progress_claims') return chain({ data: [] });
+      throw new Error(`unexpected table ${table}`);
+    });
+    const res = await loadChainSupport('p1');
+    expect(res.diary).toEqual({ lines: [], readable: false });
+    expect(res.weights).toEqual([{ boq_item_id: 'k1', weights: { SINGLE: 1 }, source: 'reference', reference_class: 'balok', updated_at: 'x' }]);
+    expect(res.verified).toEqual([]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

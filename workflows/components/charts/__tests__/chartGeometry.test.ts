@@ -1,5 +1,5 @@
 // workflows/components/charts/__tests__/chartGeometry.test.ts
-import { labelIndices, linePath, niceMax, plotArea, xAt, yAt } from '../chartGeometry';
+import { arcPath, bandLabelIndex, bandPath, endLabelPoints, labelIndices, linePath, niceMax, plotArea, polar, xAt, yAt } from '../chartGeometry';
 
 describe('chartGeometry', () => {
   const area = plotArea({ width: 300, height: 120, left: 40, right: 10, top: 10, bottom: 20 });
@@ -30,5 +30,82 @@ describe('chartGeometry', () => {
     expect(labelIndices(4, 6)).toEqual([0, 1, 2, 3]);
     expect(labelIndices(37, 5)).toEqual([0, 9, 18, 27, 36]);
     expect(labelIndices(0, 5)).toEqual([]);
+  });
+});
+
+describe('polar and arcPath', () => {
+  it('measures angles clockwise from 12 o’clock', () => {
+    expect(polar(0, 0, 10, 0)).toEqual({ x: expect.closeTo(0, 6), y: -10 });
+    expect(polar(0, 0, 10, 90)).toEqual({ x: 10, y: expect.closeTo(0, 6) });
+    expect(polar(0, 0, 10, 180)).toEqual({ x: expect.closeTo(0, 6), y: 10 });
+  });
+
+  it('draws an arc from a0 to a1 with the large-arc flag past 180°, and nothing for an empty sweep', () => {
+    expect(arcPath(50, 50, 10, 0, 90)).toBe('M 50.00 40.00 A 10 10 0 0 1 60.00 50.00');
+    expect(arcPath(50, 50, 10, 225, 495)).toBe('M 42.93 57.07 A 10 10 0 1 1 57.07 57.07');
+    expect(arcPath(50, 50, 10, 90, 90)).toBe('');
+    expect(arcPath(50, 50, 10, 90, 80)).toBe('');
+  });
+
+  it('caps a full sweep so the end point still differs from the start at a small radius', () => {
+    const d = arcPath(50, 50, 20, 0, 400);
+    const [, sx, sy, , , , , , , ex, ey] = d.split(' ');
+    expect(`${sx} ${sy}`).not.toBe(`${ex} ${ey}`);
+    expect(d).toMatch(/ A 20 20 0 1 1 /);
+  });
+});
+
+describe('bandPath and bandLabelIndex', () => {
+  const area = { x0: 0, x1: 100, y0: 0, y1: 100 };
+  it('fills the area between two series as one polygon per run where both are numbers', () => {
+    const a = [null, 50, 60, null, 80, 90];
+    const b = [null, 10, 20, null, null, 30];
+    expect(bandPath(a, b, 100, area)).toBe('M 20.0 50.0 L 40.0 40.0 L 40.0 80.0 L 20.0 90.0 Z');
+  });
+  it('returns nothing for a lone point and picks the widest positive gap for the label', () => {
+    expect(bandPath([null, 50], [null, 10], 100, area)).toBe('');
+    expect(bandLabelIndex([10, 50, 60, 20], [5, 10, 55, 30])).toBe(1);
+    expect(bandLabelIndex([10, 5], [20, 9])).toBeNull();
+  });
+  it('treats NaN and Infinity as gaps, like linePath, and draws one polygon per run', () => {
+    const area = { x0: 0, x1: 100, y0: 0, y1: 100 };
+    expect(bandPath([50, NaN, 60, 70], [10, 20, 30, 40], 100, area)).toBe('M 66.7 40.0 L 100.0 30.0 L 100.0 60.0 L 66.7 70.0 Z');
+    expect(bandPath([50, 60, null, 70, 80], [10, 20, null, 30, 40], 100, area)).toBe('M 0.0 50.0 L 25.0 40.0 L 25.0 80.0 L 0.0 90.0 Z M 75.0 30.0 L 100.0 20.0 L 100.0 60.0 L 75.0 70.0 Z');
+    expect(bandPath([], [], 100, area)).toBe('');
+    expect(linePath([1, Infinity, 2], 10, area)).toBe('M 0.0 90.0 M 100.0 80.0');
+  });
+  it('scales the band by an explicit point count', () => {
+    const area = { x0: 0, x1: 100, y0: 0, y1: 100 };
+    expect(bandPath([10, 20], [1, 2], 100, area, 4)).toBe('M 0.0 90.0 L 33.3 80.0 L 33.3 98.0 L 0.0 99.0 Z');
+  });
+  it('skips gaps when looking for the widest band', () => {
+    expect(bandLabelIndex([null, 50, 10], [null, 10, 5])).toBe(1);
+    expect(bandLabelIndex([NaN, 50], [1, 60])).toBeNull();
+  });
+});
+
+describe('endLabelPoints', () => {
+  const area = { x0: 0, x1: 100, y0: 0, y1: 100 };
+  it('labels each series at its last real point and pushes near-coincident labels apart', () => {
+    const points = endLabelPoints([
+      { key: 'a', values: [10, 30, null] },
+      { key: 'b', values: [5, 34, null] },
+      { key: 'c', values: [null, null, null] },
+    ], 100, area, 11);
+    expect(points.map((p) => p.key)).toEqual(['b', 'a']);
+    expect(points[0]).toMatchObject({ index: 1, value: 34, x: 50, y: 66 });
+    expect(points[1]).toMatchObject({ index: 1, value: 30, x: 50, y: 77 });
+  });
+});
+
+describe('the chart x-scale', () => {
+  const area = { x0: 0, x1: 100, y0: 0, y1: 100 };
+  it('scales a line by an explicit point count', () => {
+    expect(linePath([10, 20], 100, area, 4)).toBe('M 0.0 90.0 L 33.3 80.0');
+  });
+  it('scales an end label by an explicit point count', () => {
+    const [p] = endLabelPoints([{ key: 'a', values: [10, 20] }], 100, area, 11, 4);
+    expect(p).toMatchObject({ index: 1, value: 20, y: 80 });
+    expect(p.x).toBeCloseTo(100 / 3, 6);
   });
 });

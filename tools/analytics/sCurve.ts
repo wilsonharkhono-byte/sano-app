@@ -91,7 +91,8 @@ export function buildSCurve(input: SCurveInput): SCurve {
     const before = actualByWeek.get(addCalendarDays(thisWeek, -7 * windowWeeks)) ?? 0;
     const pace = round1((latestActual - before) / windowWeeks);
     if (pace <= 0) {
-      projectionNote = `Tidak ada kenaikan progres terverifikasi dalam ${PACE_WINDOW_WEEKS} minggu terakhir.`;
+      // The note names the window it actually measured, which is shorter than PACE_WINDOW_WEEKS in a young project.
+      projectionNote = `Tidak ada kenaikan progres terverifikasi dalam ${windowWeeks} minggu terakhir.`;
     } else {
       const weeksLeft = Math.min(MAX_PROJECTION_WEEKS, Math.ceil((100 - latestActual) / pace));
       const finishWeek = addCalendarDays(thisWeek, 7 * weeksLeft);

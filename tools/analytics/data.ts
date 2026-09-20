@@ -3,15 +3,21 @@
 // per card so a collapsed card costs nothing. Everything goes through RLS and
 // pages past PostgREST's 1,000-row cap; a read error is thrown, never shown
 // as an empty chart. The only write is the project's dates.
+import { listDiaryLines, listStageWeights, type StageWeightRow } from '../progressClaims/claims';
+import type { DiaryLine } from '../progressClaims/diaryEvidence';
 import { fetchAllPaged } from '../queryHelpers';
 import { supabase } from '../supabase';
 import { isRealCalendarDate } from '../timeWindow';
 import type { RequestHeader } from './approvalFlow';
 import type { DiaryReport } from './diaryActivity';
+import type { VerifiedClaimLine } from './materialChain';
 import type { CatalogEntry, PlannedLine, RequestedLine } from './materialCoverage';
 
 type Page<T> = PromiseLike<{ data: T[] | null; error: { message?: string } | null }>;
 const ID_CHUNK = 100;
+
+export interface DiaryData { reports: DiaryReport[]; links: Map<string, string | null> }
+export interface MaterialData { planned: PlannedLine[]; requests: RequestedLine[]; catalog: Map<string, CatalogEntry> }
 
 export async function loadProgressEntries(projectId: string): Promise<Array<{ boq_item_id: string; quantity: number; created_at: string }>> {
   const rows = await fetchAllPaged<{ boq_item_id: string; quantity: number | string; created_at: string }>((from, to) =>
@@ -21,7 +27,7 @@ export async function loadProgressEntries(projectId: string): Promise<Array<{ bo
 
 interface ReportRow { id: string; report_no: number; revision: number | null; period_start: string; crewTotal: unknown; updates: unknown }
 
-export async function loadDiaryData(projectId: string): Promise<{ reports: DiaryReport[]; links: Map<string, string | null> }> {
+export async function loadDiaryData(projectId: string): Promise<DiaryData> {
   const rows = await fetchAllPaged<ReportRow>((from, to) =>
     supabase.from('client_progress_reports')
       .select('id, report_no, revision, period_start, crewTotal:snapshot->crewTotal, updates:snapshot->updates')
@@ -47,7 +53,7 @@ interface RequestLineRow {
   material_request_line_allocations: Array<{ boq_item_id: string | null; allocated_quantity: number | string }> | null;
 }
 
-export async function loadMaterialData(projectId: string): Promise<{ planned: PlannedLine[]; requests: RequestedLine[]; catalog: Map<string, CatalogEntry> }> {
+export async function loadMaterialData(projectId: string): Promise<MaterialData> {
   const { data: masters, error: masterError } = await supabase
     .from('project_material_master').select('id').eq('project_id', projectId).order('created_at', { ascending: false }).limit(1);
   if (masterError) throw new Error(masterError.message);
@@ -58,8 +64,8 @@ export async function loadMaterialData(projectId: string): Promise<{ planned: Pl
     : [];
   const catalogRows = await fetchAllPaged<CatalogEntry & { id: string }>((from, to) =>
     supabase.from('material_catalog').select('id, name, category, unit, is_asset').order('id').range(from, to) as unknown as Page<CatalogEntry & { id: string }>);
-  const headers = await fetchAllPaged<{ id: string; created_at: string; overall_status: string }>((from, to) =>
-    supabase.from('material_request_headers').select('id, created_at, overall_status').eq('project_id', projectId).order('created_at').order('id').range(from, to) as unknown as Page<{ id: string; created_at: string; overall_status: string }>);
+  const headers = await fetchAllPaged<{ id: string; created_at: string; reviewed_at: string | null; overall_status: string }>((from, to) =>
+    supabase.from('material_request_headers').select('id, created_at, reviewed_at, overall_status').eq('project_id', projectId).order('created_at').order('id').range(from, to) as unknown as Page<{ id: string; created_at: string; reviewed_at: string | null; overall_status: string }>);
   const headerById = new Map(headers.map((h) => [h.id, h]));
   const requests: RequestedLine[] = [];
   for (let i = 0; i < headers.length; i += ID_CHUNK) {
@@ -74,6 +80,7 @@ export async function loadMaterialData(projectId: string): Promise<{ planned: Pl
       if (!header) continue;
       requests.push({
         material_id: l.material_id, quantity: Number(l.quantity) || 0, status: header.overall_status, created_at: header.created_at,
+        reviewed_at: header.reviewed_at ?? null,
         allocations: (l.material_request_line_allocations ?? []).map((a) => ({ boq_item_id: a.boq_item_id, allocated_quantity: Number(a.allocated_quantity) || 0 })),
       });
     }
@@ -88,6 +95,34 @@ export async function loadMaterialData(projectId: string): Promise<{ planned: Pl
 export async function loadApprovalData(projectId: string): Promise<RequestHeader[]> {
   return fetchAllPaged<RequestHeader>((from, to) =>
     supabase.from('material_request_headers').select('created_at, reviewed_at, overall_status').eq('project_id', projectId).order('created_at').order('id').range(from, to) as unknown as Page<RequestHeader>);
+}
+
+/** Every line of every VERIFIED claim with the weights it was verified under, stamped with its claim's verification time; the chart reads the stage percents as of each week. */
+export async function loadVerifiedClaimLines(projectId: string): Promise<VerifiedClaimLine[]> {
+  const claims = await fetchAllPaged<{ id: string; verified_at: string }>((from, to) =>
+    supabase.from('progress_claims').select('id, verified_at').eq('project_id', projectId).eq('status', 'VERIFIED').order('verified_at').order('id').range(from, to) as unknown as Page<{ id: string; verified_at: string }>);
+  const verifiedAt = new Map(claims.map((c) => [c.id, c.verified_at]));
+  const out: VerifiedClaimLine[] = [];
+  for (let i = 0; i < claims.length; i += ID_CHUNK) {
+    const ids = claims.slice(i, i + ID_CHUNK).map((c) => c.id);
+    const rows = await fetchAllPaged<ClaimLineRow>((from, to) =>
+      supabase.from('progress_claim_lines').select('claim_id, boq_item_id, verified_pct, weights_snapshot').in('claim_id', ids).order('id').range(from, to) as unknown as Page<ClaimLineRow>);
+    for (const r of rows) {
+      const at = verifiedAt.get(r.claim_id);
+      if (at && r.verified_pct != null) out.push({ boq_item_id: r.boq_item_id, verified_pct: r.verified_pct, weights_snapshot: r.weights_snapshot ?? null, verified_at: at });
+    }
+  }
+  return out;
+}
+
+type ClaimLineRow = { claim_id: string; boq_item_id: string; verified_pct: unknown; weights_snapshot: unknown };
+
+export interface ChainSupport { diary: { lines: DiaryLine[]; readable: boolean }; weights: StageWeightRow[]; verified: VerifiedClaimLine[] }
+
+/** What the material chain needs besides the material data: read together so the analytics cache holds one promise. A diary read failure is soft (listDiaryLines says `readable: false`); the others throw. */
+export async function loadChainSupport(projectId: string): Promise<ChainSupport> {
+  const [diary, weights, verified] = await Promise.all([listDiaryLines(projectId), listStageWeights(projectId), loadVerifiedClaimLines(projectId)]);
+  return { diary, weights, verified };
 }
 
 /** Null when the two dates can be saved; otherwise the sentence to show. */
