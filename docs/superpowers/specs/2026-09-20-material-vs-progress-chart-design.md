@@ -94,7 +94,9 @@ One card in `ProjectAnalytics`, section "Material vs Progres", on every Beranda
    - "Stok teoretis": `41,8 t` · "disetujui − terpasang · 17,9 poin".
    - "Jeda material → pekerjaan": `~4 minggu` · "disetujui sebelum terpasang".
    - "Cukup untuk": `~9 minggu` · "pada laju 2,05 poin/minggu".
-   Nulls per §5.7 (four reasons).
+   Nulls per §5.7 (four reasons). When the diary work types behind the lag sentence or
+   the waiting warning are keyword-inferred, the hint states the share ("Jenis pekerjaan
+   di laporan harian: 40% masih perkiraan kata kunci.").
 6. Warnings, when they apply, as `a.warn` lines: "Pekerjaan melebihi material yang
    disetujui: terpasang 35 %, disetujui 20 %." and the existing "Material diminta N hari
    lalu, pembesian belum muncul di laporan harian (batas 14 hari)."
@@ -189,7 +191,10 @@ counts `rowFraction × 100`.
 For every work area r as above, using confirmed lines (`listDiaryLines`, latest revision
 per report):
 
-- For a split row, the lines on the group's stage; for a single-stage row, all its lines.
+- For a split row in a category that feeds a stage, the lines on that stage; for a
+  single-stage row, all its lines (the latest of any stage decides); for a split row in a
+  category that feeds no stage, the latest line per weight-bearing stage, each stage's
+  credit combined with the row's weights (`rowFraction`), as the verified path does.
 - The latest line by (`period_end`, `issued_at`, `line_index`) with `period_end` ≤ end of
   w decides: MULAI or LANJUT → 50, SELESAI → 100; no line → 0. This is the status board's
   own comparator (`diaryEvidence.ts`); `report_no` is not consulted.
@@ -223,8 +228,11 @@ group's plan.
 - Jeda: the first week w₀ with Disetujui(w₀) ≥ T; jeda = weeks from w₀ to this week. Null
   ("belum bisa dihitung") when T = 0 or A < T.
 - Cukup untuk: (A − T) / pace in weeks, rounded; null with "belum ada laju" without a
-  projection, and with "tidak ada stok tersisa" when A ≤ T; shown as "> 52 minggu" past a
-  year.
+  projection, and with "tidak ada stok tersisa" when the approved quantity is at or below
+  the installed quantity; 0 (less than half a week of stock) reads "< 1 minggu" and draws
+  no run; shown as "> 52 minggu" past a year. The tile names the window the pace was
+  measured over, and the projection's legend entry reads "Proyeksi laju N minggu" with
+  that same N.
 - Warning "Pekerjaan melebihi material yang disetujui" when T − A > 10 points (the claim
   flag's tolerance).
 - The radial shows D, A, T and Laporan(this week).
