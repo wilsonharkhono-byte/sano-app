@@ -2,7 +2,7 @@
 import React from 'react';
 import { fireEvent, render } from '@testing-library/react-native';
 jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
-import type { MaterialData } from '../../../../tools/analytics/data';
+import type { ChainSupport, MaterialData } from '../../../../tools/analytics/data';
 import MaterialChainCard, { qtyText } from '../MaterialChainCard';
 
 const catalog = new Map([
@@ -24,7 +24,7 @@ const material: MaterialData = {
   catalog,
 };
 const diary = { reports: [], links: new Map() };
-const chain = {
+const chain: ChainSupport = {
   diary: { lines: [], readable: true },
   weights: [{ boq_item_id: 'k1', weights: { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 }, source: 'rab', reference_class: null, updated_at: 'x' }],
   verified: [
@@ -34,11 +34,11 @@ const chain = {
   ],
 };
 
-const card = (over: { material?: typeof material; chain?: typeof chain; loadChain?: () => Promise<unknown> } = {}) => render(
+const card = (over: { material?: MaterialData; chain?: ChainSupport; loadChain?: () => Promise<ChainSupport> } = {}) => render(
   <MaterialChainCard
     loadMaterial={() => Promise.resolve(over.material ?? material)}
     loadDiary={() => Promise.resolve(diary)}
-    loadChain={(over.loadChain ?? (() => Promise.resolve(over.chain ?? chain))) as never}
+    loadChain={over.loadChain ?? (() => Promise.resolve(over.chain ?? chain))}
     today="2026-09-17"
   />,
 );
@@ -68,6 +68,8 @@ describe('MaterialChainCard', () => {
     expect(getByText('pada laju 10,4 poin/minggu')).toBeTruthy();
     expect(getByText(/^Rencana 4\.000 kg per area kerja/)).toBeTruthy();
     expect(getByText('Belum pernah diminta: Material Beton (zak).')).toBeTruthy();
+    // The besi request is 38 days old and the diary is empty, so the waiting warning applies.
+    expect(getByText('Material diminta 38 hari lalu, pembesian belum muncul di laporan harian (batas 14 hari).')).toBeTruthy();
   });
 
   it('switches the group with the chips, switches rings off and on, and opens the weekly trend inline', async () => {
@@ -75,22 +77,32 @@ describe('MaterialChainCard', () => {
     await findAllByText('43,8 %');
     fireEvent.press(getByLabelText('Tampilkan cincin Diminta'));
     expect(getByLabelText('Tampilkan cincin Diminta').props.accessibilityState).toEqual({ checked: false });
+    fireEvent.press(getByLabelText('Tampilkan cincin Diminta'));
+    expect(getByLabelText('Tampilkan cincin Diminta').props.accessibilityState).toEqual({ checked: true });
     expect(queryByLabelText('Tampilkan Proyeksi laju 4 minggu (titik-titik)')).toBeNull();
     fireEvent.press(getByLabelText('Lihat tren mingguan'));
     expect(getByLabelText('Tampilkan Proyeksi laju 4 minggu (titik-titik)')).toBeTruthy();
     expect(getByLabelText('Tampilkan Menurut laporan harian (belum diverifikasi)').props.accessibilityState).toEqual({ checked: false });
+    // Diminta starts off on the chart and the chart's own switch turns it back on.
+    expect(getByLabelText('Tampilkan Diminta').props.accessibilityState).toEqual({ checked: false });
+    fireEvent.press(getByLabelText('Tampilkan Diminta'));
+    expect(getByLabelText('Tampilkan Diminta').props.accessibilityState).toEqual({ checked: true });
     expect(getByText('Sembunyikan tren')).toBeTruthy();
     fireEvent.press(getByLabelText('Semen (zak) → Pengecoran'));
     expect(getByText(/^Rencana 200 zak per area kerja/)).toBeTruthy();
-    // Semen: k1's verified Pengecoran is 0 %, so the hero, the Terpasang row and the diary row all read 0 %.
-    expect(getAllByText('0 %').length).toBeGreaterThanOrEqual(2);
+    // Semen: k1's verified Pengecoran is 0 %, and nothing was requested, so the hero and the
+    // Diminta, Disetujui and Terpasang rows all read 0 %; the diary row has no figure and reads "—".
+    expect(getAllByText('0 %')).toHaveLength(4);
+    fireEvent.press(getByLabelText('Sembunyikan tren'));
+    expect(queryByLabelText('Tampilkan Proyeksi laju 4 minggu (titik-titik)')).toBeNull();
   });
 
   it('says why the numbers are missing before anything is verified, and warns when work outruns approvals', async () => {
     const { findAllByText, getByText, getAllByText } = card({ chain: { ...chain, verified: [] } });
     // Under the hero and in the stock tile.
     expect(await findAllByText('belum ada progres terverifikasi')).toHaveLength(2);
-    expect(getAllByText('—').length).toBeGreaterThanOrEqual(3);
+    // The hero, the Terpasang and diary rows, and all three tile values.
+    expect(getAllByText('—')).toHaveLength(6);
     expect(getByText('belum bisa dihitung')).toBeTruthy();
     expect(getByText('belum ada laju')).toBeTruthy();
     const over = card({ material: { ...material, requests: material.requests.slice(0, 1) } });

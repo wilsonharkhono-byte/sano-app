@@ -38,9 +38,24 @@ const RING_ITEMS: ReadonlyArray<{ key: RingKey; label: string; color: string; op
 const LINES_OFF_BY_DEFAULT = ['requested', 'diary'];
 
 const pctText = (v: number | null) => (v === null ? '—' : `${qty(v)} %`);
+/** The daily reports only speak when they could be read. */
+const diaryValueOf = (g: ChainGroup) => (g.diaryReadable ? g.today.diary : null);
+/** The four figures of a group in one reading order, so the radial and the chart say the same thing. */
+const fourValues = (g: ChainGroup) =>
+  `diminta ${pctText(g.today.requested)}, disetujui ${pctText(g.today.approved)}, terpasang ${pctText(g.today.verified)}, menurut laporan harian ${pctText(diaryValueOf(g))}`;
 /** A quantity in the group's unit; kilograms read as tonnes from a thousand. */
 export function qtyText(n: number, unit: string): string {
   return unit === 'kg' && Math.abs(n) >= 1000 ? `${qty(n / 1000)} t` : `${qty(n)} ${unit}`;
+}
+
+/** One series' colour chip, struck through when its switch is off. */
+function Swatch({ color, opacity, off }: { color: string; opacity: number; off?: boolean }) {
+  return (
+    <View style={styles.swatchWrap}>
+      <View style={[styles.swatch, { backgroundColor: color, opacity }]} />
+      {off && <View style={styles.strike} />}
+    </View>
+  );
 }
 
 function useSetToggle(initial: string[]) {
@@ -118,7 +133,7 @@ interface GroupProps {
 
 function GroupView({ group, cov, today, hiddenRings, toggleRing, hiddenLines, toggleLine, expanded, setExpanded }: GroupProps) {
   const { today: t, relation: rel } = group;
-  const diaryValue = group.diaryReadable ? t.diary : null;
+  const diaryValue = diaryValueOf(group);
   const rings: Ring[] = [
     {
       key: 'approved', color: CHART.procurement,
@@ -132,33 +147,17 @@ function GroupView({ group, cov, today, hiddenRings, toggleRing, hiddenLines, to
   const values: Record<RingKey, number | null> = { requested: t.requested, approved: t.approved, verified: t.verified, diary: diaryValue };
   const hero = t.verified === null ? { value: '—', label: 'belum ada progres terverifikasi' } : { value: pctText(t.verified), label: 'terpasang, terverifikasi' };
 
-  const series: LineSeries[] = [
-    { key: 'requested', label: 'Diminta', color: CHART.procurement, opacity: CHART.tintOpacity, values: group.requested },
-    { key: 'approved', label: 'Disetujui', color: CHART.procurement, values: group.approved, endLabel: true },
-    { key: 'verified', label: 'Terpasang (terverifikasi)', color: CHART.installed, values: group.verified, dots: true, endLabel: true },
-    { key: 'diary', label: 'Menurut laporan harian (belum diverifikasi)', color: CHART.diary, width: 1.5, values: group.diary },
-    { key: 'projected', label: 'Proyeksi laju 4 minggu (titik-titik)', color: CHART.installed, dash: '2 4', values: group.projected },
-  ];
-  const bands: Band[] = [{ key: 'stock', between: ['approved', 'verified'], color: CHART.procurement, opacity: 0.1, label: 'stok teoretis' }];
-  const annotations: Annotation[] = [];
-  if (rel.leadWeeks !== null && rel.leadWeekIndex !== null && t.verified !== null) {
-    annotations.push({ key: 'lead', kind: 'bracket', level: t.verified, fromIndex: rel.leadWeekIndex, toIndex: group.thisWeekIndex, label: `~${rel.leadWeeks} minggu`, requires: ['approved', 'verified'] });
-  }
-  if (rel.coverWeeks !== null) {
-    annotations.push({ key: 'cover', kind: 'run', level: t.approved, fromIndex: group.thisWeekIndex, toIndex: Math.min(group.weeks.length - 1, group.thisWeekIndex + rel.coverWeeks), label: `cukup ~${rel.coverWeeks} minggu`, color: CHART.procurement, requires: ['approved', 'projected'] });
-  }
-
   return (
     <View>
       <RadialRings
         rings={rings}
         hero={hero}
-        accessibilityLabel={`${group.shortName}: diminta ${pctText(t.requested)}, disetujui ${pctText(t.approved)}, terpasang ${pctText(t.verified)}, menurut laporan harian ${pctText(diaryValue)}`}
+        accessibilityLabel={`${group.shortName}: ${fourValues(group)}`}
       />
       <View style={styles.rows}>
         {RING_ITEMS.map((item) => (
           <View key={item.key} style={styles.row}>
-            <View style={[styles.swatch, { backgroundColor: item.color, opacity: item.opacity }]} />
+            <Swatch color={item.color} opacity={item.opacity} />
             <Text style={styles.rowLabel}>{item.label}</Text>
             <Text style={styles.rowValue}>{pctText(values[item.key])}</Text>
           </View>
@@ -168,11 +167,16 @@ function GroupView({ group, cov, today, hiddenRings, toggleRing, hiddenLines, to
         {RING_ITEMS.map((item) => {
           const on = !hiddenRings.has(item.key);
           return (
-            <TouchableOpacity key={item.key} style={[styles.legendItem, !on && styles.legendOff]} onPress={() => toggleRing(item.key)} accessibilityRole="switch" accessibilityLabel={`Tampilkan cincin ${item.label}`} accessibilityState={{ checked: on }}>
-              <View style={styles.swatchWrap}>
-                <View style={[styles.swatch, { backgroundColor: item.color, opacity: item.opacity }]} />
-                {!on && <View style={styles.strike} />}
-              </View>
+            <TouchableOpacity
+              key={item.key}
+              style={[styles.legendItem, !on && styles.legendOff]}
+              onPress={() => toggleRing(item.key)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityRole="switch"
+              accessibilityLabel={`Tampilkan cincin ${item.label}`}
+              accessibilityState={{ checked: on }}
+            >
+              <Swatch color={item.color} opacity={item.opacity} off={!on} />
               <Text style={styles.legendText}>{item.label}</Text>
             </TouchableOpacity>
           );
@@ -205,24 +209,7 @@ function GroupView({ group, cov, today, hiddenRings, toggleRing, hiddenLines, to
       <TouchableOpacity style={a.ghostBtn} onPress={() => setExpanded(!expanded)} accessibilityRole="button" accessibilityLabel={expanded ? 'Sembunyikan tren' : 'Lihat tren mingguan'} accessibilityState={{ expanded }}>
         <Text style={a.ghostBtnText}>{expanded ? 'Sembunyikan tren' : 'Lihat tren mingguan'}</Text>
       </TouchableOpacity>
-      {expanded && (
-        <View style={styles.trend}>
-          <Text style={a.hint}>Kumulatif per minggu, % dari rencana BoQ</Text>
-          <LineChart
-            labels={group.weeks.map(shortLabel)}
-            yMax={100}
-            unit="%"
-            markerIndex={group.thisWeekIndex}
-            series={series}
-            bands={bands}
-            annotations={annotations}
-            hidden={hiddenLines}
-            onToggle={toggleLine}
-            accessibilityLabel={`Tren ${group.shortName} per minggu: disetujui ${pctText(t.approved)}, terpasang ${pctText(t.verified)}`}
-          />
-          {group.projectionNote ? <Text style={a.note}>{group.projectionNote}</Text> : null}
-        </View>
-      )}
+      {expanded && <Trend group={group} hidden={hiddenLines} onToggle={toggleLine} />}
 
       {cov?.workType && cov.firstRequest && cov.lagDays !== null && (
         <Text style={a.hint}>
@@ -232,6 +219,45 @@ function GroupView({ group, cov, today, hiddenRings, toggleRing, hiddenLines, to
         </Text>
       )}
       <Text style={a.hint}>{`Rencana ${qty(group.planned)} ${group.unit} per area kerja${group.plannedWithoutArea > 0 ? ` · ${qty(group.plannedWithoutArea)} ${group.unit} tanpa area kerja (tidak digambar)` : ''}`}</Text>
+    </View>
+  );
+}
+
+/** The weekly trend: its series, band and annotations are built only while the chart is open. */
+function Trend({ group, hidden, onToggle }: { group: ChainGroup; hidden: ReadonlySet<string>; onToggle: (key: string) => void }) {
+  const { today: t, relation: rel } = group;
+  const series: LineSeries[] = [
+    { key: 'requested', label: 'Diminta', color: CHART.procurement, opacity: CHART.tintOpacity, values: group.requested },
+    { key: 'approved', label: 'Disetujui', color: CHART.procurement, values: group.approved, endLabel: true },
+    { key: 'verified', label: 'Terpasang (terverifikasi)', color: CHART.installed, values: group.verified, dots: true, endLabel: true },
+    { key: 'diary', label: 'Menurut laporan harian (belum diverifikasi)', color: CHART.diary, width: 1.5, values: group.diary },
+    { key: 'projected', label: 'Proyeksi laju 4 minggu (titik-titik)', color: CHART.installed, dash: '2 4', values: group.projected },
+  ];
+  const bands: Band[] = [{ key: 'stock', between: ['approved', 'verified'], color: CHART.procurement, opacity: 0.1, label: 'stok teoretis' }];
+  const annotations: Annotation[] = [];
+  if (rel.leadWeeks !== null && rel.leadWeekIndex !== null && t.verified !== null) {
+    annotations.push({ key: 'lead', kind: 'bracket', level: t.verified, fromIndex: rel.leadWeekIndex, toIndex: group.thisWeekIndex, label: `~${rel.leadWeeks} minggu`, requires: ['approved', 'verified'] });
+  }
+  // Only when the run fits the weeks drawn: a clamped run would say a cover it does not show. The tile keeps the number.
+  if (rel.coverWeeks !== null && group.thisWeekIndex + rel.coverWeeks <= group.weeks.length - 1) {
+    annotations.push({ key: 'cover', kind: 'run', level: t.approved, fromIndex: group.thisWeekIndex, toIndex: group.thisWeekIndex + rel.coverWeeks, label: `cukup ~${rel.coverWeeks} minggu`, color: CHART.procurement, requires: ['approved', 'projected'] });
+  }
+  return (
+    <View style={styles.trend}>
+      <Text style={a.hint}>Kumulatif per minggu, % dari rencana BoQ</Text>
+      <LineChart
+        labels={group.weeks.map(shortLabel)}
+        yMax={100}
+        unit="%"
+        markerIndex={group.thisWeekIndex}
+        series={series}
+        bands={bands}
+        annotations={annotations}
+        hidden={hidden}
+        onToggle={onToggle}
+        accessibilityLabel={`Tren ${group.shortName} per minggu: ${fourValues(group)}`}
+      />
+      {group.projectionNote ? <Text style={a.note}>{group.projectionNote}</Text> : null}
     </View>
   );
 }
