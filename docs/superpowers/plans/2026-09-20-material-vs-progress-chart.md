@@ -731,20 +731,20 @@ describe('loadVerifiedClaimLines and loadChainSupport', () => {
     from
       .mockReturnValueOnce(chain({ data: [{ id: 'c1', verified_at: '2026-08-26T03:00:00Z' }, { id: 'c2', verified_at: '2026-09-02T03:00:00Z' }] }))
       .mockReturnValueOnce(chain({ data: [
-        { claim_id: 'c1', boq_item_id: 'k1', verified_pct: { PEMBESIAN: 50 } },
-        { claim_id: 'c2', boq_item_id: 'k1', verified_pct: { PEMBESIAN: 100 } },
-        { claim_id: 'c2', boq_item_id: 'k2', verified_pct: null },
+        { claim_id: 'c1', boq_item_id: 'k1', verified_pct: { PEMBESIAN: 50 }, weights_snapshot: { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 } },
+        { claim_id: 'c2', boq_item_id: 'k1', verified_pct: { PEMBESIAN: 100 }, weights_snapshot: null },
+        { claim_id: 'c2', boq_item_id: 'k2', verified_pct: null, weights_snapshot: { SINGLE: 1 } },
       ] }));
     await expect(loadVerifiedClaimLines('p1')).resolves.toEqual([
-      { boq_item_id: 'k1', verified_pct: { PEMBESIAN: 50 }, verified_at: '2026-08-26T03:00:00Z' },
-      { boq_item_id: 'k1', verified_pct: { PEMBESIAN: 100 }, verified_at: '2026-09-02T03:00:00Z' },
+      { boq_item_id: 'k1', verified_pct: { PEMBESIAN: 50 }, weights_snapshot: { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 }, verified_at: '2026-08-26T03:00:00Z' },
+      { boq_item_id: 'k1', verified_pct: { PEMBESIAN: 100 }, weights_snapshot: null, verified_at: '2026-09-02T03:00:00Z' },
     ]);
     expect(from).toHaveBeenNthCalledWith(1, 'progress_claims');
     expect(from).toHaveBeenNthCalledWith(2, 'progress_claim_lines');
     const claims = from.mock.results[0].value as { calls: Array<[string, unknown[]]> };
     expect(claims.calls).toEqual(expect.arrayContaining([['eq', ['project_id', 'p1']], ['eq', ['status', 'VERIFIED']], ['range', [0, 999]]]));
     const lines = from.mock.results[1].value as { calls: Array<[string, unknown[]]> };
-    expect(lines.calls).toEqual(expect.arrayContaining([['in', ['claim_id', ['c1', 'c2']]]]));
+    expect(lines.calls).toEqual(expect.arrayContaining([['select', ['claim_id, boq_item_id, verified_pct, weights_snapshot']], ['in', ['claim_id', ['c1', 'c2']]]]));
   });
 
   it('reads nothing more when there is no verified claim', async () => {
@@ -790,7 +790,7 @@ export interface MaterialData { planned: PlannedLine[]; requests: RequestedLine[
 3. After `loadApprovalData` add:
 
 ```ts
-/** Every line of every VERIFIED claim, stamped with its claim's verification time; the chart reads the stage percents as of each week. */
+/** Every line of every VERIFIED claim with the weights it was verified under, stamped with its claim's verification time; the chart reads the stage percents as of each week. */
 export async function loadVerifiedClaimLines(projectId: string): Promise<VerifiedClaimLine[]> {
   const claims = await fetchAllPaged<{ id: string; verified_at: string }>((from, to) =>
     supabase.from('progress_claims').select('id, verified_at').eq('project_id', projectId).eq('status', 'VERIFIED').order('verified_at').order('id').range(from, to) as unknown as Page<{ id: string; verified_at: string }>);
@@ -798,15 +798,17 @@ export async function loadVerifiedClaimLines(projectId: string): Promise<Verifie
   const out: VerifiedClaimLine[] = [];
   for (let i = 0; i < claims.length; i += ID_CHUNK) {
     const ids = claims.slice(i, i + ID_CHUNK).map((c) => c.id);
-    const rows = await fetchAllPaged<{ claim_id: string; boq_item_id: string; verified_pct: unknown }>((from, to) =>
-      supabase.from('progress_claim_lines').select('claim_id, boq_item_id, verified_pct').in('claim_id', ids).order('id').range(from, to) as unknown as Page<{ claim_id: string; boq_item_id: string; verified_pct: unknown }>);
+    const rows = await fetchAllPaged<ClaimLineRow>((from, to) =>
+      supabase.from('progress_claim_lines').select('claim_id, boq_item_id, verified_pct, weights_snapshot').in('claim_id', ids).order('id').range(from, to) as unknown as Page<ClaimLineRow>);
     for (const r of rows) {
       const at = verifiedAt.get(r.claim_id);
-      if (at && r.verified_pct != null) out.push({ boq_item_id: r.boq_item_id, verified_pct: r.verified_pct, verified_at: at });
+      if (at && r.verified_pct != null) out.push({ boq_item_id: r.boq_item_id, verified_pct: r.verified_pct, weights_snapshot: r.weights_snapshot ?? null, verified_at: at });
     }
   }
   return out;
 }
+
+type ClaimLineRow = { claim_id: string; boq_item_id: string; verified_pct: unknown; weights_snapshot: unknown };
 
 export interface ChainSupport { diary: { lines: DiaryLine[]; readable: boolean }; weights: StageWeightRow[]; verified: VerifiedClaimLine[] }
 
@@ -1382,9 +1384,9 @@ const chain = {
   diary: { lines: [], readable: true },
   weights: [{ boq_item_id: 'k1', weights: { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 }, source: 'rab', reference_class: null, updated_at: 'x' }],
   verified: [
-    { boq_item_id: 'k1', verified_pct: { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 }, verified_at: '2026-08-26T03:00:00Z' },
-    { boq_item_id: 'k1', verified_pct: { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 0 }, verified_at: '2026-09-02T03:00:00Z' },
-    { boq_item_id: 'k2', verified_pct: { SINGLE: 25 }, verified_at: '2026-09-09T03:00:00Z' },
+    { boq_item_id: 'k1', verified_pct: { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 }, weights_snapshot: { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 }, verified_at: '2026-08-26T03:00:00Z' },
+    { boq_item_id: 'k1', verified_pct: { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 0 }, weights_snapshot: { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 }, verified_at: '2026-09-02T03:00:00Z' },
+    { boq_item_id: 'k2', verified_pct: { SINGLE: 25 }, weights_snapshot: { SINGLE: 1 }, verified_at: '2026-09-09T03:00:00Z' },
   ],
 };
 
@@ -1415,12 +1417,12 @@ describe('MaterialChainCard', () => {
     expect(getByLabelText('Besi (kg) → Pembesian').props.accessibilityState).toEqual({ selected: true });
     expect(getByText('85 %')).toBeTruthy();
     expect(getByText('62,5 %')).toBeTruthy();
-    expect(getByText('748 kg')).toBeTruthy();
+    expect(getByText('750 kg')).toBeTruthy();
     expect(getByText('disetujui − terpasang · 18,7 poin')).toBeTruthy();
     expect(getByText('~4 minggu')).toBeTruthy();
     expect(getByText('~2 minggu')).toBeTruthy();
     expect(getByText('pada laju 10,4 poin/minggu')).toBeTruthy();
-    expect(getByText(/^Rencana 4\.000 kg/)).toBeTruthy();
+    expect(getByText(/^Rencana 4\.000 kg per area kerja/)).toBeTruthy();
     expect(getByText('Belum pernah diminta: Material Beton (zak).')).toBeTruthy();
   });
 
@@ -1435,7 +1437,7 @@ describe('MaterialChainCard', () => {
     expect(getByLabelText('Tampilkan Menurut laporan harian (belum diverifikasi)').props.accessibilityState).toEqual({ checked: false });
     expect(getByText('Sembunyikan tren')).toBeTruthy();
     fireEvent.press(getByLabelText('Semen (zak) → Pengecoran'));
-    expect(getByText(/^Rencana 200 zak/)).toBeTruthy();
+    expect(getByText(/^Rencana 200 zak per area kerja/)).toBeTruthy();
     // Semen: k1's verified Pengecoran is 0 %, so the hero, the Terpasang row and the diary row all read 0 %.
     expect(getAllByText('0 %').length).toBeGreaterThanOrEqual(2);
   });
@@ -1465,6 +1467,9 @@ describe('MaterialChainCard', () => {
     const empty = card({ material: { ...material, planned: [] } });
     expect(await empty.findByText('Belum ada rencana material untuk proyek ini.')).toBeTruthy();
     expect(empty.getByText('Diminta tanpa rencana di BoQ terbit: Struktur (kg).')).toBeTruthy();
+    const projectLevel = card({ material: { ...material, planned: [...material.planned, { material_id: 'besi', boq_item_id: null, planned_quantity: 500 }, { material_id: 'semen', boq_item_id: null, planned_quantity: 300 }].filter((p) => !(p.material_id === 'semen' && p.boq_item_id)) } });
+    expect(await projectLevel.findByText('Rencana 4.000 kg per area kerja · 500 kg tanpa area kerja (tidak digambar)')).toBeTruthy();
+    expect(projectLevel.getByText('Rencana hanya di tingkat proyek: Material Beton (zak) 300 zak.')).toBeTruthy();
   });
 });
 ```
@@ -1574,6 +1579,7 @@ export default function MaterialChainCard({ loadMaterial, loadDiary, loadChain, 
           {view.coverage.groups.some((g) => g.requested === 0 && g.planned > 0) && (
             <Text style={a.note}>{`Belum pernah diminta: ${view.coverage.groups.filter((g) => g.requested === 0 && g.planned > 0).map((g) => `${g.category} (${g.unit})`).join(', ')}.`}</Text>
           )}
+          {view.chains.planWithoutAreaOnly.length > 0 && <Text style={a.note}>{`Rencana hanya di tingkat proyek: ${view.chains.planWithoutAreaOnly.join(', ')}.`}</Text>}
           {view.chains.unplannedRequested.length > 0 && <Text style={a.note}>{`Diminta tanpa rencana di BoQ terbit: ${view.chains.unplannedRequested.join(', ')}.`}</Text>}
           <Text style={a.hint}>
             {`${group && !group.diaryReadable ? 'Laporan harian belum bisa dibaca. ' : ''}Diminta dan disetujui dari permintaan material; terpasang dari klaim terverifikasi × rencana material per area; laporan harian: Berjalan 50 · Selesai 100, belum diverifikasi. Permintaan yang ditolak tidak dihitung.`}
@@ -1611,7 +1617,6 @@ function GroupView({ group, cov, today, hiddenRings, toggleRing, hiddenLines, to
   ];
   const values: Record<RingKey, number | null> = { requested: t.requested, approved: t.approved, verified: t.verified, diary: diaryValue };
   const hero = t.verified === null ? { value: '—', label: 'belum ada progres terverifikasi' } : { value: pctText(t.verified), label: 'terpasang, terverifikasi' };
-  const workLower = group.workLabel ? group.workLabel.toLowerCase() : 'pekerjaan';
 
   const series: LineSeries[] = [
     { key: 'requested', label: 'Diminta', color: CHART.procurement, opacity: CHART.tintOpacity, values: group.requested },
@@ -1712,7 +1717,7 @@ function GroupView({ group, cov, today, hiddenRings, toggleRing, hiddenLines, to
             : `${WORK_TYPE_LABELS[cov.workType]} sudah berjalan ${-cov.lagDays} hari sebelum permintaan pertama (${shortLabel(cov.firstRequest)}).`}
         </Text>
       )}
-      <Text style={a.hint}>{`Rencana ${qty(group.planned)} ${group.unit}${group.workLabel ? ` · ${group.rows} area ${workLower}` : ''}`}</Text>
+      <Text style={a.hint}>{`Rencana ${qty(group.planned)} ${group.unit} per area kerja${group.plannedWithoutArea > 0 ? ` · ${qty(group.plannedWithoutArea)} ${group.unit} tanpa area kerja (tidak digambar)` : ''}`}</Text>
     </View>
   );
 }
