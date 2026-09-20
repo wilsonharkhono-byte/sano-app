@@ -1,11 +1,12 @@
 // tools/__tests__/analyticsMaterialChain.test.ts
 import { buildMaterialChain, type MaterialChainInput } from '../analytics/materialChain';
 
-export const catalog = new Map([
+const catalog = new Map([
   ['besi13', { name: 'Besi beton ulir 13 mm', category: 'Struktur', unit: 'kg', is_asset: false }],
   ['besi16', { name: 'Besi beton ulir 16 mm', category: 'Struktur', unit: 'kg', is_asset: false }],
   ['semen', { name: 'Semen PCC 40 kg', category: 'Material Beton', unit: 'zak', is_asset: false }],
   ['bata', { name: 'Bata ringan', category: 'Dinding', unit: 'pcs', is_asset: false }],
+  ['pipa', { name: 'Pipa PVC 4 inci', category: 'Plumbing', unit: 'btg', is_asset: false }],
   ['scaf', { name: 'Scaffolding', category: 'Peralatan', unit: 'set', is_asset: true }],
 ]);
 const planned = [
@@ -30,7 +31,7 @@ const dline = (id: string, row: string, stage: string | null, state: string, per
   id, boq_item_id: row, stage, activity_state: state, line_text: '', line_index: lineIndex, report_id: `r${reportNo}`, report_no: reportNo, revision: 1, period_end: periodEnd, issued_at: null,
 });
 
-export function input(over: Partial<MaterialChainInput> = {}): MaterialChainInput {
+function input(over: Partial<MaterialChainInput> = {}): MaterialChainInput {
   return { today: '2026-09-17', planned, requests, catalog, weights, verifiedLines: [], diary: { lines: [], readable: true }, ...over };
 }
 
@@ -46,6 +47,29 @@ describe('buildMaterialChain groups', () => {
     const { groups, unplannedRequested } = buildMaterialChain(input({ planned: planned.filter((p) => p.material_id !== 'semen') }));
     expect(groups.map((g) => g.key)).toEqual(['Struktur · kg', 'Dinding · pcs']);
     expect(unplannedRequested).toEqual(['Material Beton (zak)']);
+  });
+
+  it('keeps the work areas as the denominator and reports the plan made without one beside it', () => {
+    const { groups } = buildMaterialChain(input({
+      planned: [
+        { material_id: 'besi13', boq_item_id: 'k1', planned_quantity: 1000 },
+        { material_id: 'besi16', boq_item_id: null, planned_quantity: 1000 },
+      ],
+      requests: [req('besi13', 1000, 'APPROVED', '2026-09-01', '2026-09-02')],
+    }));
+    // 1 000 kg approved against the 1 000 kg tied to k1; the 1 000 kg planned for the project as a whole is reported, not divided into.
+    expect(groups[0]).toMatchObject({ key: 'Struktur · kg', planned: 1000, plannedWithoutArea: 1000, rows: 1 });
+    expect(groups[0].today.approved).toBe(100);
+  });
+
+  it('reports a group planned only for the project as a whole instead of charting or disowning it', () => {
+    const { groups, unplannedRequested, planWithoutAreaOnly } = buildMaterialChain(input({
+      planned: [...planned, { material_id: 'pipa', boq_item_id: null, planned_quantity: 300 }],
+      requests: [...requests, req('pipa', 50, 'PENDING', '2026-09-01')],
+    }));
+    expect(groups.map((g) => g.key)).toEqual(['Struktur · kg', 'Dinding · pcs', 'Material Beton · zak']);
+    expect(unplannedRequested).toEqual([]);
+    expect(planWithoutAreaOnly).toEqual(['Plumbing (btg) 300 btg']);
   });
 });
 
@@ -98,6 +122,22 @@ describe('buildMaterialChain installed series', () => {
     expect(g.projectionNote).toBeNull();
   });
 
+  it('names the window it actually measured when the verified figure did not rise', () => {
+    const flat = [vline('k1', { PEMBESIAN: 50 }, '2026-09-09'), vline('k1', { PEMBESIAN: 50 }, '2026-09-16')];
+    const g = buildMaterialChain(input({ verifiedLines: flat })).groups[0];
+    // Verified in the weeks of 7 and 14 Sep, so the pace was measured over 1 week, not 4; 12,5 % both weeks.
+    expect(g.projectionNote).toBe('Tidak ada kenaikan progres terverifikasi dalam 1 minggu terakhir.');
+    expect(g.relation).toMatchObject({ pacePerWeek: null, windowWeeks: null });
+  });
+
+  it('says so instead of projecting when the group is fully verified', () => {
+    const done = [vline('k1', { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 100 }, '2026-08-26'), vline('k2', { SINGLE: 100 }, '2026-09-02')];
+    const g = buildMaterialChain(input({ verifiedLines: done })).groups[0];
+    expect(g.today.verified).toBe(100);
+    expect(g.projectionNote).toBe('Sudah 100 % terverifikasi.');
+    expect(g.projected.every((v) => v === null)).toBe(true);
+  });
+
   it('needs verified progress in two different weeks before it projects', () => {
     const g = buildMaterialChain(input({ verifiedLines: verifiedLines.slice(0, 1) })).groups[0];
     expect(g.projectionNote).toBe('Belum cukup data: proyeksi butuh progres terverifikasi di dua minggu berbeda.');
@@ -122,9 +162,46 @@ describe('buildMaterialChain installed series', () => {
     const unreadable = buildMaterialChain(input({ verifiedLines, diary: { lines: [], readable: false } })).groups[0];
     expect(unreadable.diary.every((v) => v === null)).toBe(true);
     expect(unreadable.diaryReadable).toBe(false);
+    // A group the diary never mentions has no diary line of its own, even where it is verified.
+    const verifiedOnly = buildMaterialChain(input({ verifiedLines })).groups[0];
+    expect(verifiedOnly.diary.every((v) => v === null)).toBe(true);
+    expect(verifiedOnly.diaryReadable).toBe(true);
     const empty = buildMaterialChain(input()).groups[0];
     expect(empty.diary.every((v) => v === null)).toBe(true);
     expect(empty.verified.every((v) => v === null)).toBe(true);
+  });
+});
+
+describe('buildMaterialChain verified_pct shapes', () => {
+  it('reads a whole-row figure for a split row whose stage the claim does not carry', () => {
+    // k1's weights were split after the claim was verified whole: 40 % of its 1 000 kg is 10 % of the group's 4 000 kg.
+    const g = buildMaterialChain(input({ verifiedLines: [vline('k1', { SINGLE: 40 }, '2026-08-26')] })).groups[0];
+    expect(g.today.verified).toBe(10);
+  });
+
+  it('counts nothing for a single-stage row whose claim carries only stage figures', () => {
+    // k2 has no weights row, so it is SINGLE; stage figures cannot be combined without the weights they were claimed under.
+    const g = buildMaterialChain(input({ verifiedLines: [vline('k2', { BEKISTING: 100, PEMBESIAN: 100, PENGECORAN: 100 }, '2026-08-26')] })).groups[0];
+    expect(g.today.verified).toBe(0);
+  });
+
+  it('reads a split row in a category that feeds no single stage as the whole row', () => {
+    const bata = buildMaterialChain(input({
+      weights: [...weights, { boq_item_id: 'd1', weights: { BEKISTING: 0.3, PEMBESIAN: 0.4, PENGECORAN: 0.3 } }],
+      verifiedLines: [vline('d1', { BEKISTING: 100, PEMBESIAN: 50, PENGECORAN: 0 }, '2026-08-26')],
+    })).groups.find((g) => g.key === 'Dinding · pcs');
+    // Dinding feeds Pasangan, not a weight-bearing stage, so d1 counts 0,3 × 100 + 0,4 × 50 + 0,3 × 0 = 50 % of its 500 pcs.
+    expect(bata?.today.verified).toBe(50);
+  });
+
+  it('takes no percent from a claim it cannot read', () => {
+    const odd = [
+      { boq_item_id: 'k1', verified_pct: 'lunas', verified_at: '2026-08-26T03:00:00Z' },
+      { boq_item_id: 'k2', verified_pct: { SINGLE: '25' }, verified_at: '2026-09-02T03:00:00Z' },
+    ];
+    const g = buildMaterialChain(input({ verifiedLines: odd })).groups[0];
+    expect(g.today.verified).toBe(0);
+    expect(g.projectionNote).toBe('Tidak ada kenaikan progres terverifikasi dalam 3 minggu terakhir.');
   });
 });
 
@@ -134,13 +211,15 @@ describe('buildMaterialChain relation', () => {
     const g = buildMaterialChain(input({ requests: more, verifiedLines })).groups[0];
     expect(g.approved.slice(0, 6)).toEqual([12.5, 62.5, 62.5, 62.5, 62.5, 62.5]);
     expect(g.requested.slice(0, 6)).toEqual([12.5, 85, 85, 85, 85, 85]);
-    expect(g.relation).toMatchObject({ stockPts: 18.7, stockQty: 748, stockNote: null, leadWeeks: 4, leadWeekIndex: 1, leadNote: null, coverWeeks: 2, coverNote: null });
+    // Stock is a quantity, not the rounded points: 2 500 kg approved − 1 750 kg verified (1 000 + 750) = 750 kg.
+    expect(g.relation).toMatchObject({ stockPts: 18.7, stockQty: 750, stockNote: null, leadWeeks: 4, leadWeekIndex: 1, leadNote: null, coverWeeks: 2, coverNote: null });
     expect(g.warnings).toEqual([]);
   });
 
   it('shows a negative stock and warns when installation outruns what was approved', () => {
     const g = buildMaterialChain(input({ verifiedLines })).groups[0];
-    expect(g.relation).toMatchObject({ stockPts: -31.3, stockQty: -1252, leadWeeks: null, leadNote: 'belum bisa dihitung', coverWeeks: null, coverNote: 'tidak ada stok tersisa' });
+    // 500 kg approved − 1 750 kg verified = −1 250 kg (the points, −31,3, round separately).
+    expect(g.relation).toMatchObject({ stockPts: -31.3, stockQty: -1250, leadWeeks: null, leadNote: 'belum bisa dihitung', coverWeeks: null, coverNote: 'tidak ada stok tersisa' });
     expect(g.warnings).toEqual(['Pekerjaan melebihi material yang disetujui: terpasang 43,8 %, disetujui 12,5 %.']);
   });
 
