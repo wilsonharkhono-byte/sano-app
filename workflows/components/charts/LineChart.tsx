@@ -69,6 +69,10 @@ interface Props {
 
 const TICKS = [0, 0.25, 0.5, 0.75, 1];
 const MIN_BAND_LABEL_PX = 16;
+/** Room an end label needs to its right; with less it goes above the point instead of past the edge. */
+const END_LABEL_ROOM_PX = 34;
+/** How far a centred band label is kept inside the plot so it never runs off either side. */
+const BAND_LABEL_INSET_PX = 28;
 
 export default function LineChart({ labels, series, yMax, unit = '', height = 190, markerIndex = null, accessibilityLabel, bands = [], annotations = [], hidden, onToggle }: Props) {
   const [width, setWidth] = useState(0);
@@ -81,26 +85,28 @@ export default function LineChart({ labels, series, yMax, unit = '', height = 19
   const x = (i: number) => xAt(i, labels.length, area.x0, area.x1);
   const y = (v: number) => yAt(v, max, area.y0, area.y1);
   const byKey = new Map(series.map((s) => [s.key, s]));
-  const ends = endLabelPoints(visible.filter((s) => s.endLabel), max, area);
+  const ends = endLabelPoints(visible.filter((s) => s.endLabel), max, area, undefined, labels.length);
 
   return (
     <View>
       <View style={styles.legend}>
         {series.map((s) => {
-          const key = <View style={[styles.legendLine, { borderTopColor: s.color, borderTopWidth: s.width ?? 2, borderStyle: s.dash ? 'dotted' : 'solid', opacity: s.opacity ?? 1 }]} />;
+          const on = isVisible(s.key);
+          // An off item is a flat 40%: its own tint would compound into near-invisibility.
+          const swatch = <View style={[styles.legendLine, { borderTopColor: s.color, borderTopWidth: s.width ?? 2, borderStyle: s.dash ? 'dotted' : 'solid', opacity: on ? s.opacity ?? 1 : 1 }]} />;
           const item = (
             <>
-              {key}
+              {swatch}
               <Text style={styles.legendText}>{s.label}</Text>
             </>
           );
           if (!onToggle) return <View key={s.key} style={styles.legendItem}>{item}</View>;
-          const on = isVisible(s.key);
           return (
             <TouchableOpacity
               key={s.key}
               style={[styles.legendItem, styles.legendSwitch, !on && styles.legendOff]}
               onPress={() => onToggle(s.key)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               accessibilityRole="switch"
               accessibilityLabel={`Tampilkan ${s.label}`}
               accessibilityState={{ checked: on }}
@@ -131,7 +137,7 @@ export default function LineChart({ labels, series, yMax, unit = '', height = 19
                 <React.Fragment key={b.key}>
                   <Path d={d} fill={b.color} fillOpacity={b.opacity} stroke="none" />
                   {tall && li !== null && (
-                    <SvgText x={x(li)} y={(y(top.values[li] as number) + y(bottom.values[li] as number)) / 2 + 4} fontSize={10} fill={COLORS.textSec} textAnchor="middle">{b.label}</SvgText>
+                    <SvgText x={Math.min(Math.max(x(li), area.x0 + BAND_LABEL_INSET_PX), area.x1 - BAND_LABEL_INSET_PX)} y={(y(top.values[li] as number) + y(bottom.values[li] as number)) / 2 + 4} fontSize={10} fill={COLORS.textSec} textAnchor="middle">{b.label}</SvgText>
                   )}
                 </React.Fragment>
               );
@@ -141,7 +147,7 @@ export default function LineChart({ labels, series, yMax, unit = '', height = 19
             )}
             {visible.map((s) => (
               <React.Fragment key={s.key}>
-                <Path d={linePath(s.values, max, area)} stroke={s.color} strokeOpacity={s.opacity ?? 1} strokeWidth={s.width ?? 2} strokeDasharray={s.dash} strokeLinejoin="round" strokeLinecap="round" fill="none" />
+                <Path d={linePath(s.values, max, area, labels.length)} stroke={s.color} strokeOpacity={s.opacity ?? 1} strokeWidth={s.width ?? 2} strokeDasharray={s.dash} strokeLinejoin="round" strokeLinecap="round" fill="none" />
                 {s.dots && s.values.map((v, i) => (isDrawable(v)
                   ? <Circle key={i} cx={x(i)} cy={y(v)} r={4} fill={s.color} stroke={COLORS.surface} strokeWidth={2} />
                   : null))}
@@ -149,6 +155,7 @@ export default function LineChart({ labels, series, yMax, unit = '', height = 19
             ))}
             {annotations.map((an) => {
               if ((an.requires ?? []).some((k) => !isVisible(k))) return null;
+              if (!isDrawable(an.level)) return null;
               if (an.fromIndex < 0 || an.toIndex >= labels.length || an.toIndex < an.fromIndex) return null;
               const yy = y(an.level);
               const xa = x(an.fromIndex);
@@ -163,9 +170,13 @@ export default function LineChart({ labels, series, yMax, unit = '', height = 19
                 </React.Fragment>
               );
             })}
-            {ends.map((p) => (
-              <SvgText key={p.key} x={p.x + 5} y={p.y + 4} fontSize={10} fill={COLORS.textSec} textAnchor="start">{tick(p.value)}</SvgText>
-            ))}
+            {ends.map((p) => {
+              // Past the right edge there is no room beside the point, so the label sits above it.
+              const tight = p.x > area.x1 - END_LABEL_ROOM_PX;
+              return (
+                <SvgText key={p.key} x={tight ? p.x : p.x + 5} y={tight ? p.y - 6 : p.y + 4} fontSize={10} fill={COLORS.textSec} textAnchor={tight ? 'end' : 'start'}>{tick(p.value)}</SvgText>
+              );
+            })}
             {labelIndices(labels.length, width < 420 ? 4 : 7).map((i) => (
               <SvgText key={i} x={x(i)} y={height - 6} fontSize={10} fill={COLORS.textMuted} textAnchor={i === 0 ? 'start' : i === labels.length - 1 ? 'end' : 'middle'}>
                 {labels[i]}

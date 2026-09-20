@@ -97,3 +97,15 @@ describe('endLabelPoints', () => {
     expect(points[1]).toMatchObject({ index: 1, value: 30, x: 50, y: 77 });
   });
 });
+
+describe('the chart x-scale', () => {
+  const area = { x0: 0, x1: 100, y0: 0, y1: 100 };
+  it('scales a line by an explicit point count', () => {
+    expect(linePath([10, 20], 100, area, 4)).toBe('M 0.0 90.0 L 33.3 80.0');
+  });
+  it('scales an end label by an explicit point count', () => {
+    const [p] = endLabelPoints([{ key: 'a', values: [10, 20] }], 100, area, 11, 4);
+    expect(p).toMatchObject({ index: 1, value: 20, y: 80 });
+    expect(p.x).toBeCloseTo(100 / 3, 6);
+  });
+});

@@ -30,13 +30,13 @@ export function yAt(value: number, yMax: number, y0: number, y1: number): number
   return y1 - ((y1 - y0) * clamped) / yMax;
 }
 
-/** SVG path data for a series with gaps: each run of numbers is its own sub-path; a lone point draws nothing here (the dot shows it). */
-export function linePath(values: ReadonlyArray<number | null>, yMax: number, area: Area): string {
+/** SVG path data for a series with gaps: each run of numbers is its own sub-path; a lone point draws nothing here (the dot shows it). `count` is the number of x slots (the chart's label count); it defaults to the series' own length. */
+export function linePath(values: ReadonlyArray<number | null>, yMax: number, area: Area, count = values.length): string {
   const parts: string[] = [];
   let open = false;
   values.forEach((v, i) => {
     if (!isDrawable(v)) { open = false; return; }
-    const point = `${xAt(i, values.length, area.x0, area.x1).toFixed(1)} ${yAt(v, yMax, area.y0, area.y1).toFixed(1)}`;
+    const point = `${xAt(i, count, area.x0, area.x1).toFixed(1)} ${yAt(v, yMax, area.y0, area.y1).toFixed(1)}`;
     parts.push(`${open ? 'L' : 'M'} ${point}`);
     open = true;
   });
@@ -96,12 +96,13 @@ export function bandLabelIndex(a: ReadonlyArray<number | null>, b: ReadonlyArray
   return best;
 }
 
-/** Where to write each series' last real value; labels closer than `minGap` px are pushed down in order so they never overlap. */
+/** Where to write each series' last real value; labels closer than `minGap` px are pushed down in order so they never overlap. `count` is the number of x slots (the chart's label count); it defaults to each series' own length. */
 export function endLabelPoints(
   series: ReadonlyArray<{ key: string; values: ReadonlyArray<number | null> }>,
   yMax: number,
   area: Area,
   minGap = 11,
+  count?: number,
 ): Array<{ key: string; index: number; value: number; x: number; y: number }> {
   const points: Array<{ key: string; index: number; value: number; x: number; y: number }> = [];
   for (const s of series) {
@@ -109,7 +110,7 @@ export function endLabelPoints(
     s.values.forEach((v, i) => { if (isDrawable(v)) index = i; });
     if (index < 0) continue;
     const value = s.values[index] as number;
-    points.push({ key: s.key, index, value, x: xAt(index, s.values.length, area.x0, area.x1), y: yAt(value, yMax, area.y0, area.y1) });
+    points.push({ key: s.key, index, value, x: xAt(index, count ?? s.values.length, area.x0, area.x1), y: yAt(value, yMax, area.y0, area.y1) });
   }
   points.sort((a, b) => a.y - b.y);
   for (let i = 1; i < points.length; i += 1) {
