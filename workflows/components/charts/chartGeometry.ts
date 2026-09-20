@@ -95,3 +95,25 @@ export function bandLabelIndex(a: ReadonlyArray<number | null>, b: ReadonlyArray
   });
   return best;
 }
+
+/** Where to write each series' last real value; labels closer than `minGap` px are pushed down in order so they never overlap. */
+export function endLabelPoints(
+  series: ReadonlyArray<{ key: string; values: ReadonlyArray<number | null> }>,
+  yMax: number,
+  area: Area,
+  minGap = 11,
+): Array<{ key: string; index: number; value: number; x: number; y: number }> {
+  const points: Array<{ key: string; index: number; value: number; x: number; y: number }> = [];
+  for (const s of series) {
+    let index = -1;
+    s.values.forEach((v, i) => { if (isDrawable(v)) index = i; });
+    if (index < 0) continue;
+    const value = s.values[index] as number;
+    points.push({ key: s.key, index, value, x: xAt(index, s.values.length, area.x0, area.x1), y: yAt(value, yMax, area.y0, area.y1) });
+  }
+  points.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < points.length; i += 1) {
+    if (points[i].x === points[i - 1].x && points[i].y - points[i - 1].y < minGap) points[i].y = points[i - 1].y + minGap;
+  }
+  return points;
+}

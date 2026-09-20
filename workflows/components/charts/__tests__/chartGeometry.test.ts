@@ -1,5 +1,5 @@
 // workflows/components/charts/__tests__/chartGeometry.test.ts
-import { arcPath, bandLabelIndex, bandPath, labelIndices, linePath, niceMax, plotArea, polar, xAt, yAt } from '../chartGeometry';
+import { arcPath, bandLabelIndex, bandPath, endLabelPoints, labelIndices, linePath, niceMax, plotArea, polar, xAt, yAt } from '../chartGeometry';
 
 describe('chartGeometry', () => {
   const area = plotArea({ width: 300, height: 120, left: 40, right: 10, top: 10, bottom: 20 });
@@ -81,5 +81,19 @@ describe('bandPath and bandLabelIndex', () => {
   it('skips gaps when looking for the widest band', () => {
     expect(bandLabelIndex([null, 50, 10], [null, 10, 5])).toBe(1);
     expect(bandLabelIndex([NaN, 50], [1, 60])).toBeNull();
+  });
+});
+
+describe('endLabelPoints', () => {
+  const area = { x0: 0, x1: 100, y0: 0, y1: 100 };
+  it('labels each series at its last real point and pushes near-coincident labels apart', () => {
+    const points = endLabelPoints([
+      { key: 'a', values: [10, 30, null] },
+      { key: 'b', values: [5, 34, null] },
+      { key: 'c', values: [null, null, null] },
+    ], 100, area, 11);
+    expect(points.map((p) => p.key)).toEqual(['b', 'a']);
+    expect(points[0]).toMatchObject({ index: 1, value: 34, x: 50, y: 66 });
+    expect(points[1]).toMatchObject({ index: 1, value: 30, x: 50, y: 77 });
   });
 });
