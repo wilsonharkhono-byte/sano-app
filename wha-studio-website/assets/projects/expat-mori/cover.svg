@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1500" role="img" aria-labelledby="projectsexpatmoricoversvg-t">
+<title id="projectsexpatmoricoversvg-t">expat-mori — placeholder artwork, awaiting WHA Studio photography</title>
+<desc>Abstract architectural placeholder. Replace with real project photography.</desc>
+
+<defs>
+  <linearGradient id="projectsexpatmoricoversvg-g" x1="0" y1="0" x2="0.85" y2="1">
+    <stop offset="0" stop-color="#1F2422"/>
+    <stop offset="1" stop-color="#313634"/>
+  </linearGradient>
+  <linearGradient id="shaftGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F4F1EA" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#F4F1EA" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+<rect width="1200" height="1500" fill="url(#projectsexpatmoricoversvg-g)"/>
+<polygon points="144,248 190.8,289.6 170,352 107.6,331.2" fill="#5F7566" opacity="0.5"/><polygon points="360,506 390.6,533.2 377,574 336.2,560.4" fill="#8FA093" opacity="0.75"/><polygon points="288,946 327.6,981.2 310,1034 257.2,1016.4" fill="#8FA093" opacity="0.5"/><polygon points="576,242 601.2,264.4 590,298 556.4,286.8" fill="#5F7566" opacity="0.75"/><polygon points="660,692 712.2,738.4 689,808 619.4,784.8" fill="#8FA093" opacity="0.5"/><polygon points="528,1194 560.4,1222.8 546,1266 502.8,1251.6" fill="#8FA093" opacity="0.75"/><polygon points="864,408 901.8,441.6 885,492 834.6,475.2" fill="#5F7566" opacity="0.5"/><polygon points="960,940 1005,980 985,1040 925,1020" fill="#8FA093" opacity="0.75"/><polygon points="792,1054 815.4,1074.8 805,1106 773.8,1095.6" fill="#8FA093" opacity="0.5"/><polygon points="1056,210 1083,234 1071,270 1035,258" fill="#5F7566" opacity="0.75"/><polygon points="180,651 201.6,670.2 192,699 163.2,689.4" fill="#8FA093" opacity="0.5"/><polygon points="1080,639 1112.4,667.8 1098,711 1054.8,696.6" fill="#8FA093" opacity="0.75"/><polygon points="420,805.0000000000001 438,821.0000000000001 430,845.0000000000001 406,837.0000000000001" fill="#5F7566" opacity="0.5"/><polygon points="720,1320 747,1344 735,1380 699,1368" fill="#8FA093" opacity="0.75"/><polygon points="983.9999999999999,1298 1003.7999999999998,1315.6 994.9999999999999,1342 968.5999999999999,1333.2" fill="#8FA093" opacity="0.5"/><rect x="0" y="1170" width="1200" height="330" fill="#1F2422" opacity="0.35"/><g stroke="#8FA093" stroke-width="1" opacity="0.08"><line x1="0" y1="107" x2="1200" y2="107"/><line x1="0" y1="214" x2="1200" y2="214"/><line x1="0" y1="321" x2="1200" y2="321"/><line x1="0" y1="429" x2="1200" y2="429"/><line x1="0" y1="536" x2="1200" y2="536"/><line x1="0" y1="643" x2="1200" y2="643"/><line x1="0" y1="750" x2="1200" y2="750"/><line x1="0" y1="857" x2="1200" y2="857"/><line x1="0" y1="964" x2="1200" y2="964"/><line x1="0" y1="1071" x2="1200" y2="1071"/><line x1="0" y1="1179" x2="1200" y2="1179"/><line x1="0" y1="1286" x2="1200" y2="1286"/><line x1="0" y1="1393" x2="1200" y2="1393"/></g>
+<filter id="projectsexpatmoricoversvg-n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<rect width="1200" height="1500" filter="url(#projectsexpatmoricoversvg-n)" opacity="0.05"/>
+<text x="36" y="1474" font-family="Helvetica, Arial, sans-serif" font-size="14" letter-spacing="2.0" fill="rgba(244,241,234,0.5)">PLACEHOLDER · EXPAT MORI PHOTOGRAPHY</text>
+</svg>

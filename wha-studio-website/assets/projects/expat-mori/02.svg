@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1500" role="img" aria-labelledby="projectsexpatmori02svg-t">
+<title id="projectsexpatmori02svg-t">expat-mori — placeholder artwork, awaiting WHA Studio photography</title>
+<desc>Abstract architectural placeholder. Replace with real project photography.</desc>
+
+<defs>
+  <linearGradient id="projectsexpatmori02svg-g" x1="0" y1="0" x2="0.85" y2="1">
+    <stop offset="0" stop-color="#1F2422"/>
+    <stop offset="1" stop-color="#313634"/>
+  </linearGradient>
+  <linearGradient id="shaftGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F4F1EA" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#F4F1EA" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+<rect width="1200" height="1500" fill="url(#projectsexpatmori02svg-g)"/>
+
+<g stroke="#8FA093" stroke-width="1" opacity="0.2"><line x1="0" y1="107" x2="1200" y2="107"/><line x1="0" y1="214" x2="1200" y2="214"/><line x1="0" y1="321" x2="1200" y2="321"/><line x1="0" y1="429" x2="1200" y2="429"/><line x1="0" y1="536" x2="1200" y2="536"/><line x1="0" y1="643" x2="1200" y2="643"/><line x1="0" y1="750" x2="1200" y2="750"/><line x1="0" y1="857" x2="1200" y2="857"/><line x1="0" y1="964" x2="1200" y2="964"/><line x1="0" y1="1071" x2="1200" y2="1071"/><line x1="0" y1="1179" x2="1200" y2="1179"/><line x1="0" y1="1286" x2="1200" y2="1286"/><line x1="0" y1="1393" x2="1200" y2="1393"/></g><g stroke="#8FA093" stroke-width="1" opacity="0.2"><line x1="86" y1="0" x2="86" y2="1500"/><line x1="171" y1="0" x2="171" y2="1500"/><line x1="257" y1="0" x2="257" y2="1500"/><line x1="343" y1="0" x2="343" y2="1500"/><line x1="429" y1="0" x2="429" y2="1500"/><line x1="514" y1="0" x2="514" y2="1500"/><line x1="600" y1="0" x2="600" y2="1500"/><line x1="686" y1="0" x2="686" y2="1500"/><line x1="771" y1="0" x2="771" y2="1500"/><line x1="857" y1="0" x2="857" y2="1500"/><line x1="943" y1="0" x2="943" y2="1500"/><line x1="1029" y1="0" x2="1029" y2="1500"/><line x1="1114" y1="0" x2="1114" y2="1500"/></g>
+<path d="M 120 1275 Q 600 75 1080 1275" fill="none" stroke="#5F7566" stroke-width="5"/>
+<circle cx="600" cy="675" r="192" fill="#8FA093" opacity="0.5"/>
+<filter id="projectsexpatmori02svg-n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<rect width="1200" height="1500" filter="url(#projectsexpatmori02svg-n)" opacity="0.05"/>
+<text x="36" y="1474" font-family="Helvetica, Arial, sans-serif" font-size="14" letter-spacing="2.0" fill="rgba(244,241,234,0.5)">PLACEHOLDER · DRAWING / DETAIL</text>
+</svg>

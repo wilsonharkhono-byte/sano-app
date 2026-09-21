@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>WHA Studio — Architecture, Interiors and Design-Build</title>
+  <meta name="description" content="WHA Studio is an architecture and interior design practice creating enduring residential, commercial, and hospitality environments through design, craft, and construction.">
+  <link rel="canonical" href="https://www.whastudio.com/">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%231e1d1a'/%3E%3Cpath d='M6 10l5 14 5-11 5 11 5-14' fill='none' stroke='%23a8875a' stroke-width='2'/%3E%3C/svg%3E">
+
+  <!-- Open Graph / sharing -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="WHA Studio">
+  <meta property="og:title" content="WHA Studio — Architecture, Interiors and Design-Build">
+  <meta property="og:description" content="Designing Excellence. Building Legacies. Architecture, interiors, and objects shaped through context, craft, and construction.">
+  <meta property="og:image" content="assets/hero.svg">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <!-- Editorial type pairing: Fraunces (expressive serif) + Archivo (precise sans).
+       Loaded with swap; the site remains fully legible on the fallback stacks offline. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..600;1,9..144,300..500&family=Archivo:wght@300;400;500;600&display=swap">
+
+  <link rel="preload" as="image" href="assets/hero.svg">
+  <link rel="stylesheet" href="styles.css">
+  <noscript>
+    <style>
+      /* Without JS: no intro, hero text visible, rail scrolls natively */
+      .intro { display: none !important; }
+      body[data-intro="pending"] .hero__text { opacity: 1 !important; }
+      .universe__sticky { position: static !important; min-height: 0 !important; }
+      .universe__rail { overflow-x: auto !important; }
+      .process__sticky { position: static !important; min-height: 0 !important; }
+      .process__phase { opacity: 1 !important; }
+      .process__phase p { max-height: none !important; margin-top: 0.5rem !important; }
+      .reveal-line { opacity: 1 !important; transform: none !important; }
+    </style>
+  </noscript>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "ProfessionalService",
+    "name": "WHA Studio",
+    "url": "https://www.whastudio.com/",
+    "slogan": "Designing Excellence. Building Legacies.",
+    "description": "Architecture and interior design practice with design-build and bespoke furniture capability, working across residential, commercial, and hospitality projects.",
+    "founder": { "@type": "Person", "name": "Wilson Harkhono", "jobTitle": "Founder & Principal Architect" },
+    "areaServed": "Indonesia",
+    "address": { "@type": "PostalAddress", "addressCountry": "ID", "addressLocality": "Surabaya" },
+    "sameAs": ["https://www.instagram.com/whastudio/"]
+  }
+  </script>
+</head>
+<body data-intro="pending">
+
+<a class="skip-link" href="#projects">Skip to projects</a>
+
+<!-- ===================== Opening sequence ===================== -->
+<div class="intro" id="intro" aria-hidden="true">
+  <svg class="intro__mark" viewBox="0 0 320 160" fill="none" aria-hidden="true">
+    <rect class="intro__frame" x="6" y="6" width="308" height="148"/>
+    <path class="intro__w" d="M40 48 L58 112 L76 66 L94 112 L112 48"/>
+    <path class="intro__h" d="M136 48 V112 M176 48 V112 M136 80 H176"/>
+    <path class="intro__a" d="M200 112 L226 48 L252 112 M210 88 H242"/>
+    <text class="intro__sub" x="160" y="140" text-anchor="middle">STUDIO</text>
+  </svg>
+  <button class="intro__skip" id="introSkip" type="button">Skip</button>
+</div>
+
+<!-- ===================== Navigation ===================== -->
+<div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+
+<header class="nav" id="nav">
+  <a class="nav__mark" href="#top" aria-label="WHA Studio — back to top">
+    <span class="nav__mark-wha">WHA</span><span class="nav__mark-studio">Studio</span>
+  </a>
+  <nav class="nav__links" aria-label="Primary">
+    <a href="#studio">Studio</a>
+    <a href="#projects">Projects</a>
+    <a href="#ideas">Ideas</a>
+    <a href="#research">Research</a>
+    <a href="#contact">Contact</a>
+  </nav>
+  <div class="nav__actions">
+    <a class="btn btn--line nav__inquire" href="#inquire">Inquire</a>
+    <button class="nav__burger" id="menuToggle" type="button" aria-expanded="false" aria-controls="mobileMenu" aria-label="Open menu">
+      <span></span><span></span>
+    </button>
+  </div>
+</header>
+
+<!-- Mobile menu -->
+<div class="menu" id="mobileMenu" role="dialog" aria-modal="true" aria-label="Menu" hidden>
+  <div class="menu__inner">
+    <nav class="menu__links" aria-label="Mobile primary">
+      <a href="#studio"><i>01</i>Studio</a>
+      <a href="#projects"><i>02</i>Projects</a>
+      <a href="#ideas"><i>03</i>Ideas</a>
+      <a href="#research"><i>04</i>Research</a>
+      <a href="#contact"><i>05</i>Contact</a>
+      <a class="menu__inquire" href="#inquire"><i>06</i>Inquire</a>
+    </nav>
+    <figure class="menu__figure" aria-hidden="true">
+      <img src="assets/projects/expat-mori/cover.svg" alt="" loading="lazy">
+      <figcaption>Expat Roasters · Mori Tower</figcaption>
+    </figure>
+    <p class="menu__meta">Surabaya &amp; Jakarta, Indonesia</p>
+  </div>
+  <button class="menu__close" id="menuClose" type="button" aria-label="Close menu">Close</button>
+</div>
+
+<main id="top">
+
+  <!-- ===================== Hero ===================== -->
+  <section class="hero" id="hero" aria-label="Introduction">
+    <figure class="hero__image" data-depth="0.35">
+      <img src="assets/hero.svg" alt="Placeholder artwork standing in for a signature WHA Studio project photograph" fetchpriority="high">
+    </figure>
+
+    <figure class="hero__aperture" data-depth="0.9" aria-hidden="true">
+      <img src="assets/hero-aperture.svg" alt="" loading="lazy">
+    </figure>
+
+    <p class="hero__vertical" aria-hidden="true">Architecture · Interiors · Design-Build · Objects</p>
+
+    <div class="hero__text" data-depth="0.6">
+      <p class="hero__kicker"><span>WHA Studio</span> — Surabaya &amp; Jakarta</p>
+      <h1 class="hero__title">
+        <span class="hero__line"><em>Designing</em> Excellence.</span>
+        <span class="hero__line">Building <em>Legacies.</em></span>
+      </h1>
+      <p class="hero__sub">Architecture, interiors, and objects shaped through context, craft, and construction.</p>
+      <a class="hero__cta" href="#projects">
+        <span>Enter the work</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v14m0 0l-6-6m6 6l6-6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+      </a>
+    </div>
+
+    <p class="hero__index" aria-hidden="true">Est. 2019 — Indonesia</p>
+  </section>
+
+  <!-- ===================== Project universe ===================== -->
+  <section class="universe" id="projects" aria-label="Selected projects">
+    <div class="universe__sticky">
+      <header class="universe__head">
+        <h2 class="section-title"><i>01</i> Selected Work</h2>
+        <div class="universe__filters" role="group" aria-label="Filter projects by category">
+          <button class="chip is-active" type="button" data-filter="all" aria-pressed="true">All</button>
+          <button class="chip" type="button" data-filter="Residential" aria-pressed="false">Residential</button>
+          <button class="chip" type="button" data-filter="Commercial" aria-pressed="false">Commercial</button>
+          <button class="chip" type="button" data-filter="Interior" aria-pressed="false">Interior</button>
+        </div>
+      </header>
+
+      <div class="universe__rail" id="rail" tabindex="0" role="list"
+           aria-label="Project rail — use arrow keys to move between projects, Enter to open one">
+        <!-- cards injected by script.js from the PROJECTS data -->
+        <noscript><p style="padding:2rem var(--gutter)">Project gallery requires JavaScript in this prototype. See <a href="https://whastudio.com/projects/">whastudio.com/projects</a> meanwhile.</p></noscript>
+      </div>
+
+      <footer class="universe__foot">
+        <p class="universe__count"><span id="railIndex">01</span> / <span id="railTotal">06</span></p>
+        <div class="universe__track" aria-hidden="true"><span id="railProgress"></span></div>
+        <p class="universe__hint" aria-hidden="true">Scroll, drag, or use arrow keys</p>
+      </footer>
+    </div>
+  </section>
+
+  <!-- ===================== Manifesto ===================== -->
+  <section class="manifesto" aria-label="Studio manifesto">
+    <h2 class="manifesto__title">
+      <span class="reveal-line">Architecture</span>
+      <span class="reveal-line">you can <em>feel.</em></span>
+    </h2>
+    <p class="manifesto__body reveal-line">
+      WHA Studio approaches design as a continuous process — from the first idea to the final
+      constructed detail. Architecture, interiors, construction, and fabrication are developed
+      as one interconnected system.
+    </p>
+    <p class="manifesto__rule" aria-hidden="true"></p>
+  </section>
+
+  <!-- ===================== Process ===================== -->
+  <section class="process" id="process" aria-label="How the studio works">
+    <div class="process__sticky">
+      <header class="process__head">
+        <h2 class="section-title"><i>02</i> One Continuous Line</h2>
+      </header>
+      <div class="process__grid">
+        <ol class="process__list" id="processList">
+          <li class="process__phase is-active" data-phase="0">
+            <h3><i>1</i> Decode</h3>
+            <p>Understand the people, site, ambitions, constraints, and opportunities.</p>
+          </li>
+          <li class="process__phase" data-phase="1">
+            <h3><i>2</i> Distill</h3>
+            <p>Transform complexity into a clear architectural idea.</p>
+          </li>
+          <li class="process__phase" data-phase="2">
+            <h3><i>3</i> Prototype</h3>
+            <p>Test space, material, detail, performance, and constructability.</p>
+          </li>
+          <li class="process__phase" data-phase="3">
+            <h3><i>4</i> Realize</h3>
+            <p>Coordinate design, fabrication, and construction into one coherent result.</p>
+          </li>
+        </ol>
+        <div class="process__visual" aria-hidden="true">
+          <img class="is-active" src="assets/process/decode.svg" alt="" loading="lazy">
+          <img src="assets/process/distill.svg" alt="" loading="lazy">
+          <img src="assets/process/prototype.svg" alt="" loading="lazy">
+          <img src="assets/process/realize.svg" alt="" loading="lazy">
+          <div class="process__meter"><span id="processMeter"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Studio ===================== -->
+  <section class="studio" id="studio" aria-label="About the studio">
+    <header class="studio__head">
+      <h2 class="section-title"><i>03</i> The Studio</h2>
+      <h3 class="studio__title reveal-line">Global perspective.<br><em>Local intelligence.</em></h3>
+      <p class="studio__lede reveal-line">
+        WHA Studio is a multidisciplinary practice working across architecture, interior design,
+        construction coordination, and bespoke furniture production. Trained internationally and
+        building in Indonesia, the studio pairs design ambition with a working knowledge of how
+        things actually get made — on site and in the workshop.
+      </p>
+    </header>
+
+    <div class="studio__founders">
+      <article class="founder">
+        <figure class="founder__figure">
+          <img src="assets/studio/wilson.svg" alt="Placeholder portrait panel for Wilson Harkhono" loading="lazy">
+        </figure>
+        <h4 class="founder__name">Wilson Harkhono</h4>
+        <p class="founder__role">Founder &amp; Principal Architect</p>
+        <p class="founder__bio">
+          Returned to Indonesia in 2019 to found WHA Studio after practicing with
+          Kengo Kuma &amp; Associates in Tokyo, Adrian Smith + Gordon Gill in Chicago,
+          and KTGY in Oakland.
+        </p>
+        <button class="founder__toggle" type="button" aria-expanded="false" aria-controls="cred-wilson">
+          Credentials <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+        </button>
+        <ul class="founder__creds" id="cred-wilson" hidden>
+          <li>M.Arch with Distinction — Harvard Graduate School of Design</li>
+          <li>B.A. Architecture, High Honors — UC Berkeley, minor in sustainable design</li>
+          <li>Finalist — Lexus Design Award 2018</li>
+          <li>RAMSA Travel Fellow 2018</li>
+        </ul>
+      </article>
+
+      <article class="founder">
+        <figure class="founder__figure">
+          <img src="assets/studio/carissa.svg" alt="Placeholder portrait panel for Carissa Tjondro" loading="lazy">
+        </figure>
+        <h4 class="founder__name">Carissa Tjondro</h4>
+        <p class="founder__role">Principal Interior Designer</p>
+        <p class="founder__bio">
+          Designs luxury private residences across Indonesia, with prior experience
+          at respected interior design practices in Jakarta.
+        </p>
+        <button class="founder__toggle" type="button" aria-expanded="false" aria-controls="cred-carissa">
+          Credentials <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+        </button>
+        <ul class="founder__creds" id="cred-carissa" hidden>
+          <li>M.A. Interior Architecture — Academy of Art University</li>
+          <li>B.A. Architecture — UC Berkeley</li>
+        </ul>
+      </article>
+    </div>
+
+    <div class="studio__practice">
+      <div class="studio__areas">
+        <h4>Areas of practice</h4>
+        <ul>
+          <li>Architecture</li><li>Interior design</li><li>Design &amp; build</li>
+          <li>Construction coordination</li><li>Bespoke furniture &amp; built-ins</li>
+          <li>Installations &amp; exhibitions</li>
+        </ul>
+      </div>
+      <div class="studio__advantage">
+        <h4>The design-build advantage</h4>
+        <p>
+          Because the studio coordinates construction and fabricates its own furniture and
+          built-ins, a detail drawn in the studio is a detail the studio can stand behind on
+          site — one line carried from sketch to workshop to building.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== Ideas / Research ===================== -->
+  <section class="ideas" id="ideas" aria-label="Ideas and research">
+    <header class="ideas__head">
+      <h2 class="section-title"><i>04</i> Ideas</h2>
+    </header>
+    <ol class="ideas__list">
+      <li class="ideas__item reveal-line">
+        <i>I.</i>
+        <h3>Light on narrow ground</h3>
+        <p>On a six-metre-wide plot, the section — not the plan — decides whether a building breathes. Cutting daylight down through four storeys, as tested at the Expat Roasters flagship.</p>
+      </li>
+      <li class="ideas__item reveal-line" id="research">
+        <i>II.</i>
+        <h3>The language of harmony</h3>
+        <p>Design that enhances the well-being of the people inside it while respecting the balance of the place around it — the studio's founding position, restated in every brief.</p>
+      </li>
+      <li class="ideas__item reveal-line">
+        <i>III.</i>
+        <h3>Drawn, then built</h3>
+        <p>Ongoing research into closing the gap between drawing and construction in Indonesia — details designed with the workshop, not handed over to it.</p>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ===================== Inquiry ===================== -->
+  <section class="inquire" id="contact" aria-label="Contact and inquiry">
+    <div class="inquire__intro" id="inquire">
+      <h2 class="section-title section-title--light"><i>05</i> Contact</h2>
+      <h3 class="inquire__title">Let’s create<br><em>what lasts.</em></h3>
+      <p class="inquire__lede">
+        Tell us a little about the project you are imagining. Every inquiry is read by a principal.
+      </p>
+      <address class="inquire__direct">
+        <a href="https://www.instagram.com/whastudio/" target="_blank" rel="noopener">Instagram — @whastudio</a>
+        <a href="https://whastudio.com/contact-us/" target="_blank" rel="noopener">Full contact details — whastudio.com</a>
+        <span>Surabaya &amp; Jakarta, Indonesia</span>
+      </address>
+    </div>
+
+    <form class="inquire__form" id="inquiryForm" novalidate>
+      <div class="field">
+        <label for="f-name">Name</label>
+        <input id="f-name" name="name" type="text" autocomplete="name" required>
+      </div>
+      <div class="field">
+        <label for="f-contact">Email or WhatsApp</label>
+        <input id="f-contact" name="contact" type="text" autocomplete="email" required>
+      </div>
+      <div class="field field--half">
+        <label for="f-location">Project location</label>
+        <input id="f-location" name="location" type="text">
+      </div>
+      <div class="field field--half">
+        <label for="f-type">Project type</label>
+        <select id="f-type" name="type">
+          <option>Residential</option><option>Commercial</option><option>Hospitality</option>
+          <option>Retail</option><option>Interior only</option><option>Furniture / built-ins</option>
+          <option>Other</option>
+        </select>
+      </div>
+      <div class="field field--half">
+        <label for="f-scale">Approximate scale</label>
+        <input id="f-scale" name="scale" type="text" placeholder="e.g. 450 m² house">
+      </div>
+      <div class="field field--half">
+        <label for="f-timeline">Desired timeline</label>
+        <input id="f-timeline" name="timeline" type="text" placeholder="e.g. groundbreaking 2027">
+      </div>
+      <div class="field">
+        <label for="f-desc">Short project description</label>
+        <textarea id="f-desc" name="description" rows="4"></textarea>
+      </div>
+      <p class="inquire__privacy">
+        Your details are used only to respond to this inquiry. Nothing is shared or added to a mailing list.
+      </p>
+      <button class="btn btn--solid" type="submit">Begin the conversation</button>
+      <p class="inquire__status" id="formStatus" role="status" aria-live="polite"></p>
+    </form>
+  </section>
+
+</main>
+
+<!-- ===================== Project detail overlay ===================== -->
+<div class="detail" id="detail" role="dialog" aria-modal="true" aria-labelledby="detailTitle" hidden>
+  <div class="detail__scroll" id="detailScroll">
+    <header class="detail__head">
+      <p class="detail__eyebrow" id="detailEyebrow"></p>
+      <h2 class="detail__title" id="detailTitle"></h2>
+      <dl class="detail__meta" id="detailMeta"></dl>
+    </header>
+    <div class="detail__body" id="detailBody"></div>
+    <nav class="detail__pager" aria-label="More projects">
+      <button class="detail__pagebtn" id="detailPrev" type="button">
+        <i>←</i><span id="detailPrevLabel">Previous</span>
+      </button>
+      <button class="detail__pagebtn detail__pagebtn--next" id="detailNext" type="button">
+        <span id="detailNextLabel">Next</span><i>→</i>
+      </button>
+    </nav>
+  </div>
+  <div class="detail__bar">
+    <button class="detail__copy" id="detailCopy" type="button">Copy link</button>
+    <button class="detail__close" id="detailClose" type="button" aria-label="Close project">Close ✕</button>
+  </div>
+</div>
+
+<!-- ===================== Footer ===================== -->
+<footer class="footer">
+  <p class="footer__mark">WHA<span>Studio</span></p>
+  <nav class="footer__nav" aria-label="Footer">
+    <a href="#studio">Studio</a><a href="#projects">Projects</a><a href="#ideas">Ideas</a>
+    <a href="#research">Research</a><a href="#contact">Contact</a>
+  </nav>
+  <div class="footer__meta">
+    <button class="footer__motion" id="motionToggle" type="button" aria-pressed="false">Reduce motion</button>
+    <p>© <span id="year"></span> WHA Studio — Surabaya &amp; Jakarta, Indonesia</p>
+    <p class="footer__note">Prototype: project imagery shown as labeled placeholder artwork pending studio photography.</p>
+  </div>
+</footer>
+
+<script src="script.js" defer></script>
+</body>
+</html>
