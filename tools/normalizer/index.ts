@@ -275,7 +275,7 @@ export function makeAnalyzeBlockFromAnalyzer(
 
 /**
  * Production factory: builds an analyzeBlock function backed by the real
- * Anthropic SDK (claude-opus-4-7). The API key is required.
+ * Anthropic SDK (claude-opus-5-5). The API key is required.
  */
 export function makeAnalyzeBlock(opts: MakeAnalyzeBlockOptions): NormalizeOptions['analyzeBlock'] {
   const client = new Anthropic({ apiKey: opts.apiKey });
