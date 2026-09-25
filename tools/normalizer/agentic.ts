@@ -17,7 +17,7 @@ import type { HarvestedCell } from '../boqParserV2/types';
 import type { BoqRowV2 } from '../boqParserV2/extractTakeoffs';
 import type { RowBreakdown, BreakdownRow, BreakdownGroup } from '../boqParserV2/breakdownSheetReader.types';
 
-const MODEL = 'claude-opus-4-7';
+const MODEL = 'claude-opus-5-5';
 const MAX_TURNS = 6;       // Hard cap on Claude turns per row.
 const TOLERANCE_RP = 1;    // ±1 Rp on computed unit cost vs source.
 
@@ -258,7 +258,10 @@ export async function runAgenticBreakdown(opts: AgenticRunOptions): Promise<Agen
     turnsUsed++;
     const resp = await opts.client.messages.create({
       model: MODEL,
-      max_tokens: 4096,
+      // Opus 5.5 always thinks; thinking tokens count against max_tokens.
+      max_tokens: 16000,
+      // Opus 5.5 defaults to medium effort; reconciliation needs the full depth.
+      output_config: { effort: 'high' },
       system: SYSTEM_PROMPT,
       tools: [SUBMIT_BREAKDOWN_TOOL],
       messages,

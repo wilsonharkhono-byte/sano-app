@@ -128,9 +128,9 @@ interface LiveProjectSnapshot {
 // ── Model IDs ────────────────────────────────────────────────────────────────
 
 const MODEL_IDS: Record<AIModel, string> = {
-  haiku:  'claude-haiku-4-5-20251001',
-  sonnet: 'claude-sonnet-4-6',
-  opus:   'claude-opus-4-6',
+  haiku:  'claude-haiku-4-5',
+  sonnet: 'claude-sonnet-5',
+  opus:   'claude-opus-5-5',
 };
 
 // ── CORS headers ─────────────────────────────────────────────────────────────
@@ -630,7 +630,11 @@ serve(async (req: Request) => {
       },
       body: JSON.stringify({
         model:      modelId,
-        max_tokens: 1024,
+        // Sonnet 5 / Opus 5.5 think by default and thinking tokens count
+        // against max_tokens, so the cap is higher than the reply itself.
+        max_tokens: 4096,
+        // Low effort keeps chat replies fast. Haiku 4.5 rejects `effort`.
+        ...(model === 'haiku' ? {} : { output_config: { effort: 'low' } }),
         system:     systemPrompt,
         messages:   messages.map((m: ChatMessage) => ({
           role:    m.role,
@@ -649,7 +653,13 @@ serve(async (req: Request) => {
     }
 
     const anthropicData = await anthropicRes.json();
-    const reply = anthropicData?.content?.[0]?.text ?? 'Maaf, tidak ada respons dari AI.';
+    // content[0] may be a thinking block on Sonnet 5 / Opus 5.5 — collect the text blocks.
+    const replyText = (anthropicData?.content ?? [])
+      .filter((b: { type: string }) => b.type === 'text')
+      .map((b: { text: string }) => b.text)
+      .join('')
+      .trim();
+    const reply = replyText || 'Maaf, tidak ada respons dari AI.';
     const usage = anthropicData?.usage ?? {};
 
     return new Response(

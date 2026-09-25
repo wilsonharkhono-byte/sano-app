@@ -1,18 +1,18 @@
 // SANO — AI Draft Milestones Edge Function
 // Spec: docs/superpowers/specs/2026-04-15-jadwal-milestone-authoring-design.md §6
-// Pinned to claude-sonnet-4-6; no rate limiting; validates output strictly.
+// Pinned to claude-sonnet-5; no rate limiting; validates output strictly.
 //
 // Environment secrets required (set via: supabase secrets set ANTHROPIC_API_KEY=...)
 //   ANTHROPIC_API_KEY          — Anthropic API key
 //   SUPABASE_URL               — provided automatically in Supabase runtime
 //   SUPABASE_SERVICE_ROLE_KEY  — service role for server-side writes
-//   AI_DRAFT_MODEL             — optional override, defaults to claude-sonnet-4-6
+//   AI_DRAFT_MODEL             — optional override, defaults to claude-sonnet-5
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.8';
 import { validateDraftBatch, resolveLabelRefs } from './validate.ts';
 
-const MODEL = Deno.env.get('AI_DRAFT_MODEL') ?? 'claude-sonnet-4-6';
+const MODEL = Deno.env.get('AI_DRAFT_MODEL') ?? 'claude-sonnet-5';
 const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -348,7 +348,10 @@ async function callClaudeWithRetry(
         },
         body: JSON.stringify({
           model: MODEL,
-          max_tokens: 4096,
+          // Sonnet 5 thinks by default; thinking tokens count against
+          // max_tokens, and low effort keeps the call inside the 60 s abort.
+          max_tokens: 8192,
+          output_config: { effort: 'low' },
           system: systemNote,
           messages: [{ role: 'user', content: prompt }],
         }),
@@ -361,7 +364,11 @@ async function callClaudeWithRetry(
         continue;
       }
       const data = await resp.json();
-      const text = data?.content?.[0]?.text ?? '';
+      // content[0] may be a thinking block — collect the text blocks.
+      const text = (data?.content ?? [])
+        .filter((b: { type: string }) => b.type === 'text')
+        .map((b: { text: string }) => b.text)
+        .join('');
       try {
         const parsed = JSON.parse(extractJson(text));
         return { ok: true, parsed };
