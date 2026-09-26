@@ -4,8 +4,14 @@ import {
   markInserted,
   markUnrecoverable,
   markUploaded,
+  enqueueClose,
+  markCleanedUp,
+  markClosedElsewhere,
+  markCloseOutcome,
+  markClosureMediaInserted,
   recordFailure,
   type CaptureJob,
+  type CloseJob,
 } from '../../tools/captureQueue';
 import { WEB_QUEUE_WARNING, WEB_QUEUED_TOAST, attentionRows, queueBadgeText } from '../screens/siteEvent/captureQueueModel';
 import type { NewSiteEvent } from '../../tools/siteEvents';
@@ -113,5 +119,70 @@ describe('attentionRows escape hatches', () => {
       action: 'retry',
       reason: 'Sudah terkirim ke server; buka Draf menunggu.',
     });
+  });
+});
+
+// ─── Close jobs (closure spec 2026-09-26 §4.6) ────────────────────────────────
+
+const closeJob = (photo = true): CloseJob => enqueueClose({
+  id: 'job1', ownerId: 'u1', eventId: 'ev1', projectId: 'p1', roomId: 'r1', eventTitle: 'Retak acian', note: 'Sudah ditambal',
+  closurePhoto: photo
+    ? { id: 'cm1', localUri: 'file:///q/cm1.jpg', kind: 'photo', role: 'closure', mimeType: 'image/jpeg', ext: 'jpg', durationS: null, sortOrder: 0, capturedAt: NOW }
+    : null,
+  nowIso: NOW,
+});
+
+const supersededJob = (closedByName: string | null): CloseJob => markCleanedUp(
+  markClosedElsewhere(markCloseOutcome(closeJob(false), 'not_open', NOW), { closedByName, closedAt: '2026-09-17T07:05:00.000Z' }, NOW),
+  NOW,
+);
+
+describe('attentionRows for close jobs', () => {
+  it('offers Coba lagi on a transient failure that ran out of attempts, titled with the event', () => {
+    let j = closeJob(false);
+    for (let i = 0; i < 5; i++) j = recordFailure(j, 'Tandai selesai gagal: Gagal menyimpan: Network request failed', NOW);
+    expect(attentionRows([j])).toEqual([
+      { id: 'job1', title: 'Selesai: Retak acian', reason: 'Tandai selesai gagal: Gagal menyimpan: Network request failed', action: 'retry' },
+    ]);
+  });
+
+  it('offers Batalkan, confirmed first, on a permanent refusal before any outcome', () => {
+    const j = recordFailure(closeJob(false), 'Tandai selesai gagal: Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.', NOW, 'permanent');
+    expect(attentionRows([j])).toEqual([{
+      id: 'job1',
+      title: 'Selesai: Retak acian',
+      reason: 'Tandai selesai gagal: Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.',
+      action: 'cancel',
+      confirm: 'Batalkan penutupan "Retak acian"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.',
+    }]);
+  });
+
+  it('offers Batalkan on an unrecoverable job, with the missing-photo sentence when it carries no error', () => {
+    const j = { ...markUnrecoverable(closeJob(), 'x'), lastError: null };
+    expect(attentionRows([j])[0]).toMatchObject({
+      action: 'cancel',
+      reason: 'Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru.',
+    });
+  });
+
+  it('never offers Batalkan once the server answered, even on a permanent lookup failure', () => {
+    const j = recordFailure(markCloseOutcome(closeJob(false), 'not_open', NOW), 'Baca status kejadian gagal: Hanya kejadian terbuka yang bisa ditandai selesai.', NOW, 'permanent');
+    expect(attentionRows([j])[0].action).toBe('retry');
+  });
+
+  it("names the server's closer and time on a superseded job, and offers Mengerti", () => {
+    expect(attentionRows([supersededJob('Budi Santoso')])).toEqual([
+      { id: 'job1', title: 'Retak acian', reason: 'Sudah ditutup oleh Budi Santoso pada 17 Sep 14.05.', action: 'acknowledge' },
+    ]);
+  });
+
+  it('says only when, never a guessed name, when the server recorded no closer', () => {
+    expect(attentionRows([supersededJob(null)])[0].reason).toBe('Sudah ditutup pada 17 Sep 14.05.');
+  });
+
+  it('lists nothing for a close job that is simply waiting, and counts it as waiting for signal', () => {
+    const j = markClosureMediaInserted(markUploaded(closeJob(), 'cm1', 1, NOW), NOW);
+    expect(attentionRows([j])).toEqual([]);
+    expect(queueBadgeText([j])).toBe('Antrean: 1 menunggu sinyal');
   });
 });

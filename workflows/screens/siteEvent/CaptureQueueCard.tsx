@@ -3,9 +3,9 @@ import { Alert, Platform, View, Text, TouchableOpacity, StyleSheet } from 'react
 import Card from '../../components/Card';
 import { useProject } from '../../hooks/useProject';
 import { useToast } from '../../components/Toast';
-import { discardEntryLocally, useCaptureQueueEntries } from '../../../tools/captureQueueStore';
+import { acknowledgeCloseEntry, discardEntryLocally, useCaptureQueueEntries } from '../../../tools/captureQueueStore';
 import { retryQueueEntry } from '../../../tools/captureQueueWorker';
-import { attentionRows, queueBadgeText } from './captureQueueModel';
+import { attentionRows, queueBadgeText, type AttentionRow } from './captureQueueModel';
 import { COLORS, FONTS, SPACE, TYPE } from '../../theme';
 
 /**
@@ -73,6 +73,50 @@ export default function CaptureQueueCard() {
     }
   }, [discard]);
 
+  /** "Batalkan" on a close job (closure spec §4.6): the event stays open; nothing on the server is touched. */
+  const cancelClose = useCallback(async (id: string) => {
+    if (!profile) return;
+    setPendingId(id);
+    try {
+      const result = await discardEntryLocally(profile.id, id);
+      if (result.error) toast(result.error, 'critical');
+      else toast('Penutupan dibatalkan. Kejadian tetap terbuka.', 'ok');
+    } finally {
+      setPendingId((current) => (current === id ? null : current));
+    }
+  }, [profile, toast]);
+
+  const onCancelClose = useCallback((row: AttentionRow) => {
+    const message = row.confirm ?? `Batalkan penutupan "${row.title}"?`;
+    if (Platform?.OS === 'web') {
+      if (window.confirm(message)) void cancelClose(row.id);
+    } else {
+      Alert.alert('Batalkan penutupan', message, [
+        { text: 'Tidak', style: 'cancel' },
+        { text: 'Batalkan', style: 'destructive', onPress: () => void cancelClose(row.id) },
+      ]);
+    }
+  }, [cancelClose]);
+
+  /** "Mengerti" on a superseded close job: it only leaves the list. */
+  const onAcknowledge = useCallback(async (id: string) => {
+    if (!profile) return;
+    setPendingId(id);
+    try {
+      const result = await acknowledgeCloseEntry(profile.id, id);
+      if (result.error) toast(result.error, 'critical');
+    } finally {
+      setPendingId((current) => (current === id ? null : current));
+    }
+  }, [profile, toast]);
+
+  const onRowAction = (row: AttentionRow) => {
+    if (row.action === 'discard') onDiscard(row.id, row.title);
+    else if (row.action === 'cancel') onCancelClose(row);
+    else if (row.action === 'acknowledge') void onAcknowledge(row.id);
+    else void onRetry(row.id);
+  };
+
   if (!badge && attention.length === 0) return null;
 
   return (
@@ -86,7 +130,8 @@ export default function CaptureQueueCard() {
           <Text style={styles.sectionLabel}>Perlu perhatian</Text>
           {attention.map((row) => {
             const busy = pendingId === row.id;
-            const danger = row.action === 'discard';
+            const danger = row.action === 'discard' || row.action === 'cancel';
+            const label = ACTION_LABEL[row.action];
             return (
               <View key={row.id} style={styles.row}>
                 <View style={styles.meta}>
@@ -96,14 +141,12 @@ export default function CaptureQueueCard() {
                 <TouchableOpacity
                   style={[danger ? styles.dangerBtn : styles.retryBtn, busy && styles.btnBusy]}
                   disabled={busy}
-                  onPress={() => (danger ? onDiscard(row.id, row.title) : void onRetry(row.id))}
+                  onPress={() => onRowAction(row)}
                   accessibilityRole="button"
                   accessibilityState={{ disabled: busy }}
-                  accessibilityLabel={danger ? `Buang laporan ${row.title}` : `Coba lagi laporan ${row.title}`}
+                  accessibilityLabel={`${label} ${row.title}`}
                 >
-                  <Text style={danger ? styles.dangerText : styles.retryText}>
-                    {danger ? 'Buang' : 'Coba lagi'}
-                  </Text>
+                  <Text style={danger ? styles.dangerText : styles.retryText}>{label}</Text>
                 </TouchableOpacity>
               </View>
             );
@@ -113,6 +156,13 @@ export default function CaptureQueueCard() {
     </Card>
   );
 }
+
+const ACTION_LABEL: Record<AttentionRow['action'], string> = {
+  retry: 'Coba lagi',
+  discard: 'Buang',
+  cancel: 'Batalkan',
+  acknowledge: 'Mengerti',
+};
 
 const styles = StyleSheet.create({
   sectionLabel: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.textSec, textTransform: 'uppercase', marginBottom: SPACE.xs },
