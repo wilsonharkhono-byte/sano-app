@@ -12,8 +12,6 @@ import {
   useCaptureQueueEntries,
 } from '../../tools/captureQueueStore';
 import { retryQueueEntry } from '../../tools/captureQueueWorker';
-import type { CloseJob } from '../../tools/captureQueue';
-import { formatWibShort } from '../../tools/timeWindow';
 import { useProject } from '../hooks/useProject';
 import { gateChipLabel, listGateRefs, listGateStepRefs, stepChipLabel } from '../../tools/gateRefs';
 import { todayIsoLocal } from '../../tools/siteEventRules';
@@ -24,6 +22,7 @@ import { formStyles as s } from './siteEvent/styles';
 import MediaStrip from './siteEvent/MediaStrip';
 import ClosureForm from './siteEvent/ClosureForm';
 import { detailActions, isOverdue, voStatusText } from './siteEvent/detailModel';
+import { supersededReason } from './siteEvent/captureQueueModel';
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -36,18 +35,6 @@ function Row({ label, value }: { label: string; value: string }) {
 
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
-}
-
-/**
- * A superseded close of this event (closure spec §4.6): the server had already
- * closed it. Names only the closer the server reported, never the queue's
- * owner; without a name it says only when.
- */
-function closedElsewhereSentence(job: Pick<CloseJob, 'closedElsewhere'>): string {
-  const info = job.closedElsewhere;
-  if (!info) return 'Sudah ditutup.';
-  const when = formatWibShort(info.closedAt);
-  return info.closedByName ? `Sudah ditutup oleh ${info.closedByName} pada ${when}.` : `Sudah ditutup pada ${when}.`;
 }
 
 /** Shown for a related event when the row is missing or unreadable (RLS), so the id isn't just a raw UUID. */
@@ -330,7 +317,8 @@ export default function SiteEventDetailScreen() {
               </Card>
             ) : supersededClose ? (
               <Card title="Penutupan" borderColor={COLORS.info}>
-                <Text style={s.bannerText}>{closedElsewhereSentence(supersededClose)}</Text>
+                {/* The Beranda card's own sentence: the server's closer, never the queue owner (spec §4.6). */}
+                <Text style={s.bannerText}>{supersededReason(supersededClose)}</Text>
                 {acknowledgeError ? <Text style={s.errorText}>{acknowledgeError}</Text> : null}
                 <TouchableOpacity
                   style={s.secondaryBtn}
