@@ -156,6 +156,11 @@ export const RPC_ERROR_COPY: ReadonlyArray<[string, string]> = [
   // selesai" read as the same idea in English but are two different SQL codes).
   ['SITE_EVENT_ASSIGN_ROLE', 'Hanya pelapor atau peran kantor yang dapat mengubah pemilik dan tenggat.'],
   ['SITE_EVENT_ASSIGN_NOT_OPEN', 'Hanya kejadian terbuka yang bisa diubah pemilik atau tenggatnya.'],
+  // Migration 105 (closure spec 2026-09-26 §3): close_site_event asks for
+  // proof by type. Matched on `CODE:` exactly, so SITE_EVENT_CLOSURE_NOTE_REQUIRED
+  // never collides with SITE_EVENT_CLOSURE_NOTE above.
+  ['SITE_EVENT_CLOSURE_PHOTO_REQUIRED', 'Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.'],
+  ['SITE_EVENT_CLOSURE_NOTE_REQUIRED', 'Catatan keputusan wajib diisi, minimal 10 karakter.'],
 ];
 
 /** Matches `CODE:` exactly, so SITE_EVENT_OWNER_REQUIRED and SITE_EVENT_OWNER_NOT_MEMBER never collide. */
