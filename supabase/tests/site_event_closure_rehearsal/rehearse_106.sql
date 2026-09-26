@@ -1,6 +1,8 @@
 -- supabase/tests/site_event_closure_rehearsal/rehearse_106.sql
 -- Behaviour checks for migration 106 as real roles. Run by run.sh, as postgres,
--- after rehearse_105.sql. Every line prints PASS or FAIL.
+-- after rehearse_105.sql. Every line prints PASS or FAIL. The cases that must
+-- see a WARNING run in a second psql inside the container and pass through two
+-- files under the container's /tmp, removed afterwards (see E).
 \pset tuples_only on
 \pset format unaligned
 
@@ -101,3 +103,70 @@ SELECT rehearsal.expect('106 an office role reads the log', (SELECT count(*) FRO
 SELECT rehearsal.expect('106 the health line names today and three people',
   (SELECT count(*) = 1 AND bool_and(last_run_date = rehearsal.today() AND recipients = 3 AND last_sent_at IS NOT NULL) FROM v_site_event_digest_health));
 ROLLBACK;
+
+-- A WARNING cannot be caught in SQL, so the cases below that must see one (or
+-- prove there was none) run in a second psql session inside this container.
+-- Each such session works inside BEGIN ... ROLLBACK, so nothing it does
+-- outlives it, and its whole output, WARNINGs and any ERROR included, is read
+-- back into `capture` with \copy. `prelude` opens that transaction, starts
+-- from a morning on which nobody has been told yet (C already told three
+-- people; the rollback puts them back), and names people instead of UUIDs.
+CREATE TEMP TABLE capture (line TEXT);
+SELECT $p$
+BEGIN;
+DELETE FROM site_event_digest_log WHERE run_date = rehearsal.today();
+DELETE FROM notifications WHERE type = 'SITE_EVENT_DIGEST';
+CREATE FUNCTION pg_temp.who(p UUID) RETURNS TEXT LANGUAGE sql AS $f$
+  SELECT COALESCE((SELECT n FROM unnest(ARRAY['sup', 'sup2', 'est', 'adm', 'adm2', 'pri', 'gone', 'out']) AS n WHERE rehearsal.u(n) = p), p::text) $f$;
+CREATE FUNCTION pg_temp.logged() RETURNS TEXT LANGUAGE sql AS $f$
+  SELECT COALESCE(string_agg(pg_temp.who(profile_id) || ':' || kind, ',' ORDER BY pg_temp.who(profile_id)), '')
+  FROM site_event_digest_log WHERE run_date = rehearsal.today() $f$;
+$p$ AS prelude \gset
+
+-- E. One recipient's notification never lands (spec §6): a BEFORE INSERT
+-- trigger drops the supervisor's SITE_EVENT_DIGEST row, as a failed insert
+-- would. The others are served, the supervisor's log row rolls back with a
+-- WARNING, and a second run the same day retries only the supervisor.
+\o /tmp/rehearse_106_sub.sql
+SELECT :'prelude' || $s$
+CREATE FUNCTION public.rehearsal_drop_sup_digest() RETURNS trigger LANGUAGE plpgsql AS $f$
+BEGIN
+  IF NEW.type = 'SITE_EVENT_DIGEST' AND NEW.recipient_user_id = rehearsal.u('sup') THEN
+    RETURN NULL;
+  END IF;
+  RETURN NEW;
+END $f$;
+CREATE TRIGGER rehearsal_drop_sup_digest BEFORE INSERT ON notifications
+  FOR EACH ROW EXECUTE FUNCTION public.rehearsal_drop_sup_digest();
+SELECT 'first=' || enqueue_site_event_digests();
+SELECT 'logged_first=' || pg_temp.logged();
+DROP TRIGGER rehearsal_drop_sup_digest ON notifications;
+SELECT 'retry=' || enqueue_site_event_digests();
+SELECT 'logged_retry=' || pg_temp.logged();
+SELECT 'sup_notified=' || count(*) FROM notifications WHERE type = 'SITE_EVENT_DIGEST' AND recipient_user_id = rehearsal.u('sup');
+ROLLBACK;
+$s$;
+\o
+\! psql -X -q -tA -v ON_ERROR_STOP=1 -U postgres -d postgres -f /tmp/rehearse_106_sub.sql < /dev/null > /tmp/rehearse_106_out.txt 2>&1
+TRUNCATE capture;
+\copy capture (line) FROM '/tmp/rehearse_106_out.txt' WITH (FORMAT text, DELIMITER E'\x01')
+SELECT rehearsal.expect('106 a digest that never lands: the others are served and the supervisor''s log row rolls back',
+  EXISTS (SELECT 1 FROM capture WHERE line = 'first=2')
+  AND EXISTS (SELECT 1 FROM capture WHERE line = 'logged_first=adm:office,pri:office')
+  AND NOT EXISTS (SELECT 1 FROM capture WHERE line LIKE '%ERROR%'),
+  (SELECT string_agg(line, ' | ') FROM capture WHERE line NOT LIKE '%WARNING:%'));
+SELECT rehearsal.expect('106 the failed recipient raises one WARNING, DIGEST_NOT_LANDED, naming them and the project',
+  (SELECT count(*) FROM capture WHERE line LIKE '%WARNING:%') = 1
+  AND EXISTS (SELECT 1 FROM capture WHERE line LIKE '%WARNING:  enqueue_site_event_digests: ' || rehearsal.u('sup') || ' pada proyek ' || rehearsal.p(1) || ': DIGEST_NOT_LANDED: %'),
+  (SELECT string_agg(line, ' | ') FROM capture WHERE line LIKE '%WARNING%'));
+SELECT rehearsal.expect('106 a second run the same day retries only the failed recipient, and now logs them',
+  EXISTS (SELECT 1 FROM capture WHERE line = 'retry=1')
+  AND EXISTS (SELECT 1 FROM capture WHERE line = 'logged_retry=adm:office,pri:office,sup:owner')
+  AND EXISTS (SELECT 1 FROM capture WHERE line = 'sup_notified=1'),
+  (SELECT string_agg(line, ' | ') FROM capture WHERE line NOT LIKE '%WARNING:%'));
+SELECT rehearsal.expect('106 the failed-landing session left nothing behind: no trigger, and C''s three log rows',
+  NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'rehearsal_drop_sup_digest')
+  AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'rehearsal_drop_sup_digest')
+  AND (SELECT count(*) FROM site_event_digest_log WHERE run_date = rehearsal.today()) = 3
+  AND (SELECT count(*) FROM notifications WHERE type = 'SITE_EVENT_DIGEST') = 3);
+\! rm -f /tmp/rehearse_106_sub.sql /tmp/rehearse_106_out.txt
