@@ -559,6 +559,78 @@ export async function closeSiteEvent(params: {
   return {};
 }
 
+// ─── Offline close (closure spec 2026-09-26 §4) ──────────────────────────────
+// The capture queue's close job calls these three one at a time, each safe to
+// retry, so "Selesai" survives no signal. The form has no synchronous path.
+
+/**
+ * The closure photo's media row, after its file is uploaded. The same upsert
+ * with ignoreDuplicates as the capture insert, so a retry after a lost
+ * response is a no-op. `carrier.id` is the EVENT id: the row must point inside
+ * site-events/{projectId}/{eventId}/ or 097's path guard refuses it.
+ */
+export async function insertClosureMedia(
+  carrier: { id: string; projectId: string; media: LocalSiteEventMedia[] },
+  bytesById: Record<string, number | null>,
+): Promise<{ error?: string; kind?: SiteEventErrorKind }> {
+  const rows = buildMediaRows(
+    { ...carrier, media: carrier.media.map((m) => ({ ...m, kind: 'photo' as const, role: 'closure' as const })) },
+    bytesById,
+  );
+  if (rows.length === 0) return {};
+  const { error } = await supabase
+    .from('site_event_media')
+    .upsert(rows, { onConflict: 'id', ignoreDuplicates: true });
+  if (error) {
+    return { error: mapSiteEventRpcError(error.message), kind: classifyStorageOrPostgrestError(error) };
+  }
+  return {};
+}
+
+/**
+ * close_site_event's three possible answers. `notOpen` is not an error: the
+ * event is no longer open, usually because somebody closed it first (or this
+ * job's own earlier attempt landed and its response was lost). Every other
+ * SITE_EVENT_* refusal and Postgres 42501 are decisions, so `permanent`;
+ * anything else (a dropped network, a 5xx) is `transient`.
+ */
+export type CloseRpcResult =
+  | { ok: true }
+  | { notOpen: true }
+  | { error: string; kind: SiteEventErrorKind };
+
+export async function closeSiteEventRpc(eventId: string, note: string | null): Promise<CloseRpcResult> {
+  const { error } = await supabase.rpc('close_site_event', { p_event_id: eventId, p_closure_note: note });
+  if (!error) return { ok: true };
+  const message = error.message ?? '';
+  if (message.includes('SITE_EVENT_NOT_OPEN:')) return { notOpen: true };
+  const permanent = /SITE_EVENT_[A-Z_]+:/.test(message) || (error as { code?: string }).code === '42501';
+  return { error: mapSiteEventRpcError(message), kind: permanent ? 'permanent' : 'transient' };
+}
+
+/** Who closed an event, read from the server, for a close job that found it already closed. */
+export type CloserLookup =
+  | { closedByName: string | null; closedAt: string }
+  | { error: string; kind: SiteEventErrorKind };
+
+/**
+ * A read failure is transient: only the lookup is repeated. A row that is not
+ * there, or not `done`, cannot be explained by retrying, so it is permanent
+ * and carries SITE_EVENT_NOT_OPEN's copy. `closedByName` is null when the
+ * close was made by the service role (097 leaves closed_by NULL then).
+ */
+export async function lookupSiteEventCloser(eventId: string): Promise<CloserLookup> {
+  const read = await getSiteEventResult(eventId);
+  if (read.error !== undefined) {
+    return { error: `Status kejadian gagal dibaca: ${read.error}`, kind: 'transient' };
+  }
+  const event = read.event;
+  if (!event || event.status !== 'done' || !event.closed_at) {
+    return { error: mapSiteEventRpcError('SITE_EVENT_NOT_OPEN: '), kind: 'permanent' };
+  }
+  return { closedByName: event.closed_by_name, closedAt: event.closed_at };
+}
+
 /** "Buang": a status, never a delete (spec §1.1 rule 3). Media rows and files stay. */
 export async function discardSiteEvent(eventId: string): Promise<{ error?: string }> {
   const { data, error } = await supabase
