@@ -94,6 +94,23 @@ describe('CaptureQueueCard with close jobs', () => {
     await waitFor(() => expect(acknowledgeCloseEntry).toHaveBeenCalledWith('u1', 'job1'));
   });
 
+  it('shows in the row why Mengerti failed, and keeps the row so it can be pressed again', async () => {
+    (acknowledgeCloseEntry as jest.Mock).mockRejectedValueOnce(new Error('disk full'));
+    mockEntries = [markCleanedUp(
+      markClosedElsewhere(markCloseOutcome(job(), 'not_open', NOW), { closedByName: 'Sari', closedAt: '2026-09-17T07:05:00.000Z' }, NOW),
+      NOW,
+    )];
+    const utils = render(<CaptureQueueCard />);
+
+    fireEvent.press(utils.getByText('Mengerti'));
+    await waitFor(() => expect(utils.getByText('Gagal menghapus dari ponsel ini: disk full')).toBeTruthy());
+    expect(utils.getByText('Mengerti')).toBeTruthy();
+
+    fireEvent.press(utils.getByText('Mengerti'));
+    await waitFor(() => expect(acknowledgeCloseEntry).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(utils.queryByText('Gagal menghapus dari ponsel ini: disk full')).toBeNull());
+  });
+
   it('counts a close that is still on its way as waiting for signal', () => {
     mockEntries = [job()];
     const utils = render(<CaptureQueueCard />);

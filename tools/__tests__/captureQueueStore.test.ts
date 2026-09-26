@@ -690,6 +690,24 @@ describe('acknowledgeCloseEntry', () => {
     expect(await loadQueue(USER)).toEqual([]);
   });
 
+  /**
+   * "Mengerti" must not fail for good on a folder it cannot delete (a locked
+   * file, an unmounted SD card): the key goes first, and a folder left behind
+   * is an orphan the next session's sweep reclaims.
+   */
+  it('removes the job even when its folder cannot be deleted', async () => {
+    const job = (await enqueueCloseJob(closeRequest())).entry!;
+    await saveEntry(unreadable(markUploaded(job, 'cm1', 1, '2026-09-17T02:00:30.000Z')));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    (FileSystem.deleteAsync as jest.Mock).mockImplementationOnce(async () => {
+      throw new Error('SD card unmounted');
+    });
+    await expect(acknowledgeCloseEntry(USER, 'job1')).resolves.toEqual({});
+    expect(await AsyncStorage.getItem(entryKey(USER, 'job1'))).toBeNull();
+    expect(await loadQueue(USER)).toEqual([]);
+    warn.mockRestore();
+  });
+
   it('still refuses a job the server refused before any outcome: that one is cancelled, not acknowledged', async () => {
     const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
     await saveEntry(recordFailure(job, 'Tandai selesai gagal: x', '2026-09-17T02:01:00.000Z', 'permanent'));

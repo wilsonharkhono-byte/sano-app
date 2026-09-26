@@ -27,6 +27,8 @@ export default function CaptureQueueCard() {
    * this is so the supervisor can see that the first tap was taken.
    */
   const [pendingId, setPendingId] = useState<string | null>(null);
+  /** Why the last "Mengerti" on a row threw, shown in that row; cleared when it is pressed again. */
+  const [rowError, setRowError] = useState<{ id: string; message: string } | null>(null);
 
   const badge = queueBadgeText(entries);
   const attention = attentionRows(entries);
@@ -98,13 +100,22 @@ export default function CaptureQueueCard() {
     }
   }, [cancelClose]);
 
-  /** "Mengerti" on a superseded close job: it only leaves the list. */
+  /**
+   * "Mengerti" on a close job the server already answered for good: it only
+   * leaves the list. A throw (storage refusing the write) stays on the row,
+   * next to the button that can be pressed again, rather than vanishing as an
+   * unhandled rejection.
+   */
   const onAcknowledge = useCallback(async (id: string) => {
     if (!profile) return;
     setPendingId(id);
+    setRowError((current) => (current?.id === id ? null : current));
     try {
       const result = await acknowledgeCloseEntry(profile.id, id);
       if (result.error) toast(result.error, 'critical');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setRowError({ id, message: `Gagal menghapus dari ponsel ini: ${message}` });
     } finally {
       setPendingId((current) => (current === id ? null : current));
     }
@@ -137,6 +148,7 @@ export default function CaptureQueueCard() {
                 <View style={styles.meta}>
                   <Text style={styles.title} numberOfLines={1}>{row.title}</Text>
                   <Text style={styles.reason} numberOfLines={2}>{row.reason}</Text>
+                  {rowError?.id === row.id ? <Text style={styles.rowError}>{rowError.message}</Text> : null}
                 </View>
                 <TouchableOpacity
                   style={[danger ? styles.dangerBtn : styles.retryBtn, busy && styles.btnBusy]}
@@ -173,6 +185,7 @@ const styles = StyleSheet.create({
   meta: { flex: 1 },
   title: { fontSize: TYPE.sm, fontFamily: FONTS.semibold, color: COLORS.text },
   reason: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 2 },
+  rowError: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.critical, marginTop: 2 },
   retryBtn: { paddingVertical: SPACE.xs, paddingHorizontal: SPACE.sm, minHeight: 40, justifyContent: 'center' },
   retryText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold, color: COLORS.primary, textTransform: 'uppercase' },
   dangerBtn: { paddingVertical: SPACE.xs, paddingHorizontal: SPACE.sm, minHeight: 40, justifyContent: 'center' },

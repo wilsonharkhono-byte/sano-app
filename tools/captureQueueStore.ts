@@ -538,8 +538,16 @@ export async function acknowledgeCloseEntry(userId: string, entryId: string): Pr
   if (entry.kind !== 'close' || (entry.state !== 'superseded' && !isCloseStatusUnreadable(entry))) {
     return { error: 'Penutupan ini belum selesai diproses.' };
   }
-  await deleteLocalMedia(userId, entryId);
+  // The key first: once it is gone the job is gone, whatever happens to its
+  // folder. A folder that cannot be deleted now (a locked file, an unmounted
+  // SD card) is an orphan the next session's sweep reclaims (sweepOrphanedFiles);
+  // failing "Mengerti" over it would leave the person no way to dismiss the row.
   await removeEntry(userId, entryId);
+  try {
+    await deleteLocalMedia(userId, entryId);
+  } catch (err) {
+    console.warn(`captureQueueStore: could not delete the folder of acknowledged close job ${entryId}; the orphan sweep will`, err);
+  }
   return {};
 }
 
