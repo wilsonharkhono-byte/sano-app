@@ -534,36 +534,6 @@ export async function confirmSiteEvent(
   return { result: data as ConfirmSiteEventResult };
 }
 
-/** "Selesai" (spec §5.5). The closure photo is optional; it is uploaded and recorded before the RPC. */
-export async function closeSiteEvent(params: {
-  eventId: string;
-  projectId: string;
-  note: string;
-  closurePhoto?: LocalSiteEventMedia | null;
-}): Promise<{ error?: string }> {
-  if (params.closurePhoto) {
-    const carrier: MediaCarrier = {
-      id: params.eventId,
-      projectId: params.projectId,
-      media: [{ ...params.closurePhoto, kind: 'photo', role: 'closure' }],
-    };
-    const uploaded = await uploadSiteEventMedia(carrier);
-    if (uploaded.error) return { error: uploaded.error };
-    const { error: mediaError } = await supabase
-      .from('site_event_media')
-      .upsert(buildMediaRows(carrier, uploaded.bytesById), { onConflict: 'id', ignoreDuplicates: true });
-    if (mediaError) return { error: mapSiteEventRpcError(mediaError.message) };
-  }
-
-  const note = params.note.trim();
-  const { error } = await supabase.rpc('close_site_event', {
-    p_event_id: params.eventId,
-    p_closure_note: note ? note : null,
-  });
-  if (error) return { error: mapSiteEventRpcError(error.message) };
-  return {};
-}
-
 // ─── Offline close (closure spec 2026-09-26 §4) ──────────────────────────────
 // The capture queue's close job calls these three one at a time, each safe to
 // retry, so "Selesai" survives no signal. The form has no synchronous path.
