@@ -132,10 +132,15 @@ export default function SiteEventDetailScreen() {
     }
   };
 
-  // "Batalkan" (closure spec §4.6), by the Beranda card's own rule
-  // (closeJobCancelKind) and in its words (attentionRows' confirm): a close the
-  // server refused, or whose photo vanished before upload, while no outcome is
-  // recorded. Office and principal phones have no queue card, Selesai stays
+  // "Coba lagi" and "Batalkan" follow the Beranda card's own rule
+  // (closeJobCancelKind), so no two surfaces offer different ways out of the
+  // same job. "Coba lagi" only on 'retry': a permanent refusal repeats itself
+  // on every attempt, and retryEntry leaves an unrecoverable job as it is.
+  const closeAction = pendingClose ? closeJobCancelKind(pendingClose) : null;
+
+  // "Batalkan" (closure spec §4.6), on 'cancel' and in the card's words
+  // (attentionRows' confirm): a close the server refused, or whose photo
+  // vanished before upload, while no outcome is recorded. Office and principal phones have no queue card, Selesai stays
   // hidden while the job is pending, and a second close is refused
   // (CLOSE_ALREADY_PENDING), so without it here such a job would sit on this
   // screen for good. The job leaves the phone; the event and every photo
@@ -144,8 +149,7 @@ export default function SiteEventDetailScreen() {
   // screen can, and once the server has closed the event it says that
   // instead. Everything else stays the card's, including whether the photo is
   // promised (only once its media row is in).
-  const cardConfirm =
-    pendingClose && closeJobCancelKind(pendingClose) === 'cancel' ? attentionRows([pendingClose])[0]?.confirm ?? null : null;
+  const cardConfirm = pendingClose && closeAction === 'cancel' ? attentionRows([pendingClose])[0]?.confirm ?? null : null;
   const cancelConfirm =
     cardConfirm && event?.status !== 'open' ? cardConfirm.replace(CARD_STAYS_OPEN, CLOSED_ON_SERVER) : cardConfirm;
   const [cancelling, setCancelling] = useState(false);
@@ -377,8 +381,8 @@ export default function SiteEventDetailScreen() {
                       Penutupan belum terkirim: {pendingClose.lastError ?? 'gagal setelah beberapa kali percobaan.'}
                     </Text>
                     {cancelError ? <Text style={s.errorText}>{cancelError}</Text> : null}
-                    {/* retryEntry leaves an unrecoverable job exactly as it is: nothing to retry. */}
-                    {!pendingClose.unrecoverable ? (
+                    {/* Only where a retry can change the answer (closeAction above). */}
+                    {closeAction === 'retry' ? (
                       <TouchableOpacity
                         style={s.secondaryBtn}
                         onPress={() => void retryClose()}

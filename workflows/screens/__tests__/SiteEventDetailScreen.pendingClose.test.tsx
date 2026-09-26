@@ -288,11 +288,15 @@ describe('a close the server refused, or whose photo vanished', () => {
     buttons.find((b) => b.text === label)!.onPress!();
   };
 
-  it('offers Batalkan beside Coba lagi on a permanent refusal, asks first, then drops the job and reads the server again', async () => {
+  // The card's rule (closeJobCancelKind 'cancel'): a permanent refusal repeats
+  // itself on every attempt, so Coba lagi would only send it back to the same
+  // answer. Batalkan is the one way out.
+  it('offers only Batalkan on a permanent refusal, asks first, then drops the job and reads the server again', async () => {
     mockEntries = [recordFailure(closeJob('job1', 'ev1'), REFUSAL, NOW, 'permanent')];
     const utils = render(<SiteEventDetailScreen />);
     await waitFor(() => expect(utils.getByText(`Penutupan belum terkirim: ${REFUSAL}`)).toBeTruthy());
-    expect(utils.getByText('Coba lagi')).toBeTruthy();
+    expect(utils.getByText('Batalkan')).toBeTruthy();
+    expect(utils.queryByText('Coba lagi')).toBeNull();
 
     fireEvent.press(utils.getByText('Batalkan'));
     expect(alert).toHaveBeenCalledWith('Batalkan penutupan', CONFIRM, expect.any(Array));
@@ -308,6 +312,7 @@ describe('a close the server refused, or whose photo vanished', () => {
     mockEntries = [recordFailure(closeJobWithPhotoRowIn('job1', 'ev1'), REFUSAL, NOW, 'permanent')];
     const utils = render(<SiteEventDetailScreen />);
     await waitFor(() => expect(utils.getByText('Batalkan')).toBeTruthy());
+    expect(utils.queryByText('Coba lagi')).toBeNull();
 
     fireEvent.press(utils.getByText('Batalkan'));
     expect(alert).toHaveBeenCalledWith('Batalkan penutupan', CONFIRM_PHOTO_KEPT, expect.any(Array));
