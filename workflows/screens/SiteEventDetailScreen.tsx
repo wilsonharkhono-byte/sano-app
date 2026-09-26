@@ -1,10 +1,19 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ScrollView, View, Text, TouchableOpacity } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import Card from '../components/Card';
 import { getSiteEvent, getSiteEventResult, type SiteEventWithMedia } from '../../tools/siteEvents';
+import {
+  acknowledgeCloseEntry,
+  pendingCloseFor,
+  supersededCloseFor,
+  useCaptureQueueEntries,
+} from '../../tools/captureQueueStore';
+import { retryQueueEntry } from '../../tools/captureQueueWorker';
+import type { CloseJob } from '../../tools/captureQueue';
+import { formatWibShort } from '../../tools/timeWindow';
 import { useProject } from '../hooks/useProject';
 import { gateChipLabel, listGateRefs, listGateStepRefs, stepChipLabel } from '../../tools/gateRefs';
 import { todayIsoLocal } from '../../tools/siteEventRules';
@@ -29,6 +38,18 @@ function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
+/**
+ * A superseded close of this event (closure spec §4.6): the server had already
+ * closed it. Names only the closer the server reported, never the queue's
+ * owner; without a name it says only when.
+ */
+function closedElsewhereSentence(job: Pick<CloseJob, 'closedElsewhere'>): string {
+  const info = job.closedElsewhere;
+  if (!info) return 'Sudah ditutup.';
+  const when = formatWibShort(info.closedAt);
+  return info.closedByName ? `Sudah ditutup oleh ${info.closedByName} pada ${when}.` : `Sudah ditutup pada ${when}.`;
+}
+
 /** Shown for a related event when the row is missing or unreadable (RLS), so the id isn't just a raw UUID. */
 function shortId(id: string): string {
   return id.slice(0, 8);
@@ -45,6 +66,7 @@ export default function SiteEventDetailScreen() {
   const navigation = useNavigation<any>();
   const params = (route.params ?? {}) as { eventId?: string; projectId?: string };
   const { profile } = useProject();
+  const queue = useCaptureQueueEntries(profile?.id ?? null);
 
   const [event, setEvent] = useState<SiteEventWithMedia | null>(null);
   const [gates, setGates] = useState<GateRef[]>([]);
@@ -83,6 +105,54 @@ export default function SiteEventDetailScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Closure spec §4.5: a close job on this phone keeps the server's status on
+  // screen and adds "Menunggu kirim". The moment the job leaves the pending
+  // set (closed, superseded, or cancelled), read the server again rather than
+  // guess what happened there.
+  const pendingClose = event ? pendingCloseFor(queue, event.id) : undefined;
+  const hadPendingClose = useRef(false);
+  useEffect(() => {
+    const pending = pendingClose !== undefined;
+    if (hadPendingClose.current && !pending) void load();
+    hadPendingClose.current = pending;
+  }, [pendingClose, load]);
+  const [retrying, setRetrying] = useState(false);
+  const retryClose = async () => {
+    if (!profile || !pendingClose) return;
+    setRetrying(true);
+    try {
+      await retryQueueEntry(profile.id, pendingClose.id);
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  // This phone's queued "Selesai" found the event already closed on the
+  // server. Office and principal phones have no Beranda queue card, and this
+  // screen is shared by every navigator, so "Mengerti" lives here too: it
+  // removes the job, then the screen reads the server again.
+  const supersededClose = event && !pendingClose ? supersededCloseFor(queue, event.id) : null;
+  const [acknowledging, setAcknowledging] = useState(false);
+  const [acknowledgeError, setAcknowledgeError] = useState<string | null>(null);
+  const acknowledgeClose = async () => {
+    if (!profile || !supersededClose) return;
+    setAcknowledging(true);
+    setAcknowledgeError(null);
+    try {
+      const result = await acknowledgeCloseEntry(profile.id, supersededClose.id);
+      if (result.error) {
+        setAcknowledgeError(result.error);
+        return;
+      }
+    } catch (err) {
+      setAcknowledgeError((err as Error).message);
+      return;
+    } finally {
+      setAcknowledging(false);
+    }
+    void load();
+  };
 
   const routeNames: string[] = navigation.getState?.()?.routeNames ?? [];
   const goBack = () => {
@@ -142,6 +212,11 @@ export default function SiteEventDetailScreen() {
                 <View style={s.chip}>
                   <Text style={s.chipText}>{SITE_EVENT_STATUS_LABELS[event.status]}</Text>
                 </View>
+                {pendingClose ? (
+                  <View style={[s.chip, { borderColor: COLORS.info, backgroundColor: COLORS.infoBg }]}>
+                    <Text style={[s.chipText, { color: COLORS.info }]}>Menunggu kirim</Text>
+                  </View>
+                ) : null}
                 {event.event_type ? (
                   <View style={s.chip}>
                     <Text style={s.chipText}>{SITE_EVENT_TYPE_LABELS[event.event_type]}</Text>
@@ -194,7 +269,7 @@ export default function SiteEventDetailScreen() {
             </Card>
 
             <Card title="Bukti">
-              <MediaStrip media={event.media} />
+              <MediaStrip media={event.media.filter((m) => m.role !== 'closure')} />
               {event.raw_text ? <Text style={s.hint}>Catatan: {event.raw_text}</Text> : null}
               {transcript ? (
                 <>
@@ -225,6 +300,46 @@ export default function SiteEventDetailScreen() {
                   }
                 />
                 {event.closure_note ? <Text style={s.bannerText}>{event.closure_note}</Text> : null}
+                {/* The database proved a closure photo exists; a person judges what it shows (spec §1.1 rule 6). */}
+                <Text style={[s.label, { marginTop: SPACE.sm }]}>Foto penutupan</Text>
+                <MediaStrip media={event.media.filter((m) => m.role === 'closure')} />
+              </Card>
+            ) : null}
+
+            {pendingClose ? (
+              <Card title="Penutupan" borderColor={pendingClose.needsAttention ? COLORS.critical : COLORS.info}>
+                {pendingClose.needsAttention ? (
+                  <>
+                    <Text style={s.errorText}>
+                      Penutupan belum terkirim: {pendingClose.lastError ?? 'gagal setelah beberapa kali percobaan.'}
+                    </Text>
+                    <TouchableOpacity
+                      style={s.secondaryBtn}
+                      onPress={() => void retryClose()}
+                      disabled={retrying}
+                      accessibilityRole="button"
+                    >
+                      <Text style={s.secondaryText}>{retrying ? 'Mencoba…' : 'Coba lagi'}</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : (
+                  <Text style={s.bannerText}>
+                    Penutupan tersimpan di ponsel ini dan menunggu kirim. Status tetap Terbuka sampai server menerimanya.
+                  </Text>
+                )}
+              </Card>
+            ) : supersededClose ? (
+              <Card title="Penutupan" borderColor={COLORS.info}>
+                <Text style={s.bannerText}>{closedElsewhereSentence(supersededClose)}</Text>
+                {acknowledgeError ? <Text style={s.errorText}>{acknowledgeError}</Text> : null}
+                <TouchableOpacity
+                  style={s.secondaryBtn}
+                  onPress={() => void acknowledgeClose()}
+                  disabled={acknowledging}
+                  accessibilityRole="button"
+                >
+                  <Text style={s.secondaryText}>Mengerti</Text>
+                </TouchableOpacity>
               </Card>
             ) : null}
 
@@ -238,13 +353,13 @@ export default function SiteEventDetailScreen() {
               </TouchableOpacity>
             ) : null}
 
-            {actions.canClose && !closing ? (
+            {actions.canClose && !pendingClose && !closing ? (
               <TouchableOpacity style={s.primaryBtn} onPress={() => setClosing(true)} accessibilityRole="button">
                 <Text style={s.primaryText}>Selesai</Text>
               </TouchableOpacity>
             ) : null}
 
-            {actions.canClose && closing && profile ? (
+            {actions.canClose && !pendingClose && closing && profile ? (
               <Card title="Tandai selesai">
                 <ClosureForm
                   userId={profile.id}
