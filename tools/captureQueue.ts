@@ -40,6 +40,14 @@ export type QueueJobKind = 'capture' | 'close';
 /** Spec §7: "After 5 consecutive failed attempts the entry is flagged for manual attention." */
 export const MAX_CONSECUTIVE_FAILURES = 5;
 
+/**
+ * Closure spec §4.6: what a close job whose photo vanished before upload tells
+ * the person. captureQueueStore.ts's load-time recovery marks the job
+ * unrecoverable with it, and the Beranda card shows it as that job's lastError.
+ */
+export const REASON_CLOSURE_PHOTO_MISSING =
+  'Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru.';
+
 export interface QueueMediaItem {
   id: string;
   localUri: string;

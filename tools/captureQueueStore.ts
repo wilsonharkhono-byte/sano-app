@@ -45,6 +45,7 @@ import {
   isCloseStatusUnreadable,
   markUnrecoverable,
   needsLocalMedia,
+  REASON_CLOSURE_PHOTO_MISSING,
   upgradeEntry,
   type CaptureJob,
   type CaptureQueueEntry,
@@ -99,10 +100,6 @@ function userQueueDirUri(userId: string): string | null {
 const REASON_MEDIA_MISSING =
   'Berkas foto atau suara untuk laporan ini hilang dari HP (mungkin dibersihkan sistem sebelum terkirim). ' +
   'Laporan tidak bisa dikirim; buang dan laporkan ulang.';
-
-/** Closure spec §4.6: what a close job whose photo vanished before upload tells the person. */
-export const REASON_CLOSURE_PHOTO_MISSING =
-  'Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru.';
 
 // ─── Native backend (AsyncStorage + expo-file-system) ─────────────────────────
 

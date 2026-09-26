@@ -54,22 +54,26 @@ export const WEB_QUEUE_WARNING =
 export const WEB_QUEUED_TOAST =
   'Dikirim dari tab ini. Jangan tutup halaman sampai laporan muncul di Draf menunggu.';
 
-export interface AttentionRow {
+interface AttentionRowBase {
   id: string;
   title: string;
   reason: string;
-  /**
-   * 'retry' offers "Coba lagi". 'discard' offers "Buang" - only where there
-   * is genuinely nothing left to retry AND nothing on the server to lose.
-   * 'cancel' offers "Batalkan" on a close job the server refused or whose
-   * photo vanished; the event stays open. 'acknowledge' offers "Mengerti" on
-   * a close job that found the event already closed, or no longer open with a
-   * status it could not read (closeJobCancelKind).
-   */
-  action: 'retry' | 'discard' | 'cancel' | 'acknowledge';
-  /** The confirmation a 'cancel' row asks before acting; absent on every other row. */
-  confirm?: string;
 }
+
+/**
+ * `action`: 'retry' offers "Coba lagi". 'discard' offers "Buang" - only where
+ * there is genuinely nothing left to retry AND nothing on the server to lose.
+ * 'cancel' offers "Batalkan" on a close job the server refused or whose photo
+ * vanished; the event stays open. 'acknowledge' offers "Mengerti" on a close
+ * job that found the event already closed, or no longer open with a status it
+ * could not read (closeJobCancelKind).
+ *
+ * `confirm`: the confirmation a 'cancel' row asks before acting - always
+ * present on that row, absent on every other.
+ */
+export type AttentionRow =
+  | (AttentionRowBase & { action: 'retry' | 'discard' | 'acknowledge'; confirm?: undefined })
+  | (AttentionRowBase & { action: 'cancel'; confirm: string });
 
 const FALLBACK_TITLE = 'Laporan tanpa catatan';
 const FALLBACK_REASON = 'Gagal setelah beberapa kali percobaan. Ketuk untuk mencoba lagi.';
@@ -82,10 +86,6 @@ const FALLBACK_REASON = 'Gagal setelah beberapa kali percobaan. Ketuk untuk menc
  * refuses it precisely because the server already has the row.
  */
 const REASON_ALREADY_SENT = 'Sudah terkirim ke server; buka Draf menunggu.';
-
-/** Closure spec §4.6, shown when a close job is unrecoverable and carries no error of its own. */
-const REASON_CLOSURE_PHOTO_GONE =
-  'Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru.';
 
 /**
  * A close job whose RPC answered NOT_OPEN and whose status read was then
@@ -170,13 +170,18 @@ function closeRow(e: CloseJob, action: 'retry' | 'cancel' | 'acknowledge'): Atte
   if (action === 'acknowledge') {
     return { id: e.id, title, reason: REASON_CLOSE_STATUS_UNREADABLE, action };
   }
+  // A flagged job always carries lastError: recordFailure and markUnrecoverable
+  // (whose close-job reason is REASON_CLOSURE_PHOTO_MISSING) both set it, and
+  // every write that clears it clears needsAttention too. The fallback is for
+  // the type only, the same one every other row uses.
+  const reason = e.lastError ?? FALLBACK_REASON;
   if (action === 'retry') {
-    return { id: e.id, title, reason: e.lastError ?? FALLBACK_REASON, action };
+    return { id: e.id, title, reason, action };
   }
   return {
     id: e.id,
     title,
-    reason: e.lastError ?? REASON_CLOSURE_PHOTO_GONE,
+    reason,
     action: 'cancel',
     confirm: `Batalkan penutupan "${e.eventTitle}"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.`,
   };

@@ -9,6 +9,7 @@ import {
   markClosedElsewhere,
   markCloseOutcome,
   markClosureMediaInserted,
+  REASON_CLOSURE_PHOTO_MISSING,
   recordFailure,
   type CaptureJob,
   type CloseJob,
@@ -164,8 +165,8 @@ describe('attentionRows for close jobs', () => {
     }]);
   });
 
-  it('offers Batalkan on an unrecoverable job, with the missing-photo sentence when it carries no error', () => {
-    const j = { ...markUnrecoverable(closeJob(), 'x'), lastError: null };
+  it('offers Batalkan on a job whose photo vanished, with the sentence the store flagged it with', () => {
+    const j = markUnrecoverable(closeJob(), REASON_CLOSURE_PHOTO_MISSING);
     expect(attentionRows([j])[0]).toMatchObject({
       action: 'cancel',
       reason: 'Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru.',

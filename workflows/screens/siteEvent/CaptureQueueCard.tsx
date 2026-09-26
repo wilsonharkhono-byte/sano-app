@@ -88,8 +88,8 @@ export default function CaptureQueueCard() {
     }
   }, [profile, toast]);
 
-  const onCancelClose = useCallback((row: AttentionRow) => {
-    const message = row.confirm ?? `Batalkan penutupan "${row.title}"?`;
+  const onCancelClose = useCallback((row: Extract<AttentionRow, { action: 'cancel' }>) => {
+    const message = row.confirm;
     if (Platform?.OS === 'web') {
       if (window.confirm(message)) void cancelClose(row.id);
     } else {

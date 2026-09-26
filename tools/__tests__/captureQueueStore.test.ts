@@ -90,7 +90,6 @@ import {
   indexKey,
   loadQueue,
   pendingCloseFor,
-  REASON_CLOSURE_PHOTO_MISSING,
   removeEntry,
   saveEntry,
   subscribeToQueue,
@@ -106,6 +105,7 @@ import {
   markCloseOutcome,
   markInserted,
   markUploaded,
+  REASON_CLOSURE_PHOTO_MISSING,
   recordFailure,
   type CloseJob,
 } from '../captureQueue';
