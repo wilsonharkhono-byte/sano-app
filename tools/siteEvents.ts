@@ -589,15 +589,17 @@ export type CloserLookup =
   | { error: string; kind: SiteEventErrorKind };
 
 /**
- * A read failure is transient: only the lookup is repeated. A row that is not
- * there, or not `done`, cannot be explained by retrying, so it is permanent
- * and carries SITE_EVENT_NOT_OPEN's copy. `closedByName` is null when the
- * close was made by the service role (097 leaves closed_by NULL then).
+ * A read failure is transient: only the lookup is repeated. Its error is the
+ * read's own message, unlabelled: the queue worker prefixes the step label
+ * ("Baca status kejadian gagal: ") itself. A row that is not there, or not
+ * `done`, cannot be explained by retrying, so it is permanent and carries
+ * SITE_EVENT_NOT_OPEN's copy. `closedByName` is null when the close was made
+ * by the service role (097 leaves closed_by NULL then).
  */
 export async function lookupSiteEventCloser(eventId: string): Promise<CloserLookup> {
   const read = await getSiteEventResult(eventId);
   if (read.error !== undefined) {
-    return { error: `Status kejadian gagal dibaca: ${read.error}`, kind: 'transient' };
+    return { error: read.error, kind: 'transient' };
   }
   const event = read.event;
   if (!event || event.status !== 'done' || !event.closed_at) {

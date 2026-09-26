@@ -721,7 +721,7 @@ describe('a close job', () => {
 
   it('a failed lookup retries only the lookup, never the RPC', async () => {
     closeRpc.mockResolvedValueOnce({ notOpen: true });
-    lookupCloser.mockResolvedValueOnce({ error: 'Status kejadian gagal dibaca: jaringan turun', kind: 'transient' });
+    lookupCloser.mockResolvedValueOnce({ error: 'jaringan turun', kind: 'transient' });
     seedClose('job1', '2026-09-17T02:00:00.000Z', { photo: false });
     startCaptureQueueWorker(USER);
     await flush();
@@ -730,7 +730,7 @@ describe('a close job', () => {
 
     const failed = closeJobIn('job1');
     expect(failed).toMatchObject({ state: 'failed', closeOutcome: 'not_open', closedElsewhere: null, consecutiveFailures: 1 });
-    expect(failed.lastError).toBe('Baca status kejadian gagal: Status kejadian gagal dibaca: jaringan turun');
+    expect(failed.lastError).toBe('Baca status kejadian gagal: jaringan turun');
 
     store.set('job1', { ...failed, lastAttemptAt: new Date(0).toISOString() });
     triggerDrain();

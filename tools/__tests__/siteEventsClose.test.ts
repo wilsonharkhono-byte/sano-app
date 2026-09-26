@@ -168,10 +168,12 @@ describe('lookupSiteEventCloser', () => {
     expect(await lookupSiteEventCloser(EVENT)).toEqual({ closedByName: null, closedAt: '2026-09-17T07:05:00.000Z' });
   });
 
-  it('calls a failed read transient', async () => {
+  // The worker prefixes its own step label ("Baca status kejadian gagal: "), so
+  // the lookup hands back the read's error alone - never a second label.
+  it('calls a failed read transient, carrying the read error alone', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     mocked.from.mockReturnValueOnce(readChain({ data: null, error: { message: 'network down' } }));
-    expect(await lookupSiteEventCloser(EVENT)).toEqual({ error: 'Status kejadian gagal dibaca: network down', kind: 'transient' });
+    expect(await lookupSiteEventCloser(EVENT)).toEqual({ error: 'network down', kind: 'transient' });
     warn.mockRestore();
   });
 
