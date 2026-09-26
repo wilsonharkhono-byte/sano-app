@@ -743,6 +743,48 @@ describe('a close job', () => {
     expect(closeJobIn('job1').state).toBe('superseded');
   });
 
+  /**
+   * Closure spec §4.4, "Lost response": the first RPC landed but its answer
+   * never came back, so the retry meets NOT_OPEN. The job then reads whoever
+   * the server recorded - here the queue owner themself - rather than guess
+   * whose attempt landed, and never calls the RPC a third time.
+   */
+  it('on a lost response, the retry meets NOT_OPEN, reads the server, and ends superseded after exactly two RPC calls', async () => {
+    closeRpc
+      .mockResolvedValueOnce({ error: 'Gagal menyimpan: Network request failed', kind: 'transient' })
+      .mockResolvedValueOnce({ notOpen: true });
+    lookupCloser.mockResolvedValueOnce({ closedByName: 'Wilson', closedAt: '2026-09-17T02:00:05.000Z' });
+    seedClose('job1', '2026-09-17T02:00:00.000Z', { photo: false });
+    startCaptureQueueWorker(USER);
+    await flush();
+    await flush();
+
+    const failed = closeJobIn('job1');
+    expect(failed).toMatchObject({ state: 'failed', closeOutcome: null, consecutiveFailures: 1, lastFailureKind: 'transient' });
+
+    store.set('job1', { ...failed, lastAttemptAt: new Date(0).toISOString() });
+    triggerDrain();
+    await flush();
+    await flush();
+    await flush();
+
+    expect(closeRpc).toHaveBeenCalledTimes(2);
+    expect(lookupCloser).toHaveBeenCalledTimes(1);
+    expect(closeJobIn('job1')).toMatchObject({
+      state: 'superseded',
+      closeOutcome: 'not_open',
+      closedElsewhere: { closedByName: 'Wilson', closedAt: '2026-09-17T02:00:05.000Z' },
+      consecutiveFailures: 0,
+      lastError: null,
+      needsAttention: false,
+    });
+
+    triggerDrain();
+    await flush();
+    await flush();
+    expect(closeRpc).toHaveBeenCalledTimes(2);
+  });
+
   it('flags a photo refusal at once, carrying the mapped copy', async () => {
     closeRpc.mockResolvedValueOnce({
       error: 'Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.',

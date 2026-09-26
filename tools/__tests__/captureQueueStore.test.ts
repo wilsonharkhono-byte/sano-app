@@ -508,6 +508,20 @@ describe('enqueueCloseJob (native)', () => {
     expect(stored.media[0]).toMatchObject({ id: 'cm1', role: 'closure', localUri: `file:///doc/capture-queue/${USER}/job1/cm1.jpg` });
   });
 
+  /**
+   * The order that matters: a copy that fails must leave nothing to discover.
+   * Were the entry written first, this would leave a queued close pointing at
+   * a photo that was never saved.
+   */
+  it('writes no entry when the photo copy fails', async () => {
+    (FileSystem.copyAsync as jest.Mock).mockImplementationOnce(async () => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+    await expect(enqueueCloseJob(closeRequest())).rejects.toThrow('ENOSPC');
+    expect(await AsyncStorage.getItem(entryKey(USER, 'job1'))).toBeNull();
+    expect(await loadQueue(USER)).toEqual([]);
+  });
+
   it('touches no file when there is no photo', async () => {
     const result = await enqueueCloseJob(closeRequest({ closurePhoto: null }));
     expect(result.entry?.media).toEqual([]);

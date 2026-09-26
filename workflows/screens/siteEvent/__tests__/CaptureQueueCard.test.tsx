@@ -5,7 +5,7 @@
 // offers "Batalkan", confirmed first.
 import React from 'react';
 import { Alert } from 'react-native';
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 const mockToast = jest.fn();
 jest.mock('../../../components/Toast', () => ({ useToast: () => ({ show: mockToast }) }));
@@ -72,8 +72,11 @@ describe('CaptureQueueCard with close jobs', () => {
     );
     expect(discardEntryLocally).not.toHaveBeenCalled();
 
+    // The Alert button's handler sets the card's state, so it runs inside act().
     const buttons = alert.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
-    buttons.find((b) => b.text === 'Batalkan')!.onPress!();
+    await act(async () => {
+      buttons.find((b) => b.text === 'Batalkan')!.onPress!();
+    });
     await waitFor(() => expect(discardEntryLocally).toHaveBeenCalledWith('u1', 'job1'));
     await waitFor(() => expect(mockToast).toHaveBeenCalledWith('Penutupan dibatalkan. Kejadian tetap terbuka.', 'ok'));
     alert.mockRestore();
