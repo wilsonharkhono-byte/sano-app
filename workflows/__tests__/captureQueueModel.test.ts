@@ -161,8 +161,34 @@ describe('attentionRows for close jobs', () => {
       title: 'Selesai: Retak acian',
       reason: 'Tandai selesai gagal: Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.',
       action: 'cancel',
-      confirm: 'Batalkan penutupan "Retak acian"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.',
+      confirm: 'Batalkan penutupan "Retak acian"? Kejadian tetap terbuka.',
     }]);
+  });
+
+  /**
+   * "Foto yang sudah terkirim tetap tersimpan sebagai bukti" is only true once
+   * the photo's media row is in: an uploaded file whose row insert was refused
+   * is in storage but on no event, so the sentence would promise evidence that
+   * nobody can see.
+   */
+  it('promises the photo stays as evidence only once its media row is in', () => {
+    const inserted = recordFailure(
+      markClosureMediaInserted(markUploaded(closeJob(), 'cm1', 1, NOW), NOW),
+      'Tandai selesai gagal: Anda tidak ditugaskan ke proyek ini.',
+      NOW,
+      'permanent',
+    );
+    expect(attentionRows([inserted])[0].confirm).toBe(
+      'Batalkan penutupan "Retak acian"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.',
+    );
+
+    const uploadedButRefused = recordFailure(
+      markUploaded(closeJob(), 'cm1', 1, NOW),
+      'Simpan foto penutupan gagal: Lokasi berkas media tidak sesuai kejadian.',
+      NOW,
+      'permanent',
+    );
+    expect(attentionRows([uploadedButRefused])[0].confirm).toBe('Batalkan penutupan "Retak acian"? Kejadian tetap terbuka.');
   });
 
   it('offers Batalkan on a job whose photo vanished, with the sentence the store flagged it with', () => {

@@ -64,9 +64,10 @@ describe('CaptureQueueCard with close jobs', () => {
     expect(utils.getByText('Selesai: Retak acian')).toBeTruthy();
 
     fireEvent.press(utils.getByText('Batalkan'));
+    // No photo on this job, so nothing is promised about one.
     expect(alert).toHaveBeenCalledWith(
       'Batalkan penutupan',
-      'Batalkan penutupan "Retak acian"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.',
+      'Batalkan penutupan "Retak acian"? Kejadian tetap terbuka.',
       expect.any(Array),
     );
     expect(discardEntryLocally).not.toHaveBeenCalled();

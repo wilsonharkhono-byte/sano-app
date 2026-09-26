@@ -178,11 +178,12 @@ function closeRow(e: CloseJob, action: 'retry' | 'cancel' | 'acknowledge'): Atte
   if (action === 'retry') {
     return { id: e.id, title, reason, action };
   }
-  return {
-    id: e.id,
-    title,
-    reason,
-    action: 'cancel',
-    confirm: `Batalkan penutupan "${e.eventTitle}"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.`,
-  };
+  // Only a photo whose media row is in stays on the event as evidence. One
+  // that was uploaded but whose row was refused is in storage and on no
+  // event, so promising it would be false; with no photo there is nothing to
+  // promise.
+  const confirm = e.mediaInserted
+    ? `Batalkan penutupan "${e.eventTitle}"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.`
+    : `Batalkan penutupan "${e.eventTitle}"? Kejadian tetap terbuka.`;
+  return { id: e.id, title, reason, action: 'cancel', confirm };
 }
