@@ -98,11 +98,15 @@ END IF;
   `mapSiteEventRpcError` shows `Gagal menyimpan: ` plus the raw text (`tools/siteEvents.ts:162-168`).
 - **Paste precondition.** The check runs as the function owner (the Dashboard's `postgres`)
   against `storage.objects`, owned by `supabase_storage_admin` with RLS on. If `postgres`
-  could not read past that RLS, the rule would refuse **every** closure photo, silently. 105
-  opens with a `DO` block raising `MIGRATION_105_PRECONDITION: <role> tidak bisa membaca
-  storage.objects melewati RLS` unless `current_user` has `rolsuper` or `rolbypassrls`, or is
-  a member of the table's owner (`pg_has_role(current_user, relowner, 'MEMBER')`). The prefix
-  is not `SITE_EVENT_`, so the client cross-check (§8.3) never asks for app copy for it.
+  could not read that table, the rule would refuse **every** closure photo, silently. 105
+  opens with a `DO` block that requires **both** (a) `has_table_privilege(current_user,
+  'storage.objects', 'SELECT')` and (b) RLS bypass or ownership: `rolsuper` or
+  `rolbypassrls`, or membership of the table's owner (`pg_has_role(current_user, relowner,
+  'MEMBER')`). Bypassing RLS is no use without SELECT on the table. If either fails, the paste
+  stops with `MIGRATION_105_PRECONDITION: <role> ...`, and the message names which check
+  failed: "tidak punya hak SELECT pada storage.objects" or "tidak bisa membaca storage.objects
+  melewati RLS". The prefix is not `SITE_EVENT_`, so the client cross-check (§8.3) never asks
+  for app copy for it.
 - **Re-paste hazard (stated in the 105 header too).** 097 still carries its own
   `close_site_event` and `confirm_site_event`: **re-pasting 097 alone silently reverts both
   100 and 105**, leaving working functions without the VO re-check and the evidence rule.
@@ -312,9 +316,11 @@ run it and no app user can trigger a round of pushes.
    kiriman harus hari ini (WIB)` (no `SITE_EVENT_` prefix: no client ever sees it).
 2. Recipients, from `v_site_event_attention` joined to `projects` with `status = 'ACTIVE'`.
    **Office:** every `project_assignments` row on a project with an attention item whose
-   profile role is `admin` or `principal` (093 makes principals members of every project by
-   default; an explicit removal sticks, 093:41-43). **Owner:** each distinct `owner_id` with
-   a `project_assignments` row on that project, unless an office recipient there.
+   profile role is `admin` or `principal`. The office recipient must hold that row on that
+   project (the 092 membership rule, 092:128-135): an admin not assigned to a project gets
+   no summary for it, while principals are members of every project by 093 (an explicit
+   removal sticks, 093:41-43). **Owner:** each distinct `owner_id` with a
+   `project_assignments` row on that project, unless an office recipient there.
 3. Per recipient, in its own `BEGIN ... EXCEPTION WHEN OTHERS` block: `INSERT INTO
    site_event_digest_log ... ON CONFLICT (project_id, profile_id, run_date) DO NOTHING`,
    skipping when nothing was inserted (already sent today); else `PERFORM
@@ -329,8 +335,9 @@ run it and no app user can trigger a round of pushes.
 ### 5.4 Messages
 
 Counts overlap: an item overdue and blocking counts once in `n` and in each of "lewat
-tenggat" and "menghambat". A zero part is dropped with its separator. Dates use an IMMUTABLE
-`site_event_digest_day(d DATE)`: `to_char(d, 'FMDD') || ' ' ||
+tenggat" and "menghambat". A zero part is dropped with its separator. Dates use a STABLE
+`site_event_digest_day(d DATE)` (STABLE because `to_char` is; an IMMUTABLE label would be
+false): `to_char(d, 'FMDD') || ' ' ||
 (ARRAY['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'])[extract(month
 FROM d)]`. Titles carry the project code because a push banner has no project line (the
 in-app list names it, `NotificationList.tsx:15-17`); titles cap at 200 characters as 097 does
@@ -440,7 +447,7 @@ reads stay membership-gated (092:562-571). No new secret, edge function or outbo
 
 | File | Pins |
 |---|---|
-| `tools/__tests__/migration105.test.ts` | Header links this spec, PASTE ORDER (after 097, 098, 099, 100), RE-PASTE SAFETY, and "re-pasting 097 reverts 100 and 105"; `SET lock_timeout = '5s';` first and one `RESET`; the precondition `DO` block before the function; DROP by signature before CREATE, REVOKE and GRANT after, exact grantees; DEFINER and `search_path`; the `E' \t\r\n'` trim; the exact four-column SET list; RAISE codes in order `NOT_FOUND`, `AUTH`, `AUTH`, `NOT_OPEN`, `CLOSURE_NOTE`, `CLOSURE_PHOTO_REQUIRED`, `CLOSURE_NOTE_REQUIRED` (all `SITE_EVENT_`); the photo branch names exactly `cacat`, `isu`, `hambatan` and joins `storage.objects` on `'site-media'` and `m.storage_path` with `role = 'closure'`; `char_length(v_note) < 10`; no table, view, policy or trigger DDL; no migration above 105 redefines `close_site_event`; the self-check `EXPECTED:` count. |
+| `tools/__tests__/migration105.test.ts` | Header links this spec, PASTE ORDER (after 097, 098, 099, 100), RE-PASTE SAFETY, and "re-pasting 097 reverts 100 and 105"; `SET lock_timeout = '5s';` first and one `RESET`; the precondition `DO` block before the function, checking both the SELECT privilege (`has_table_privilege(current_user, 'storage.objects', 'SELECT')`) and RLS bypass or ownership, with a distinct `MIGRATION_105_PRECONDITION:` message for each; DROP by signature before CREATE, REVOKE and GRANT after, exact grantees; DEFINER and `search_path`; the `E' \t\r\n'` trim; the exact four-column SET list; RAISE codes in order `NOT_FOUND`, `AUTH`, `AUTH`, `NOT_OPEN`, `CLOSURE_NOTE`, `CLOSURE_PHOTO_REQUIRED`, `CLOSURE_NOTE_REQUIRED` (all `SITE_EVENT_`); the photo branch names exactly `cacat`, `isu`, `hambatan` and joins `storage.objects` on `'site-media'` and `m.storage_path` with `role = 'closure'`; `char_length(v_note) < 10`; no table, view, policy or trigger DDL; no migration above 105 redefines `close_site_event`; the self-check `EXPECTED:` count. |
 | `tools/__tests__/migration106.test.ts` | Header (spec, paste order after 104 and 105, what re-pasting 098 or 104 undoes); `lock_timeout`; the log table `IF NOT EXISTS`, UNIQUE key, `kind` CHECK; RLS on, one SELECT policy, no write policy; `DROP VIEW IF EXISTS` and `security_invoker = true` on both views; the predicate text and `'Asia/Jakarta'`; DEFINER, `search_path`, REVOKE from `PUBLIC, anon, authenticated`, no GRANT on the function; `ON CONFLICT (project_id, profile_id, run_date) DO NOTHING`; `enqueue_notification_user` and `'RoomBoard'`; `DIGEST_RUN_DATE:`; `status = 'ACTIVE'`; the CHECK widened by shape with 104's sixteen types kept and exactly `SITE_EVENT_DIGEST` added; the cron guard (`pg_extension`, unschedule-if-exists, name, `'0 0 * * 1-6'`, command) and the NOTICE naming "Integrations → Cron"; no `SITE_EVENT_` RAISE code. |
 
 ### 8.2 Docker rehearsal: `supabase/tests/site_event_closure_rehearsal/`
@@ -515,3 +522,4 @@ reminders; quiet-room reminders.
 | 1 | Principals on many active projects get one summary per project each morning. | User | Principals report the morning list as noise after two weeks. |
 | 2 | Indonesian public holidays still get the Monday to Saturday run. | User | The first holiday morning with complaints. |
 | 3 | The rule proves a closure photo exists, not what it shows or when it was taken. | PM on the pilot | A closure photo that turns out not to show the repair. |
+| 4 | Live projects with no admin assigned (Citraland today) send the office summary only to the principal. | User | An admin expects a summary and gets none: assign them to the project. |
