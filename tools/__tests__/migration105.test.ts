@@ -14,7 +14,8 @@
  *    event someone else closed gets NOT_OPEN, never a photo refusal.
  *  • The photo rule joins storage.objects, so a row without a file is no proof,
  *    and refuses a closure row that reuses the event's own context photo path.
- *  • Nothing later redefines close_site_event, which a re-paste of 105 would revert.
+ *  • Nothing later replaces, drops or alters close_site_event, which a re-paste
+ *    of 105 would silently revert.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -190,12 +191,33 @@ describe('migration 105 - close_site_event', () => {
   });
 });
 
+/** A statement in a later migration that would replace, drop or alter 105's function. */
+const REDEFINES_CLOSE_SITE_EVENT =
+  /\b(?:(?:CREATE\s+(?:OR\s+REPLACE\s+)?|DROP\s+)FUNCTION\s+(?:IF\s+EXISTS\s+)?|ALTER\s+FUNCTION\s+)(?:public\.)?close_site_event\b/i;
+
 describe('migration 105 - nothing later reverts it', () => {
-  it('no migration above 105 redefines close_site_event', () => {
+  it('recognises every way a later file could replace, drop or alter the function', () => {
+    for (const sql of [
+      'CREATE OR REPLACE FUNCTION close_site_event(p_event_id UUID, p_closure_note TEXT)',
+      'CREATE FUNCTION public.close_site_event(UUID, TEXT)',
+      'DROP FUNCTION IF EXISTS close_site_event(UUID, TEXT);',
+      'ALTER FUNCTION close_site_event(UUID, TEXT) SECURITY INVOKER;',
+      'alter function public.close_site_event(uuid, text) set search_path = pg_temp;',
+    ]) {
+      expect(sql).toMatch(REDEFINES_CLOSE_SITE_EVENT);
+    }
+    for (const sql of [
+      "SELECT close_site_event('00000000-0000-0000-0000-000000000000', NULL);",
+      'CREATE OR REPLACE FUNCTION close_site_event_v2(UUID)',
+      'ALTER FUNCTION close_site_event_v2(UUID) OWNER TO postgres;',
+    ]) {
+      expect(sql).not.toMatch(REDEFINES_CLOSE_SITE_EVENT);
+    }
+  });
+
+  it('no migration above 105 replaces, drops or alters close_site_event', () => {
     const later = fs.readdirSync(MIGRATIONS).filter((f) => /^\d{3}_.*\.sql$/.test(f) && Number(f.slice(0, 3)) > 105);
-    const touching = later.filter((f) =>
-      /\b(?:CREATE\s+(?:OR\s+REPLACE\s+)?|DROP\s+)FUNCTION\s+(?:IF\s+EXISTS\s+)?(?:public\.)?close_site_event\b/i.test(stripComments(read(f))),
-    );
+    const touching = later.filter((f) => REDEFINES_CLOSE_SITE_EVENT.test(stripComments(read(f))));
     expect(touching).toEqual([]);
   });
 
