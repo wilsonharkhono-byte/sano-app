@@ -9,19 +9,26 @@ import {
   bytesById,
   draftReadyCount,
   enqueueCapture,
+  enqueueClose,
   isReadyToAttempt,
   markAnalysisRequested,
   markCleanedUp,
+  markClosedElsewhere,
+  markCloseOutcome,
+  markClosureMediaInserted,
   markInserted,
   markUnrecoverable,
   markUploaded,
+  mediaCarrierId,
   nextStep,
   recordFailure,
   retryEntry,
   toNewSiteEvent,
   upgradeEntry,
   waitingCount,
+  type CaptureJob,
   type CaptureQueueEntry,
+  type CloseJob,
   type QueueState,
 } from '../captureQueue';
 import type { NewSiteEvent } from '../siteEvents';
@@ -38,13 +45,13 @@ const event = (over: Partial<NewSiteEvent> = {}): NewSiteEvent => ({
   ...over,
 });
 
-const fresh = (): CaptureQueueEntry => enqueueCapture({ event: event(), ownerId: 'u1', workGroupNames: ['Finishing Lantai 2'], nowIso: NOW });
+const fresh = (): CaptureJob => enqueueCapture({ event: event(), ownerId: 'u1', workGroupNames: ['Finishing Lantai 2'], nowIso: NOW });
 
 describe('enqueueCapture', () => {
   it('starts queued, no progress, both media not yet uploaded', () => {
     const e = fresh();
     expect(e).toMatchObject({
-      id: 'e1', version: 1, ownerId: 'u1', state: 'queued', eventInserted: false, analysisRequested: false,
+      id: 'e1', version: 2, kind: 'capture', ownerId: 'u1', state: 'queued', eventInserted: false, analysisRequested: false,
       localCleanedUp: false, attempts: 0, consecutiveFailures: 0, needsAttention: false, unrecoverable: false,
     });
     expect(e.media.map((m) => [m.id, m.uploaded, m.bytes])).toEqual([['m1', false, null], ['m2', false, null]]);
@@ -76,7 +83,7 @@ describe('nextStep', () => {
   });
 });
 
-function recordFailures(entry: CaptureQueueEntry, n: number): CaptureQueueEntry {
+function recordFailures<E extends CaptureQueueEntry>(entry: E, n: number): E {
   let e = entry;
   for (let i = 0; i < n; i++) e = recordFailure(e, `gagal ${i}`, NOW);
   return e;
@@ -209,7 +216,7 @@ describe('illegal transitions', () => {
 });
 
 describe('assertTransition exhaustiveness', () => {
-  const QUEUE_STATES: QueueState[] = ['queued', 'uploading', 'analyzing', 'draft_ready', 'done', 'failed'];
+  const QUEUE_STATES: QueueState[] = ['queued', 'uploading', 'analyzing', 'draft_ready', 'closing', 'done', 'superseded', 'failed'];
 
   // Hand-copied from ALLOWED_TRANSITIONS in captureQueue.ts, deliberately NOT
   // imported from there - the point of this table is to catch a future,
@@ -222,6 +229,8 @@ describe('assertTransition exhaustiveness', () => {
     draft_ready: ['draft_ready', 'done', 'failed'],
     failed: ['queued', 'uploading', 'analyzing', 'draft_ready'],
     done: [],
+    closing: [],
+    superseded: [],
   };
 
   const allPairs: Array<[QueueState, QueueState]> = QUEUE_STATES.flatMap((from) =>
@@ -310,24 +319,49 @@ describe('conversions', () => {
 });
 
 describe('versioning / upgradeEntry', () => {
-  it('exports the current version as 1', () => {
-    expect(CAPTURE_QUEUE_ENTRY_VERSION).toBe(1);
+  /** A record exactly as a v1 build wrote it: no `kind`, version 1. */
+  const v1Record = (): Record<string, unknown> => {
+    const { kind: _kind, ...rest } = fresh();
+    return { ...rest, version: 1 };
+  };
+
+  it('exports the current version as 2', () => {
+    expect(CAPTURE_QUEUE_ENTRY_VERSION).toBe(2);
   });
 
-  it('round-trips a well-formed v1 entry unchanged', () => {
-    const e = fresh();
-    expect(upgradeEntry(e)).toEqual(e);
+  it('upgrades a v1 record to version 2, kind capture, keeping every field', () => {
+    const raw = v1Record();
+    expect(upgradeEntry(raw)).toEqual({ ...raw, version: 2, kind: 'capture' });
   });
 
-  it('treats a legacy entry with no version field as v1', () => {
-    const e = fresh();
-    const { version, ...legacy } = e;
-    expect(upgradeEntry(legacy)).toEqual({ ...legacy, version: 1 });
+  it('treats a legacy record with no version field as v1 and upgrades it the same way', () => {
+    const { version: _version, ...legacy } = v1Record();
+    expect(upgradeEntry(legacy)).toEqual({ ...legacy, version: 2, kind: 'capture' });
   });
 
-  it('refuses a future/unrecognised version rather than guessing', () => {
-    const e = fresh();
-    expect(upgradeEntry({ ...e, version: 2 })).toBeNull();
+  it('sets kind on a v1 record, never reads it from the record', () => {
+    expect(upgradeEntry({ ...v1Record(), kind: 'close' })).toMatchObject({ kind: 'capture', version: 2 });
+  });
+
+  it('round-trips a well-formed v2 capture and a v2 close unchanged', () => {
+    const capture = fresh();
+    expect(upgradeEntry(capture)).toEqual(capture);
+    const close = freshClose();
+    expect(upgradeEntry(close)).toEqual(close);
+  });
+
+  it('refuses a future version, an unknown kind, and a close record missing eventId', () => {
+    expect(upgradeEntry({ ...fresh(), version: 3 })).toBeNull();
+    expect(upgradeEntry({ ...fresh(), kind: 'reopen' })).toBeNull();
+    const { eventId: _eventId, ...noEvent } = freshClose();
+    expect(upgradeEntry(noEvent)).toBeNull();
+  });
+
+  it('refuses a close record carrying two photos or a malformed outcome', () => {
+    const close = freshClose();
+    expect(upgradeEntry({ ...close, media: [...close.media, { ...close.media[0], id: 'm9' }] })).toBeNull();
+    expect(upgradeEntry({ ...close, closeOutcome: 'maybe' })).toBeNull();
+    expect(upgradeEntry({ ...close, closedElsewhere: { closedByName: 'A' } })).toBeNull();
   });
 
   it('refuses non-objects and objects missing a required field', () => {
@@ -367,5 +401,161 @@ describe('Beranda selectors', () => {
     expect(waitingCount(all)).toBe(3); // queued, uploading, flagged(failed)
     expect(draftReadyCount(all)).toBe(1); // ready
     expect(attentionCount(all)).toBe(1); // flagged
+  });
+});
+
+// ─── Close jobs (closure spec 2026-09-26 §4) ─────────────────────────────────
+
+const closurePhoto = {
+  id: 'cm1', localUri: 'file:///q/job1/cm1.jpg', kind: 'photo' as const, role: 'closure' as const,
+  mimeType: 'image/jpeg', ext: 'jpg', durationS: null, sortOrder: 0, capturedAt: NOW,
+};
+
+function freshClose(over: { photo?: boolean; note?: string } = {}): CloseJob {
+  return enqueueClose({
+    id: 'job1', ownerId: 'u1', eventId: 'ev1', projectId: 'p1', roomId: 'r1', eventTitle: 'Retak acian',
+    note: over.note ?? '  Sudah ditambal  ', closurePhoto: over.photo === false ? null : closurePhoto, nowIso: NOW,
+  });
+}
+
+describe('enqueueClose', () => {
+  it('starts queued with its own id, the event id kept apart, the note trimmed and the photo as a closure photo', () => {
+    const job = freshClose();
+    expect(job).toMatchObject({
+      version: 2, kind: 'close', id: 'job1', eventId: 'ev1', projectId: 'p1', roomId: 'r1', eventTitle: 'Retak acian',
+      note: 'Sudah ditambal', state: 'queued', mediaInserted: false, closeOutcome: null, closedElsewhere: null,
+      localCleanedUp: false, attempts: 0, needsAttention: false, unrecoverable: false,
+    });
+    expect(job.media).toEqual([{ ...closurePhoto, uploaded: false, bytes: null }]);
+  });
+
+  it('stores a blank note as null, exactly what the RPC receives', () => {
+    expect(freshClose({ note: ' \n\t ' }).note).toBeNull();
+  });
+
+  it('forces kind photo and role closure on whatever the form handed in', () => {
+    const job = enqueueClose({
+      id: 'j', ownerId: 'u1', eventId: 'ev1', projectId: 'p1', roomId: 'r1', eventTitle: 'T', note: '',
+      closurePhoto: { ...closurePhoto, role: 'context' }, nowIso: NOW,
+    });
+    expect(job.media[0]).toMatchObject({ kind: 'photo', role: 'closure' });
+  });
+
+  it("uploads into the event's folder, not the job's", () => {
+    expect(mediaCarrierId(freshClose())).toBe('ev1');
+    expect(mediaCarrierId(fresh())).toBe('e1');
+  });
+});
+
+describe('nextStep for a close job', () => {
+  it('with a photo: upload -> insert_media -> close -> cleanup -> done', () => {
+    let j = freshClose();
+    expect(nextStep(j)).toEqual({ kind: 'upload', mediaId: 'cm1' });
+    j = markUploaded(j, 'cm1', 2048, NOW);
+    expect(j.state).toBe('uploading');
+    expect(nextStep(j)).toEqual({ kind: 'insert_media' });
+    j = markClosureMediaInserted(j, NOW);
+    expect(j.state).toBe('closing');
+    expect(nextStep(j)).toEqual({ kind: 'close' });
+    j = markCloseOutcome(j, 'closed', NOW);
+    expect(j.state).toBe('closing');
+    expect(nextStep(j)).toEqual({ kind: 'cleanup' });
+    j = markCleanedUp(j, NOW);
+    expect(j.state).toBe('done');
+    expect(nextStep(j)).toEqual({ kind: 'none' });
+  });
+
+  it('without a photo: straight to close', () => {
+    let j = freshClose({ photo: false });
+    expect(nextStep(j)).toEqual({ kind: 'close' });
+    j = markCloseOutcome(j, 'closed', NOW);
+    expect(j.state).toBe('closing');
+    expect(nextStep(j)).toEqual({ kind: 'cleanup' });
+  });
+
+  it('through not_open: no failure recorded, the closer read once, the RPC never asked again, ends superseded', () => {
+    let j = markCloseOutcome(freshClose({ photo: false }), 'not_open', NOW);
+    expect(j).toMatchObject({ closeOutcome: 'not_open', consecutiveFailures: 0, lastError: null, needsAttention: false });
+    expect(nextStep(j)).toEqual({ kind: 'lookup_closer' });
+    j = markClosedElsewhere(j, { closedByName: 'Budi', closedAt: '2026-09-17T07:05:00.000Z' }, NOW);
+    expect(nextStep(j)).toEqual({ kind: 'cleanup' });
+    j = markCleanedUp(j, NOW);
+    expect(j.state).toBe('superseded');
+    expect(j.closedElsewhere).toEqual({ closedByName: 'Budi', closedAt: '2026-09-17T07:05:00.000Z' });
+    expect(nextStep(j)).toEqual({ kind: 'none' });
+  });
+
+  it('a failed lookup resumes at the lookup, not at the RPC', () => {
+    let j = markCloseOutcome(freshClose({ photo: false }), 'not_open', NOW);
+    j = recordFailure(j, 'Baca status kejadian gagal: jaringan turun', NOW);
+    expect(j.state).toBe('failed');
+    const retried = retryEntry(j, NOW);
+    expect(retried.state).toBe('closing');
+    expect(nextStep(retried)).toEqual({ kind: 'lookup_closer' });
+  });
+});
+
+describe('superseded is terminal, closing is waiting', () => {
+  const superseded = (): CloseJob => markCleanedUp(
+    markClosedElsewhere(markCloseOutcome(freshClose({ photo: false }), 'not_open', NOW), { closedByName: null, closedAt: NOW }, NOW),
+    NOW,
+  );
+
+  it('a superseded job is neither ready to attempt nor counted as waiting', () => {
+    const j = superseded();
+    expect(isReadyToAttempt(j, Date.parse(NOW) + 999_999)).toBe(false);
+    expect(waitingCount([j])).toBe(0);
+  });
+
+  it('a close job that is still closing counts as waiting for signal', () => {
+    const j = markClosureMediaInserted(markUploaded(freshClose(), 'cm1', 1, NOW), NOW);
+    expect(j.state).toBe('closing');
+    expect(waitingCount([j])).toBe(1);
+  });
+});
+
+describe('markUnrecoverable per kind', () => {
+  it('flags a close job whose photo is not uploaded yet', () => {
+    const j = markUnrecoverable(freshClose(), 'Foto penutupan hilang.');
+    expect(j).toMatchObject({ unrecoverable: true, needsAttention: true, lastError: 'Foto penutupan hilang.', state: 'queued' });
+  });
+
+  it('throws once the close photo is uploaded, and for a close job with no photo at all', () => {
+    expect(() => markUnrecoverable(markUploaded(freshClose(), 'cm1', 1, NOW), 'x')).toThrow();
+    expect(() => markUnrecoverable(freshClose({ photo: false }), 'x')).toThrow();
+  });
+
+  it('still keys a capture job on eventInserted', () => {
+    expect(markUnrecoverable(fresh(), 'x').unrecoverable).toBe(true);
+    const inserted = markInserted(markUploaded(markUploaded(fresh(), 'm1', 1, NOW), 'm2', 1, NOW), NOW);
+    expect(() => markUnrecoverable(inserted, 'x')).toThrow();
+  });
+});
+
+describe('close transition table, exhaustively', () => {
+  const STATES: QueueState[] = ['queued', 'uploading', 'analyzing', 'draft_ready', 'closing', 'done', 'superseded', 'failed'];
+  // Hand-copied from CLOSE_TRANSITIONS in captureQueue.ts, deliberately NOT
+  // imported, for the same reason as the capture table above.
+  const EXPECTED: Record<QueueState, ReadonlyArray<QueueState>> = {
+    queued: ['uploading', 'closing', 'failed'],
+    uploading: ['uploading', 'closing', 'failed'],
+    closing: ['closing', 'done', 'superseded', 'failed'],
+    failed: ['queued', 'uploading', 'closing'],
+    done: [],
+    superseded: [],
+    analyzing: [],
+    draft_ready: [],
+  };
+  const pairs: Array<[QueueState, QueueState]> = STATES.flatMap((from) =>
+    STATES.map((to): [QueueState, QueueState] => [from, to]),
+  );
+
+  it.each(pairs)('from %s to %s', (from, to) => {
+    const allowed = from === to || EXPECTED[from].includes(to);
+    if (allowed) {
+      expect(() => assertTransition(from, to, 'close')).not.toThrow();
+    } else {
+      expect(() => assertTransition(from, to, 'close')).toThrow(IllegalQueueTransitionError);
+    }
   });
 });

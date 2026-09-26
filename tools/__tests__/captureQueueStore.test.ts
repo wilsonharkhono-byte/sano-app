@@ -263,15 +263,31 @@ describe('loadQueue resilience (fix 3): one bad entry cannot abort the whole loa
 });
 
 describe('legacy entries without a version field (fix 4: upgradeEntry)', () => {
-  it('still loads an entry written before the version field existed', async () => {
+  it('still loads an entry written before the version field existed, as a v2 capture job', async () => {
     const entry = await enqueueNewCapture({ userId: USER, event: event(), workGroupNames: [], nowIso: '2026-09-11T02:00:01.000Z' });
     const legacyShape: Record<string, unknown> = { ...entry };
     delete legacyShape.version;
+    delete legacyShape.kind;
     await AsyncStorage.setItem(entryKey(USER, 'e1'), JSON.stringify(legacyShape));
 
     const [loaded] = await loadQueue(USER);
     expect(loaded.id).toBe('e1');
-    expect(loaded.version).toBe(1);
+    expect(loaded.version).toBe(2);
+    expect(loaded.kind).toBe('capture');
+  });
+
+  it('loads a v1 record from disk, drains it as a capture job, and rewrites it as v2 on the next save', async () => {
+    const entry = await enqueueNewCapture({ userId: USER, event: event(), workGroupNames: [], nowIso: '2026-09-11T02:00:01.000Z' });
+    const v1: Record<string, unknown> = { ...entry, version: 1 };
+    delete v1.kind;
+    await AsyncStorage.setItem(entryKey(USER, 'e1'), JSON.stringify(v1));
+
+    const [loaded] = await loadQueue(USER);
+    if (loaded.kind !== 'capture') throw new Error('expected a capture job');
+    await saveEntry(markUploaded(loaded, 'm1', 10, '2026-09-11T02:00:05.000Z'));
+
+    const stored = JSON.parse((await AsyncStorage.getItem(entryKey(USER, 'e1')))!);
+    expect(stored).toMatchObject({ version: 2, kind: 'capture', state: 'uploading' });
   });
 });
 

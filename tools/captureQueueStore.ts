@@ -42,7 +42,9 @@ import { useEffect, useState } from 'react';
 import {
   enqueueCapture,
   markUnrecoverable,
+  needsLocalMedia,
   upgradeEntry,
+  type CaptureJob,
   type CaptureQueueEntry,
 } from './captureQueue';
 import type { LocalSiteEventMedia, NewSiteEvent } from './siteEvents';
@@ -312,11 +314,11 @@ export async function removeEntry(userId: string, entryId: string): Promise<void
 }
 
 async function recoverMissingMedia(entry: CaptureQueueEntry): Promise<CaptureQueueEntry> {
-  // Upload always finishes before insert is attempted (captureQueue.ts's
-  // nextStep ordering), so a still-needed local file can only go missing
-  // before eventInserted flips true. After that, or once already flagged,
+  // A capture job needs its files until the event is inserted (upload always
+  // finishes first); a close job needs its photo until it is uploaded
+  // (captureQueue.ts's needsLocalMedia). After that, or once already flagged,
   // there is nothing new to check.
-  if (entry.eventInserted || entry.unrecoverable) return entry;
+  if (!needsLocalMedia(entry) || entry.unrecoverable) return entry;
   for (const m of entry.media) {
     if (m.uploaded) continue;
     let info: Awaited<ReturnType<typeof FileSystem.getInfoAsync>>;
@@ -394,7 +396,7 @@ export interface NewCaptureRequest {
  * nothing to find (just an orphaned, harmless directory), never a
  * half-registered entry.
  */
-export async function enqueueNewCapture(request: NewCaptureRequest): Promise<CaptureQueueEntry> {
+export async function enqueueNewCapture(request: NewCaptureRequest): Promise<CaptureJob> {
   const media =
     Platform.OS === 'web' ? request.event.media : await copyMediaIntoQueueDir(request.userId, request.event.id, request.event.media);
   const entry = enqueueCapture({
@@ -423,7 +425,7 @@ export async function deleteLocalMedia(userId: string, entryId: string): Promise
 export async function discardEntryLocally(userId: string, entryId: string): Promise<{ error?: string }> {
   const entry = await readEntryForUser(userId, entryId);
   if (!entry) return {};
-  if (entry.eventInserted) {
+  if (entry.kind === 'capture' && entry.eventInserted) {
     return { error: 'Kejadian ini sudah tersimpan di server; buang lewat layar konfirmasi.' };
   }
   await deleteLocalMedia(userId, entryId);

@@ -3,6 +3,7 @@
 import {
   draftReadyCount,
   waitingCount,
+  type CaptureJob,
   type CaptureQueueEntry,
 } from '../../../tools/captureQueue';
 
@@ -91,7 +92,7 @@ const REASON_ALREADY_SENT = 'Sudah terkirim ke server; buka Draf menunggu.';
  */
 export function attentionRows(entries: ReadonlyArray<CaptureQueueEntry>): AttentionRow[] {
   return entries
-    .filter((e) => e.needsAttention)
+    .filter((e): e is CaptureJob => e.kind === 'capture' && e.needsAttention)
     .map((e) => ({
       id: e.id,
       title: e.rawText && e.rawText.trim() ? e.rawText.trim() : FALLBACK_TITLE,

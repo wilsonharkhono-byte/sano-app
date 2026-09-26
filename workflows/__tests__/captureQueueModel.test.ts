@@ -5,7 +5,7 @@ import {
   markUnrecoverable,
   markUploaded,
   recordFailure,
-  type CaptureQueueEntry,
+  type CaptureJob,
 } from '../../tools/captureQueue';
 import { WEB_QUEUE_WARNING, WEB_QUEUED_TOAST, attentionRows, queueBadgeText } from '../screens/siteEvent/captureQueueModel';
 import type { NewSiteEvent } from '../../tools/siteEvents';
@@ -17,7 +17,7 @@ const event = (id: string, rawText: string | null): NewSiteEvent => ({
   media: [{ id: `${id}-m`, localUri: 'file:///x.jpg', kind: 'photo', role: 'context', mimeType: 'image/jpeg', ext: 'jpg', durationS: null, sortOrder: 0, capturedAt: NOW }],
 });
 
-const fresh = (id: string, rawText: string | null = null): CaptureQueueEntry =>
+const fresh = (id: string, rawText: string | null = null): CaptureJob =>
   enqueueCapture({ event: event(id, rawText), ownerId: 'u1', workGroupNames: [], nowIso: NOW });
 
 describe('WEB_QUEUE_WARNING', () => {
@@ -59,7 +59,7 @@ describe('attentionRows', () => {
 });
 
 /** Uploaded, inserted, analysis kicked off - the state the badge's second half counts. */
-const kickedOff = (id: string): CaptureQueueEntry => {
+const kickedOff = (id: string): CaptureJob => {
   const e = fresh(id);
   return markAnalysisRequested(markInserted(markUploaded(e, `${id}-m`, 1, NOW), NOW), NOW);
 };
