@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { getDigestHealth, type DigestHealthResult } from '../../../tools/siteEventAttention';
 import { formatWibShort } from '../../../tools/timeWindow';
@@ -12,11 +12,17 @@ import { COLORS, FONTS, SPACE, TYPE } from '../../../workflows/theme';
  * table can prove. A failed read says so, never "belum pernah".
  */
 export default function DigestHealthLine({ reloadKey }: { reloadKey?: number }) {
+  // null only until the first answer: a refresh keeps the last line on screen.
   const [result, setResult] = useState<DigestHealthResult | null>(null);
+  // Only the latest read may land, so a slow earlier answer never wins.
+  const request = useRef(0);
 
   const load = useCallback(async () => {
-    setResult(null);
-    setResult(await getDigestHealth());
+    const id = ++request.current;
+    // A retry after a failed read goes back to "Memuat…"; a refresh does not.
+    setResult((prev) => (prev && 'error' in prev ? null : prev));
+    const next = await getDigestHealth();
+    if (id === request.current) setResult(next);
   }, []);
 
   useEffect(() => {

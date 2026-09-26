@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import Card from '../../../workflows/components/Card';
 import {
@@ -22,9 +22,15 @@ export interface AttentionListProps {
   /** Events this phone holds a pending close job for (captureQueueStore.pendingCloseFor). */
   pendingEventIds: ReadonlySet<string>;
   onOpenEvent: (eventId: string, projectId: string) => void;
-  /** Bumped by the board on focus and pull-to-refresh, so this list refetches with it. */
+  /**
+   * Bumped by the board on every focus after the first and on pull-to-refresh,
+   * so this list refetches with it. The list reads once on mount by itself.
+   */
   reloadKey?: number;
 }
+
+/** What the last read that counted returned, and for which project. */
+type Loaded = { projectId: string; rows: AttentionRow[] } | { projectId: string; error: string };
 
 const CHIP_TONE: Record<AttentionChipTone, { fg: string; bg: string }> = {
   late: { fg: COLORS.high, bg: COLORS.highBg },
@@ -41,31 +47,36 @@ const CHIP_TONE: Record<AttentionChipTone, { fg: string; bg: string }> = {
  */
 export default function AttentionList(props: AttentionListProps) {
   const { projectId, viewerId, showOwner, mineRequest, pendingEventIds, onOpenEvent, reloadKey } = props;
-  const [rows, setRows] = useState<AttentionRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [mine, setMine] = useState(mineRequest?.mine ?? false);
+  // Every read takes a number; only the latest one may land, so a slow
+  // earlier answer can never overwrite a newer one.
+  const request = useRef(0);
 
   useEffect(() => {
     if (mineRequest) setMine(mineRequest.mine);
   }, [mineRequest]);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const id = ++request.current;
+    // A refresh keeps the rows on screen until the new ones arrive; a retry
+    // after a failed read goes back to the spinner.
+    setLoaded((prev) => (prev && 'error' in prev ? null : prev));
     const result = await listSiteEventAttention(projectId);
-    if ('error' in result) {
-      setError(result.error);
-      setRows(null);
-    } else {
-      setError(null);
-      setRows(result.rows);
-    }
-    setLoading(false);
+    if (id !== request.current) return;
+    setLoaded('error' in result ? { projectId, error: result.error } : { projectId, rows: result.rows });
   }, [projectId]);
 
   useEffect(() => {
     void load();
   }, [load, reloadKey]);
+
+  // Only what was read for THIS project: after a project switch the spinner
+  // shows until its own rows arrive, never the previous project's rows.
+  const current = loaded && loaded.projectId === projectId ? loaded : null;
+  const rows = current && 'rows' in current ? current.rows : null;
+  const error = current && 'error' in current ? current.error : null;
+  const loading = current === null;
 
   const shown = useMemo(() => (rows ? (mine ? filterMine(rows, viewerId) : rows) : []), [rows, mine, viewerId]);
   const title = rows ? attentionHeading(rows.length, shown.length, mine) : 'Perlu ditindak';

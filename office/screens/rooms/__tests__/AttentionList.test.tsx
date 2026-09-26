@@ -5,7 +5,7 @@
 // the Milik saya filter, the deeplink turning it on, "Menunggu kirim", and a
 // tap opening the event.
 import React from 'react';
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
 jest.mock('../../../../tools/siteEventAttention', () => {
@@ -162,5 +162,47 @@ describe('AttentionList', () => {
     await waitFor(() => expect(listSiteEventAttention).toHaveBeenCalledTimes(1));
     utils.rerender(<AttentionList {...utils.props} reloadKey={2} />);
     await waitFor(() => expect(listSiteEventAttention).toHaveBeenCalledTimes(2));
+  });
+
+  it('keeps the rows on screen while a refresh is in flight, with no spinner', async () => {
+    const utils = renderList({ reloadKey: 1 });
+    await waitFor(() => expect(utils.getByText('Retak dinding')).toBeTruthy());
+
+    let resolve!: (v: unknown) => void;
+    (listSiteEventAttention as jest.Mock).mockReturnValueOnce(new Promise((r) => { resolve = r; }));
+    utils.rerender(<AttentionList {...utils.props} reloadKey={2} />);
+    await waitFor(() => expect(listSiteEventAttention).toHaveBeenCalledTimes(2));
+    expect(utils.getByText('Retak dinding')).toBeTruthy();
+    expect(utils.getByText('Perlu ditindak (3)')).toBeTruthy();
+    expect(utils.queryByLabelText('Memuat daftar perlu ditindak')).toBeNull();
+
+    await act(async () => { resolve({ rows: [row({ event_id: 'e7', title: 'Plafon bocor' })] }); });
+    expect(utils.getByText('Plafon bocor')).toBeTruthy();
+    expect(utils.queryByText('Retak dinding')).toBeNull();
+  });
+
+  it('ignores a slow earlier read that answers after a later one', async () => {
+    let resolveFirst!: (v: unknown) => void;
+    (listSiteEventAttention as jest.Mock)
+      .mockReturnValueOnce(new Promise((r) => { resolveFirst = r; }))
+      .mockResolvedValueOnce({ rows: [row({ event_id: 'e8', title: 'Terbaru' })] });
+    const utils = renderList({ reloadKey: 1 });
+    utils.rerender(<AttentionList {...utils.props} reloadKey={2} />);
+    await waitFor(() => expect(utils.getByText('Terbaru')).toBeTruthy());
+
+    await act(async () => { resolveFirst({ rows: [row({ event_id: 'e9', title: 'Sudah basi' })] }); });
+    expect(utils.queryByText('Sudah basi')).toBeNull();
+    expect(utils.getByText('Terbaru')).toBeTruthy();
+  });
+
+  it("never shows another project's rows: a project switch shows the spinner until its own rows arrive", async () => {
+    const utils = renderList();
+    await waitFor(() => expect(utils.getByText('Retak dinding')).toBeTruthy());
+
+    (listSiteEventAttention as jest.Mock).mockReturnValueOnce(new Promise(() => {}));
+    utils.rerender(<AttentionList {...utils.props} projectId="p2" />);
+    await waitFor(() => expect(listSiteEventAttention).toHaveBeenLastCalledWith('p2'));
+    expect(utils.queryByText('Retak dinding')).toBeNull();
+    expect(utils.getByLabelText('Memuat daftar perlu ditindak')).toBeTruthy();
   });
 });
