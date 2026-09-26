@@ -80,19 +80,33 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import {
+  acknowledgeCloseEntry,
+  CLOSE_ALREADY_PENDING,
   discardEntryLocally,
+  enqueueCloseJob,
   enqueueNewCapture,
   entryDirUri,
   entryKey,
   indexKey,
   loadQueue,
+  pendingCloseFor,
+  REASON_CLOSURE_PHOTO_MISSING,
   removeEntry,
   saveEntry,
   subscribeToQueue,
+  supersededCloseFor,
   sweepOrphanedFiles,
   __clearWebStoreForTests,
+  type NewCloseRequest,
 } from '../captureQueueStore';
-import { markInserted, markUploaded } from '../captureQueue';
+import {
+  markCleanedUp,
+  markClosedElsewhere,
+  markCloseOutcome,
+  markInserted,
+  markUploaded,
+  type CloseJob,
+} from '../captureQueue';
 import type { NewSiteEvent } from '../siteEvents';
 
 const USER = 'u1';
@@ -461,5 +475,145 @@ describe('scan cost', () => {
 
     await loadQueue(USER);
     expect(calls).toContain(`delete:${dir}`);
+  });
+});
+
+// ─── Close jobs (closure spec 2026-09-26 §4) ──────────────────────────────────
+
+const closeRequest = (over: Partial<NewCloseRequest> = {}): NewCloseRequest => ({
+  userId: USER, jobId: 'job1', eventId: 'ev1', projectId: 'p1', roomId: 'r1', eventTitle: 'Retak acian',
+  note: '  Sudah ditambal  ',
+  closurePhoto: {
+    id: 'cm1', localUri: 'file:///tmp/cam/m1.jpg', kind: 'photo', role: 'closure', mimeType: 'image/jpeg', ext: 'jpg',
+    durationS: null, sortOrder: 0, capturedAt: '2026-09-17T02:00:00.000Z',
+  },
+  nowIso: '2026-09-17T02:00:01.000Z',
+  ...over,
+});
+
+describe('enqueueCloseJob (native)', () => {
+  it("copies the photo into the job's own folder before writing the entry", async () => {
+    const result = await enqueueCloseJob(closeRequest());
+    expect(result.error).toBeUndefined();
+    expect(calls).toEqual([
+      `mkdir:file:///doc/capture-queue/${USER}/job1/`,
+      `copy:file:///tmp/cam/m1.jpg->file:///doc/capture-queue/${USER}/job1/cm1.jpg`,
+    ]);
+    const stored = JSON.parse((await AsyncStorage.getItem(entryKey(USER, 'job1')))!);
+    expect(stored).toMatchObject({
+      version: 2, kind: 'close', id: 'job1', eventId: 'ev1', note: 'Sudah ditambal', state: 'queued',
+    });
+    expect(stored.media[0]).toMatchObject({ id: 'cm1', role: 'closure', localUri: `file:///doc/capture-queue/${USER}/job1/cm1.jpg` });
+  });
+
+  it('touches no file when there is no photo', async () => {
+    const result = await enqueueCloseJob(closeRequest({ closurePhoto: null }));
+    expect(result.entry?.media).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it('refuses a second pending close for the same event, writing nothing', async () => {
+    await enqueueCloseJob(closeRequest({ closurePhoto: null }));
+    const second = await enqueueCloseJob(closeRequest({ jobId: 'job2', closurePhoto: null }));
+    expect(second).toEqual({ error: CLOSE_ALREADY_PENDING });
+    expect(second.error).toBe('Penutupan kejadian ini sudah menunggu kirim.');
+    expect(await AsyncStorage.getItem(entryKey(USER, 'job2'))).toBeNull();
+  });
+
+  it('accepts a new close once the earlier one was superseded', async () => {
+    const first = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    await saveEntry(supersede(first));
+    const again = await enqueueCloseJob(closeRequest({ jobId: 'job2', closurePhoto: null }));
+    expect(again.error).toBeUndefined();
+  });
+});
+
+function supersede(job: CloseJob): CloseJob {
+  const now = '2026-09-17T02:01:00.000Z';
+  return markCleanedUp(
+    markClosedElsewhere(markCloseOutcome(job, 'not_open', now), { closedByName: 'Budi', closedAt: now }, now),
+    now,
+  );
+}
+
+describe('pendingCloseFor', () => {
+  it("returns the event's close job unless it is done or superseded", async () => {
+    const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    expect(pendingCloseFor([job], 'ev1')).toBe(job);
+    expect(pendingCloseFor([job], 'other')).toBeUndefined();
+    expect(pendingCloseFor([supersede(job)], 'ev1')).toBeUndefined();
+    const done = markCleanedUp(markCloseOutcome(job, 'closed', '2026-09-17T02:01:00.000Z'), '2026-09-17T02:01:00.000Z');
+    expect(done.state).toBe('done');
+    expect(pendingCloseFor([done], 'ev1')).toBeUndefined();
+  });
+
+  it('never mistakes a capture job for a close', async () => {
+    const capture = await enqueueNewCapture({ userId: USER, event: event({ id: 'ev1' }), workGroupNames: [], nowIso: '2026-09-11T02:00:01.000Z' });
+    expect(pendingCloseFor([capture], 'ev1')).toBeUndefined();
+  });
+});
+
+describe('supersededCloseFor', () => {
+  it("returns the event's newest superseded close job, whatever the order it is handed", async () => {
+    const older = supersede((await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!);
+    await saveEntry(older);
+    const newer = supersede(
+      (await enqueueCloseJob(closeRequest({ jobId: 'job2', closurePhoto: null, nowIso: '2026-09-17T03:00:00.000Z' }))).entry!,
+    );
+    const otherEvent = supersede(
+      (await enqueueCloseJob(closeRequest({ jobId: 'job3', eventId: 'ev2', closurePhoto: null, nowIso: '2026-09-17T04:00:00.000Z' }))).entry!,
+    );
+    expect(supersededCloseFor([older, newer, otherEvent], 'ev1')).toBe(newer);
+    expect(supersededCloseFor([otherEvent, newer, older], 'ev1')).toBe(newer);
+  });
+
+  it('returns null when the event has no superseded close job', async () => {
+    const pending = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    const done = markCleanedUp(markCloseOutcome(pending, 'closed', '2026-09-17T02:01:00.000Z'), '2026-09-17T02:01:00.000Z');
+    const otherEvent = supersede({ ...pending, id: 'job9', eventId: 'ev2' });
+    const capture = await enqueueNewCapture({ userId: USER, event: event({ id: 'ev1' }), workGroupNames: [], nowIso: '2026-09-11T02:00:01.000Z' });
+    expect(supersededCloseFor([], 'ev1')).toBeNull();
+    expect(supersededCloseFor([pending, done, otherEvent, capture], 'ev1')).toBeNull();
+  });
+});
+
+describe('close jobs and local discard', () => {
+  it('lets Batalkan remove a close job that has no outcome yet, folder and all', async () => {
+    await enqueueCloseJob(closeRequest());
+    calls.length = 0;
+    expect(await discardEntryLocally(USER, 'job1')).toEqual({});
+    expect(calls).toContain(`delete:file:///doc/capture-queue/${USER}/job1/`);
+    expect(await loadQueue(USER)).toEqual([]);
+  });
+
+  it('refuses once the server has answered, and touches nothing', async () => {
+    const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    await saveEntry(markCloseOutcome(job, 'closed', '2026-09-17T02:01:00.000Z'));
+    calls.length = 0;
+    expect(await discardEntryLocally(USER, 'job1')).toEqual({ error: 'Kejadian sudah ditutup di server.' });
+    expect(calls).toEqual([]);
+    expect((await loadQueue(USER))[0].id).toBe('job1');
+  });
+
+  it('flags a close job whose photo vanished before upload, with the closure sentence', async () => {
+    const job = (await enqueueCloseJob(closeRequest())).entry!;
+    fsFiles.delete(job.media[0].localUri);
+    const [reloaded] = await loadQueue(USER);
+    expect(reloaded).toMatchObject({ unrecoverable: true, needsAttention: true, lastError: REASON_CLOSURE_PHOTO_MISSING });
+  });
+});
+
+describe('acknowledgeCloseEntry', () => {
+  it('removes a superseded close job', async () => {
+    const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    await saveEntry(supersede(job));
+    expect(await acknowledgeCloseEntry(USER, 'job1')).toEqual({});
+    expect(await loadQueue(USER)).toEqual([]);
+  });
+
+  it('refuses a close job that still has work to do', async () => {
+    await enqueueCloseJob(closeRequest({ closurePhoto: null }));
+    expect((await acknowledgeCloseEntry(USER, 'job1')).error).toBe('Penutupan ini belum selesai diproses.');
+    expect(await loadQueue(USER)).toHaveLength(1);
   });
 });

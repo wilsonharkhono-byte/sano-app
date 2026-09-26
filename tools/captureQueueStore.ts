@@ -41,11 +41,13 @@ import { Platform } from 'react-native';
 import { useEffect, useState } from 'react';
 import {
   enqueueCapture,
+  enqueueClose,
   markUnrecoverable,
   needsLocalMedia,
   upgradeEntry,
   type CaptureJob,
   type CaptureQueueEntry,
+  type CloseJob,
 } from './captureQueue';
 import type { LocalSiteEventMedia, NewSiteEvent } from './siteEvents';
 
@@ -96,6 +98,10 @@ function userQueueDirUri(userId: string): string | null {
 const REASON_MEDIA_MISSING =
   'Berkas foto atau suara untuk laporan ini hilang dari HP (mungkin dibersihkan sistem sebelum terkirim). ' +
   'Laporan tidak bisa dikirim; buang dan laporkan ulang.';
+
+/** Closure spec §4.6: what a close job whose photo vanished before upload tells the person. */
+export const REASON_CLOSURE_PHOTO_MISSING =
+  'Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru.';
 
 // ─── Native backend (AsyncStorage + expo-file-system) ─────────────────────────
 
@@ -333,7 +339,7 @@ async function recoverMissingMedia(entry: CaptureQueueEntry): Promise<CaptureQue
       continue;
     }
     if (!info.exists) {
-      const fixed = markUnrecoverable(entry, REASON_MEDIA_MISSING);
+      const fixed = markUnrecoverable(entry, entry.kind === 'close' ? REASON_CLOSURE_PHOTO_MISSING : REASON_MEDIA_MISSING);
       await saveEntry(fixed);
       return fixed;
     }
@@ -409,6 +415,98 @@ export async function enqueueNewCapture(request: NewCaptureRequest): Promise<Cap
   return entry;
 }
 
+// ─── Close jobs (closure spec 2026-09-26 §4) ──────────────────────────────────
+
+export interface NewCloseRequest {
+  userId: string;
+  /** A fresh client uuid for the job (the form calls newSiteEventId()); never the event id. */
+  jobId: string;
+  eventId: string;
+  projectId: string;
+  roomId: string;
+  eventTitle: string;
+  /** The note as typed; the job stores it trimmed, or null when blank. */
+  note: string;
+  closurePhoto: LocalSiteEventMedia | null;
+  nowIso: string;
+}
+
+export type EnqueueCloseResult =
+  | { entry: CloseJob; error?: undefined }
+  | { entry?: undefined; error: string };
+
+export const CLOSE_ALREADY_PENDING = 'Penutupan kejadian ini sudah menunggu kirim.';
+
+/** The event's close job while it still has work to do: not `done`, not `superseded`. */
+export function pendingCloseFor(entries: ReadonlyArray<CaptureQueueEntry>, eventId: string): CloseJob | undefined {
+  return entries.find(
+    (e): e is CloseJob => e.kind === 'close' && e.eventId === eventId && e.state !== 'done' && e.state !== 'superseded',
+  );
+}
+
+/**
+ * The event's newest (by createdAt) superseded close job, or null: this
+ * user's queued "Selesai" found the event already closed on the server and
+ * nobody has pressed "Mengerti" yet. Office and principal phones have no
+ * Beranda queue card, so the detail screen renders this with "Mengerti" ->
+ * acknowledgeCloseEntry. createdAt is always toISOString() output (UTC, one
+ * fixed format), so comparing the strings orders them by time.
+ */
+export function supersededCloseFor(entries: ReadonlyArray<CaptureQueueEntry>, eventId: string): CloseJob | null {
+  let newest: CloseJob | null = null;
+  for (const e of entries) {
+    if (e.kind !== 'close' || e.eventId !== eventId || e.state !== 'superseded') continue;
+    if (newest === null || e.createdAt > newest.createdAt) newest = e;
+  }
+  return newest;
+}
+
+/**
+ * "Tandai selesai". Copies the closure photo into the job's own folder
+ * (native), THEN writes the entry - the same "media copies first, then the
+ * entry record" order enqueueNewCapture keeps. Refuses a second job for an
+ * event this user already has a pending close for. Throws on a copy failure,
+ * like enqueueNewCapture; the form shows the message.
+ */
+export async function enqueueCloseJob(request: NewCloseRequest): Promise<EnqueueCloseResult> {
+  if (pendingCloseFor(await loadQueue(request.userId), request.eventId)) {
+    return { error: CLOSE_ALREADY_PENDING };
+  }
+  const photos = request.closurePhoto ? [request.closurePhoto] : [];
+  const media =
+    Platform.OS === 'web' || photos.length === 0 ? photos : await copyMediaIntoQueueDir(request.userId, request.jobId, photos);
+  const entry = enqueueClose({
+    id: request.jobId,
+    ownerId: request.userId,
+    eventId: request.eventId,
+    projectId: request.projectId,
+    roomId: request.roomId,
+    eventTitle: request.eventTitle,
+    note: request.note,
+    closurePhoto: media[0] ?? null,
+    nowIso: request.nowIso,
+  });
+  await saveEntry(entry);
+  return { entry };
+}
+
+/**
+ * "Mengerti" on a superseded close job: the event was closed by somebody else
+ * (or by this job's own earlier attempt whose response was lost), and the
+ * person has read who and when. Only a superseded close job can be
+ * acknowledged; anything else still has work to do or is not a close.
+ */
+export async function acknowledgeCloseEntry(userId: string, entryId: string): Promise<{ error?: string }> {
+  const entry = await readEntryForUser(userId, entryId);
+  if (!entry) return {};
+  if (entry.kind !== 'close' || entry.state !== 'superseded') {
+    return { error: 'Penutupan ini belum selesai diproses.' };
+  }
+  await deleteLocalMedia(userId, entryId);
+  await removeEntry(userId, entryId);
+  return {};
+}
+
 /** The cleanup step (captureQueueWorker.ts task 3). No-op on web: nothing was ever copied. */
 export async function deleteLocalMedia(userId: string, entryId: string): Promise<void> {
   if (Platform.OS === 'web') return;
@@ -427,6 +525,11 @@ export async function discardEntryLocally(userId: string, entryId: string): Prom
   if (!entry) return {};
   if (entry.kind === 'capture' && entry.eventInserted) {
     return { error: 'Kejadian ini sudah tersimpan di server; buang lewat layar konfirmasi.' };
+  }
+  // A close job with an outcome already reached the server: "Batalkan" would
+  // only hide what happened there (closure spec §4.6).
+  if (entry.kind === 'close' && entry.closeOutcome !== null) {
+    return { error: 'Kejadian sudah ditutup di server.' };
   }
   await deleteLocalMedia(userId, entryId);
   await removeEntry(userId, entryId);
