@@ -11,6 +11,7 @@
 
 import { isOverdue } from './detailModel';
 import { isActionableType, isIsoDate } from '../../../tools/siteEventRules';
+import type { CloseJob } from '../../../tools/captureQueue';
 import type { SiteEvent } from '../../../tools/types';
 
 export { isOverdue };
@@ -66,6 +67,31 @@ export function canEditAssignment(
  */
 export function canClose(ev: Pick<TimelineEvent, 'status'>, closePending = false): boolean {
   return ev.status === 'open' && !closePending;
+}
+
+/**
+ * The badge a close still on this phone adds beside the server's status
+ * (closure spec §4.5), or null when there is none. A job that needs attention
+ * (the server refused it, or it ran out of attempts) is not on its way, so it
+ * says "Belum terkirim" - the detail screen's "Penutupan belum terkirim" -
+ * never "Menunggu kirim".
+ */
+export function pendingCloseBadge(
+  job: Pick<CloseJob, 'needsAttention'> | null | undefined,
+): 'Menunggu kirim' | 'Belum terkirim' | null {
+  if (!job) return null;
+  return job.needsAttention ? 'Belum terkirim' : 'Menunggu kirim';
+}
+
+/**
+ * True when an event that had a pending close on this phone no longer has one
+ * (it closed, was superseded, was cancelled, or can no longer send): the
+ * timeline then reads the server again rather than keep showing the stale
+ * "Terbuka" and "Selesai" (the detail screen's hadPendingClose rule).
+ */
+export function pendingCloseLeft(before: ReadonlyArray<string>, after: ReadonlyArray<string>): boolean {
+  const now = new Set(after);
+  return before.some((id) => !now.has(id));
 }
 
 /**

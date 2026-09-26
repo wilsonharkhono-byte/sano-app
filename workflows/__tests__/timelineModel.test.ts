@@ -10,7 +10,7 @@
  * hand the item on.
  */
 import {
-  canClose, canEditAssignment, dueLabel, fmtDate, sortTimeline, validateAssignment,
+  canClose, canEditAssignment, dueLabel, fmtDate, pendingCloseBadge, pendingCloseLeft, sortTimeline, validateAssignment,
   type TimelineEvent,
 } from '../screens/siteEvent/timelineModel';
 
@@ -75,6 +75,40 @@ describe('canClose', () => {
   it('hides Selesai while this phone holds a close for the event that has not reached the server', () => {
     expect(canClose(ev({ id: 'a', status: 'open' }), true)).toBe(false);
     expect(canClose(ev({ id: 'a', status: 'open' }), false)).toBe(true);
+  });
+});
+
+/**
+ * Closure spec §4.5: a close still on this phone adds a badge beside the
+ * server's status. A job the server refused, or that ran out of attempts, is
+ * not on its way, so it must not say it is - the same "belum terkirim" the
+ * detail screen uses for it.
+ */
+describe('pendingCloseBadge', () => {
+  it('says nothing without a pending close', () => {
+    expect(pendingCloseBadge(null)).toBeNull();
+    expect(pendingCloseBadge(undefined)).toBeNull();
+  });
+
+  it('says Menunggu kirim while the close is on its way', () => {
+    expect(pendingCloseBadge({ needsAttention: false })).toBe('Menunggu kirim');
+  });
+
+  it('says Belum terkirim, never Menunggu kirim, once the close needs attention', () => {
+    expect(pendingCloseBadge({ needsAttention: true })).toBe('Belum terkirim');
+  });
+});
+
+describe('pendingCloseLeft', () => {
+  it('is true when an event that had a pending close no longer has one', () => {
+    expect(pendingCloseLeft(['a', 'b'], ['b'])).toBe(true);
+    expect(pendingCloseLeft(['a'], [])).toBe(true);
+  });
+
+  it('is false when nothing left, including when a new close joins', () => {
+    expect(pendingCloseLeft([], [])).toBe(false);
+    expect(pendingCloseLeft([], ['a'])).toBe(false);
+    expect(pendingCloseLeft(['a'], ['a', 'b'])).toBe(false);
   });
 });
 
