@@ -45,6 +45,9 @@ function formatDateTime(iso: string): string {
  */
 const CLOSED_ON_SERVER = 'Kejadian ini sudah ditutup di server.';
 
+/** The clause of the card's Batalkan confirmation (attentionRows) that only holds while the server has the event open. */
+const CARD_STAYS_OPEN = 'Kejadian tetap terbuka.';
+
 /** Shown for a related event when the row is missing or unreadable (RLS), so the id isn't just a raw UUID. */
 function shortId(id: string): string {
   return id.slice(0, 8);
@@ -131,15 +134,14 @@ export default function SiteEventDetailScreen() {
   // (CLOSE_ALREADY_PENDING), so without it here such a job would sit on this
   // screen for good. The job leaves the phone; the event and every photo
   // already uploaded stay on the server as they are.
-  // The card cannot see the server and says "Kejadian tetap terbuka"; this
-  // screen can, and never says it once the server has closed the event.
-  const serverOpen = event?.status === 'open';
+  // The card cannot see the server and says "Kejadian tetap terbuka."; this
+  // screen can, and once the server has closed the event it says that
+  // instead. Everything else stays the card's, including whether the photo is
+  // promised (only once its media row is in).
+  const cardConfirm =
+    pendingClose && closeJobCancelKind(pendingClose) === 'cancel' ? attentionRows([pendingClose])[0]?.confirm ?? null : null;
   const cancelConfirm =
-    pendingClose && closeJobCancelKind(pendingClose) === 'cancel'
-      ? serverOpen
-        ? attentionRows([pendingClose])[0]?.confirm ?? null
-        : `Batalkan penutupan "${pendingClose.eventTitle}"? ${CLOSED_ON_SERVER} Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.`
-      : null;
+    cardConfirm && event?.status !== 'open' ? cardConfirm.replace(CARD_STAYS_OPEN, CLOSED_ON_SERVER) : cardConfirm;
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const cancelClose = async (jobId: string) => {

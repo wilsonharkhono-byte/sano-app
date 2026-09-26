@@ -75,8 +75,10 @@ import {
   enqueueClose,
   markCleanedUp,
   markClosedElsewhere,
+  markClosureMediaInserted,
   markCloseOutcome,
   markUnrecoverable,
+  markUploaded,
   recordFailure,
   type CloseJob,
 } from '../../../tools/captureQueue';
@@ -106,6 +108,10 @@ const closeJobWithPhoto = (id: string, eventId: string): CloseJob => enqueueClos
   },
   nowIso: NOW,
 });
+
+/** Its closure photo uploaded and its media row in: the photo is evidence on the event now. */
+const closeJobWithPhotoRowIn = (id: string, eventId: string): CloseJob =>
+  markClosureMediaInserted(markUploaded(closeJobWithPhoto(id, eventId), 'cm1', 1, NOW), NOW);
 
 /** The worker's end state when the RPC answered NOT_OPEN and the lookup read the closer. */
 const supersededJob = (id: string, eventId: string, closedByName: string | null): CloseJob => markCleanedUp(
@@ -252,7 +258,9 @@ describe('a close waiting on this phone', () => {
 describe('a close the server refused, or whose photo vanished', () => {
   const REFUSAL = 'Tandai selesai gagal: Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.';
   const PHOTO_GONE = 'Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru.';
-  const CONFIRM =
+  // The card's own sentences (attentionRows): the photo is promised only once its row is in.
+  const CONFIRM = 'Batalkan penutupan "Retak acian"? Kejadian tetap terbuka.';
+  const CONFIRM_PHOTO_KEPT =
     'Batalkan penutupan "Retak acian"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.';
   let alert: jest.SpyInstance;
   beforeEach(() => {
@@ -280,6 +288,15 @@ describe('a close the server refused, or whose photo vanished', () => {
     await waitFor(() => expect(getSiteEventResult).toHaveBeenCalledTimes(2));
   });
 
+  it("promises the photo stays only once its row is in, in the card's words", async () => {
+    mockEntries = [recordFailure(closeJobWithPhotoRowIn('job1', 'ev1'), REFUSAL, NOW, 'permanent')];
+    const utils = render(<SiteEventDetailScreen />);
+    await waitFor(() => expect(utils.getByText('Batalkan')).toBeTruthy());
+
+    fireEvent.press(utils.getByText('Batalkan'));
+    expect(alert).toHaveBeenCalledWith('Batalkan penutupan', CONFIRM_PHOTO_KEPT, expect.any(Array));
+  });
+
   it('does nothing when the confirmation is declined', async () => {
     mockEntries = [recordFailure(closeJob('job1', 'ev1'), REFUSAL, NOW, 'permanent')];
     const utils = render(<SiteEventDetailScreen />);
@@ -293,9 +310,9 @@ describe('a close the server refused, or whose photo vanished', () => {
     expect(getSiteEventResult).toHaveBeenCalledTimes(1);
   });
 
-  it('never says the event stays open when the server already closed it', async () => {
+  it('never says the event stays open when the server already closed it, and keeps the rest of the card sentence', async () => {
     (getSiteEventResult as jest.Mock).mockResolvedValue({ event: doneEvent('Sari') });
-    mockEntries = [recordFailure(closeJob('job1', 'ev1'), REFUSAL, NOW, 'permanent')];
+    mockEntries = [recordFailure(closeJobWithPhotoRowIn('job1', 'ev1'), REFUSAL, NOW, 'permanent')];
     const utils = render(<SiteEventDetailScreen />);
     await waitFor(() => expect(utils.getByText('Batalkan')).toBeTruthy());
     expect(utils.queryByText('Menunggu kirim')).toBeNull();
