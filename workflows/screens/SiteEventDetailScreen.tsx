@@ -1,10 +1,20 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { ScrollView, View, Text, TouchableOpacity } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, Platform, ScrollView, View, Text, TouchableOpacity } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import Card from '../components/Card';
 import { getSiteEvent, getSiteEventResult, type SiteEventWithMedia } from '../../tools/siteEvents';
+import {
+  acknowledgeCloseEntry,
+  discardEntryLocally,
+  pendingCloseFor,
+  supersededCloseFor,
+  unreadableCloseFor,
+  useCaptureQueueEntries,
+} from '../../tools/captureQueueStore';
+import { retryQueueEntry } from '../../tools/captureQueueWorker';
+import { useProject } from '../hooks/useProject';
 import { gateChipLabel, listGateRefs, listGateStepRefs, stepChipLabel } from '../../tools/gateRefs';
 import { todayIsoLocal } from '../../tools/siteEventRules';
 import { SITE_EVENT_STATUS_LABELS, SITE_EVENT_TYPE_LABELS } from '../../tools/constants';
@@ -14,6 +24,12 @@ import { formStyles as s } from './siteEvent/styles';
 import MediaStrip from './siteEvent/MediaStrip';
 import ClosureForm from './siteEvent/ClosureForm';
 import { detailActions, isOverdue, voStatusText } from './siteEvent/detailModel';
+import {
+  REASON_CLOSE_STATUS_UNREADABLE,
+  attentionRows,
+  closeJobCancelKind,
+  supersededReason,
+} from './siteEvent/captureQueueModel';
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -27,6 +43,16 @@ function Row({ label, value }: { label: string; value: string }) {
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
+
+/**
+ * What the server already did, said wherever a close job on this phone would
+ * otherwise imply the event is still open. An open event only ever becomes
+ * 'done' on the server (097: only a draft can be discarded).
+ */
+const CLOSED_ON_SERVER = 'Kejadian ini sudah ditutup di server.';
+
+/** The clause of the card's Batalkan confirmation (attentionRows) that only holds while the server has the event open. */
+const CARD_STAYS_OPEN = 'Kejadian tetap terbuka.';
 
 /** Shown for a related event when the row is missing or unreadable (RLS), so the id isn't just a raw UUID. */
 function shortId(id: string): string {
@@ -43,6 +69,8 @@ export default function SiteEventDetailScreen() {
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
   const params = (route.params ?? {}) as { eventId?: string; projectId?: string };
+  const { profile } = useProject();
+  const queue = useCaptureQueueEntries(profile?.id ?? null);
 
   const [event, setEvent] = useState<SiteEventWithMedia | null>(null);
   const [gates, setGates] = useState<GateRef[]>([]);
@@ -81,6 +109,116 @@ export default function SiteEventDetailScreen() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Closure spec §4.5: a close job on this phone keeps the server's status on
+  // screen and adds "Menunggu kirim". The moment the job leaves the pending
+  // set (closed, superseded, or cancelled), read the server again rather than
+  // guess what happened there.
+  const pendingClose = event ? pendingCloseFor(queue, event.id) : null;
+  const hadPendingClose = useRef(false);
+  useEffect(() => {
+    const pending = !!pendingClose;
+    if (hadPendingClose.current && !pending) void load();
+    hadPendingClose.current = pending;
+  }, [pendingClose, load]);
+  const [retrying, setRetrying] = useState(false);
+  const retryClose = async () => {
+    if (!profile || !pendingClose) return;
+    setRetrying(true);
+    try {
+      await retryQueueEntry(profile.id, pendingClose.id);
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  // "Coba lagi" and "Batalkan" follow the Beranda card's own rule
+  // (closeJobCancelKind), so no two surfaces offer different ways out of the
+  // same job. "Coba lagi" only on 'retry': a permanent refusal repeats itself
+  // on every attempt, and retryEntry leaves an unrecoverable job as it is.
+  const closeAction = pendingClose ? closeJobCancelKind(pendingClose) : null;
+
+  // "Batalkan" (closure spec §4.6), on 'cancel' and in the card's words
+  // (attentionRows' confirm): a close the server refused, or whose photo
+  // vanished before upload, while no outcome is recorded. Office and principal phones have no queue card, Selesai stays
+  // hidden while the job is pending, and a second close is refused
+  // (CLOSE_ALREADY_PENDING), so without it here such a job would sit on this
+  // screen for good. The job leaves the phone; the event and every photo
+  // already uploaded stay on the server as they are.
+  // The card cannot see the server and says "Kejadian tetap terbuka."; this
+  // screen can, and once the server has closed the event it says that
+  // instead. Everything else stays the card's, including whether the photo is
+  // promised (only once its media row is in).
+  const cardConfirm = pendingClose && closeAction === 'cancel' ? attentionRows([pendingClose])[0]?.confirm ?? null : null;
+  const cancelConfirm =
+    cardConfirm && event?.status !== 'open' ? cardConfirm.replace(CARD_STAYS_OPEN, CLOSED_ON_SERVER) : cardConfirm;
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const cancelClose = async (jobId: string) => {
+    if (!profile) return;
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      const result = await discardEntryLocally(profile.id, jobId);
+      if (result.error) {
+        setCancelError(result.error);
+        return;
+      }
+    } catch (err) {
+      setCancelError((err as Error).message);
+      return;
+    } finally {
+      setCancelling(false);
+    }
+    void load();
+  };
+  const confirmCancelClose = () => {
+    if (!pendingClose || !cancelConfirm) return;
+    const jobId = pendingClose.id;
+    if (Platform?.OS === 'web') {
+      if (window.confirm(cancelConfirm)) void cancelClose(jobId);
+    } else {
+      Alert.alert('Batalkan penutupan', cancelConfirm, [
+        { text: 'Tidak', style: 'cancel' },
+        { text: 'Batalkan', style: 'destructive', onPress: () => void cancelClose(jobId) },
+      ]);
+    }
+  };
+
+  // This phone's queued "Selesai" the server already answered for good
+  // (closeJobCancelKind's 'acknowledge'): superseded - the event was already
+  // closed, and the lookup read who and when - or no longer open with a status
+  // that could not be read (unreadableCloseFor), where nothing about who
+  // closed it was read, so only REASON_CLOSE_STATUS_UNREADABLE is said, never
+  // a "Sudah ditutup oleh ..." sentence. Office and principal phones have no
+  // Beranda queue card, and this screen is shared by every navigator, so
+  // "Mengerti" lives here too: it removes the job, then the screen reads the
+  // server again. A superseded job goes first when both exist for the event,
+  // since it carries what the server said; the unreadable one follows once
+  // that is acknowledged, so neither is hidden for good.
+  const supersededClose = event && !pendingClose ? supersededCloseFor(queue, event.id) : null;
+  const unreadableClose = event && !pendingClose && !supersededClose ? unreadableCloseFor(queue, event.id) : null;
+  const acknowledgeJob = supersededClose ?? unreadableClose;
+  const [acknowledging, setAcknowledging] = useState(false);
+  const [acknowledgeError, setAcknowledgeError] = useState<string | null>(null);
+  const acknowledgeClose = async () => {
+    if (!profile || !acknowledgeJob) return;
+    setAcknowledging(true);
+    setAcknowledgeError(null);
+    try {
+      const result = await acknowledgeCloseEntry(profile.id, acknowledgeJob.id);
+      if (result.error) {
+        setAcknowledgeError(result.error);
+        return;
+      }
+    } catch (err) {
+      setAcknowledgeError((err as Error).message);
+      return;
+    } finally {
+      setAcknowledging(false);
+    }
+    void load();
+  };
 
   const routeNames: string[] = navigation.getState?.()?.routeNames ?? [];
   const goBack = () => {
@@ -140,6 +278,12 @@ export default function SiteEventDetailScreen() {
                 <View style={s.chip}>
                   <Text style={s.chipText}>{SITE_EVENT_STATUS_LABELS[event.status]}</Text>
                 </View>
+                {/* Only while the server still has it open: after that the close is not "needed", only checked. */}
+                {pendingClose && event.status === 'open' ? (
+                  <View style={[s.chip, { borderColor: COLORS.info, backgroundColor: COLORS.infoBg }]}>
+                    <Text style={[s.chipText, { color: COLORS.info }]}>Menunggu kirim</Text>
+                  </View>
+                ) : null}
                 {event.event_type ? (
                   <View style={s.chip}>
                     <Text style={s.chipText}>{SITE_EVENT_TYPE_LABELS[event.event_type]}</Text>
@@ -192,7 +336,7 @@ export default function SiteEventDetailScreen() {
             </Card>
 
             <Card title="Bukti">
-              <MediaStrip media={event.media} />
+              <MediaStrip media={event.media.filter((m) => m.role !== 'closure')} />
               {event.raw_text ? <Text style={s.hint}>Catatan: {event.raw_text}</Text> : null}
               {transcript ? (
                 <>
@@ -223,6 +367,68 @@ export default function SiteEventDetailScreen() {
                   }
                 />
                 {event.closure_note ? <Text style={s.bannerText}>{event.closure_note}</Text> : null}
+                {/* The database proved a closure photo exists; a person judges what it shows (spec §1.1 rule 6). */}
+                <Text style={[s.label, { marginTop: SPACE.sm }]}>Foto penutupan</Text>
+                <MediaStrip media={event.media.filter((m) => m.role === 'closure')} />
+              </Card>
+            ) : null}
+
+            {pendingClose ? (
+              <Card title="Penutupan" borderColor={pendingClose.needsAttention ? COLORS.critical : COLORS.info}>
+                {pendingClose.needsAttention ? (
+                  <>
+                    <Text style={s.errorText}>
+                      Penutupan belum terkirim: {pendingClose.lastError ?? 'gagal setelah beberapa kali percobaan.'}
+                    </Text>
+                    {cancelError ? <Text style={s.errorText}>{cancelError}</Text> : null}
+                    {/* Only where a retry can change the answer (closeAction above). */}
+                    {closeAction === 'retry' ? (
+                      <TouchableOpacity
+                        style={s.secondaryBtn}
+                        onPress={() => void retryClose()}
+                        disabled={retrying}
+                        accessibilityRole="button"
+                      >
+                        <Text style={s.secondaryText}>{retrying ? 'Mencoba…' : 'Coba lagi'}</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    {cancelConfirm ? (
+                      <TouchableOpacity
+                        style={s.dangerBtn}
+                        onPress={confirmCancelClose}
+                        disabled={cancelling}
+                        accessibilityRole="button"
+                      >
+                        <Text style={s.dangerText}>Batalkan</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </>
+                ) : event.status === 'open' ? (
+                  <Text style={s.bannerText}>
+                    Penutupan tersimpan di ponsel ini dan menunggu kirim. Status tetap Terbuka sampai server menerimanya.
+                  </Text>
+                ) : (
+                  <Text style={s.bannerText}>
+                    {CLOSED_ON_SERVER} Penutupan yang tersimpan di ponsel ini akan dicek saat terkirim.
+                  </Text>
+                )}
+              </Card>
+            ) : acknowledgeJob ? (
+              <Card title="Penutupan" borderColor={COLORS.info}>
+                {/* The Beranda card's own sentences: the server's closer, never the queue owner (spec §4.6);
+                    for a status that could not be read, only that the event is no longer open. */}
+                <Text style={s.bannerText}>
+                  {supersededClose ? supersededReason(supersededClose) : REASON_CLOSE_STATUS_UNREADABLE}
+                </Text>
+                {acknowledgeError ? <Text style={s.errorText}>{acknowledgeError}</Text> : null}
+                <TouchableOpacity
+                  style={s.secondaryBtn}
+                  onPress={() => void acknowledgeClose()}
+                  disabled={acknowledging}
+                  accessibilityRole="button"
+                >
+                  <Text style={s.secondaryText}>Mengerti</Text>
+                </TouchableOpacity>
               </Card>
             ) : null}
 
@@ -236,21 +442,23 @@ export default function SiteEventDetailScreen() {
               </TouchableOpacity>
             ) : null}
 
-            {actions.canClose && !closing ? (
+            {/* The same profile condition as the form below: a Selesai that opens nothing is not offered. */}
+            {actions.canClose && !pendingClose && !closing && profile ? (
               <TouchableOpacity style={s.primaryBtn} onPress={() => setClosing(true)} accessibilityRole="button">
                 <Text style={s.primaryText}>Selesai</Text>
               </TouchableOpacity>
             ) : null}
 
-            {actions.canClose && closing ? (
+            {actions.canClose && !pendingClose && closing && profile ? (
               <Card title="Tandai selesai">
                 <ClosureForm
+                  userId={profile.id}
                   eventId={event.id}
                   projectId={event.project_id}
-                  onClosed={() => {
-                    setClosing(false);
-                    void load();
-                  }}
+                  roomId={event.room_id}
+                  eventTitle={event.title ?? 'Kejadian lapangan'}
+                  eventType={event.event_type}
+                  onQueued={() => setClosing(false)}
                   onCancel={() => setClosing(false)}
                 />
               </Card>

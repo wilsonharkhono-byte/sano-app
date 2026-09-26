@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ScrollView, View, Text, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import Header from '../../workflows/components/Header';
 import Card from '../../workflows/components/Card';
 import { useProject } from '../../workflows/hooks/useProject';
@@ -16,6 +16,7 @@ import {
   type ParsedRoomRow,
 } from '../../tools/rooms';
 import { exportRoomLabelSheet } from '../../tools/roomLabelsHtml';
+import { attentionMineRequest } from '../../tools/siteEventAttention';
 import { canSetProjectPhase, setProjectPhase } from '../../tools/projectPhase';
 import { AREA_TYPE_LABELS, PROJECT_PHASES } from '../../tools/constants';
 import type { ProjectPhase, Room } from '../../tools/types';
@@ -32,8 +33,17 @@ export default function RoomsAdminScreen() {
   const { project, profile, refresh } = useProject();
   const { show: toast } = useToast();
   const navigation = useNavigation<any>();
+  const route = useRoute<any>();
 
   const [sub, setSub] = useState<SubModule>('board');
+
+  // A SITE_EVENT_DIGEST tap resolves to this tab (tools/notificationRouting.ts)
+  // with { projectId, attention, mine } (closure spec §5.6): show the board,
+  // whatever sub-screen was open, and hand "Milik saya" to the list.
+  const mineRequest = useMemo(() => attentionMineRequest(route.params), [route.params]);
+  useEffect(() => {
+    if (mineRequest) setSub('board');
+  }, [mineRequest]);
   const [mode, setMode] = useState<Mode>('none');
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
@@ -196,6 +206,11 @@ export default function RoomsAdminScreen() {
         <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
           <RoomBoardView
             projectId={project?.id ?? null}
+            viewerId={profile?.id ?? null}
+            showOwners
+            showDigestHealth
+            mineRequest={mineRequest}
+            onOpenEvent={(eventId, projectId) => navigation.navigate('SiteEventDetail', { eventId, projectId })}
             onOpenRoom={(row) => {
               if (!project || !row.room_code) return;
               navigation.navigate('RoomDetail', { projectCode: project.code, roomCode: row.room_code });

@@ -58,13 +58,19 @@ jest.mock('../captureQueueStore', () => ({
 const upload = jest.fn();
 const insert = jest.fn();
 const invoke = jest.fn();
+const insertClosure = jest.fn();
+const closeRpc = jest.fn();
+const lookupCloser = jest.fn();
 jest.mock('../siteEvents', () => ({
   uploadSiteEventMedia: (...args: unknown[]) => upload(...args),
   insertSiteEvent: (...args: unknown[]) => insert(...args),
   invokeSiteEventAnalysis: (...args: unknown[]) => invoke(...args),
+  insertClosureMedia: (...args: unknown[]) => insertClosure(...args),
+  closeSiteEventRpc: (...args: unknown[]) => closeRpc(...args),
+  lookupSiteEventCloser: (...args: unknown[]) => lookupCloser(...args),
 }));
 
-import { enqueueCapture, recordFailure, type CaptureQueueEntry } from '../captureQueue';
+import { enqueueCapture, enqueueClose, recordFailure, type CaptureQueueEntry, type CloseJob } from '../captureQueue';
 import { deleteLocalMedia } from '../captureQueueStore';
 import {
   retryQueueEntry,
@@ -110,6 +116,9 @@ beforeEach(() => {
   upload.mockReset().mockResolvedValue({ bytesById: { 'e1-m1': 100 } });
   insert.mockReset().mockResolvedValue({});
   invoke.mockReset().mockResolvedValue({ ok: true, code: 'ANALYZED', status: 'draft' });
+  insertClosure.mockReset().mockResolvedValue({});
+  closeRpc.mockReset().mockResolvedValue({ ok: true });
+  lookupCloser.mockReset().mockResolvedValue({ closedByName: 'Budi Santoso', closedAt: '2026-09-17T07:05:00.000Z' });
   stopCaptureQueueWorker();
 });
 
@@ -629,5 +638,182 @@ describe('single-flight, pinned (I7)', () => {
     await flush();
     expect(calls.filter((c) => c.startsWith('loadQueue:')).length).toBe(3);
     expect(store.size).toBe(0);
+  });
+});
+
+// ─── Close jobs (closure spec 2026-09-26 §4.4) ────────────────────────────────
+
+function seedClose(id: string, createdAt: string, opts: { photo?: boolean } = {}): CloseJob {
+  const job = enqueueClose({
+    id, ownerId: USER, eventId: 'ev1', projectId: 'p1', roomId: 'r1', eventTitle: 'Retak acian', note: ' Sudah ditambal ',
+    closurePhoto: opts.photo === false
+      ? null
+      : { id: 'cm1', localUri: 'file:///q/cm1.jpg', kind: 'photo', role: 'closure', mimeType: 'image/jpeg', ext: 'jpg', durationS: null, sortOrder: 0, capturedAt: createdAt },
+    nowIso: createdAt,
+  });
+  store.set(id, job);
+  return job;
+}
+
+const closeJobIn = (id: string): CloseJob => store.get(id) as CloseJob;
+
+describe('a close job', () => {
+  it("uploads into the event's folder, inserts the media row, calls the RPC, in that order, then removes the job", async () => {
+    upload.mockResolvedValueOnce({ bytesById: { cm1: 2048 } });
+    seedClose('job1', '2026-09-17T02:00:00.000Z');
+    startCaptureQueueWorker(USER);
+    await flush();
+    await flush();
+    await flush();
+
+    expect(upload).toHaveBeenCalledWith({ id: 'ev1', projectId: 'p1', media: [expect.objectContaining({ id: 'cm1', role: 'closure' })] });
+    expect(insertClosure).toHaveBeenCalledWith(
+      { id: 'ev1', projectId: 'p1', media: [expect.objectContaining({ id: 'cm1', kind: 'photo', role: 'closure' })] },
+      { cm1: 2048 },
+    );
+    expect(closeRpc).toHaveBeenCalledWith('ev1', 'Sudah ditambal');
+    const order = [upload, insertClosure, closeRpc].map((m) => m.mock.invocationCallOrder[0]);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(lookupCloser).not.toHaveBeenCalled();
+    expect(calls).toContain('removeEntry:job1');
+  });
+
+  it('with no photo, calls only the RPC', async () => {
+    seedClose('job1', '2026-09-17T02:00:00.000Z', { photo: false });
+    startCaptureQueueWorker(USER);
+    await flush();
+    await flush();
+    await flush();
+
+    expect(upload).not.toHaveBeenCalled();
+    expect(insertClosure).not.toHaveBeenCalled();
+    expect(closeRpc).toHaveBeenCalledWith('ev1', 'Sudah ditambal');
+    expect(calls).toContain('removeEntry:job1');
+  });
+
+  it("on NOT_OPEN reads the server, ends superseded with the server's closer, records no failure, and stays until acknowledged", async () => {
+    closeRpc.mockResolvedValueOnce({ notOpen: true });
+    seedClose('job1', '2026-09-17T02:00:00.000Z', { photo: false });
+    startCaptureQueueWorker(USER);
+    await flush();
+    await flush();
+    await flush();
+
+    expect(lookupCloser).toHaveBeenCalledWith('ev1');
+    expect(closeJobIn('job1')).toMatchObject({
+      state: 'superseded',
+      closeOutcome: 'not_open',
+      closedElsewhere: { closedByName: 'Budi Santoso', closedAt: '2026-09-17T07:05:00.000Z' },
+      consecutiveFailures: 0,
+      lastError: null,
+      needsAttention: false,
+    });
+    expect(calls.filter((c) => c.endsWith(':failed'))).toEqual([]);
+    expect(calls).not.toContain('removeEntry:job1');
+
+    triggerDrain();
+    await flush();
+    await flush();
+    expect(closeRpc).toHaveBeenCalledTimes(1);
+    expect(lookupCloser).toHaveBeenCalledTimes(1);
+    expect(store.has('job1')).toBe(true);
+  });
+
+  it('a failed lookup retries only the lookup, never the RPC', async () => {
+    closeRpc.mockResolvedValueOnce({ notOpen: true });
+    lookupCloser.mockResolvedValueOnce({ error: 'jaringan turun', kind: 'transient' });
+    seedClose('job1', '2026-09-17T02:00:00.000Z', { photo: false });
+    startCaptureQueueWorker(USER);
+    await flush();
+    await flush();
+    await flush();
+
+    const failed = closeJobIn('job1');
+    expect(failed).toMatchObject({ state: 'failed', closeOutcome: 'not_open', closedElsewhere: null, consecutiveFailures: 1 });
+    expect(failed.lastError).toBe('Baca status kejadian gagal: jaringan turun');
+
+    store.set('job1', { ...failed, lastAttemptAt: new Date(0).toISOString() });
+    triggerDrain();
+    await flush();
+    await flush();
+    await flush();
+
+    expect(closeRpc).toHaveBeenCalledTimes(1);
+    expect(lookupCloser).toHaveBeenCalledTimes(2);
+    expect(closeJobIn('job1').state).toBe('superseded');
+  });
+
+  /**
+   * Closure spec §4.4, "Lost response": the first RPC landed but its answer
+   * never came back, so the retry meets NOT_OPEN. The job then reads whoever
+   * the server recorded - here the queue owner themself - rather than guess
+   * whose attempt landed, and never calls the RPC a third time.
+   */
+  it('on a lost response, the retry meets NOT_OPEN, reads the server, and ends superseded after exactly two RPC calls', async () => {
+    closeRpc
+      .mockResolvedValueOnce({ error: 'Gagal menyimpan: Network request failed', kind: 'transient' })
+      .mockResolvedValueOnce({ notOpen: true });
+    lookupCloser.mockResolvedValueOnce({ closedByName: 'Wilson', closedAt: '2026-09-17T02:00:05.000Z' });
+    seedClose('job1', '2026-09-17T02:00:00.000Z', { photo: false });
+    startCaptureQueueWorker(USER);
+    await flush();
+    await flush();
+
+    const failed = closeJobIn('job1');
+    expect(failed).toMatchObject({ state: 'failed', closeOutcome: null, consecutiveFailures: 1, lastFailureKind: 'transient' });
+
+    store.set('job1', { ...failed, lastAttemptAt: new Date(0).toISOString() });
+    triggerDrain();
+    await flush();
+    await flush();
+    await flush();
+
+    expect(closeRpc).toHaveBeenCalledTimes(2);
+    expect(lookupCloser).toHaveBeenCalledTimes(1);
+    expect(closeJobIn('job1')).toMatchObject({
+      state: 'superseded',
+      closeOutcome: 'not_open',
+      closedElsewhere: { closedByName: 'Wilson', closedAt: '2026-09-17T02:00:05.000Z' },
+      consecutiveFailures: 0,
+      lastError: null,
+      needsAttention: false,
+    });
+
+    triggerDrain();
+    await flush();
+    await flush();
+    expect(closeRpc).toHaveBeenCalledTimes(2);
+  });
+
+  it('flags a photo refusal at once, carrying the mapped copy', async () => {
+    closeRpc.mockResolvedValueOnce({
+      error: 'Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.',
+      kind: 'permanent',
+    });
+    seedClose('job1', '2026-09-17T02:00:00.000Z', { photo: false });
+    startCaptureQueueWorker(USER);
+    await flush();
+    await flush();
+
+    expect(closeJobIn('job1')).toMatchObject({
+      state: 'failed', needsAttention: true, lastFailureKind: 'permanent', consecutiveFailures: 1, closeOutcome: null,
+      lastError: 'Tandai selesai gagal: Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.',
+    });
+  });
+
+  it('a network error on the RPC flags only after five in a row', async () => {
+    closeRpc.mockResolvedValue({ error: 'Gagal menyimpan: Network request failed', kind: 'transient' });
+    seedClose('job1', '2026-09-17T02:00:00.000Z', { photo: false });
+    for (let i = 1; i <= 5; i++) {
+      store.set('job1', { ...closeJobIn('job1'), lastAttemptAt: new Date(0).toISOString() });
+      startCaptureQueueWorker(USER);
+      // eslint-disable-next-line no-await-in-loop
+      await flush();
+      // eslint-disable-next-line no-await-in-loop
+      await flush();
+      stopCaptureQueueWorker();
+      expect(closeJobIn('job1')).toMatchObject({ consecutiveFailures: i, needsAttention: i === 5 });
+    }
+    expect(closeRpc).toHaveBeenCalledTimes(5);
   });
 });

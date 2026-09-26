@@ -2,9 +2,13 @@
 
 import {
   draftReadyCount,
+  isCloseStatusUnreadable,
   waitingCount,
+  type CaptureJob,
   type CaptureQueueEntry,
+  type CloseJob,
 } from '../../../tools/captureQueue';
+import { formatWibShort } from '../../../tools/timeWindow';
 
 /**
  * "Antrean: N menunggu sinyal · M terkirim ke server, menunggu analisis"
@@ -50,16 +54,26 @@ export const WEB_QUEUE_WARNING =
 export const WEB_QUEUED_TOAST =
   'Dikirim dari tab ini. Jangan tutup halaman sampai laporan muncul di Draf menunggu.';
 
-export interface AttentionRow {
+interface AttentionRowBase {
   id: string;
   title: string;
   reason: string;
-  /**
-   * 'retry' offers "Coba lagi"; 'discard' offers "Buang" - only where there
-   * is genuinely nothing left to retry AND nothing on the server to lose.
-   */
-  action: 'retry' | 'discard';
 }
+
+/**
+ * `action`: 'retry' offers "Coba lagi". 'discard' offers "Buang" - only where
+ * there is genuinely nothing left to retry AND nothing on the server to lose.
+ * 'cancel' offers "Batalkan" on a close job the server refused or whose photo
+ * vanished; the event stays open. 'acknowledge' offers "Mengerti" on a close
+ * job that found the event already closed, or no longer open with a status it
+ * could not read (closeJobCancelKind).
+ *
+ * `confirm`: the confirmation a 'cancel' row asks before acting - always
+ * present on that row, absent on every other.
+ */
+export type AttentionRow =
+  | (AttentionRowBase & { action: 'retry' | 'discard' | 'acknowledge'; confirm?: undefined })
+  | (AttentionRowBase & { action: 'cancel'; confirm: string });
 
 const FALLBACK_TITLE = 'Laporan tanpa catatan';
 const FALLBACK_REASON = 'Gagal setelah beberapa kali percobaan. Ketuk untuk mencoba lagi.';
@@ -74,31 +88,102 @@ const FALLBACK_REASON = 'Gagal setelah beberapa kali percobaan. Ketuk untuk menc
 const REASON_ALREADY_SENT = 'Sudah terkirim ke server; buka Draf menunggu.';
 
 /**
- * Beranda's "Perlu perhatian" list: every entry flagged after 5 consecutive
- * failures, by a permanent refusal, or by missing local media.
+ * A close job whose RPC answered NOT_OPEN and whose status read was then
+ * refused for good (isCloseStatusUnreadable). Only what is known: the event is
+ * not open any more. Never who closed it - nothing was read.
+ */
+export const REASON_CLOSE_STATUS_UNREADABLE = 'Kejadian sudah tidak terbuka di server; statusnya tidak bisa dibaca.';
+
+/**
+ * The one rule for what a person can do with a close job, for every surface
+ * that shows one (the Beranda card here; the detail screen next), so no two
+ * surfaces offer different ways out of the same job:
  *
- * "Buang" is offered in exactly two cases, and both mean the same thing: the
- * report never reached the server and no further attempt can change that -
- * its local media is gone (unrecoverable), or the server refused it with a
- * decision rather than a hiccup (lastFailureKind 'permanent': a revoked
- * project assignment, an RLS refusal, an oversize file). Without this a
- * permanently-refused report would be stuck behind a "Coba lagi" that can
- * only ever fail again.
+ * - 'acknowledge' ("Mengerti"): the server already answered for good - the
+ *   job is superseded, or its event is no longer open and its status cannot
+ *   be read. Retrying repeats the answer; cancelling would hide it.
+ * - 'cancel' ("Batalkan"): no outcome is recorded and no attempt can succeed -
+ *   a permanent refusal, or the photo vanished before upload. The event stays
+ *   open on the server.
+ * - 'retry' ("Coba lagi"): flagged for attention after transient failures (or
+ *   a failure after the close already landed, where only cleanup is left).
+ * - null: nothing to offer - the job is on its way by itself, or done.
+ */
+export function closeJobCancelKind(
+  job: Pick<CloseJob, 'state' | 'needsAttention' | 'unrecoverable' | 'lastFailureKind' | 'closeOutcome'>,
+): 'retry' | 'cancel' | 'acknowledge' | null {
+  if (job.state === 'superseded' || isCloseStatusUnreadable(job)) return 'acknowledge';
+  if (!job.needsAttention) return null;
+  if (job.closeOutcome === null && (job.unrecoverable || job.lastFailureKind === 'permanent')) return 'cancel';
+  return 'retry';
+}
+
+/**
+ * Beranda's "Perlu perhatian" list: every capture entry flagged after 5
+ * consecutive failures, by a permanent refusal, or by missing local media -
+ * plus every close job closeJobCancelKind offers an action on.
  *
- * An entry whose event IS inserted never gets "Buang", whatever else is true
- * of it: the row exists on the server, so discarding the local copy would
- * only hide it from the supervisor who is trying to act on it.
+ * A capture row offers "Buang" in exactly two cases, and both mean the same
+ * thing: the report never reached the server and no further attempt can
+ * change that - its local media is gone (unrecoverable), or the server
+ * refused it with a decision rather than a hiccup. An entry whose event IS
+ * inserted never gets "Buang", whatever else is true of it.
  */
 export function attentionRows(entries: ReadonlyArray<CaptureQueueEntry>): AttentionRow[] {
-  return entries
-    .filter((e) => e.needsAttention)
-    .map((e) => ({
-      id: e.id,
-      title: e.rawText && e.rawText.trim() ? e.rawText.trim() : FALLBACK_TITLE,
-      reason: e.eventInserted ? REASON_ALREADY_SENT : e.lastError ?? FALLBACK_REASON,
-      action:
-        !e.eventInserted && (e.unrecoverable || e.lastFailureKind === 'permanent')
-          ? ('discard' as const)
-          : ('retry' as const),
-    }));
+  const rows: AttentionRow[] = [];
+  for (const e of entries) {
+    if (e.kind === 'capture') {
+      if (e.needsAttention) rows.push(captureRow(e));
+      continue;
+    }
+    const action = closeJobCancelKind(e);
+    if (action) rows.push(closeRow(e, action));
+  }
+  return rows;
+}
+
+function captureRow(e: CaptureJob): AttentionRow {
+  return {
+    id: e.id,
+    title: e.rawText && e.rawText.trim() ? e.rawText.trim() : FALLBACK_TITLE,
+    reason: e.eventInserted ? REASON_ALREADY_SENT : e.lastError ?? FALLBACK_REASON,
+    action:
+      !e.eventInserted && (e.unrecoverable || e.lastFailureKind === 'permanent')
+        ? ('discard' as const)
+        : ('retry' as const),
+  };
+}
+
+/** "Sudah ditutup oleh {name} pada {17 Sep 14.05}." - the server's closer, never the queue owner (spec §1.1 rule 3). */
+export function supersededReason(job: Pick<CloseJob, 'closedElsewhere'>): string {
+  const info = job.closedElsewhere;
+  if (!info) return 'Sudah ditutup.';
+  const when = formatWibShort(info.closedAt);
+  return info.closedByName ? `Sudah ditutup oleh ${info.closedByName} pada ${when}.` : `Sudah ditutup pada ${when}.`;
+}
+
+function closeRow(e: CloseJob, action: 'retry' | 'cancel' | 'acknowledge'): AttentionRow {
+  if (e.state === 'superseded') {
+    return { id: e.id, title: e.eventTitle, reason: supersededReason(e), action: 'acknowledge' };
+  }
+  const title = `Selesai: ${e.eventTitle}`;
+  if (action === 'acknowledge') {
+    return { id: e.id, title, reason: REASON_CLOSE_STATUS_UNREADABLE, action };
+  }
+  // A flagged job always carries lastError: recordFailure and markUnrecoverable
+  // (whose close-job reason is REASON_CLOSURE_PHOTO_MISSING) both set it, and
+  // every write that clears it clears needsAttention too. The fallback is for
+  // the type only, the same one every other row uses.
+  const reason = e.lastError ?? FALLBACK_REASON;
+  if (action === 'retry') {
+    return { id: e.id, title, reason, action };
+  }
+  // Only a photo whose media row is in stays on the event as evidence. One
+  // that was uploaded but whose row was refused is in storage and on no
+  // event, so promising it would be false; with no photo there is nothing to
+  // promise.
+  const confirm = e.mediaInserted
+    ? `Batalkan penutupan "${e.eventTitle}"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.`
+    : `Batalkan penutupan "${e.eventTitle}"? Kejadian tetap terbuka.`;
+  return { id: e.id, title, reason, action: 'cancel', confirm };
 }

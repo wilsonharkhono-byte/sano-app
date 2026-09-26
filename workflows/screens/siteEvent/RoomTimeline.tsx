@@ -1,14 +1,15 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Card from '../../components/Card';
 import AssignmentEditor from './AssignmentEditor';
 import {
-  canClose, canEditAssignment, dueLabel, isOverdue, sortTimeline,
+  canClose, canEditAssignment, dueLabel, isOverdue, pendingCloseBadge, pendingCloseLeft, sortTimeline,
 } from './timelineModel';
 import { listRoomTimeline, signedMediaUrl, updateSiteEventAssignment, type TimelineEventRow } from '../../../tools/siteEvents';
 import { getProjectTeamResult, type TeamMember } from '../../../tools/projectManagement';
+import { pendingCloseFor, useCaptureQueueEntries } from '../../../tools/captureQueueStore';
 import { SITE_EVENT_STATUS_LABELS, SITE_EVENT_TYPE_LABELS } from '../../../tools/constants';
 import type { SiteEventStatus } from '../../../tools/types';
 import { COLORS, FONTS, RADIUS_SM, SPACE, TYPE } from '../../theme';
@@ -61,6 +62,9 @@ export default function RoomTimeline(props: {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<{ id: string; message: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Close jobs still on this phone (closure spec §4.5). The status badge
+  // keeps the server's word; a pending close only adds "Menunggu kirim".
+  const queue = useCaptureQueueEntries(viewer?.id ?? null);
 
   // Guards state writes after three awaits (load) or one (save) land after
   // the screen has lost focus or unmounted.
@@ -115,6 +119,26 @@ export default function RoomTimeline(props: {
       return () => { alive.current = false; };
     }, [load]),
   );
+
+  // Closure spec §4.5, as on the detail screen: the moment a close of an event
+  // in this room leaves the pending set (closed, superseded, cancelled, or no
+  // longer able to send) while the timeline is on screen, read the server
+  // again - otherwise the stale "Terbuka" and "Selesai" come back as soon as
+  // the "Menunggu kirim" badge goes. A job carries its event's room, and an
+  // event never changes room. Off screen, the focus refetch above covers it.
+  const pendingKey = useMemo(() => {
+    const ids = new Set<string>();
+    for (const job of queue) {
+      if (job.kind === 'close' && job.roomId === roomId && pendingCloseFor(queue, job.eventId)) ids.add(job.eventId);
+    }
+    return [...ids].sort().join(',');
+  }, [queue, roomId]);
+  const hadPendingCloses = useRef<string[]>([]);
+  useEffect(() => {
+    const pending = pendingKey ? pendingKey.split(',') : [];
+    if (alive.current && pendingCloseLeft(hadPendingCloses.current, pending)) void load();
+    hadPendingCloses.current = pending;
+  }, [pendingKey, load]);
 
   const ordered = useMemo(() => sortTimeline(rows ?? []), [rows]);
 
@@ -175,6 +199,8 @@ export default function RoomTimeline(props: {
         const open = expanded.has(e.id);
         const transcript = e.transcript_edited ?? e.transcript;
         const late = isOverdue(e, today);
+        const pendingClose = pendingCloseFor(queue, e.id);
+        const closeBadge = pendingCloseBadge(pendingClose);
         return (
           <View key={e.id} style={styles.row}>
             <View style={styles.head}>
@@ -192,6 +218,13 @@ export default function RoomTimeline(props: {
                       {SITE_EVENT_STATUS_LABELS[e.status]}
                     </Text>
                   </View>
+                  {closeBadge && (
+                    <View style={[styles.badge, pendingClose?.needsAttention ? styles.failedBadge : styles.pendingBadge]}>
+                      <Text style={[styles.badgeText, pendingClose?.needsAttention ? styles.failedBadgeText : styles.pendingBadgeText]}>
+                        {closeBadge}
+                      </Text>
+                    </View>
+                  )}
                 </View>
                 <Text style={styles.meta}>
                   {e.event_type ? SITE_EVENT_TYPE_LABELS[e.event_type] : 'Draf'}
@@ -214,7 +247,7 @@ export default function RoomTimeline(props: {
             {open && transcript && <Text style={styles.transcript}>{transcript}</Text>}
 
             <View style={styles.actions}>
-              {canClose(e) && onOpenEvent && (
+              {canClose(e, !!pendingClose) && onOpenEvent && (
                 <TouchableOpacity
                   style={styles.actionBtn}
                   onPress={() => onOpenEvent(e.id)}
@@ -287,9 +320,13 @@ const styles = StyleSheet.create({
   thumbEmpty: { alignItems: 'center', justifyContent: 'center' },
   headBody: { flex: 1 },
   title: { fontSize: TYPE.base, fontFamily: FONTS.semibold, color: COLORS.text },
-  badgeRow: { flexDirection: 'row', marginTop: 3 },
+  badgeRow: { flexDirection: 'row', gap: SPACE.xs, marginTop: 3 },
   badge: { paddingHorizontal: SPACE.sm, paddingVertical: 2, borderRadius: RADIUS_SM },
   badgeText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold },
+  pendingBadge: { backgroundColor: COLORS.infoBg },
+  pendingBadgeText: { color: COLORS.info },
+  failedBadge: { backgroundColor: COLORS.criticalBg },
+  failedBadgeText: { color: COLORS.critical },
   meta: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 1 },
   due: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.textSec, marginTop: 2 },
   dueLate: { color: COLORS.high, fontFamily: FONTS.bold },

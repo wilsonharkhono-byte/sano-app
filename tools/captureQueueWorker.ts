@@ -50,20 +50,29 @@ import {
   isReadyToAttempt,
   markAnalysisRequested,
   markCleanedUp,
+  markClosedElsewhere,
+  markCloseOutcome,
+  markClosureMediaInserted,
   markInserted,
   markUploaded,
+  mediaCarrierId,
   nextStep,
   recordFailure,
   retryEntry,
   toLocalMedia,
   toNewSiteEvent,
+  type CaptureJob,
   type CaptureQueueEntry,
+  type CloseJob,
   type QueueAction,
 } from './captureQueue';
 import { deleteLocalMedia, loadQueue, removeEntry, saveEntry } from './captureQueueStore';
 import {
+  closeSiteEventRpc,
+  insertClosureMedia,
   insertSiteEvent,
   invokeSiteEventAnalysis,
+  lookupSiteEventCloser,
   uploadSiteEventMedia,
   type SiteEventErrorKind,
 } from './siteEvents';
@@ -325,37 +334,65 @@ async function runStep(userId: string, entry: CaptureQueueEntry, step: QueueActi
     case 'upload': {
       const item = entry.media.find((m) => m.id === step.mediaId);
       if (!item) return markUploaded(entry, step.mediaId, null, now); // defensive; nextStep only asks for media that exists
-      const result = await uploadSiteEventMedia({ id: entry.id, projectId: entry.projectId, media: [toLocalMedia(item)] });
+      // A close job's media belongs in its EVENT's folder, not under the job id:
+      // 097's path guard refuses a media row outside site-events/{projectId}/{eventId}/.
+      const result = await uploadSiteEventMedia({ id: mediaCarrierId(entry), projectId: entry.projectId, media: [toLocalMedia(item)] });
       if (result.error) throw new StepFailure(result.error, result.kind);
       return markUploaded(entry, item.id, result.bytesById[item.id] ?? null, now);
     }
     case 'insert': {
-      const result = await insertSiteEvent(toNewSiteEvent(entry), bytesById(entry));
+      const job = asCapture(entry, step);
+      const result = await insertSiteEvent(toNewSiteEvent(job), bytesById(job));
       if (result.error) throw new StepFailure(result.error, result.kind);
-      return markInserted(entry, now);
+      return markInserted(job, now);
     }
     case 'invoke': {
+      const job = asCapture(entry, step);
       try {
-        const result = await invokeSiteEventAnalysis(entry.id, { workGroupNames: entry.workGroupNames });
+        const result = await invokeSiteEventAnalysis(job.id, { workGroupNames: job.workGroupNames });
         if (!result.ok) {
-          console.warn('[captureQueueWorker] analysis deferred for', entry.id, result.code, result.error);
+          console.warn('[captureQueueWorker] analysis deferred for', job.id, result.code, result.error);
         }
       } catch (err) {
-        console.warn('[captureQueueWorker] analysis invoke failed for', entry.id, (err as Error).message);
+        console.warn('[captureQueueWorker] analysis invoke failed for', job.id, (err as Error).message);
       }
-      return markAnalysisRequested(entry, now);
+      return markAnalysisRequested(job, now);
+    }
+    case 'insert_media': {
+      const job = asClose(entry, step);
+      const result = await insertClosureMedia(
+        { id: job.eventId, projectId: job.projectId, media: job.media.map(toLocalMedia) },
+        bytesById(job),
+      );
+      if (result.error) throw new StepFailure(result.error, result.kind);
+      return markClosureMediaInserted(job, now);
+    }
+    case 'close': {
+      const job = asClose(entry, step);
+      const result = await closeSiteEventRpc(job.eventId, job.note);
+      // Somebody closed it first. An outcome, not a failure: no strike, no
+      // lastError, and nextStep never asks for the RPC again (closure spec §4.4).
+      if ('notOpen' in result) return markCloseOutcome(job, 'not_open', now);
+      if ('error' in result) throw new StepFailure(result.error, result.kind);
+      return markCloseOutcome(job, 'closed', now);
+    }
+    case 'lookup_closer': {
+      const job = asClose(entry, step);
+      const result = await lookupSiteEventCloser(job.eventId);
+      if ('error' in result) throw new StepFailure(result.error, result.kind);
+      return markClosedElsewhere(job, result, now);
     }
     case 'cleanup': {
       try {
         await deleteLocalMedia(userId, entry.id);
       } catch (err) {
-        // The event is already on the server by the time cleanup runs. A
-        // locked file or an unmounted SD card must not re-label a delivered
-        // report as "menunggu sinyal" - which is what recording this as a
-        // step failure would do, and there would be no way out of it:
-        // discardEntryLocally refuses an entry whose event is inserted, and
-        // "Coba lagi" would only re-run the same failing delete. The store's
-        // orphan sweep collects the directory on a later loadQueue instead.
+        // The server already has what this job delivered by the time cleanup
+        // runs. A locked file or an unmounted SD card must not re-label it as
+        // "menunggu sinyal" - which is what recording this as a step failure
+        // would do, and there would be no way out of it: discardEntryLocally
+        // refuses a delivered job, and "Coba lagi" would only re-run the same
+        // failing delete. The store's orphan sweep collects the directory on a
+        // later loadQueue instead.
         console.warn('[captureQueueWorker] local cleanup failed for', entry.id, (err as Error).message);
       }
       return markCleanedUp(entry, now);
@@ -365,10 +402,24 @@ async function runStep(userId: string, entry: CaptureQueueEntry, step: QueueActi
   }
 }
 
+/** nextStep never mixes kinds; a mismatch here is a bug, reported permanently rather than retried forever. */
+function asCapture(entry: CaptureQueueEntry, step: QueueAction): CaptureJob {
+  if (entry.kind !== 'capture') throw new StepFailure(`Langkah ${step.kind} bukan untuk penutupan kejadian.`, 'permanent');
+  return entry;
+}
+
+function asClose(entry: CaptureQueueEntry, step: QueueAction): CloseJob {
+  if (entry.kind !== 'close') throw new StepFailure(`Langkah ${step.kind} bukan untuk laporan baru.`, 'permanent');
+  return entry;
+}
+
 const STEP_LABEL: Record<Exclude<QueueAction['kind'], 'none'>, string> = {
   upload: 'Unggah berkas',
   insert: 'Simpan kejadian',
   invoke: 'Jalankan analisis',
+  insert_media: 'Simpan foto penutupan',
+  close: 'Tandai selesai',
+  lookup_closer: 'Baca status kejadian',
   cleanup: 'Bersihkan berkas lokal',
 };
 
