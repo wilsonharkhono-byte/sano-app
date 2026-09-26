@@ -10,6 +10,7 @@
 //   POScreen        → Procurement*    Procurement  Procurement (Gate2/PO)
 //   ReceiptScreen   → Terima          Terima*      Terima
 //   SiteEventDetail → SiteEventDetail SiteEventDetail SiteEventDetail
+//   RoomBoard       → RoomBoard       Rooms        Rooms
 //
 //   (* route absent from that role's nav — caller's try/catch falls back to
 //    the Notifikasi tab; out of scope here.)
@@ -48,6 +49,9 @@ const BASE_ROUTE_MAP: Record<string, string> = {
   // PROGRESS_CLAIM_RETURNED / PROGRESS_CLAIM_VERIFIED (104) reach whoever
   // submitted: the supervisor's Progres tab, which reads module = 'progress'.
   ProgressClaim: 'Progres',
+  // SITE_EVENT_DIGEST (migration 106) opens Papan Ruangan with the "Perlu
+  // ditindak" list; params carry projectId, attention and mine.
+  RoomBoard: 'RoomBoard',
 };
 
 /** Every deeplink_screen a server-side notification is known to use. */
@@ -67,5 +71,8 @@ export function resolveNotificationRoute(
   // initialSection = 'klaim', which Laporan and Reports both read.
   if (role === 'supervisor' && target === 'Reports') return 'Laporan';
   if (role !== 'supervisor' && target === 'Progres') return 'Reports';
+  // Only the supervisor navigator registers RoomBoard; the office and
+  // principal navigators show the same board as their "Ruangan" tab.
+  if (role !== 'supervisor' && target === 'RoomBoard') return 'Rooms';
   return target;
 }
