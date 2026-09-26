@@ -88,9 +88,26 @@ export function filterMine(rows: ReadonlyArray<AttentionRow>, viewerId: string |
   return rows.filter((r) => r.owner_id === viewerId);
 }
 
-/** "Perlu ditindak (n)", or "(200 teratas)" when the read hit the cap. */
-export function attentionHeading(totalRead: number, shown: number): string {
-  return totalRead >= ATTENTION_LIMIT ? `Perlu ditindak (${ATTENTION_LIMIT} teratas)` : `Perlu ditindak (${shown})`;
+/**
+ * "Perlu ditindak (n)", or "(200 teratas)" when the read hit the cap. With
+ * "Milik saya" on over a capped read the filter saw only those 200 rows, so
+ * the count says so: "(n dari 200 teratas)", never a bare n that reads as
+ * everything the viewer owns (CLAUDE.md §12).
+ */
+export function attentionHeading(totalRead: number, shown: number, mine: boolean): string {
+  if (totalRead < ATTENTION_LIMIT) return `Perlu ditindak (${shown})`;
+  return mine ? `Perlu ditindak (${shown} dari ${ATTENTION_LIMIT} teratas)` : `Perlu ditindak (${ATTENTION_LIMIT} teratas)`;
+}
+
+/**
+ * The empty text. With "Milik saya" on over a capped read, the viewer may
+ * well own items beyond the first 200: say only what the read can prove.
+ */
+export function attentionEmptyText(totalRead: number, mine: boolean): string {
+  if (!mine) return 'Tidak ada yang perlu ditindak.';
+  return totalRead >= ATTENTION_LIMIT
+    ? `Tidak ada tugas Anda di ${ATTENTION_LIMIT} teratas.`
+    : 'Tidak ada tugas Anda yang perlu ditindak.';
 }
 
 /** "LT1-R01 · Kamar Tidur 1", or the name alone when the room has no code. */

@@ -11,6 +11,7 @@ import {
   ATTENTION_COLUMNS,
   ATTENTION_LIMIT,
   attentionChips,
+  attentionEmptyText,
   attentionHeading,
   attentionRoomLabel,
   filterMine,
@@ -101,9 +102,21 @@ describe('pure helpers', () => {
   });
 
   it('titles the list with the shown count, or says it was capped', () => {
-    expect(attentionHeading(3, 3)).toBe('Perlu ditindak (3)');
-    expect(attentionHeading(3, 1)).toBe('Perlu ditindak (1)');
-    expect(attentionHeading(200, 200)).toBe('Perlu ditindak (200 teratas)');
+    expect(attentionHeading(3, 3, false)).toBe('Perlu ditindak (3)');
+    expect(attentionHeading(3, 1, true)).toBe('Perlu ditindak (1)');
+    expect(attentionHeading(200, 200, false)).toBe('Perlu ditindak (200 teratas)');
+  });
+
+  it('says Milik saya over a capped read counts only within the 200 read', () => {
+    expect(attentionHeading(200, 7, true)).toBe('Perlu ditindak (7 dari 200 teratas)');
+    expect(attentionHeading(200, 0, true)).toBe('Perlu ditindak (0 dari 200 teratas)');
+  });
+
+  it('never claims the viewer has nothing when the read was capped', () => {
+    expect(attentionEmptyText(0, false)).toBe('Tidak ada yang perlu ditindak.');
+    expect(attentionEmptyText(0, true)).toBe('Tidak ada tugas Anda yang perlu ditindak.');
+    expect(attentionEmptyText(12, true)).toBe('Tidak ada tugas Anda yang perlu ditindak.');
+    expect(attentionEmptyText(200, true)).toBe('Tidak ada tugas Anda di 200 teratas.');
   });
 
   it('labels a room by code and name, or by name alone', () => {

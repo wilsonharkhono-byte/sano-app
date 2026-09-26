@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import Card from '../../../workflows/components/Card';
 import {
-  attentionChips, attentionHeading, attentionRoomLabel, filterMine, listSiteEventAttention,
+  attentionChips, attentionEmptyText, attentionHeading, attentionRoomLabel, filterMine, listSiteEventAttention,
   type AttentionChipTone, type AttentionRow,
 } from '../../../tools/siteEventAttention';
 import { COLORS, FONTS, RADIUS_SM, SPACE, TYPE } from '../../../workflows/theme';
@@ -68,7 +68,7 @@ export default function AttentionList(props: AttentionListProps) {
   }, [load, reloadKey]);
 
   const shown = useMemo(() => (rows ? (mine ? filterMine(rows, viewerId) : rows) : []), [rows, mine, viewerId]);
-  const title = rows ? attentionHeading(rows.length, shown.length) : 'Perlu ditindak';
+  const title = rows ? attentionHeading(rows.length, shown.length, mine) : 'Perlu ditindak';
 
   const minePill = (
     <TouchableOpacity
@@ -96,7 +96,7 @@ export default function AttentionList(props: AttentionListProps) {
       ) : null}
 
       {!loading && error === null && shown.length === 0 ? (
-        <Text style={styles.empty}>{mine ? 'Tidak ada tugas Anda yang perlu ditindak.' : 'Tidak ada yang perlu ditindak.'}</Text>
+        <Text style={styles.empty}>{attentionEmptyText(rows?.length ?? 0, mine)}</Text>
       ) : null}
 
       {!loading && error === null

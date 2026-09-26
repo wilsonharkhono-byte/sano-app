@@ -137,6 +137,26 @@ describe('AttentionList', () => {
     await waitFor(() => expect(utils.getByText('Perlu ditindak (200 teratas)')).toBeTruthy());
   });
 
+  it('counts Milik saya within the 200 read, not as the whole list, when capped', async () => {
+    (listSiteEventAttention as jest.Mock).mockResolvedValue({
+      rows: Array.from({ length: 200 }, (_, i) => row({ event_id: `e${i}`, title: `Item ${i}`, owner_id: i < 2 ? 'u1' : 'u2' })),
+    });
+    const utils = renderList();
+    await waitFor(() => expect(utils.getByText('Perlu ditindak (200 teratas)')).toBeTruthy());
+    fireEvent.press(utils.getByLabelText('Milik saya'));
+    expect(utils.getByText('Perlu ditindak (2 dari 200 teratas)')).toBeTruthy();
+  });
+
+  it('with Milik saya on over a capped read, says none are in the 200, never that the viewer has none', async () => {
+    (listSiteEventAttention as jest.Mock).mockResolvedValue({
+      rows: Array.from({ length: 200 }, (_, i) => row({ event_id: `e${i}`, title: `Item ${i}`, owner_id: 'u2' })),
+    });
+    const utils = renderList({ mineRequest: { mine: true } });
+    await waitFor(() => expect(utils.getByText('Tidak ada tugas Anda di 200 teratas.')).toBeTruthy());
+    expect(utils.queryByText('Tidak ada tugas Anda yang perlu ditindak.')).toBeNull();
+    expect(utils.getByText('Perlu ditindak (0 dari 200 teratas)')).toBeTruthy();
+  });
+
   it('refetches when the board bumps reloadKey', async () => {
     const utils = renderList({ reloadKey: 1 });
     await waitFor(() => expect(listSiteEventAttention).toHaveBeenCalledTimes(1));
