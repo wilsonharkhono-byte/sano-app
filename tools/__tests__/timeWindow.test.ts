@@ -5,6 +5,8 @@ import {
   isRealCalendarDate,
   addCalendarDays,
   todayIsoWIB,
+  formatWibShort,
+  WIB_MONTH_ABBR,
 } from '../timeWindow';
 
 describe('wibStartOfDayIso', () => {
@@ -159,5 +161,36 @@ describe('todayIsoWIB', () => {
     const today = todayIsoWIB(new Date('2026-02-28T20:00:00.000Z'));
     expect(today).toBe('2026-03-01');
     expect(isRealCalendarDate(today)).toBe(true);
+  });
+});
+
+/**
+ * Closure spec 2026-09-26 §4.6 and §5.6: the superseded close card and the
+ * digest health line print an instant as "17 Sep 14.05" in WIB. Fixed +7 h
+ * arithmetic, like todayIsoWIB, so the day and the month roll at 17:00 UTC.
+ */
+describe('formatWibShort', () => {
+  it('prints day, Indonesian month and HH.mm in WIB', () => {
+    expect(formatWibShort('2026-09-17T07:05:00.000Z')).toBe('17 Sep 14.05');
+    expect(formatWibShort('2026-09-17T00:00:00.000Z')).toBe('17 Sep 07.00');
+  });
+
+  it('rolls the date at 17:00 UTC, across a month and a year boundary', () => {
+    expect(formatWibShort('2026-09-11T16:59:00.000Z')).toBe('11 Sep 23.59');
+    expect(formatWibShort('2026-09-11T17:00:00.000Z')).toBe('12 Sep 00.00');
+    expect(formatWibShort('2026-01-31T17:30:00.000Z')).toBe('1 Feb 00.30');
+    expect(formatWibShort('2026-12-31T17:00:00.000Z')).toBe('1 Jan 00.00');
+  });
+
+  it('reads an offset timestamp the way Postgres returns one', () => {
+    expect(formatWibShort('2026-08-05T09:15:00+07:00')).toBe('5 Agu 09.15');
+  });
+
+  it('returns an unparseable value unchanged instead of inventing a time', () => {
+    expect(formatWibShort('bukan tanggal')).toBe('bukan tanggal');
+  });
+
+  it('spells the twelve months the Indonesian way', () => {
+    expect(WIB_MONTH_ABBR).toEqual(['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des']);
   });
 });
