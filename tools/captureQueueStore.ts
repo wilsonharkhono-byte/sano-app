@@ -436,21 +436,25 @@ export type EnqueueCloseResult =
 export const CLOSE_ALREADY_PENDING = 'Penutupan kejadian ini sudah menunggu kirim.';
 
 /**
- * The event's close job while it will still try: not `done`, not
+ * The event's close job while it will still try, or null: not `done`, not
  * `superseded`, and not one whose event is no longer open with a status that
  * cannot be read (captureQueue.ts's isCloseStatusUnreadable - nothing can send
  * that job any more; unreadableCloseFor finds it). A job the server refused
  * before any outcome IS still pending: the event is still open on the server
- * and the person has to act on the job ("Coba lagi" or "Batalkan").
+ * and the person has to act on the job (closeJobCancelKind: "Batalkan" on a
+ * permanent refusal, "Coba lagi" after transient ones). Null, like
+ * supersededCloseFor and unreadableCloseFor, so callers test it the same way.
  */
-export function pendingCloseFor(entries: ReadonlyArray<CaptureQueueEntry>, eventId: string): CloseJob | undefined {
-  return entries.find(
-    (e): e is CloseJob =>
-      e.kind === 'close' &&
-      e.eventId === eventId &&
-      e.state !== 'done' &&
-      e.state !== 'superseded' &&
-      !isCloseStatusUnreadable(e),
+export function pendingCloseFor(entries: ReadonlyArray<CaptureQueueEntry>, eventId: string): CloseJob | null {
+  return (
+    entries.find(
+      (e): e is CloseJob =>
+        e.kind === 'close' &&
+        e.eventId === eventId &&
+        e.state !== 'done' &&
+        e.state !== 'superseded' &&
+        !isCloseStatusUnreadable(e),
+    ) ?? null
   );
 }
 

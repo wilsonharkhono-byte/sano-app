@@ -114,10 +114,10 @@ export default function SiteEventDetailScreen() {
   // screen and adds "Menunggu kirim". The moment the job leaves the pending
   // set (closed, superseded, or cancelled), read the server again rather than
   // guess what happened there.
-  const pendingClose = event ? pendingCloseFor(queue, event.id) : undefined;
+  const pendingClose = event ? pendingCloseFor(queue, event.id) : null;
   const hadPendingClose = useRef(false);
   useEffect(() => {
-    const pending = pendingClose !== undefined;
+    const pending = !!pendingClose;
     if (hadPendingClose.current && !pending) void load();
     hadPendingClose.current = pending;
   }, [pendingClose, load]);

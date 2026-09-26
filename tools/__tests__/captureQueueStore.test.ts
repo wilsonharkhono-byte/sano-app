@@ -564,19 +564,20 @@ function unreadable(job: CloseJob): CloseJob {
 }
 
 describe('pendingCloseFor', () => {
-  it("returns the event's close job unless it is done or superseded", async () => {
+  it("returns the event's close job unless it is done or superseded, and null otherwise", async () => {
     const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
     expect(pendingCloseFor([job], 'ev1')).toBe(job);
-    expect(pendingCloseFor([job], 'other')).toBeUndefined();
-    expect(pendingCloseFor([supersede(job)], 'ev1')).toBeUndefined();
+    expect(pendingCloseFor([], 'ev1')).toBeNull();
+    expect(pendingCloseFor([job], 'other')).toBeNull();
+    expect(pendingCloseFor([supersede(job)], 'ev1')).toBeNull();
     const done = markCleanedUp(markCloseOutcome(job, 'closed', '2026-09-17T02:01:00.000Z'), '2026-09-17T02:01:00.000Z');
     expect(done.state).toBe('done');
-    expect(pendingCloseFor([done], 'ev1')).toBeUndefined();
+    expect(pendingCloseFor([done], 'ev1')).toBeNull();
   });
 
   it('does not return a job that will never send: the event is no longer open and its status cannot be read', async () => {
     const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
-    expect(pendingCloseFor([unreadable(job)], 'ev1')).toBeUndefined();
+    expect(pendingCloseFor([unreadable(job)], 'ev1')).toBeNull();
   });
 
   it('still returns a job the server refused before any outcome: the event is still open and the person must act', async () => {
@@ -587,7 +588,7 @@ describe('pendingCloseFor', () => {
 
   it('never mistakes a capture job for a close', async () => {
     const capture = await enqueueNewCapture({ userId: USER, event: event({ id: 'ev1' }), workGroupNames: [], nowIso: '2026-09-11T02:00:01.000Z' });
-    expect(pendingCloseFor([capture], 'ev1')).toBeUndefined();
+    expect(pendingCloseFor([capture], 'ev1')).toBeNull();
   });
 });
 
