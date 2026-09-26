@@ -12,6 +12,7 @@
 // Only the I/O around them is mocked, so a job for another event, or a job
 // in the wrong state, is filtered exactly as it would be in the field.
 import React from 'react';
+import { Alert } from 'react-native';
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 
 const mockNavigate = jest.fn();
@@ -51,6 +52,7 @@ jest.mock('../../../tools/captureQueueStore', () => {
       mockEntries = mockEntries.filter((e) => (e as { id: string }).id !== entryId);
       return {};
     }),
+    discardEntryLocally: jest.fn(async () => ({})),
   };
 });
 jest.mock('../../../tools/captureQueueWorker', () => ({ retryQueueEntry: jest.fn(async () => undefined) }));
@@ -74,11 +76,12 @@ import {
   markCleanedUp,
   markClosedElsewhere,
   markCloseOutcome,
+  markUnrecoverable,
   recordFailure,
   type CloseJob,
 } from '../../../tools/captureQueue';
 import { getSiteEventResult } from '../../../tools/siteEvents';
-import { acknowledgeCloseEntry, useCaptureQueueEntries } from '../../../tools/captureQueueStore';
+import { acknowledgeCloseEntry, discardEntryLocally, useCaptureQueueEntries } from '../../../tools/captureQueueStore';
 import { retryQueueEntry } from '../../../tools/captureQueueWorker';
 import SiteEventDetailScreen from '../SiteEventDetailScreen';
 
@@ -92,6 +95,16 @@ const CLOSED_AT = '2026-09-17T07:05:00.000Z';
 const closeJob = (id: string, eventId: string): CloseJob => enqueueClose({
   id, ownerId: 'u1', eventId, projectId: 'p1', roomId: 'r1', eventTitle: 'Retak acian', note: '',
   closurePhoto: null, nowIso: NOW,
+});
+
+/** A close job whose closure photo is still only on this phone. */
+const closeJobWithPhoto = (id: string, eventId: string): CloseJob => enqueueClose({
+  id, ownerId: 'u1', eventId, projectId: 'p1', roomId: 'r1', eventTitle: 'Retak acian', note: '',
+  closurePhoto: {
+    id: 'cm1', localUri: 'file:///queue/cm1.jpg', kind: 'photo', role: 'closure', mimeType: 'image/jpeg', ext: 'jpg',
+    durationS: null, sortOrder: 0, capturedAt: NOW,
+  },
+  nowIso: NOW,
 });
 
 /** The worker's end state when the RPC answered NOT_OPEN and the lookup read the closer. */
@@ -211,6 +224,93 @@ describe('a close waiting on this phone', () => {
     expect(utils.queryByText('closure form')).toBeNull();
     expect(utils.getByText('Menunggu kirim')).toBeTruthy();
     expect(utils.queryByText('Selesai')).toBeNull();
+  });
+});
+
+// Closure spec §4.6: office and principal phones have no Beranda queue card,
+// Selesai stays hidden while the job is pending, and a second close is refused
+// while it is, so the detail must offer the card's way out of a job that can
+// never send.
+describe('a close the server refused, or whose photo vanished', () => {
+  const REFUSAL = 'Tandai selesai gagal: Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.';
+  const PHOTO_GONE = 'Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru.';
+  const CONFIRM =
+    'Batalkan penutupan "Retak acian"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.';
+  let alert: jest.SpyInstance;
+  beforeEach(() => {
+    alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  });
+  afterEach(() => alert.mockRestore());
+  const pressConfirmed = (label: string) => {
+    const buttons = alert.mock.calls[0][2] as Array<{ text: string; onPress?: () => void }>;
+    buttons.find((b) => b.text === label)!.onPress!();
+  };
+
+  it('offers Batalkan beside Coba lagi on a permanent refusal, asks first, then drops the job and reads the server again', async () => {
+    mockEntries = [recordFailure(closeJob('job1', 'ev1'), REFUSAL, NOW, 'permanent')];
+    const utils = render(<SiteEventDetailScreen />);
+    await waitFor(() => expect(utils.getByText(`Penutupan belum terkirim: ${REFUSAL}`)).toBeTruthy());
+    expect(utils.getByText('Coba lagi')).toBeTruthy();
+
+    fireEvent.press(utils.getByText('Batalkan'));
+    expect(alert).toHaveBeenCalledWith('Batalkan penutupan', CONFIRM, expect.any(Array));
+    expect((alert.mock.calls[0][2] as Array<{ text: string }>).map((b) => b.text)).toEqual(['Tidak', 'Batalkan']);
+    expect(discardEntryLocally).not.toHaveBeenCalled();
+
+    pressConfirmed('Batalkan');
+    await waitFor(() => expect(discardEntryLocally).toHaveBeenCalledWith('u1', 'job1'));
+    await waitFor(() => expect(getSiteEventResult).toHaveBeenCalledTimes(2));
+  });
+
+  it('does nothing when the confirmation is declined', async () => {
+    mockEntries = [recordFailure(closeJob('job1', 'ev1'), REFUSAL, NOW, 'permanent')];
+    const utils = render(<SiteEventDetailScreen />);
+    await waitFor(() => expect(utils.getByText('Batalkan')).toBeTruthy());
+
+    fireEvent.press(utils.getByText('Batalkan'));
+    const buttons = alert.mock.calls[0][2] as Array<{ text: string; style?: string; onPress?: () => void }>;
+    expect(buttons[0]).toMatchObject({ text: 'Tidak', style: 'cancel' });
+    buttons[0].onPress?.();
+    expect(discardEntryLocally).not.toHaveBeenCalled();
+    expect(getSiteEventResult).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers only Batalkan when the closure photo vanished: Coba lagi could never send it', async () => {
+    mockEntries = [markUnrecoverable(closeJobWithPhoto('job1', 'ev1'), PHOTO_GONE)];
+    const utils = render(<SiteEventDetailScreen />);
+    await waitFor(() => expect(utils.getByText(`Penutupan belum terkirim: ${PHOTO_GONE}`)).toBeTruthy());
+    expect(utils.getByText('Batalkan')).toBeTruthy();
+    expect(utils.queryByText('Coba lagi')).toBeNull();
+
+    fireEvent.press(utils.getByText('Batalkan'));
+    pressConfirmed('Batalkan');
+    await waitFor(() => expect(discardEntryLocally).toHaveBeenCalledWith('u1', 'job1'));
+  });
+
+  it('offers only Coba lagi on a transient failure that ran out of attempts', async () => {
+    mockEntries = [flaggedTransient('job1', 'ev1', 'Tandai selesai gagal: Network request failed')];
+    const utils = render(<SiteEventDetailScreen />);
+    await waitFor(() => expect(utils.getByText('Coba lagi')).toBeTruthy());
+    expect(utils.queryByText('Batalkan')).toBeNull();
+  });
+
+  it('never offers Batalkan once the close has an outcome: only the server can say what happened', async () => {
+    mockEntries = [recordFailure(markCloseOutcome(closeJob('job1', 'ev1'), 'closed', NOW), 'Hapus salinan lokal gagal.', NOW, 'permanent')];
+    const utils = render(<SiteEventDetailScreen />);
+    await waitFor(() => expect(utils.getByText('Coba lagi')).toBeTruthy());
+    expect(utils.queryByText('Batalkan')).toBeNull();
+  });
+
+  it('shows why Batalkan did not go through, and does not read the server again', async () => {
+    (discardEntryLocally as jest.Mock).mockResolvedValueOnce({ error: 'Kejadian sudah ditutup di server.' });
+    mockEntries = [recordFailure(closeJob('job1', 'ev1'), REFUSAL, NOW, 'permanent')];
+    const utils = render(<SiteEventDetailScreen />);
+    await waitFor(() => expect(utils.getByText('Batalkan')).toBeTruthy());
+
+    fireEvent.press(utils.getByText('Batalkan'));
+    pressConfirmed('Batalkan');
+    await waitFor(() => expect(utils.getByText('Kejadian sudah ditutup di server.')).toBeTruthy());
+    expect(getSiteEventResult).toHaveBeenCalledTimes(1);
   });
 });
 

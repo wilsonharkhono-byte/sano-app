@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ScrollView, View, Text, TouchableOpacity } from 'react-native';
+import { Alert, Platform, ScrollView, View, Text, TouchableOpacity } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
@@ -7,6 +7,7 @@ import Card from '../components/Card';
 import { getSiteEvent, getSiteEventResult, type SiteEventWithMedia } from '../../tools/siteEvents';
 import {
   acknowledgeCloseEntry,
+  discardEntryLocally,
   pendingCloseFor,
   supersededCloseFor,
   useCaptureQueueEntries,
@@ -22,7 +23,7 @@ import { formStyles as s } from './siteEvent/styles';
 import MediaStrip from './siteEvent/MediaStrip';
 import ClosureForm from './siteEvent/ClosureForm';
 import { detailActions, isOverdue, voStatusText } from './siteEvent/detailModel';
-import { supersededReason } from './siteEvent/captureQueueModel';
+import { attentionRows, closeJobCancelKind, supersededReason } from './siteEvent/captureQueueModel';
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -112,6 +113,49 @@ export default function SiteEventDetailScreen() {
       await retryQueueEntry(profile.id, pendingClose.id);
     } finally {
       setRetrying(false);
+    }
+  };
+
+  // "Batalkan" (closure spec §4.6), by the Beranda card's own rule
+  // (closeJobCancelKind) and in its words (attentionRows' confirm): a close the
+  // server refused, or whose photo vanished before upload, while no outcome is
+  // recorded. Office and principal phones have no queue card, Selesai stays
+  // hidden while the job is pending, and a second close is refused
+  // (CLOSE_ALREADY_PENDING), so without it here such a job would sit on this
+  // screen for good. The job leaves the phone; the event and every photo
+  // already uploaded stay on the server as they are.
+  const cancelConfirm =
+    pendingClose && closeJobCancelKind(pendingClose) === 'cancel' ? attentionRows([pendingClose])[0]?.confirm ?? null : null;
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const cancelClose = async (jobId: string) => {
+    if (!profile) return;
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      const result = await discardEntryLocally(profile.id, jobId);
+      if (result.error) {
+        setCancelError(result.error);
+        return;
+      }
+    } catch (err) {
+      setCancelError((err as Error).message);
+      return;
+    } finally {
+      setCancelling(false);
+    }
+    void load();
+  };
+  const confirmCancelClose = () => {
+    if (!pendingClose || !cancelConfirm) return;
+    const jobId = pendingClose.id;
+    if (Platform?.OS === 'web') {
+      if (window.confirm(cancelConfirm)) void cancelClose(jobId);
+    } else {
+      Alert.alert('Batalkan penutupan', cancelConfirm, [
+        { text: 'Tidak', style: 'cancel' },
+        { text: 'Batalkan', style: 'destructive', onPress: () => void cancelClose(jobId) },
+      ]);
     }
   };
 
@@ -300,14 +344,28 @@ export default function SiteEventDetailScreen() {
                     <Text style={s.errorText}>
                       Penutupan belum terkirim: {pendingClose.lastError ?? 'gagal setelah beberapa kali percobaan.'}
                     </Text>
-                    <TouchableOpacity
-                      style={s.secondaryBtn}
-                      onPress={() => void retryClose()}
-                      disabled={retrying}
-                      accessibilityRole="button"
-                    >
-                      <Text style={s.secondaryText}>{retrying ? 'Mencoba…' : 'Coba lagi'}</Text>
-                    </TouchableOpacity>
+                    {cancelError ? <Text style={s.errorText}>{cancelError}</Text> : null}
+                    {/* retryEntry leaves an unrecoverable job exactly as it is: nothing to retry. */}
+                    {!pendingClose.unrecoverable ? (
+                      <TouchableOpacity
+                        style={s.secondaryBtn}
+                        onPress={() => void retryClose()}
+                        disabled={retrying}
+                        accessibilityRole="button"
+                      >
+                        <Text style={s.secondaryText}>{retrying ? 'Mencoba…' : 'Coba lagi'}</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    {cancelConfirm ? (
+                      <TouchableOpacity
+                        style={s.dangerBtn}
+                        onPress={confirmCancelClose}
+                        disabled={cancelling}
+                        accessibilityRole="button"
+                      >
+                        <Text style={s.dangerText}>Batalkan</Text>
+                      </TouchableOpacity>
+                    ) : null}
                   </>
                 ) : (
                   <Text style={s.bannerText}>
