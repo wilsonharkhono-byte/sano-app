@@ -40,6 +40,14 @@ SELECT rehearsal.expect_error('106 a run for tomorrow is refused', format('SELEC
 BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('adm') IS NOT NULL AS ok \gset
 SELECT rehearsal.expect_error('106 an app user cannot run the digest', 'SELECT enqueue_site_event_digests()', 'permission denied for function enqueue_site_event_digests');
 ROLLBACK;
+-- Supabase's default privileges grant EXECUTE on every new function to
+-- service_role, the key edge functions hold; only postgres (pg_cron, the
+-- Dashboard) may run a round of pushes.
+SELECT rehearsal.expect('106 service_role cannot execute the digest or its day label',
+  NOT has_function_privilege('service_role', 'enqueue_site_event_digests(date)', 'EXECUTE')
+  AND NOT has_function_privilege('service_role', 'site_event_digest_day(date)', 'EXECUTE'),
+  'digest=' || has_function_privilege('service_role', 'enqueue_site_event_digests(date)', 'EXECUTE')
+  || ' day=' || has_function_privilege('service_role', 'site_event_digest_day(date)', 'EXECUTE'));
 
 BEGIN;
 UPDATE site_events SET status = 'done' WHERE status = 'open';

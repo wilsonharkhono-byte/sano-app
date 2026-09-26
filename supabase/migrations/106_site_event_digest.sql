@@ -22,7 +22,10 @@
 --     and worded before its log row is written, and a person whose items all
 --     closed while the run was under way is skipped: never a "0 tugas" push.
 --     Delivery rides the existing notifications INSERT webhook (034);
---     nothing to deploy.
+--     nothing to deploy. Only postgres, the owner (pg_cron and the
+--     Dashboard), executes it or its day label: EXECUTE is revoked from
+--     PUBLIC, anon, authenticated and service_role, which Supabase's default
+--     privileges would otherwise hand every new function.
 --   * The SITE_EVENT_DIGEST notification type, and a pg_cron schedule,
 --     Monday to Saturday at 00:00 UTC = 07:00 WIB (WIB has no daylight saving).
 --
@@ -141,7 +144,7 @@ AS $$
          (ARRAY['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'])[extract(month FROM d)::int]
 $$;
 
-REVOKE ALL ON FUNCTION site_event_digest_day(DATE) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION site_event_digest_day(DATE) FROM PUBLIC, anon, authenticated, service_role;
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- 6. enqueue_site_event_digests - one message per person per project
@@ -313,9 +316,12 @@ BEGIN
 END;
 $$;
 
--- No grant to any app role: only pg_cron and the Dashboard (both postgres)
--- run it, so no app user can trigger a round of pushes.
-REVOKE ALL ON FUNCTION enqueue_site_event_digests(DATE) FROM PUBLIC, anon, authenticated;
+-- No grant to any app role, and none to service_role, the key edge functions
+-- hold (Supabase's default privileges grant it EXECUTE on every new
+-- function): only pg_cron and the Dashboard, both postgres, the owner, run
+-- it, so neither an app user nor a leaked service key can trigger a round of
+-- pushes.
+REVOKE ALL ON FUNCTION enqueue_site_event_digests(DATE) FROM PUBLIC, anon, authenticated, service_role;
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- 7. notifications.type: 104's sixteen plus SITE_EVENT_DIGEST
@@ -376,7 +382,9 @@ END $$;
 -- reused editor connection back with its default lock timeout.
 RESET lock_timeout;
 
-SELECT proname, prosecdef, has_function_privilege('authenticated', oid, 'EXECUTE') AS app_exec
+SELECT proname, prosecdef,
+       has_function_privilege('authenticated', oid, 'EXECUTE') AS app_exec,
+       has_function_privilege('service_role', oid, 'EXECUTE') AS service_exec
 FROM pg_proc
 WHERE proname IN ('enqueue_site_event_digests', 'site_event_digest_day')
 ORDER BY proname;
@@ -386,7 +394,7 @@ ORDER BY proname;
 --
 -- 1. The grid above already answers the first check:
 --    EXPECTED: two rows, enqueue_site_event_digests with prosecdef = true, and
---    app_exec = false on both.
+--    app_exec = false and service_exec = false on both.
 --
 -- 2. The views run as the caller, and the log is readable by office only:
 --      SELECT relname, reloptions FROM pg_class

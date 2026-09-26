@@ -147,9 +147,19 @@ describe('migration 106 - enqueue_site_event_digests', () => {
     expect(body()).toContain("p_run_date DATE DEFAULT (now() AT TIME ZONE 'Asia/Jakarta')::date");
   });
 
-  it('is executable by no app role', () => {
-    expect(CODE).toContain('REVOKE ALL ON FUNCTION enqueue_site_event_digests(DATE) FROM PUBLIC, anon, authenticated;');
-    expect(CODE).not.toMatch(/GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+enqueue_site_event_digests/i);
+  it('is executable by no app role and not by service_role, which Supabase grants by default', () => {
+    expect(CODE).toContain('REVOKE ALL ON FUNCTION enqueue_site_event_digests(DATE) FROM PUBLIC, anon, authenticated, service_role;');
+    expect(CODE).toContain('REVOKE ALL ON FUNCTION site_event_digest_day(DATE) FROM PUBLIC, anon, authenticated, service_role;');
+    expect(CODE).not.toMatch(/GRANT\s+EXECUTE\s+ON\s+FUNCTION\s+(?:enqueue_site_event_digests|site_event_digest_day)/i);
+    expect(SQL).toMatch(/service_role/);
+    expect(SQL.slice(0, SQL.indexOf('SET lock_timeout'))).toMatch(/service_role/);
+  });
+
+  it("prints a grid that answers whether authenticated or service_role can execute either function", () => {
+    const grid = CODE.slice(CODE.indexOf('RESET lock_timeout;'));
+    expect(grid).toContain("has_function_privilege('authenticated', oid, 'EXECUTE') AS app_exec");
+    expect(grid).toContain("has_function_privilege('service_role', oid, 'EXECUTE') AS service_exec");
+    expect(SQL).toMatch(/app_exec = false and service_exec = false on both/);
   });
 
   it('refuses any run date but the Jakarta date of now()', () => {
