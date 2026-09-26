@@ -96,6 +96,7 @@ import {
   subscribeToQueue,
   supersededCloseFor,
   sweepOrphanedFiles,
+  unreadableCloseFor,
   __clearWebStoreForTests,
   type NewCloseRequest,
 } from '../captureQueueStore';
@@ -105,6 +106,7 @@ import {
   markCloseOutcome,
   markInserted,
   markUploaded,
+  recordFailure,
   type CloseJob,
 } from '../captureQueue';
 import type { NewSiteEvent } from '../siteEvents';
@@ -536,6 +538,17 @@ function supersede(job: CloseJob): CloseJob {
   );
 }
 
+/** NOT_OPEN, then the status read refused for good: nothing can send this job any more. */
+function unreadable(job: CloseJob): CloseJob {
+  const now = '2026-09-17T02:01:00.000Z';
+  return recordFailure(
+    markCloseOutcome(job, 'not_open', now),
+    'Baca status kejadian gagal: Hanya kejadian terbuka yang bisa ditandai selesai.',
+    now,
+    'permanent',
+  );
+}
+
 describe('pendingCloseFor', () => {
   it("returns the event's close job unless it is done or superseded", async () => {
     const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
@@ -545,6 +558,17 @@ describe('pendingCloseFor', () => {
     const done = markCleanedUp(markCloseOutcome(job, 'closed', '2026-09-17T02:01:00.000Z'), '2026-09-17T02:01:00.000Z');
     expect(done.state).toBe('done');
     expect(pendingCloseFor([done], 'ev1')).toBeUndefined();
+  });
+
+  it('does not return a job that will never send: the event is no longer open and its status cannot be read', async () => {
+    const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    expect(pendingCloseFor([unreadable(job)], 'ev1')).toBeUndefined();
+  });
+
+  it('still returns a job the server refused before any outcome: the event is still open and the person must act', async () => {
+    const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    const refused = recordFailure(job, 'Tandai selesai gagal: x', '2026-09-17T02:01:00.000Z', 'permanent');
+    expect(pendingCloseFor([refused], 'ev1')).toBe(refused);
   });
 
   it('never mistakes a capture job for a close', async () => {
@@ -575,6 +599,30 @@ describe('supersededCloseFor', () => {
     expect(supersededCloseFor([], 'ev1')).toBeNull();
     expect(supersededCloseFor([pending, done, otherEvent, capture], 'ev1')).toBeNull();
   });
+
+  it('never returns a job whose status could not be read: it did not find who closed the event', async () => {
+    const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    expect(supersededCloseFor([unreadable(job)], 'ev1')).toBeNull();
+  });
+});
+
+describe('unreadableCloseFor', () => {
+  it("returns the event's newest close job whose event is no longer open and whose status cannot be read", async () => {
+    const older = unreadable((await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!);
+    await saveEntry(older);
+    const newer = unreadable(
+      (await enqueueCloseJob(closeRequest({ jobId: 'job2', closurePhoto: null, nowIso: '2026-09-17T03:00:00.000Z' }))).entry!,
+    );
+    expect(unreadableCloseFor([older, newer], 'ev1')).toBe(newer);
+    expect(unreadableCloseFor([newer, older], 'ev1')).toBe(newer);
+  });
+
+  it('returns null for every other close job, and for another event', async () => {
+    const pending = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    expect(unreadableCloseFor([], 'ev1')).toBeNull();
+    expect(unreadableCloseFor([pending, supersede(pending)], 'ev1')).toBeNull();
+    expect(unreadableCloseFor([unreadable(pending)], 'ev2')).toBeNull();
+  });
 });
 
 describe('close jobs and local discard', () => {
@@ -595,6 +643,22 @@ describe('close jobs and local discard', () => {
     expect((await loadQueue(USER))[0].id).toBe('job1');
   });
 
+  it('says only that the event is no longer open when the server answered NOT_OPEN, never that this job closed it', async () => {
+    const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    await saveEntry(unreadable(job));
+    calls.length = 0;
+    expect(await discardEntryLocally(USER, 'job1')).toEqual({ error: 'Kejadian sudah tidak terbuka di server.' });
+    expect(calls).toEqual([]);
+    expect((await loadQueue(USER))[0].id).toBe('job1');
+  });
+
+  it('accepts a new close once the earlier one can never send', async () => {
+    const first = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    await saveEntry(unreadable(first));
+    const again = await enqueueCloseJob(closeRequest({ jobId: 'job2', closurePhoto: null }));
+    expect(again.error).toBeUndefined();
+  });
+
   it('flags a close job whose photo vanished before upload, with the closure sentence', async () => {
     const job = (await enqueueCloseJob(closeRequest())).entry!;
     fsFiles.delete(job.media[0].localUri);
@@ -613,6 +677,22 @@ describe('acknowledgeCloseEntry', () => {
 
   it('refuses a close job that still has work to do', async () => {
     await enqueueCloseJob(closeRequest({ closurePhoto: null }));
+    expect((await acknowledgeCloseEntry(USER, 'job1')).error).toBe('Penutupan ini belum selesai diproses.');
+    expect(await loadQueue(USER)).toHaveLength(1);
+  });
+
+  it('removes a job whose event is no longer open and whose status cannot be read, folder and all', async () => {
+    const job = (await enqueueCloseJob(closeRequest())).entry!;
+    await saveEntry(unreadable(markUploaded(job, 'cm1', 1, '2026-09-17T02:00:30.000Z')));
+    calls.length = 0;
+    expect(await acknowledgeCloseEntry(USER, 'job1')).toEqual({});
+    expect(calls).toContain(`delete:file:///doc/capture-queue/${USER}/job1/`);
+    expect(await loadQueue(USER)).toEqual([]);
+  });
+
+  it('still refuses a job the server refused before any outcome: that one is cancelled, not acknowledged', async () => {
+    const job = (await enqueueCloseJob(closeRequest({ closurePhoto: null }))).entry!;
+    await saveEntry(recordFailure(job, 'Tandai selesai gagal: x', '2026-09-17T02:01:00.000Z', 'permanent'));
     expect((await acknowledgeCloseEntry(USER, 'job1')).error).toBe('Penutupan ini belum selesai diproses.');
     expect(await loadQueue(USER)).toHaveLength(1);
   });

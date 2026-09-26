@@ -2,6 +2,7 @@
 
 import {
   draftReadyCount,
+  isCloseStatusUnreadable,
   waitingCount,
   type CaptureJob,
   type CaptureQueueEntry,
@@ -62,7 +63,8 @@ export interface AttentionRow {
    * is genuinely nothing left to retry AND nothing on the server to lose.
    * 'cancel' offers "Batalkan" on a close job the server refused or whose
    * photo vanished; the event stays open. 'acknowledge' offers "Mengerti" on
-   * a close job that found the event already closed.
+   * a close job that found the event already closed, or no longer open with a
+   * status it could not read (closeJobCancelKind).
    */
   action: 'retry' | 'discard' | 'cancel' | 'acknowledge';
   /** The confirmation a 'cancel' row asks before acting; absent on every other row. */
@@ -86,25 +88,58 @@ const REASON_CLOSURE_PHOTO_GONE =
   'Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru.';
 
 /**
- * Beranda's "Perlu perhatian" list: every entry flagged after 5 consecutive
- * failures, by a permanent refusal, or by missing local media - plus every
- * close job that found its event already closed, until the person has read
- * who closed it.
+ * A close job whose RPC answered NOT_OPEN and whose status read was then
+ * refused for good (isCloseStatusUnreadable). Only what is known: the event is
+ * not open any more. Never who closed it - nothing was read.
+ */
+export const REASON_CLOSE_STATUS_UNREADABLE = 'Kejadian sudah tidak terbuka di server; statusnya tidak bisa dibaca.';
+
+/**
+ * The one rule for what a person can do with a close job, for every surface
+ * that shows one (the Beranda card here; the detail screen next), so no two
+ * surfaces offer different ways out of the same job:
+ *
+ * - 'acknowledge' ("Mengerti"): the server already answered for good - the
+ *   job is superseded, or its event is no longer open and its status cannot
+ *   be read. Retrying repeats the answer; cancelling would hide it.
+ * - 'cancel' ("Batalkan"): no outcome is recorded and no attempt can succeed -
+ *   a permanent refusal, or the photo vanished before upload. The event stays
+ *   open on the server.
+ * - 'retry' ("Coba lagi"): flagged for attention after transient failures (or
+ *   a failure after the close already landed, where only cleanup is left).
+ * - null: nothing to offer - the job is on its way by itself, or done.
+ */
+export function closeJobCancelKind(
+  job: Pick<CloseJob, 'state' | 'needsAttention' | 'unrecoverable' | 'lastFailureKind' | 'closeOutcome'>,
+): 'retry' | 'cancel' | 'acknowledge' | null {
+  if (job.state === 'superseded' || isCloseStatusUnreadable(job)) return 'acknowledge';
+  if (!job.needsAttention) return null;
+  if (job.closeOutcome === null && (job.unrecoverable || job.lastFailureKind === 'permanent')) return 'cancel';
+  return 'retry';
+}
+
+/**
+ * Beranda's "Perlu perhatian" list: every capture entry flagged after 5
+ * consecutive failures, by a permanent refusal, or by missing local media -
+ * plus every close job closeJobCancelKind offers an action on.
  *
  * A capture row offers "Buang" in exactly two cases, and both mean the same
  * thing: the report never reached the server and no further attempt can
  * change that - its local media is gone (unrecoverable), or the server
  * refused it with a decision rather than a hiccup. An entry whose event IS
  * inserted never gets "Buang", whatever else is true of it.
- *
- * A close row offers "Batalkan" on the same two conditions, and only while no
- * close outcome is recorded: once the server answered, cancelling would only
- * hide what happened there (discardEntryLocally refuses it too).
  */
 export function attentionRows(entries: ReadonlyArray<CaptureQueueEntry>): AttentionRow[] {
-  return entries
-    .filter((e) => e.needsAttention || (e.kind === 'close' && e.state === 'superseded'))
-    .map((e) => (e.kind === 'close' ? closeRow(e) : captureRow(e)));
+  const rows: AttentionRow[] = [];
+  for (const e of entries) {
+    if (e.kind === 'capture') {
+      if (e.needsAttention) rows.push(captureRow(e));
+      continue;
+    }
+    const action = closeJobCancelKind(e);
+    if (action) rows.push(closeRow(e, action));
+  }
+  return rows;
 }
 
 function captureRow(e: CaptureJob): AttentionRow {
@@ -127,14 +162,16 @@ export function supersededReason(job: Pick<CloseJob, 'closedElsewhere'>): string
   return info.closedByName ? `Sudah ditutup oleh ${info.closedByName} pada ${when}.` : `Sudah ditutup pada ${when}.`;
 }
 
-function closeRow(e: CloseJob): AttentionRow {
+function closeRow(e: CloseJob, action: 'retry' | 'cancel' | 'acknowledge'): AttentionRow {
   if (e.state === 'superseded') {
     return { id: e.id, title: e.eventTitle, reason: supersededReason(e), action: 'acknowledge' };
   }
   const title = `Selesai: ${e.eventTitle}`;
-  const cancellable = e.closeOutcome === null && (e.unrecoverable || e.lastFailureKind === 'permanent');
-  if (!cancellable) {
-    return { id: e.id, title, reason: e.lastError ?? FALLBACK_REASON, action: 'retry' };
+  if (action === 'acknowledge') {
+    return { id: e.id, title, reason: REASON_CLOSE_STATUS_UNREADABLE, action };
+  }
+  if (action === 'retry') {
+    return { id: e.id, title, reason: e.lastError ?? FALLBACK_REASON, action };
   }
   return {
     id: e.id,

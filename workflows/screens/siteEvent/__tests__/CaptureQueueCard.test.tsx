@@ -78,6 +78,22 @@ describe('CaptureQueueCard with close jobs', () => {
     alert.mockRestore();
   });
 
+  it('offers Mengerti, not Coba lagi, when the event is no longer open and its status cannot be read', async () => {
+    mockEntries = [recordFailure(
+      markCloseOutcome(job(), 'not_open', NOW),
+      'Baca status kejadian gagal: Hanya kejadian terbuka yang bisa ditandai selesai.',
+      NOW,
+      'permanent',
+    )];
+    const utils = render(<CaptureQueueCard />);
+    expect(utils.getByText('Selesai: Retak acian')).toBeTruthy();
+    expect(utils.getByText('Kejadian sudah tidak terbuka di server; statusnya tidak bisa dibaca.')).toBeTruthy();
+    expect(utils.queryByText('Coba lagi')).toBeNull();
+
+    fireEvent.press(utils.getByText('Mengerti'));
+    await waitFor(() => expect(acknowledgeCloseEntry).toHaveBeenCalledWith('u1', 'job1'));
+  });
+
   it('counts a close that is still on its way as waiting for signal', () => {
     mockEntries = [job()];
     const utils = render(<CaptureQueueCard />);

@@ -10,6 +10,7 @@ import {
   draftReadyCount,
   enqueueCapture,
   enqueueClose,
+  isCloseStatusUnreadable,
   isReadyToAttempt,
   markAnalysisRequested,
   markCleanedUp,
@@ -529,6 +530,25 @@ describe('markUnrecoverable per kind', () => {
     expect(markUnrecoverable(fresh(), 'x').unrecoverable).toBe(true);
     const inserted = markInserted(markUploaded(markUploaded(fresh(), 'm1', 1, NOW), 'm2', 1, NOW), NOW);
     expect(() => markUnrecoverable(inserted, 'x')).toThrow();
+  });
+});
+
+/**
+ * NOT_OPEN, then the status read refused for good (the row is hidden from this
+ * user, or its status is not done): no step can ever send this job, and
+ * nothing it could say about who closed the event would be true.
+ */
+describe('isCloseStatusUnreadable', () => {
+  const notOpen = (): CloseJob => markCloseOutcome(freshClose({ photo: false }), 'not_open', NOW);
+
+  it('holds after NOT_OPEN and a permanent status-read failure', () => {
+    expect(isCloseStatusUnreadable(recordFailure(notOpen(), 'x', NOW, 'permanent'))).toBe(true);
+  });
+
+  it('does not hold while the status read may still succeed, or before any outcome', () => {
+    expect(isCloseStatusUnreadable(notOpen())).toBe(false);
+    expect(isCloseStatusUnreadable(recordFailure(notOpen(), 'x', NOW, 'transient'))).toBe(false);
+    expect(isCloseStatusUnreadable(recordFailure(freshClose({ photo: false }), 'x', NOW, 'permanent'))).toBe(false);
   });
 });
 

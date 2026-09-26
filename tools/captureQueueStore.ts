@@ -42,6 +42,7 @@ import { useEffect, useState } from 'react';
 import {
   enqueueCapture,
   enqueueClose,
+  isCloseStatusUnreadable,
   markUnrecoverable,
   needsLocalMedia,
   upgradeEntry,
@@ -437,11 +438,37 @@ export type EnqueueCloseResult =
 
 export const CLOSE_ALREADY_PENDING = 'Penutupan kejadian ini sudah menunggu kirim.';
 
-/** The event's close job while it still has work to do: not `done`, not `superseded`. */
+/**
+ * The event's close job while it will still try: not `done`, not
+ * `superseded`, and not one whose event is no longer open with a status that
+ * cannot be read (captureQueue.ts's isCloseStatusUnreadable - nothing can send
+ * that job any more; unreadableCloseFor finds it). A job the server refused
+ * before any outcome IS still pending: the event is still open on the server
+ * and the person has to act on the job ("Coba lagi" or "Batalkan").
+ */
 export function pendingCloseFor(entries: ReadonlyArray<CaptureQueueEntry>, eventId: string): CloseJob | undefined {
   return entries.find(
-    (e): e is CloseJob => e.kind === 'close' && e.eventId === eventId && e.state !== 'done' && e.state !== 'superseded',
+    (e): e is CloseJob =>
+      e.kind === 'close' &&
+      e.eventId === eventId &&
+      e.state !== 'done' &&
+      e.state !== 'superseded' &&
+      !isCloseStatusUnreadable(e),
   );
+}
+
+/** The newest (by createdAt) close job of `eventId` matching `pick`, or null. */
+function newestCloseFor(
+  entries: ReadonlyArray<CaptureQueueEntry>,
+  eventId: string,
+  pick: (job: CloseJob) => boolean,
+): CloseJob | null {
+  let newest: CloseJob | null = null;
+  for (const e of entries) {
+    if (e.kind !== 'close' || e.eventId !== eventId || !pick(e)) continue;
+    if (newest === null || e.createdAt > newest.createdAt) newest = e;
+  }
+  return newest;
 }
 
 /**
@@ -453,12 +480,19 @@ export function pendingCloseFor(entries: ReadonlyArray<CaptureQueueEntry>, event
  * fixed format), so comparing the strings orders them by time.
  */
 export function supersededCloseFor(entries: ReadonlyArray<CaptureQueueEntry>, eventId: string): CloseJob | null {
-  let newest: CloseJob | null = null;
-  for (const e of entries) {
-    if (e.kind !== 'close' || e.eventId !== eventId || e.state !== 'superseded') continue;
-    if (newest === null || e.createdAt > newest.createdAt) newest = e;
-  }
-  return newest;
+  return newestCloseFor(entries, eventId, (job) => job.state === 'superseded');
+}
+
+/**
+ * The event's newest close job that can never send (isCloseStatusUnreadable),
+ * or null: close_site_event answered NOT_OPEN and the status read was refused
+ * for good. Kept apart from supersededCloseFor on purpose - nothing was read
+ * about who closed the event, so no "Sudah ditutup oleh ..." sentence may be
+ * built from it. For a surface with no Beranda card (the detail screen) to
+ * offer "Mengerti" -> acknowledgeCloseEntry.
+ */
+export function unreadableCloseFor(entries: ReadonlyArray<CaptureQueueEntry>, eventId: string): CloseJob | null {
+  return newestCloseFor(entries, eventId, isCloseStatusUnreadable);
 }
 
 /**
@@ -491,15 +525,17 @@ export async function enqueueCloseJob(request: NewCloseRequest): Promise<Enqueue
 }
 
 /**
- * "Mengerti" on a superseded close job: the event was closed by somebody else
- * (or by this job's own earlier attempt whose response was lost), and the
- * person has read who and when. Only a superseded close job can be
- * acknowledged; anything else still has work to do or is not a close.
+ * "Mengerti" on a close job the server already answered for good: a
+ * superseded one (the event was closed by somebody else, or by this job's own
+ * earlier attempt whose response was lost, and the person has read who and
+ * when), or one whose event is no longer open with a status that cannot be
+ * read (isCloseStatusUnreadable). Anything else still has work to do, can
+ * still be cancelled, or is not a close.
  */
 export async function acknowledgeCloseEntry(userId: string, entryId: string): Promise<{ error?: string }> {
   const entry = await readEntryForUser(userId, entryId);
   if (!entry) return {};
-  if (entry.kind !== 'close' || entry.state !== 'superseded') {
+  if (entry.kind !== 'close' || (entry.state !== 'superseded' && !isCloseStatusUnreadable(entry))) {
     return { error: 'Penutupan ini belum selesai diproses.' };
   }
   await deleteLocalMedia(userId, entryId);
@@ -527,9 +563,12 @@ export async function discardEntryLocally(userId: string, entryId: string): Prom
     return { error: 'Kejadian ini sudah tersimpan di server; buang lewat layar konfirmasi.' };
   }
   // A close job with an outcome already reached the server: "Batalkan" would
-  // only hide what happened there (closure spec §4.6).
+  // only hide what happened there (closure spec §4.6). NOT_OPEN says only that
+  // the event is no longer open - not that it was closed, nor by whom.
   if (entry.kind === 'close' && entry.closeOutcome !== null) {
-    return { error: 'Kejadian sudah ditutup di server.' };
+    return {
+      error: entry.closeOutcome === 'closed' ? 'Kejadian sudah ditutup di server.' : 'Kejadian sudah tidak terbuka di server.',
+    };
   }
   await deleteLocalMedia(userId, entryId);
   await removeEntry(userId, entryId);

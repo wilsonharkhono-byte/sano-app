@@ -636,6 +636,19 @@ export function retryEntry<E extends CaptureQueueEntry>(entry: E, now: string): 
 }
 
 /**
+ * A close job that can never send: close_site_event answered NOT_OPEN, then
+ * reading the event's status was refused for good (the row is hidden from this
+ * user, or its status is not done). Retrying repeats the same refusal, and
+ * cancelling would hide that the server already answered, so the only thing
+ * left is for the person to read it and dismiss it (acknowledgeCloseEntry).
+ * It is not pending (captureQueueStore.ts's pendingCloseFor means "will still
+ * try") and not superseded (nobody's name or time was read).
+ */
+export function isCloseStatusUnreadable(job: Pick<CloseJob, 'closeOutcome' | 'lastFailureKind'>): boolean {
+  return job.closeOutcome === 'not_open' && job.lastFailureKind === 'permanent';
+}
+
+/**
  * True while the job still needs a local file the OS may purge: a capture job
  * until its event is inserted (upload always finishes before insert), a close
  * job until its closure photo is uploaded.
