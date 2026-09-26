@@ -222,3 +222,31 @@ SELECT rehearsal.expect('106 the zero-count session left nothing behind: no trig
   AND (SELECT owner_id = rehearsal.u('sup') AND status = 'open' FROM site_events WHERE id = rehearsal.ev('D1'))
   AND (SELECT count(*) FROM site_event_digest_log WHERE run_date = rehearsal.today()) = 3);
 \! rm -f /tmp/rehearse_106_sub.sql /tmp/rehearse_106_out.txt
+
+-- G. The two message branches C does not reach (spec §5.4), in one
+-- transaction rolled back, from a morning on which nobody has been told yet.
+-- D5 (blocking since 23:59 WIB yesterday, due in five days) moves to sup2 and
+-- is all sup2 owns: nothing overdue, so the sentence ends "menghambat sejak"
+-- with the WIB day D5 was confirmed. D2 becomes due the same day as D1, and
+-- D1 is re-confirmed a day ago: the due-date tie goes to D2, confirmed
+-- earlier, although D1's event id sorts first.
+BEGIN;
+DELETE FROM site_event_digest_log WHERE run_date = rehearsal.today();
+DELETE FROM notifications WHERE type = 'SITE_EVENT_DIGEST';
+UPDATE site_events SET owner_id = rehearsal.u('sup2') WHERE id = rehearsal.ev('D5');
+UPDATE site_events SET due_date = rehearsal.today() - 3 WHERE id = rehearsal.ev('D2');
+UPDATE site_events SET confirmed_at = now() - interval '1 day' WHERE id = rehearsal.ev('D1');
+SELECT enqueue_site_event_digests() AS sent_branches \gset
+SELECT rehearsal.expect('106 an owner with nothing overdue is told since when their oldest item has blocked',
+  (SELECT count(*) = 1 AND bool_and(
+      n.title = '1 tugas lapangan perlu ditindak · REH-CL-A'
+      AND n.body = '1 menghambat. Terlama: LT1-R01 – Menunggu material (menghambat sejak ' || site_event_digest_day(rehearsal.today() - 1) || ').'
+      AND n.deeplink_params = jsonb_build_object('projectId', rehearsal.p(1), 'attention', true, 'mine', true))
+   FROM notifications n WHERE n.recipient_user_id = rehearsal.u('sup2') AND n.type = 'SITE_EVENT_DIGEST'),
+  (SELECT string_agg(title || ' | ' || body, ' || ') FROM notifications WHERE recipient_user_id = rehearsal.u('sup2') AND type = 'SITE_EVENT_DIGEST'));
+SELECT rehearsal.expect('106 Terlama breaks a due-date tie on the earlier confirmed_at, not the event id',
+  (SELECT count(*) = 1 AND bool_and(
+      n.body = '2 lewat tenggat, 1 menghambat. Terlama: LT1-R01 – Pompa air mati (tenggat ' || site_event_digest_day(rehearsal.today() - 3) || ').')
+   FROM notifications n WHERE n.recipient_user_id = rehearsal.u('sup') AND n.type = 'SITE_EVENT_DIGEST'),
+  (SELECT string_agg(body, ' || ') FROM notifications WHERE recipient_user_id = rehearsal.u('sup') AND type = 'SITE_EVENT_DIGEST'));
+ROLLBACK;
