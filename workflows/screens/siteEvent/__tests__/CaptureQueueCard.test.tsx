@@ -19,11 +19,14 @@ jest.mock('../../../../tools/captureQueueStore', () => ({
 jest.mock('../../../../tools/captureQueueWorker', () => ({ retryQueueEntry: jest.fn(async () => undefined) }));
 
 import {
+  enqueueCapture,
   enqueueClose,
   markCleanedUp,
   markClosedElsewhere,
   markCloseOutcome,
+  markUnrecoverable,
   recordFailure,
+  type CaptureJob,
   type CloseJob,
 } from '../../../../tools/captureQueue';
 import { acknowledgeCloseEntry, discardEntryLocally } from '../../../../tools/captureQueueStore';
@@ -113,6 +116,28 @@ describe('CaptureQueueCard with close jobs', () => {
     fireEvent.press(utils.getByText('Mengerti'));
     await waitFor(() => expect(acknowledgeCloseEntry).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(utils.queryByText('Gagal menghapus dari ponsel ini: disk full')).toBeNull());
+  });
+
+  /** Capture rows must read exactly as they did before close jobs existed; close rows name their own action. */
+  it("keeps the capture rows' accessibility labels as on main, beside the close rows' own", () => {
+    const capture = (id: string, rawText: string): CaptureJob => enqueueCapture({
+      event: {
+        id, projectId: 'p1', roomId: 'r1', reporterId: 'u1', gateCode: null, rawText, capturedAt: NOW,
+        media: [{ id: `${id}-m`, localUri: 'file:///q/x.jpg', kind: 'photo', role: 'context', mimeType: 'image/jpeg', ext: 'jpg', durationS: null, sortOrder: 0, capturedAt: NOW }],
+      },
+      ownerId: 'u1', workGroupNames: [], nowIso: NOW,
+    });
+    let stuck = capture('e1', 'Nat retak');
+    for (let i = 0; i < 5; i++) stuck = recordFailure(stuck, 'jaringan turun', NOW);
+    mockEntries = [
+      stuck,
+      markUnrecoverable(capture('e2', 'Retak kolom'), 'Berkas hilang.'),
+      recordFailure(job(), 'Tandai selesai gagal: x', NOW, 'permanent'),
+    ];
+    const utils = render(<CaptureQueueCard />);
+    expect(utils.getByLabelText('Coba lagi laporan Nat retak')).toBeTruthy();
+    expect(utils.getByLabelText('Buang laporan Retak kolom')).toBeTruthy();
+    expect(utils.getByLabelText('Batalkan Selesai: Retak acian')).toBeTruthy();
   });
 
   it('counts a close that is still on its way as waiting for signal', () => {

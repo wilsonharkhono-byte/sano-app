@@ -32,6 +32,8 @@ export default function CaptureQueueCard() {
 
   const badge = queueBadgeText(entries);
   const attention = attentionRows(entries);
+  /** Close rows name their own action; capture rows keep main's "... laporan {title}" labels unchanged. */
+  const closeIds = new Set(entries.filter((e) => e.kind === 'close').map((e) => e.id));
 
   const onRetry = useCallback(async (id: string) => {
     if (!profile) return;
@@ -65,7 +67,7 @@ export default function CaptureQueueCard() {
    */
   const onDiscard = useCallback((id: string, title: string) => {
     const message = `Buang "${title}"? Laporan ini belum terkirim, dan catatan, foto serta rekamannya akan hilang dari ponsel ini.`;
-    if (Platform.OS === 'web') {
+    if (Platform?.OS === 'web') {
       if (window.confirm(message)) void discard(id);
     } else {
       Alert.alert('Buang laporan', message, [
@@ -156,7 +158,7 @@ export default function CaptureQueueCard() {
                   onPress={() => onRowAction(row)}
                   accessibilityRole="button"
                   accessibilityState={{ disabled: busy }}
-                  accessibilityLabel={`${label} ${row.title}`}
+                  accessibilityLabel={closeIds.has(row.id) ? `${label} ${row.title}` : `${label} laporan ${row.title}`}
                 >
                   <Text style={danger ? styles.dangerText : styles.retryText}>{label}</Text>
                 </TouchableOpacity>
