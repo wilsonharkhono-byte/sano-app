@@ -5,7 +5,7 @@
 // close - it never calls the RPC and never says "Selesai" itself.
 import React from 'react';
 import { StyleSheet } from 'react-native';
-import { fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 const mockToast = jest.fn();
 jest.mock('../../../components/Toast', () => ({ useToast: () => ({ show: mockToast }) }));
@@ -190,6 +190,33 @@ describe('submit queues, never closes', () => {
     } finally {
       platform.mockRestore();
     }
+  });
+
+  // Two taps in one frame: the second arrives before React re-renders the
+  // button as disabled, so only a ref taken synchronously can stop it.
+  it('queues once when Tandai selesai is pressed twice in the same frame', async () => {
+    const utils = renderForm('info');
+    const button = submitButton(utils);
+    act(() => {
+      fireEvent.press(button);
+      fireEvent.press(button);
+    });
+
+    await waitFor(() => expect(utils.onQueued).toHaveBeenCalledTimes(1));
+    expect(enqueueCloseJob).toHaveBeenCalledTimes(1);
+    expect(triggerDrain).toHaveBeenCalledTimes(1);
+    expect(mockToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('can be pressed again after the phone refused to store the close', async () => {
+    (enqueueCloseJob as jest.Mock).mockRejectedValueOnce(new Error('Penyimpanan HP tidak tersedia; coba lagi.'));
+    const utils = renderForm('info');
+    fireEvent.press(submitButton(utils));
+    await waitFor(() => expect(utils.getByText(/Penutupan gagal disimpan di ponsel/)).toBeTruthy());
+
+    fireEvent.press(submitButton(utils));
+    await waitFor(() => expect(utils.onQueued).toHaveBeenCalledTimes(1));
+    expect(enqueueCloseJob).toHaveBeenCalledTimes(2);
   });
 
   it('shows the refusal and stays open when the event already has a pending close', async () => {

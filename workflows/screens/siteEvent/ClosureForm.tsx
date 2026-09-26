@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { View, Text, TextInput, TouchableOpacity, Platform, StyleSheet } from 'react-native';
 import PhotoGalleryField from '../../components/PhotoGalleryField';
 import { useToast } from '../../components/Toast';
@@ -55,6 +55,10 @@ export default function ClosureForm({ userId, eventId, projectId, roomId, eventT
   const [photo, setPhoto] = useState<LocalSiteEventMedia | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set synchronously, unlike `saving`: two presses in one frame both run
+  // against the render before setSaving(true) lands, and would queue the
+  // close twice.
+  const submitting = useRef(false);
 
   const requirement = closureRequirement(eventType);
   const copy = closureCopy(eventType);
@@ -84,7 +88,8 @@ export default function ClosureForm({ userId, eventId, projectId, roomId, eventT
   };
 
   const submit = async () => {
-    if (disabled) return;
+    if (disabled || submitting.current) return;
+    submitting.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -107,6 +112,7 @@ export default function ClosureForm({ userId, eventId, projectId, roomId, eventT
       setError(`Penutupan gagal disimpan di ponsel: ${(err as Error).message}`);
       return;
     } finally {
+      submitting.current = false;
       setSaving(false);
     }
     triggerDrain();
