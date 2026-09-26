@@ -4,6 +4,7 @@
 // "Tandai selesai" disabled until it has it, and on submit only QUEUES the
 // close - it never calls the RPC and never says "Selesai" itself.
 import React from 'react';
+import { StyleSheet } from 'react-native';
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 
 const mockToast = jest.fn();
@@ -36,6 +37,8 @@ import { closeSiteEventRpc, newSiteEventId } from '../../../../tools/siteEvents'
 import { enqueueCloseJob } from '../../../../tools/captureQueueStore';
 import { triggerDrain } from '../../../../tools/captureQueueWorker';
 import type { SiteEventType } from '../../../../tools/types';
+import { COLORS } from '../../../theme';
+import { closureRequirement } from '../closureModel';
 import ClosureForm from '../ClosureForm';
 
 // Rendering suites run slowly beside the full jest run; the 5 s default flakes.
@@ -86,6 +89,18 @@ describe('Wajib and Opsional, per type', () => {
     expect(badges).toEqual([photoBadge, noteBadge]);
     expect(utils.getByText(noteLabel)).toBeTruthy();
   });
+
+  // The colour follows the rule (closureRequirement), not the badge's wording.
+  it.each<SiteEventType>(['cacat', 'isu', 'hambatan', 'butuh_keputusan', 'progres', 'info'])(
+    '%s: each badge is red exactly when its requirement is wajib',
+    (type) => {
+      const req = closureRequirement(type);
+      const [photo, note] = renderForm(type).getAllByText(/^(Wajib|Opsional)$/);
+      const colour = (r: 'wajib' | 'opsional') => (r === 'wajib' ? COLORS.critical : COLORS.textSec);
+      expect(StyleSheet.flatten(photo.props.style).color).toBe(colour(req.photo));
+      expect(StyleSheet.flatten(note.props.style).color).toBe(colour(req.note));
+    },
+  );
 
   it('shows the on-site helper for a required photo', () => {
     expect(renderForm('cacat').getByText('Wajib. Foto hasil perbaikan, diambil di lokasi yang sama.')).toBeTruthy();
@@ -154,6 +169,27 @@ describe('submit queues, never closes', () => {
     expect(triggerDrain).toHaveBeenCalledTimes(1);
     expect(mockToast).toHaveBeenCalledWith('Penutupan masuk antrean. Status menjadi Selesai setelah server menerimanya.', 'ok');
     expect(closeSiteEventRpc).not.toHaveBeenCalled();
+  });
+
+  // The web queue is memory only (captureQueueStore.ts): the native sentence
+  // would promise the phone kept a close that a closed tab loses.
+  it('on web, says the tab must stay open instead', async () => {
+    const ReactNative = require('react-native') as typeof import('react-native');
+    const platform = jest
+      .spyOn(ReactNative, 'Platform', 'get')
+      .mockReturnValue({ OS: 'web', select: (o: Record<string, unknown>) => o.web ?? o.default } as unknown as typeof ReactNative.Platform);
+    try {
+      const utils = renderForm('info');
+      fireEvent.press(submitButton(utils));
+      await waitFor(() => expect(utils.onQueued).toHaveBeenCalledTimes(1));
+      expect(mockToast).toHaveBeenCalledTimes(1);
+      expect(mockToast).toHaveBeenCalledWith(
+        'Dikirim dari tab ini. Jangan tutup halaman sampai status berubah menjadi Selesai.',
+        'ok',
+      );
+    } finally {
+      platform.mockRestore();
+    }
   });
 
   it('shows the refusal and stays open when the event already has a pending close', async () => {

@@ -420,7 +420,8 @@ export default function SiteEventDetailScreen() {
               </TouchableOpacity>
             ) : null}
 
-            {actions.canClose && !pendingClose && !closing ? (
+            {/* The same profile condition as the form below: a Selesai that opens nothing is not offered. */}
+            {actions.canClose && !pendingClose && !closing && profile ? (
               <TouchableOpacity style={s.primaryBtn} onPress={() => setClosing(true)} accessibilityRole="button">
                 <Text style={s.primaryText}>Selesai</Text>
               </TouchableOpacity>

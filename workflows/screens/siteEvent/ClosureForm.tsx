@@ -15,7 +15,9 @@ import {
   WEB_CLOSE_QUEUED_TOAST,
   closureBlocker,
   closureCopy,
+  closureRequirement,
   noteLength,
+  type Requirement,
 } from './closureModel';
 
 interface Props {
@@ -31,8 +33,9 @@ interface Props {
   onCancel: () => void;
 }
 
-function Badge({ label }: { label: string }) {
-  const required = label === 'Wajib';
+/** Coloured by the rule (closureRequirement), never by its wording. */
+function Badge({ requirement, label }: { requirement: Requirement; label: string }) {
+  const required = requirement === 'wajib';
   return (
     <View style={[styles.badge, required ? styles.badgeRequired : styles.badgeOptional]}>
       <Text style={[styles.badgeText, required ? styles.badgeTextRequired : styles.badgeTextOptional]}>{label}</Text>
@@ -53,6 +56,7 @@ export default function ClosureForm({ userId, eventId, projectId, roomId, eventT
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const requirement = closureRequirement(eventType);
   const copy = closureCopy(eventType);
   // The exact string the job will send, and the one both sides count.
   const sentNote = note.trim();
@@ -114,7 +118,7 @@ export default function ClosureForm({ userId, eventId, projectId, roomId, eventT
     <View>
       <View style={styles.labelRow}>
         <Text style={[s.label, styles.labelInRow]}>Foto penutupan</Text>
-        <Badge label={copy.photoBadge} />
+        <Badge requirement={requirement.photo} label={copy.photoBadge} />
       </View>
       <PhotoGalleryField
         photoPaths={photo ? [photo.localUri] : []}
@@ -128,7 +132,7 @@ export default function ClosureForm({ userId, eventId, projectId, roomId, eventT
 
       <View style={styles.labelRow}>
         <Text style={[s.label, styles.labelInRow]}>{copy.noteLabel}</Text>
-        <Badge label={copy.noteBadge} />
+        <Badge requirement={requirement.note} label={copy.noteBadge} />
       </View>
       {copy.noteHint ? <Text style={s.hint}>{copy.noteHint}</Text> : null}
       <TextInput

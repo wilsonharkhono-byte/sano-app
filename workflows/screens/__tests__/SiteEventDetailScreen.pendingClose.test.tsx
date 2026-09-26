@@ -26,7 +26,8 @@ jest.mock('@react-navigation/native', () => ({
   useRoute: () => ({ params: { eventId: 'ev1', projectId: 'p1' } }),
 }));
 jest.mock('../../components/Header', () => ({ __esModule: true, default: () => null }));
-jest.mock('../../hooks/useProject', () => ({ useProject: () => ({ profile: { id: 'u1', role: 'supervisor' } }) }));
+let mockProfile: { id: string; role: string } | null = { id: 'u1', role: 'supervisor' };
+jest.mock('../../hooks/useProject', () => ({ useProject: () => ({ profile: mockProfile }) }));
 jest.mock('../../../tools/siteEvents', () => ({ getSiteEventResult: jest.fn(), getSiteEvent: jest.fn() }));
 jest.mock('../../../tools/gateRefs', () => ({
   listGateRefs: jest.fn(async () => []),
@@ -146,6 +147,7 @@ const doneEvent = (closedByName: string | null) => ({
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockProfile = { id: 'u1', role: 'supervisor' };
   mockEntries = [];
   (getSiteEventResult as jest.Mock).mockResolvedValue({ event: baseEvent });
 });
@@ -370,6 +372,16 @@ describe('with nothing queued', () => {
     await waitFor(() => expect(utils.getByText('Selesai')).toBeTruthy());
     expect(utils.queryByText('Menunggu kirim')).toBeNull();
     expect(utils.getByText('media: context')).toBeTruthy();
+  });
+
+  // The form needs the profile to own the close job and renders nothing
+  // without it, so a Selesai that opens nothing must not be offered.
+  it('offers no Selesai while no profile is loaded', async () => {
+    mockProfile = null;
+    const utils = render(<SiteEventDetailScreen />);
+    await waitFor(() => expect(utils.getByText('Terbuka')).toBeTruthy());
+    expect(utils.queryByText('Selesai')).toBeNull();
+    expect(useCaptureQueueEntries).toHaveBeenCalledWith(null);
   });
 
   it('shows the closure photo next to the closer on a done event', async () => {
