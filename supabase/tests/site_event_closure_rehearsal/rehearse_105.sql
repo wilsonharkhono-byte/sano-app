@@ -15,6 +15,10 @@ SELECT rehearsal.expect_error('105 a closure row whose file was never uploaded i
 INSERT INTO site_event_media (id, event_id, kind, role, storage_path)
 VALUES (rehearsal.m(2), rehearsal.ev('isu'), 'photo', 'context', rehearsal.path('isu', 2));
 SELECT rehearsal.expect_error('105 a context photo is not a closure photo', format('SELECT close_site_event(%L, NULL)', rehearsal.ev('isu')), 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED:');
+-- A direct insert (no app needed): a closure row pointing at the context photo's file, which exists.
+INSERT INTO site_event_media (id, event_id, kind, role, storage_path)
+VALUES (rehearsal.m(6), rehearsal.ev('isu'), 'photo', 'closure', rehearsal.path('isu', 2));
+SELECT rehearsal.expect_error('105 a closure row that reuses the context photo''s path is refused', format('SELECT close_site_event(%L, NULL)', rehearsal.ev('isu')), 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED:');
 INSERT INTO site_event_media (id, event_id, kind, role, storage_path)
 VALUES (rehearsal.m(3), rehearsal.ev('cacat'), 'photo', 'closure', rehearsal.path('cacat', 3));
 SELECT rehearsal.expect('105 a cacat closes with a closure row and its file', (close_site_event(rehearsal.ev('cacat'), 'Sudah ditambal') ->> 'status') = 'done');

@@ -22,6 +22,11 @@
 -- insert a row and the path guard checks only the folder prefix, so a row
 -- pointing at a file that was never uploaded would otherwise count as proof.
 --
+-- WHY NOT ANOTHER ROW'S FILE. For the same reason a closure row could point
+-- at the event's own context photo, whose file does exist: a direct insert,
+-- no app needed. A closure row counts only if no other-role row of the event
+-- names the same storage_path.
+--
 -- WHY FULL INDONESIAN SENTENCES IN THE REFUSALS. A phone still on an older
 -- bundle has no copy for the two new codes, so tools/siteEvents.ts shows
 -- "Gagal menyimpan: " plus the raw text. The raw text therefore has to read
@@ -135,6 +140,10 @@ BEGIN
     SELECT 1 FROM site_event_media m
     JOIN storage.objects o ON o.bucket_id = 'site-media' AND o.name = m.storage_path
     WHERE m.event_id = p_event_id AND m.role = 'closure' AND m.kind = 'photo'
+      AND NOT EXISTS (
+        SELECT 1 FROM site_event_media c
+        WHERE c.event_id = m.event_id AND c.role <> 'closure' AND c.storage_path = m.storage_path
+      )
   ) THEN
     RAISE EXCEPTION 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED: kejadian % hanya bisa ditandai selesai dengan foto penutupan. Perbarui aplikasi, lalu ambil foto hasil perbaikan.', v_ev.event_type;
   END IF;

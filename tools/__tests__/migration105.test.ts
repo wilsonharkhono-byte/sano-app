@@ -12,7 +12,8 @@
  *    otherwise the rule would refuse every closure photo, silently.
  *  • 097's body is kept, refusal order included, so a queued close for an
  *    event someone else closed gets NOT_OPEN, never a photo refusal.
- *  • The photo rule joins storage.objects, so a row without a file is no proof.
+ *  • The photo rule joins storage.objects, so a row without a file is no proof,
+ *    and refuses a closure row that reuses the event's own context photo path.
  *  • Nothing later redefines close_site_event, which a re-paste of 105 would revert.
  */
 import fs from 'node:fs';
@@ -151,6 +152,17 @@ describe('migration 105 - close_site_event', () => {
     expect(body).toContain("IF v_ev.event_type IN ('cacat', 'isu', 'hambatan') AND NOT EXISTS (");
     expect(body).toContain("JOIN storage.objects o ON o.bucket_id = 'site-media' AND o.name = m.storage_path");
     expect(body).toContain("WHERE m.event_id = p_event_id AND m.role = 'closure' AND m.kind = 'photo'");
+  });
+
+  // site_event_media_insert lets any member insert a row, and the path guard
+  // pins only the event's folder: a closure row pointing at the event's own
+  // context photo would otherwise pass as proof of the repair.
+  it('refuses a closure row that reuses the path of one of the event\'s other photos', () => {
+    const photoRule = fnBody().slice(fnBody().indexOf("IF v_ev.event_type IN ('cacat', 'isu', 'hambatan') AND NOT EXISTS ("));
+    const evidence = photoRule.slice(0, photoRule.indexOf('THEN')).replace(/\s+/g, ' ');
+    expect(evidence).toContain(
+      "AND NOT EXISTS ( SELECT 1 FROM site_event_media c WHERE c.event_id = m.event_id AND c.role <> 'closure' AND c.storage_path = m.storage_path )",
+    );
   });
 
   it('asks a butuh_keputusan for ten characters of trimmed note', () => {
