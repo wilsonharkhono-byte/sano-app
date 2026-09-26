@@ -170,3 +170,47 @@ SELECT rehearsal.expect('106 the failed-landing session left nothing behind: no 
   AND (SELECT count(*) FROM site_event_digest_log WHERE run_date = rehearsal.today()) = 3
   AND (SELECT count(*) FROM notifications WHERE type = 'SITE_EVENT_DIGEST') = 3);
 \! rm -f /tmp/rehearse_106_sub.sql /tmp/rehearse_106_out.txt
+
+-- F. Every item closes between the recipient query and a recipient's count
+-- (spec §5.3): the two are separate snapshots. An AFTER INSERT trigger closes
+-- all of project A's open items the moment the first digest lands, and D1
+-- moves to sup2 so an owner is counted after that as well as the admin and
+-- the principal. Recipients go in UUID order: sup, sup2, adm, pri. Only sup
+-- is told; the three counted at zero get no log row, no "0 tugas" message
+-- and no WARNING.
+\o /tmp/rehearse_106_sub.sql
+SELECT :'prelude' || $s$
+UPDATE site_events SET owner_id = rehearsal.u('sup2') WHERE id = rehearsal.ev('D1');
+CREATE FUNCTION public.rehearsal_close_all_open() RETURNS trigger LANGUAGE plpgsql AS $f$
+BEGIN
+  UPDATE site_events SET status = 'done' WHERE project_id = rehearsal.p(1) AND status = 'open';
+  RETURN NULL;
+END $f$;
+CREATE TRIGGER rehearsal_close_all_open AFTER INSERT ON notifications
+  FOR EACH ROW WHEN (NEW.type = 'SITE_EVENT_DIGEST') EXECUTE FUNCTION public.rehearsal_close_all_open();
+SELECT 'sent=' || enqueue_site_event_digests();
+SELECT 'logged=' || pg_temp.logged();
+SELECT 'told=' || COALESCE(string_agg(pg_temp.who(recipient_user_id) || ':' || title, ',' ORDER BY pg_temp.who(recipient_user_id)), '')
+FROM notifications WHERE type = 'SITE_EVENT_DIGEST';
+ROLLBACK;
+$s$;
+\o
+\! psql -X -q -tA -v ON_ERROR_STOP=1 -U postgres -d postgres -f /tmp/rehearse_106_sub.sql < /dev/null > /tmp/rehearse_106_out.txt 2>&1
+TRUNCATE capture;
+\copy capture (line) FROM '/tmp/rehearse_106_out.txt' WITH (FORMAT text, DELIMITER E'\x01')
+SELECT rehearsal.expect('106 office recipients whose items all closed after the recipient query get no "0 tugas" message and no log row',
+  EXISTS (SELECT 1 FROM capture WHERE line = 'sent=1')
+  AND EXISTS (SELECT 1 FROM capture WHERE line = 'logged=sup:owner')
+  AND EXISTS (SELECT 1 FROM capture WHERE line = 'told=sup:1 tugas lapangan perlu ditindak · REH-CL-A')
+  AND NOT EXISTS (SELECT 1 FROM capture WHERE line LIKE '%ERROR%'),
+  (SELECT string_agg(line, ' | ') FROM capture));
+SELECT rehearsal.expect('106 an owner whose items all closed meanwhile is skipped too, and nobody gets a WARNING',
+  NOT EXISTS (SELECT 1 FROM capture WHERE line LIKE '%WARNING%')
+  AND EXISTS (SELECT 1 FROM capture WHERE line = 'logged=sup:owner'),
+  (SELECT string_agg(line, ' | ') FROM capture));
+SELECT rehearsal.expect('106 the zero-count session left nothing behind: no trigger, D1 still sup''s and open, C''s three log rows',
+  NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'rehearsal_close_all_open')
+  AND NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'rehearsal_close_all_open')
+  AND (SELECT owner_id = rehearsal.u('sup') AND status = 'open' FROM site_events WHERE id = rehearsal.ev('D1'))
+  AND (SELECT count(*) FROM site_event_digest_log WHERE run_date = rehearsal.today()) = 3);
+\! rm -f /tmp/rehearse_106_sub.sql /tmp/rehearse_106_out.txt

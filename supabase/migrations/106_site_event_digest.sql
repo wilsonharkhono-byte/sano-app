@@ -18,8 +18,11 @@
 --     reminders went out, read by v_site_event_digest_health.
 --   * enqueue_site_event_digests(): one message per person per project.
 --     Someone who is both an owner and an admin or principal there gets only
---     the office summary, which says "n milik Anda". Delivery rides the
---     existing notifications INSERT webhook (034); nothing to deploy.
+--     the office summary, which says "n milik Anda". Each message is counted
+--     and worded before its log row is written, and a person whose items all
+--     closed while the run was under way is skipped: never a "0 tugas" push.
+--     Delivery rides the existing notifications INSERT webhook (034);
+--     nothing to deploy.
 --   * The SITE_EVENT_DIGEST notification type, and a pg_cron schedule,
 --     Monday to Saturday at 00:00 UTC = 07:00 WIB (WIB has no daylight saving).
 --
@@ -202,62 +205,75 @@ BEGIN
     ORDER BY 1, 2
   LOOP
     BEGIN
+      -- Count first. The recipient query above and these counts are separate
+      -- snapshots, so every item this person was picked for may have closed
+      -- in between. Then there is nothing true to say: no log row, no
+      -- message, no WARNING (an office "0 tugas" push logged as sent, or an
+      -- owner's NULL body failing NOT NULL, would both be wrong).
+      IF r.kind = 'office' THEN
+        SELECT count(*),
+               count(*) FILTER (WHERE a.is_overdue),
+               count(*) FILTER (WHERE a.is_blocking),
+               count(*) FILTER (WHERE a.owner_on_project IS FALSE),
+               count(*) FILTER (WHERE a.owner_id = r.profile_id)
+          INTO v_n, v_a, v_b, v_c, v_d
+        FROM v_site_event_attention a
+        WHERE a.project_id = r.project_id;
+      ELSE
+        SELECT count(*),
+               count(*) FILTER (WHERE a.is_overdue),
+               count(*) FILTER (WHERE a.is_blocking)
+          INTO v_n, v_a, v_b
+        FROM v_site_event_attention a
+        WHERE a.project_id = r.project_id AND a.owner_id = r.profile_id;
+      END IF;
+
+      IF v_n = 0 THEN
+        CONTINUE;
+      END IF;
+
+      IF r.kind = 'office' THEN
+        v_body := concat_ws(', ',
+                    CASE WHEN v_a > 0 THEN v_a || ' lewat tenggat' END,
+                    CASE WHEN v_b > 0 THEN v_b || ' menghambat' END) || '.'
+               || CASE WHEN v_c > 0 THEN ' ' || v_c || ' tanpa penanggung jawab.' ELSE '' END
+               || CASE WHEN v_d > 0 THEN ' ' || v_d || ' milik Anda.' ELSE '' END;
+      ELSE
+        -- "Terlama": the overdue item with the earliest due date, else the
+        -- blocking item blocking the longest.
+        SELECT a.room_code, a.room_name, a.title, a.due_date, a.confirmed_at, a.is_overdue
+          INTO v_old
+        FROM v_site_event_attention a
+        WHERE a.project_id = r.project_id AND a.owner_id = r.profile_id
+        ORDER BY a.is_overdue DESC,
+                 CASE WHEN a.is_overdue THEN a.due_date END ASC,
+                 a.confirmed_at ASC,
+                 a.event_id ASC
+        LIMIT 1;
+
+        v_body := concat_ws(', ',
+                    CASE WHEN v_a > 0 THEN v_a || ' lewat tenggat' END,
+                    CASE WHEN v_b > 0 THEN v_b || ' menghambat' END) || '.'
+               || ' Terlama: ' || COALESCE(v_old.room_code, v_old.room_name) || ' – '
+               || left(COALESCE(v_old.title, 'Kejadian lapangan'), 60)
+               || CASE WHEN v_old.is_overdue
+                       THEN ' (tenggat ' || site_event_digest_day(v_old.due_date) || ').'
+                       ELSE ' (menghambat sejak '
+                            || site_event_digest_day((v_old.confirmed_at AT TIME ZONE 'Asia/Jakarta')::date) || ').'
+                  END;
+      END IF;
+
+      SELECT left(v_n || ' tugas lapangan perlu ditindak · ' || p.code, 200) INTO v_title
+      FROM projects p WHERE p.id = r.project_id;
+
+      -- Once per person, project and WIB day: a second run finds the row and
+      -- sends nothing.
       INSERT INTO site_event_digest_log (project_id, profile_id, run_date, kind)
       VALUES (r.project_id, r.profile_id, p_run_date, r.kind)
       ON CONFLICT (project_id, profile_id, run_date) DO NOTHING;
       GET DIAGNOSTICS v_logged = ROW_COUNT;
 
       IF v_logged > 0 THEN
-        IF r.kind = 'office' THEN
-          SELECT count(*),
-                 count(*) FILTER (WHERE a.is_overdue),
-                 count(*) FILTER (WHERE a.is_blocking),
-                 count(*) FILTER (WHERE a.owner_on_project IS FALSE),
-                 count(*) FILTER (WHERE a.owner_id = r.profile_id)
-            INTO v_n, v_a, v_b, v_c, v_d
-          FROM v_site_event_attention a
-          WHERE a.project_id = r.project_id;
-
-          v_body := concat_ws(', ',
-                      CASE WHEN v_a > 0 THEN v_a || ' lewat tenggat' END,
-                      CASE WHEN v_b > 0 THEN v_b || ' menghambat' END) || '.'
-                 || CASE WHEN v_c > 0 THEN ' ' || v_c || ' tanpa penanggung jawab.' ELSE '' END
-                 || CASE WHEN v_d > 0 THEN ' ' || v_d || ' milik Anda.' ELSE '' END;
-        ELSE
-          SELECT count(*),
-                 count(*) FILTER (WHERE a.is_overdue),
-                 count(*) FILTER (WHERE a.is_blocking)
-            INTO v_n, v_a, v_b
-          FROM v_site_event_attention a
-          WHERE a.project_id = r.project_id AND a.owner_id = r.profile_id;
-
-          -- "Terlama": the overdue item with the earliest due date, else the
-          -- blocking item blocking the longest.
-          SELECT a.room_code, a.room_name, a.title, a.due_date, a.confirmed_at, a.is_overdue
-            INTO v_old
-          FROM v_site_event_attention a
-          WHERE a.project_id = r.project_id AND a.owner_id = r.profile_id
-          ORDER BY a.is_overdue DESC,
-                   CASE WHEN a.is_overdue THEN a.due_date END ASC,
-                   a.confirmed_at ASC,
-                   a.event_id ASC
-          LIMIT 1;
-
-          v_body := concat_ws(', ',
-                      CASE WHEN v_a > 0 THEN v_a || ' lewat tenggat' END,
-                      CASE WHEN v_b > 0 THEN v_b || ' menghambat' END) || '.'
-                 || ' Terlama: ' || COALESCE(v_old.room_code, v_old.room_name) || ' – '
-                 || left(COALESCE(v_old.title, 'Kejadian lapangan'), 60)
-                 || CASE WHEN v_old.is_overdue
-                         THEN ' (tenggat ' || site_event_digest_day(v_old.due_date) || ').'
-                         ELSE ' (menghambat sejak '
-                              || site_event_digest_day((v_old.confirmed_at AT TIME ZONE 'Asia/Jakarta')::date) || ').'
-                    END;
-        END IF;
-
-        SELECT left(v_n || ' tugas lapangan perlu ditindak · ' || p.code, 200) INTO v_title
-        FROM projects p WHERE p.id = r.project_id;
-
         PERFORM enqueue_notification_user(
           r.project_id,
           r.profile_id,

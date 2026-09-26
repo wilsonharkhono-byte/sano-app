@@ -164,10 +164,26 @@ describe('migration 106 - enqueue_site_event_digests', () => {
     expect(body()).toMatch(/NOT EXISTS \(\s+SELECT 1 FROM office o WHERE o\.project_id = i\.project_id AND o\.profile_id = i\.owner_id\s+\)/);
   });
 
-  it('logs first, once per day, and sends only when the log row is new', () => {
+  it('logs once per day, and sends only when the log row is new', () => {
     expect(body()).toContain('ON CONFLICT (project_id, profile_id, run_date) DO NOTHING;');
     expect(body()).toContain('GET DIAGNOSTICS v_logged = ROW_COUNT;');
     expect(body()).toContain('IF v_logged > 0 THEN');
+    expect(body().indexOf('INSERT INTO site_event_digest_log')).toBeLessThan(body().indexOf('PERFORM enqueue_notification_user('));
+  });
+
+  it('counts before it logs: a recipient whose items all closed meanwhile gets no log row, no message, no WARNING', () => {
+    const b = body();
+    const zero = b.indexOf('IF v_n = 0 THEN');
+    expect(zero).toBeGreaterThan(-1);
+    expect(b.slice(zero, b.indexOf('END IF;', zero))).toMatch(/^IF v_n = 0 THEN\s+CONTINUE;\s+$/);
+    // Both counts (office and owner) come before the check, the log INSERT after it.
+    expect(b.match(/INTO v_n, /g) ?? []).toHaveLength(2);
+    expect(b.lastIndexOf('INTO v_n, ')).toBeLessThan(zero);
+    expect(zero).toBeLessThan(b.indexOf('INSERT INTO site_event_digest_log'));
+    // The message is worded before the log row exists, so nothing between the
+    // INSERT and the send can still turn out to have nothing to say.
+    expect(b.indexOf("' Terlama: '")).toBeLessThan(b.indexOf('INSERT INTO site_event_digest_log'));
+    expect(b.indexOf("' milik Anda.'")).toBeLessThan(b.indexOf('INSERT INTO site_event_digest_log'));
   });
 
   it('delivers through enqueue_notification_user, deeplinking to RoomBoard with the attention params', () => {
