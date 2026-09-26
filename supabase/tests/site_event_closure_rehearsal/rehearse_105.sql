@@ -4,11 +4,42 @@
 \pset tuples_only on
 \pset format unaligned
 
+-- The closure rows of the matrix block below point at files that must not exist.
+SELECT rehearsal.expect('105 (setup) no file exists for the isu and hambatan closure rows whose upload never happened', NOT EXISTS (SELECT 1 FROM storage.objects WHERE bucket_id = 'site-media' AND name IN (rehearsal.path('isu', 9), rehearsal.path('hambatan', 10))));
+
 -- A. Proof by type, as the supervisor who owns every closure event
 BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal.as_user('sup') IS NOT NULL AS ok \gset
 SELECT rehearsal.expect_error('105 a cacat with no closure row is refused', format('SELECT close_site_event(%L, %L)', rehearsal.ev('cacat'), 'Sudah ditambal'), 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED:');
 SELECT rehearsal.expect_error('105 an isu with no closure row is refused', format('SELECT close_site_event(%L, %L)', rehearsal.ev('isu'), 'Sudah ditambal'), 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED:');
 SELECT rehearsal.expect_error('105 a hambatan with no closure row is refused', format('SELECT close_site_event(%L, %L)', rehearsal.ev('hambatan'), 'Sudah ditambal'), 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED:');
+-- Spec §8.2 lists every refusal for all three types. The checks after these
+-- two savepoints try a closure row whose file is missing on the cacat only,
+-- and only a context photo on the isu only; the savepoints try the other two
+-- types of each, then roll back, so all three events are back to no media
+-- row at all for the checks that follow.
+SAVEPOINT only_context;
+-- The context files do exist (postgres puts them in storage, as the fixture
+-- does its own), so the refusal can only come from the row's role.
+SET LOCAL ROLE postgres;
+INSERT INTO storage.objects (bucket_id, name) VALUES
+  ('site-media', rehearsal.path('cacat', 7)),
+  ('site-media', rehearsal.path('hambatan', 8));
+SELECT rehearsal.expect('105 (setup) the cacat and hambatan context photos'' files exist', (SELECT count(*) = 2 FROM storage.objects WHERE bucket_id = 'site-media' AND name IN (rehearsal.path('cacat', 7), rehearsal.path('hambatan', 8))));
+SET LOCAL ROLE authenticated;
+INSERT INTO site_event_media (id, event_id, kind, role, storage_path) VALUES
+  (rehearsal.m(7), rehearsal.ev('cacat'), 'photo', 'context', rehearsal.path('cacat', 7)),
+  (rehearsal.m(8), rehearsal.ev('hambatan'), 'photo', 'context', rehearsal.path('hambatan', 8));
+SELECT rehearsal.expect_error('105 a cacat with only a context photo is refused', format('SELECT close_site_event(%L, NULL)', rehearsal.ev('cacat')), 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED:');
+SELECT rehearsal.expect_error('105 a hambatan with only a context photo is refused', format('SELECT close_site_event(%L, NULL)', rehearsal.ev('hambatan')), 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED:');
+ROLLBACK TO SAVEPOINT only_context;
+SAVEPOINT missing_file;
+INSERT INTO site_event_media (id, event_id, kind, role, storage_path) VALUES
+  (rehearsal.m(9), rehearsal.ev('isu'), 'photo', 'closure', rehearsal.path('isu', 9)),
+  (rehearsal.m(10), rehearsal.ev('hambatan'), 'photo', 'closure', rehearsal.path('hambatan', 10));
+SELECT rehearsal.expect_error('105 an isu closure row whose file was never uploaded is no proof', format('SELECT close_site_event(%L, NULL)', rehearsal.ev('isu')), 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED:');
+SELECT rehearsal.expect_error('105 a hambatan closure row whose file was never uploaded is no proof', format('SELECT close_site_event(%L, NULL)', rehearsal.ev('hambatan')), 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED:');
+ROLLBACK TO SAVEPOINT missing_file;
+SELECT rehearsal.expect('105 the matrix savepoints left no media row on the cacat, isu or hambatan', NOT EXISTS (SELECT 1 FROM site_event_media WHERE event_id IN (rehearsal.ev('cacat'), rehearsal.ev('isu'), rehearsal.ev('hambatan'))));
 INSERT INTO site_event_media (id, event_id, kind, role, storage_path)
 VALUES (rehearsal.m(1), rehearsal.ev('cacat'), 'photo', 'closure', rehearsal.path('cacat', 1));
 SELECT rehearsal.expect_error('105 a closure row whose file was never uploaded is no proof', format('SELECT close_site_event(%L, NULL)', rehearsal.ev('cacat')), 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED:');
