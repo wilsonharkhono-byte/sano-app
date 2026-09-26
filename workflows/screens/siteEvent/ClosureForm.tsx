@@ -1,28 +1,63 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, Platform, StyleSheet } from 'react-native';
 import PhotoGalleryField from '../../components/PhotoGalleryField';
 import { useToast } from '../../components/Toast';
 import { pickPhoto } from '../../../tools/storage';
-import { closeSiteEvent, newSiteEventId, type LocalSiteEventMedia } from '../../../tools/siteEvents';
-import { COLORS } from '../../theme';
+import { newSiteEventId, type LocalSiteEventMedia } from '../../../tools/siteEvents';
+import { enqueueCloseJob } from '../../../tools/captureQueueStore';
+import { triggerDrain } from '../../../tools/captureQueueWorker';
+import type { SiteEventType } from '../../../tools/types';
+import { COLORS, FONTS, RADIUS, SPACE, TYPE } from '../../theme';
 import { formStyles as s } from './styles';
-
-const NOTE_MAX = 500;
+import {
+  CLOSE_QUEUED_TOAST,
+  CLOSURE_NOTE_MAX,
+  WEB_CLOSE_QUEUED_TOAST,
+  closureBlocker,
+  closureCopy,
+  noteLength,
+} from './closureModel';
 
 interface Props {
+  /** The signed-in profile; the close job belongs to it (a shared phone must not mix people). */
+  userId: string;
   eventId: string;
   projectId: string;
-  onClosed: () => void;
+  roomId: string;
+  eventTitle: string;
+  eventType: SiteEventType | null;
+  /** Called once the close is safely in the queue - NOT when the server has closed the event. */
+  onQueued: () => void;
   onCancel: () => void;
 }
 
-/** "Selesai" (spec §5.5): closure evidence is offered, not required, in release 1. */
-export default function ClosureForm({ eventId, projectId, onClosed, onCancel }: Props) {
+function Badge({ label }: { label: string }) {
+  const required = label === 'Wajib';
+  return (
+    <View style={[styles.badge, required ? styles.badgeRequired : styles.badgeOptional]}>
+      <Text style={[styles.badgeText, required ? styles.badgeTextRequired : styles.badgeTextOptional]}>{label}</Text>
+    </View>
+  );
+}
+
+/**
+ * "Selesai" (closure spec 2026-09-26 §3.3). Asks for proof by event type,
+ * the same rule migration 105 enforces, and never closes anything itself: the
+ * submit puts a close job in the capture queue and the status turns "Selesai"
+ * only when the server has accepted it (spec §1.1 rule 1).
+ */
+export default function ClosureForm({ userId, eventId, projectId, roomId, eventTitle, eventType, onQueued, onCancel }: Props) {
   const { show: toast } = useToast();
   const [note, setNote] = useState('');
   const [photo, setPhoto] = useState<LocalSiteEventMedia | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const copy = closureCopy(eventType);
+  // The exact string the job will send, and the one both sides count.
+  const sentNote = note.trim();
+  const blocker = closureBlocker({ type: eventType, hasPhoto: photo !== null, sentNote });
+  const disabled = saving || blocker !== null;
 
   const take = async () => {
     try {
@@ -45,44 +80,69 @@ export default function ClosureForm({ eventId, projectId, onClosed, onCancel }: 
   };
 
   const submit = async () => {
+    if (disabled) return;
     setSaving(true);
     setError(null);
-    const result = await closeSiteEvent({ eventId, projectId, note, closurePhoto: photo });
-    setSaving(false);
-    if (result.error) {
-      setError(result.error);
+    try {
+      const result = await enqueueCloseJob({
+        userId,
+        jobId: newSiteEventId(),
+        eventId,
+        projectId,
+        roomId,
+        eventTitle,
+        note: sentNote,
+        closurePhoto: photo,
+        nowIso: new Date().toISOString(),
+      });
+      if (result.error) {
+        setError(result.error);
+        return;
+      }
+    } catch (err) {
+      setError(`Penutupan gagal disimpan di ponsel: ${(err as Error).message}`);
       return;
+    } finally {
+      setSaving(false);
     }
-    toast('Kejadian ditandai selesai.', 'ok');
-    onClosed();
+    triggerDrain();
+    toast(Platform?.OS === 'web' ? WEB_CLOSE_QUEUED_TOAST : CLOSE_QUEUED_TOAST, 'ok');
+    onQueued();
   };
 
   return (
     <View>
-      <Text style={s.label}>Foto penutupan</Text>
+      <View style={styles.labelRow}>
+        <Text style={[s.label, styles.labelInRow]}>Foto penutupan</Text>
+        <Badge label={copy.photoBadge} />
+      </View>
       <PhotoGalleryField
         photoPaths={photo ? [photo.localUri] : []}
         maxPhotos={1}
         emptyLabel="Foto hasil"
-        helperText="Opsional. Bukti bahwa masalahnya sudah beres."
+        helperText={copy.photoHelper}
         onAdd={() => void take()}
         onReplace={() => void take()}
         onRemove={() => setPhoto(null)}
       />
 
-      <Text style={s.label}>Catatan penutupan</Text>
+      <View style={styles.labelRow}>
+        <Text style={[s.label, styles.labelInRow]}>{copy.noteLabel}</Text>
+        <Badge label={copy.noteBadge} />
+      </View>
+      {copy.noteHint ? <Text style={s.hint}>{copy.noteHint}</Text> : null}
       <TextInput
         style={[s.input, s.textarea]}
         value={note}
         onChangeText={setNote}
-        maxLength={NOTE_MAX}
+        maxLength={CLOSURE_NOTE_MAX}
         multiline
         editable={!saving}
-        placeholder="Opsional. Apa yang dikerjakan?"
+        placeholder={copy.notePlaceholder}
         placeholderTextColor={COLORS.textMuted}
-        accessibilityLabel="Catatan penutupan"
+        accessibilityLabel={copy.noteLabel}
       />
-      <Text style={s.counter}>{note.length}/{NOTE_MAX}</Text>
+      <Text style={s.counter}>{copy.counter(noteLength(sentNote))}</Text>
 
       {error ? (
         <View style={s.errorBox}>
@@ -91,16 +151,29 @@ export default function ClosureForm({ eventId, projectId, onClosed, onCancel }: 
       ) : null}
 
       <TouchableOpacity
-        style={[s.primaryBtn, saving && s.primaryBtnDisabled]}
+        style={[s.primaryBtn, disabled && s.primaryBtnDisabled]}
         onPress={() => void submit()}
-        disabled={saving}
+        disabled={disabled}
         accessibilityRole="button"
+        accessibilityState={{ disabled }}
       >
         <Text style={s.primaryText}>{saving ? 'Menyimpan…' : 'Tandai selesai'}</Text>
       </TouchableOpacity>
+      {blocker && !saving ? <Text style={s.hint}>{blocker}</Text> : null}
       <TouchableOpacity style={s.secondaryBtn} onPress={onCancel} disabled={saving} accessibilityRole="button">
         <Text style={s.secondaryText}>Batal</Text>
       </TouchableOpacity>
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  labelRow: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, marginTop: SPACE.md, marginBottom: 6 },
+  labelInRow: { marginTop: 0, marginBottom: 0 },
+  badge: { paddingVertical: 2, paddingHorizontal: SPACE.sm, borderRadius: RADIUS },
+  badgeRequired: { backgroundColor: COLORS.criticalBg },
+  badgeOptional: { backgroundColor: COLORS.surfaceAlt },
+  badgeText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold },
+  badgeTextRequired: { color: COLORS.critical },
+  badgeTextOptional: { color: COLORS.textSec },
+});

@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import Card from '../components/Card';
 import { getSiteEvent, getSiteEventResult, type SiteEventWithMedia } from '../../tools/siteEvents';
+import { useProject } from '../hooks/useProject';
 import { gateChipLabel, listGateRefs, listGateStepRefs, stepChipLabel } from '../../tools/gateRefs';
 import { todayIsoLocal } from '../../tools/siteEventRules';
 import { SITE_EVENT_STATUS_LABELS, SITE_EVENT_TYPE_LABELS } from '../../tools/constants';
@@ -43,6 +44,7 @@ export default function SiteEventDetailScreen() {
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
   const params = (route.params ?? {}) as { eventId?: string; projectId?: string };
+  const { profile } = useProject();
 
   const [event, setEvent] = useState<SiteEventWithMedia | null>(null);
   const [gates, setGates] = useState<GateRef[]>([]);
@@ -242,15 +244,16 @@ export default function SiteEventDetailScreen() {
               </TouchableOpacity>
             ) : null}
 
-            {actions.canClose && closing ? (
+            {actions.canClose && closing && profile ? (
               <Card title="Tandai selesai">
                 <ClosureForm
+                  userId={profile.id}
                   eventId={event.id}
                   projectId={event.project_id}
-                  onClosed={() => {
-                    setClosing(false);
-                    void load();
-                  }}
+                  roomId={event.room_id}
+                  eventTitle={event.title ?? 'Kejadian lapangan'}
+                  eventType={event.event_type}
+                  onQueued={() => setClosing(false)}
                   onCancel={() => setClosing(false)}
                 />
               </Card>
