@@ -54,9 +54,15 @@ digest (106) built on one "needs attention" predicate that the app also shows as
 
 | `event_type` | Proof needed to close | Refusal |
 |---|---|---|
-| `cacat`, `isu`, `hambatan` | At least one `site_event_media` row for the event with `role = 'closure'`, `kind = 'photo'`, whose object exists in `storage.objects` (`bucket_id = 'site-media'`, `name = storage_path`) | `SITE_EVENT_CLOSURE_PHOTO_REQUIRED` |
+| `cacat`, `isu`, `hambatan` | At least one `site_event_media` row for the event with `role = 'closure'`, `kind = 'photo'`, whose object exists in `storage.objects` (`bucket_id = 'site-media'`, `name = storage_path`), **and whose `storage_path` no other, non-closure row of the same event also names** | `SITE_EVENT_CLOSURE_PHOTO_REQUIRED` |
 | `butuh_keputusan` | `p_closure_note` of at least 10 characters after trimming | `SITE_EVENT_CLOSURE_NOTE_REQUIRED` |
 | `progres`, `info` | Nothing, as today | none |
+
+**(As built)** A closure row is also no proof when its `storage_path` matches a non-closure
+row of the same event: `site_event_media_insert` lets any member insert a media row with no
+upload of its own, so without this exclusion the event's own `context` photo — whose file
+genuinely exists — could be re-registered as `closure` by a bare row insert, no photo ever
+taken. The inner `NOT EXISTS` in §3.2 checks this per candidate closure row.
 
 Unchanged for every type: only an open event closes (`SITE_EVENT_NOT_OPEN`), the note is
 capped at 500 characters (`SITE_EVENT_CLOSURE_NOTE`), and any project member or office role
@@ -78,6 +84,11 @@ IF v_ev.event_type IN ('cacat', 'isu', 'hambatan') AND NOT EXISTS (
   SELECT 1 FROM site_event_media m
   JOIN storage.objects o ON o.bucket_id = 'site-media' AND o.name = m.storage_path
   WHERE m.event_id = p_event_id AND m.role = 'closure' AND m.kind = 'photo'
+    AND NOT EXISTS (
+      -- (as built) refuses a closure row that only reuses another row's path
+      SELECT 1 FROM site_event_media c
+      WHERE c.event_id = m.event_id AND c.role <> 'closure' AND c.storage_path = m.storage_path
+    )
 ) THEN
   RAISE EXCEPTION 'SITE_EVENT_CLOSURE_PHOTO_REQUIRED: kejadian % hanya bisa ditandai selesai dengan foto penutupan. Perbarui aplikasi, lalu ambil foto hasil perbaikan.', v_ev.event_type;
 END IF;
@@ -94,17 +105,27 @@ END IF;
 - **Why the storage object:** `site_event_media_insert` (097:464-472) lets any member insert a
   row and the path guard (097:201-223) checks only the prefix, so a row pointing at a file
   never uploaded would otherwise count as proof.
+- **(As built) Why the path also can't be shared:** the same insert path that lets a row point
+  at a never-uploaded file also lets a `closure` row point at the event's own `context`
+  photo's path, whose file genuinely exists — a direct insert, no app needed. The inner
+  `NOT EXISTS` refuses a closure row whenever another, non-closure row of the same event
+  already names that `storage_path`.
 - **Why full Indonesian sentences:** older builds lack the new codes in `RPC_ERROR_COPY`, so
   `mapSiteEventRpcError` shows `Gagal menyimpan: ` plus the raw text (`tools/siteEvents.ts:162-168`).
-- **Paste precondition.** The check runs as the function owner (the Dashboard's `postgres`)
-  against `storage.objects`, owned by `supabase_storage_admin` with RLS on. If `postgres`
-  could not read that table, the rule would refuse **every** closure photo, silently. 105
-  opens with a `DO` block that requires **both** (a) `has_table_privilege(current_user,
-  'storage.objects', 'SELECT')` and (b) RLS bypass or ownership: `rolsuper` or
-  `rolbypassrls`, or membership of the table's owner (`pg_has_role(current_user, relowner,
-  'MEMBER')`). Bypassing RLS is no use without SELECT on the table. If either fails, the paste
-  stops with `MIGRATION_105_PRECONDITION: <role> ...`, and the message names which check
-  failed: "tidak punya hak SELECT pada storage.objects" or "tidak bisa membaca storage.objects
+- **Paste precondition (as built: three checks, in order, not two).** The check runs as the
+  function owner (the Dashboard's `postgres`) against `storage.objects`, owned by
+  `supabase_storage_admin` with RLS on. If `postgres` could not read that table, the rule
+  would refuse **every** closure photo, silently. 105 opens with a `DO` block that checks, in
+  order: (a) `has_schema_privilege(current_user, 'storage', 'USAGE')` — without it the next
+  check's own table-name lookup fails with a bare "permission denied for schema storage"; (b)
+  `has_table_privilege(current_user, 'storage.objects', 'SELECT')`; (c) RLS bypass or
+  ownership: `rolsuper` or `rolbypassrls`, or `pg_has_role(current_user, relowner, 'USAGE')`
+  — not `'MEMBER'`: RLS exempts the owner through inherited privilege, and a NOINHERIT
+  membership would pass `'MEMBER'` and still be filtered by the policies — with the table not
+  forcing row security. Bypassing RLS is no use without SELECT on the table, and SELECT is no
+  use without USAGE on the schema. Each check has its own `MIGRATION_105_PRECONDITION: <role>
+  ...` message, naming exactly which one failed: "tidak punya hak USAGE pada schema storage",
+  "tidak punya hak SELECT pada storage.objects", or "tidak bisa membaca storage.objects
   melewati RLS". The prefix is not `SITE_EVENT_`, so the client cross-check (§8.3) never asks
   for app copy for it.
 - **Re-paste hazard (stated in the 105 header too).** 097 still carries its own
@@ -207,6 +228,18 @@ gains "Simpan foto penutupan", "Tandai selesai", "Baca status kejadian". New mut
 `isReadyToAttempt` treats `superseded` as terminal; `WAITING_STATES` gains `closing`, so the
 Beranda badge counts a waiting close as "menunggu sinyal".
 
+**(As built) The unreadable close.** A `lookup_closer` step that fails for good lands in
+`failed` like any other permanent failure (`recordFailure`: `lastFailureKind: 'permanent'`,
+`needsAttention: true`), but this job also already carries `closeOutcome: 'not_open'` from the
+`close` step that ran before it. That pairing is neither pending nor superseded: the server
+has already said the event is no longer open, yet nothing could be read about who closed it or
+when. `isCloseStatusUnreadable(job)` in `captureQueue.ts` names it exactly
+(`closeOutcome === 'not_open' && lastFailureKind === 'permanent'`); `pendingCloseFor`
+(`captureQueueStore.ts`) excludes it so it never reads as "will still try", `unreadableCloseFor`
+finds it, and `acknowledgeCloseEntry` is the only way off it, the same as a superseded job.
+`pendingCloseFor`, `supersededCloseFor` and `unreadableCloseFor` all return `null` when nothing
+matches, so every caller tests them the same way.
+
 ### 4.4 Worker steps and outcomes
 
 | Step | Call | Result |
@@ -214,7 +247,7 @@ Beranda badge counts a waiting close as "menunggu sinyal".
 | `upload` | Shared, but a close job's carrier id is `entry.eventId`: the object must land in `site-events/{projectId}/{eventId}/` or 097's path guard refuses the row. | `markUploaded` |
 | `insert_media` | `insertClosureMedia(carrier, bytesById)`, today's upsert with `ignoreDuplicates` (`tools/siteEvents.ts:547-550`) lifted out, so a retry is a no-op. | `markClosureMediaInserted` |
 | `close` | `closeSiteEventRpc(eventId, note)` returns `{ ok }`, `{ notOpen }` for `SITE_EVENT_NOT_OPEN:`, or `{ error, kind }`: other `SITE_EVENT_*:` refusals and Postgres `42501` are `permanent`, anything else `transient`. | `ok` → outcome `closed`. `notOpen` → outcome `not_open`, **not a failure**: no strike, no `lastError`, and the RPC is never called again. |
-| `lookup_closer` | `getSiteEventResult(eventId)` (`tools/siteEvents.ts:386-412`). | Status `done` records `closed_by_name`, `closed_at`. A read error is transient and the next pass repeats only the lookup. Not found or another status is permanent, with the `SITE_EVENT_NOT_OPEN` copy. |
+| `lookup_closer` | `getSiteEventResult(eventId)` (`tools/siteEvents.ts:386-412`), wrapped **(as built)** by `lookupSiteEventCloser(eventId)` (`tools/siteEvents.ts:599-609`). | Status `done` with `closed_at` set records `closed_by_name`, `closed_at`. A read error is transient and the next pass repeats only the lookup. Not found, or any other status, is permanent, mapped through the `SITE_EVENT_NOT_OPEN` copy — paired with the job's own `not_open` outcome, this is the unreadable case §4.3 names. |
 | `cleanup` | Shared. | `processEntry` still removes only `done` entries (`:285-287`); `superseded` stays until acknowledged. |
 
 `closeSiteEvent` is removed; the form has no synchronous path. **Lost response:** the retry
@@ -233,8 +266,8 @@ permanent and the card offers "Batalkan", after which the person closes with a n
 
 | Surface | While a close job is pending |
 |---|---|
-| Detail | Status chip keeps the server label ("Terbuka") plus a chip "Menunggu kirim". "Selesai" is replaced by "Penutupan tersimpan di ponsel ini dan menunggu kirim. Status tetap Terbuka sampai server menerimanya." If the job needs attention: "Penutupan belum terkirim: {lastError}" and "Coba lagi" (`retryQueueEntry`). When the job leaves the pending set the screen calls `load()` and shows what the server says. |
-| Room timeline | A second badge "Menunggu kirim" beside the status badge (`RoomTimeline.tsx:186-195`); its "Selesai" action is hidden. |
+| Detail | Status chip keeps the server label; while it is still "Terbuka" the chip "Menunggu kirim" joins it and "Selesai" is replaced by "Penutupan tersimpan di ponsel ini dan menunggu kirim. Status tetap Terbuka sampai server menerimanya." **(As built)** once the server's own status is no longer "Terbuka" — someone else closed the event while this job's lookup is still pending — the "Menunggu kirim" chip drops and the sentence becomes "Kejadian ini sudah ditutup di server. Penutupan yang tersimpan di ponsel ini akan dicek saat terkirim." If the job needs attention: "Penutupan belum terkirim: {lastError}", then exactly one of "Coba lagi" (`retryQueueEntry`, shown only when the shared `closeJobCancelKind` rule, §4.6, says `'retry'`) or "Batalkan" (shown only on `'cancel'`, with the card's own confirm sentence, whose "Kejadian tetap terbuka." clause is rewritten to "Kejadian ini sudah ditutup di server." once the server status is not open). A superseded or unreadable job (§4.3) instead shows its own reason and "Mengerti", superseded taking precedence when both exist for the event. Acting on any of these makes the screen call `load()` and show what the server says. |
+| Room timeline | A second badge beside the status badge (`RoomTimeline.tsx:186-195`); its "Selesai" action is hidden. **(As built)** `pendingCloseBadge(job)` (`timelineModel.ts`) reads "Belum terkirim" while the job needs attention, else "Menunggu kirim"; `pendingCloseLeft(before, after)` compares the pending-close id set across a reload and tells the timeline to reload once an event's pending close disappears (closed, superseded, cancelled, or turned unreadable) — the timeline's own version of the detail screen's `hadPendingClose` rule. |
 | Perlu ditindak (§5.6) | The row stays, since the server still has it open, with a "Menunggu kirim" chip. |
 | Board counts | Unchanged: `v_room_board` counts server state, where the event is still open. |
 
@@ -245,12 +278,24 @@ permanent and the card offers "Batalkan", after which the person closes with a n
 | Close job | Title | Reason | Action |
 |---|---|---|---|
 | Needs attention, transient | "Selesai: {eventTitle}" | `lastError` | "Coba lagi" |
-| Permanent or unrecoverable | "Selesai: {eventTitle}" | `lastError`, or "Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru." | "Batalkan", confirmed with "Batalkan penutupan "{title}"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu." |
+| Permanent or unrecoverable, no outcome yet | "Selesai: {eventTitle}" | `lastError`, or "Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru." | "Batalkan", confirmed with "Batalkan penutupan "{title}"? Kejadian tetap terbuka." plus, **(as built)** only when the closure photo's media row is in (`mediaInserted`), the trailing "Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu." |
 | `superseded` | "{eventTitle}" | "Sudah ditutup oleh {closedByName} pada {17 Sep 14.05}." or, with no name, "Sudah ditutup pada {…}." | "Mengerti", which removes it (`acknowledgeCloseEntry`) |
+| **(As built)** unreadable — `closeOutcome = 'not_open'` plus a permanent lookup failure (§4.3's `isCloseStatusUnreadable`) | "Selesai: {eventTitle}" | `REASON_CLOSE_STATUS_UNREADABLE`: "Kejadian sudah tidak terbuka di server; statusnya tidak bisa dibaca." | "Mengerti", which removes it (`acknowledgeCloseEntry`) |
 
-`discardEntryLocally` refuses a close job with an outcome ("Kejadian sudah ditutup di
-server."); the early return (`CaptureQueueCard.tsx:76`) also counts `superseded` rows. Times
-use a new pure `formatWibShort(iso)` in `tools/timeWindow.ts`: fixed +7 h arithmetic like
+**(As built)** One rule decides the action column for every row above,
+`closeJobCancelKind(job)` in `workflows/screens/siteEvent/captureQueueModel.ts`:
+`'acknowledge'` for `superseded` or unreadable, `'cancel'` for a permanent refusal or a lost
+photo with no outcome recorded yet, `'retry'` for a transient failure still under attention,
+`null` otherwise — the same rule the detail screen reads (§4.5), so no two surfaces offer
+different ways out of the same job.
+
+`discardEntryLocally` refuses a close job with an outcome, worded by which one **(as built)**:
+"Kejadian sudah ditutup di server." when the outcome is `closed`, "Kejadian sudah tidak
+terbuka di server." when it is `not_open`; the early return (`CaptureQueueCard.tsx:76`) also
+counts `superseded` rows. **(As built)** "Mengerti" (`acknowledgeCloseEntry`) removes the
+queue entry's key first, then deletes its local folder best-effort — a folder that cannot be
+deleted now is left for the next session's orphan sweep, never a reason to fail "Mengerti".
+Times use a new pure `formatWibShort(iso)` in `tools/timeWindow.ts`: fixed +7 h arithmetic like
 `todayIsoWIB` (`:79-85`), months `Jan Feb Mar Apr Mei Jun Jul Agu Sep Okt Nov Des`, `HH.mm`.
 
 ## 5. Morning digest: migration 106
@@ -309,8 +354,11 @@ the scheduler, not one project.
 
 `enqueue_site_event_digests(p_run_date DATE DEFAULT (now() AT TIME ZONE 'Asia/Jakarta')::date)
 RETURNS INTEGER`: SECURITY DEFINER, `SET search_path = public`, `REVOKE ALL ... FROM PUBLIC,
-anon, authenticated` and **no grant**, so only `pg_cron` and the Dashboard (both `postgres`)
-run it and no app user can trigger a round of pushes.
+anon, authenticated` — **(as built) also `service_role`**, on this function and on
+`site_event_digest_day`: Supabase's default privileges grant `service_role` EXECUTE on every
+new function, and a round of pushes is not something the service role should be able to
+trigger either — and **no grant**, so only `pg_cron` and the Dashboard (both `postgres`) run it
+and no app role can trigger a round of pushes.
 
 1. A `p_run_date` other than the Jakarta date of `now()` raises `DIGEST_RUN_DATE: tanggal
    kiriman harus hari ini (WIB)` (no `SITE_EVENT_` prefix: no client ever sees it).
@@ -321,14 +369,22 @@ run it and no app user can trigger a round of pushes.
    no summary for it, while principals are members of every project by 093 (an explicit
    removal sticks, 093:41-43). **Owner:** each distinct `owner_id` with a
    `project_assignments` row on that project, unless an office recipient there.
-3. Per recipient, in its own `BEGIN ... EXCEPTION WHEN OTHERS` block: `INSERT INTO
+3. Per recipient, in its own `BEGIN ... EXCEPTION WHEN OTHERS` block: **(as built)** first
+   count that recipient's current attention rows and build the title and body from them — a
+   fresh read, separate from the recipient query above, since every item this person was
+   picked for may have closed in the gap between the two. A zero count `CONTINUE`s straight to
+   the next recipient: no log row, no notification, and no `WARNING` — an office "0 tugas"
+   push logged as sent, or an owner's body built from nothing, would both say something false.
+   Only once there is something to report does the function `INSERT INTO
    site_event_digest_log ... ON CONFLICT (project_id, profile_id, run_date) DO NOTHING`,
-   skipping when nothing was inserted (already sent today); else `PERFORM
-   enqueue_notification_user(project_id, profile_id, 'SITE_EVENT_DIGEST', title, body,
-   'RoomBoard', params, NULL, NULL, NULL)` (092:100-137) and read back `notifications` for
-   that recipient, project and type with `created_at >= now()` (097:790-803). If nothing
-   landed, `RAISE` so the block rolls the log row back; the handler logs a `WARNING` and the
-   loop goes on. A log row exists if and only if its notification does.
+   skipping the rest of the block when nothing was inserted (already sent today for this
+   person, project and kind); else `PERFORM enqueue_notification_user(project_id, profile_id,
+   'SITE_EVENT_DIGEST', title, body, 'RoomBoard', params, NULL, NULL, NULL)` (092:100-137) and
+   read back `notifications` for that recipient, project and type with `created_at >= now()`
+   (097:790-803). If nothing landed, `RAISE EXCEPTION 'DIGEST_NOT_LANDED: ...'` so the block
+   rolls back everything it did for this recipient, **including the log row just inserted**;
+   the handler logs a `WARNING` and the loop goes on. A log row exists if and only if its
+   notification does.
 4. Return the number that landed (0 when nobody needs anything). Two concurrent runs
    serialize on the UNIQUE key and the second inserts nothing.
 
@@ -395,22 +451,34 @@ END $$;
   `getDigestHealth()` returns `{ last } | { error }`, `last` null when the view has no row.
 - **"Perlu ditindak"** (`office/screens/rooms/AttentionList.tsx`) renders at the top of
   `RoomBoardView`, above the summary card, so the supervisor `RoomBoardScreen` and the office
-  and principal Rooms tabs all get it. Title "Perlu ditindak ({n})", or "(200 teratas)" when
-  capped. Row: `{room_code} · {room_name}`, title, chips "Lewat {d} hari" (d ≥ 1),
-  "Menghambat", "Menunggu kirim" (§4.5) and, in office layouts, the owner's name or "Tanpa
-  penanggung jawab" when `owner_on_project` is false; a tap opens `SiteEventDetail` with
-  `{ eventId, projectId }`.
+  and principal Rooms tabs all get it. Title "Perlu ditindak ({n})". **(As built)** when the
+  read hit the 200-item cap the title instead reads "Perlu ditindak (200 teratas)", or with
+  "Milik saya" on, "Perlu ditindak ({shown} dari 200 teratas)" — the filtered count, never a
+  bare `n` that would read as everything the viewer owns (`attentionHeading`,
+  `tools/siteEventAttention.ts`). Row: `{room_code} · {room_name}`, title, chips "Lewat {d}
+  hari" (d ≥ 1), "Menghambat", "Menunggu kirim" (§4.5) and, in office layouts, the owner's name
+  or "Tanpa penanggung jawab" when `owner_on_project` is false; a tap opens `SiteEventDetail`
+  with `{ eventId, projectId }`.
 
 | State | Renders |
 |---|---|
-| loading | a spinner in the card |
+| loading | a spinner in the card, **(as built)** shown only while there is no data yet for the current project: a refresh keeps the previous rows on screen, and only a retry after a failed read goes back to the spinner |
 | error | "Daftar perlu ditindak gagal dimuat. Periksa koneksi lalu coba lagi." and "Coba lagi"; never the empty text |
-| empty | "Tidak ada yang perlu ditindak."; with Milik saya on, "Tidak ada tugas Anda yang perlu ditindak." |
+| empty | "Tidak ada yang perlu ditindak."; with Milik saya on and the read under the cap, "Tidak ada tugas Anda yang perlu ditindak."; **(as built)** with Milik saya on and the read at the 200-item cap, "Tidak ada tugas Anda di 200 teratas." — the viewer may own items past the first 200, so the text says only what the capped read can prove |
 
+- **(As built)** Every read takes a number from a ref counter; only the latest one may set
+  state, so a slow earlier answer can never overwrite a newer one (`AttentionList.tsx`). The
+  board (`RoomBoardView.tsx`, via `useFocusEffect`) bumps a `reloadKey` on every focus after
+  the first and on pull-to-refresh; the list itself reads once on mount and again whenever
+  `reloadKey` changes — so, together, the board reads once on mount and once per later focus.
 - **"Milik saya"** is a pill in the list header filtering the same rows to `owner_id ===
-  profile.id`, with no second query. Screens read `route.params` and pass `initialMine`; a
-  fresh params object per tap (`pendingDeeplink.ts:37-38`) re-applies it. `RoomsAdminScreen`
-  sets `sub = 'board'` (`:36`) when `params.attention` is true.
+  profile.id`, with no second query. **(As built)** `attentionMineRequest(params)`
+  (`tools/siteEventAttention.ts`) is what the three screens use to turn a `SITE_EVENT_DIGEST`
+  tap's route params into `{ mine } | null`: `RoomBoardScreen`, `PrincipalRoomsScreen` and
+  `RoomsAdminScreen` each call it and pass the result down as a `mineRequest` prop (not a
+  generic `initialMine`), a fresh object per tap (`pendingDeeplink.ts:37-38`) so a second tap
+  of the same notification re-applies it even with the list already on screen.
+  `RoomsAdminScreen` sets `sub = 'board'` (`:43-46`) when `mineRequest` is non-null.
 - **Health line** (`DigestHealthLine.tsx`), office layouts only, via a `showDigestHealth` prop
   from `RoomsAdminScreen` and `PrincipalRoomsScreen`: "Pengingat terakhir: 17 Sep 07.00 · 4
   orang" (`formatWibShort`); "Pengingat harian belum pernah terkirim" when the view has no
@@ -447,8 +515,8 @@ reads stay membership-gated (092:562-571). No new secret, edge function or outbo
 
 | File | Pins |
 |---|---|
-| `tools/__tests__/migration105.test.ts` | Header links this spec, PASTE ORDER (after 097, 098, 099, 100), RE-PASTE SAFETY, and "re-pasting 097 reverts 100 and 105"; `SET lock_timeout = '5s';` first and one `RESET`; the precondition `DO` block before the function, checking both the SELECT privilege (`has_table_privilege(current_user, 'storage.objects', 'SELECT')`) and RLS bypass or ownership, with a distinct `MIGRATION_105_PRECONDITION:` message for each; DROP by signature before CREATE, REVOKE and GRANT after, exact grantees; DEFINER and `search_path`; the `E' \t\r\n'` trim; the exact four-column SET list; RAISE codes in order `NOT_FOUND`, `AUTH`, `AUTH`, `NOT_OPEN`, `CLOSURE_NOTE`, `CLOSURE_PHOTO_REQUIRED`, `CLOSURE_NOTE_REQUIRED` (all `SITE_EVENT_`); the photo branch names exactly `cacat`, `isu`, `hambatan` and joins `storage.objects` on `'site-media'` and `m.storage_path` with `role = 'closure'`; `char_length(v_note) < 10`; no table, view, policy or trigger DDL; no migration above 105 redefines `close_site_event`; the self-check `EXPECTED:` count. |
-| `tools/__tests__/migration106.test.ts` | Header (spec, paste order after 104 and 105, what re-pasting 098 or 104 undoes); `lock_timeout`; the log table `IF NOT EXISTS`, UNIQUE key, `kind` CHECK; RLS on, one SELECT policy, no write policy; `DROP VIEW IF EXISTS` and `security_invoker = true` on both views; the predicate text and `'Asia/Jakarta'`; DEFINER, `search_path`, REVOKE from `PUBLIC, anon, authenticated`, no GRANT on the function; `ON CONFLICT (project_id, profile_id, run_date) DO NOTHING`; `enqueue_notification_user` and `'RoomBoard'`; `DIGEST_RUN_DATE:`; `status = 'ACTIVE'`; the CHECK widened by shape with 104's sixteen types kept and exactly `SITE_EVENT_DIGEST` added; the cron guard (`pg_extension`, unschedule-if-exists, name, `'0 0 * * 1-6'`, command) and the NOTICE naming "Integrations → Cron"; no `SITE_EVENT_` RAISE code. |
+| `tools/__tests__/migration105.test.ts` | Header links this spec, PASTE ORDER (after 097, 098, 099, 100), RE-PASTE SAFETY, and "re-pasting 097 reverts 100 and 105"; `SET lock_timeout = '5s';` first and one `RESET`; the precondition `DO` block before the function, checking, **(as built) in order,** USAGE on the storage schema (`has_schema_privilege(current_user, 'storage', 'USAGE')`, before the table check), the SELECT privilege (`has_table_privilege(current_user, 'storage.objects', 'SELECT')`) and RLS bypass or ownership (`pg_has_role(current_user, v_owner, 'USAGE')`, not `'MEMBER'`), each with its own `MIGRATION_105_PRECONDITION:` message; DROP by signature before CREATE, REVOKE and GRANT after, exact grantees; DEFINER and `search_path`; the `E' \t\r\n'` trim; the exact four-column SET list; RAISE codes in order `NOT_FOUND`, `AUTH`, `AUTH`, `NOT_OPEN`, `CLOSURE_NOTE`, `CLOSURE_PHOTO_REQUIRED`, `CLOSURE_NOTE_REQUIRED` (all `SITE_EVENT_`); the photo branch names exactly `cacat`, `isu`, `hambatan`, joins `storage.objects` on `'site-media'` and `m.storage_path` with `role = 'closure'`, and **(as built)** its inner `NOT EXISTS (... c.role <> 'closure' AND c.storage_path = m.storage_path)` excludes a reused non-closure path; `char_length(v_note) < 10`; no table, view, policy or trigger DDL; no migration above 105 redefines `close_site_event`; the self-check `EXPECTED:` count. |
+| `tools/__tests__/migration106.test.ts` | Header (spec, paste order after 104 and 105, what re-pasting 098 or 104 undoes); `lock_timeout`; the log table `IF NOT EXISTS`, UNIQUE key, `kind` CHECK; RLS on, one SELECT policy, no write policy; `DROP VIEW IF EXISTS` and `security_invoker = true` on both views; the predicate text and `'Asia/Jakarta'`; DEFINER, `search_path`, REVOKE from `PUBLIC, anon, authenticated` **(as built) and `service_role`** on both `enqueue_site_event_digests` and `site_event_digest_day`, no GRANT on either function, and a self-check grid reporting whether `authenticated` or `service_role` can execute them; `ON CONFLICT (project_id, profile_id, run_date) DO NOTHING`; `enqueue_notification_user` and `'RoomBoard'`; `DIGEST_RUN_DATE:`; `status = 'ACTIVE'`; the CHECK widened by shape with 104's sixteen types kept and exactly `SITE_EVENT_DIGEST` added; the cron guard (`pg_extension`, unschedule-if-exists, name, `'0 0 * * 1-6'`, command) and the NOTICE naming "Integrations → Cron"; no `SITE_EVENT_` RAISE code. |
 
 ### 8.2 Docker rehearsal: `supabase/tests/site_event_closure_rehearsal/`
 
@@ -459,21 +527,27 @@ That image has no storage schema (`run.sh:5-7`), so `storage_stub.sql` first cre
 in production, so the precondition and the existence check face the live RLS question. The
 first run applies 001-104; every run pastes 105 and 106 **twice** each, loads the fixture, then:
 
+**(As built)** 76 checks in total: `rehearse_105.sql` runs 30, `rehearse_repaste_097.sql` and
+`rehearse_repaste_105.sql` run 2 and 2, `rehearse_106.sql` runs 39, and the scheduler's own
+bash PASS/FAIL assertions in `run.sh` (no SQL rehearsal helper, so not part of the 106 count)
+run 3.
+
 | Area | Cases |
 |---|---|
-| Closure, every row of §3.1 | `cacat`, `isu`, `hambatan`: refused with no closure row, with a row whose object is missing, with only a `context` photo; closed with row plus object; closed by a second member using a photo a first member uploaded. `butuh_keputusan`: refused with NULL, nine characters, ten newlines; closed with ten characters padded by spaces and newlines; 501 gets `SITE_EVENT_CLOSURE_NOTE`. `progres`, `info` close with nothing. A closed `cacat` with no photo gets `NOT_OPEN`, not the photo refusal. An outsider gets `AUTH`. Note stored trimmed; `closed_by`, `closed_at` set. |
-| Re-paste hazard | Paste 097: a `cacat` with no photo closes (the revert is real). Paste 100 and 105: refused again. |
-| Digest | Owner only (one row, counts, the "Terlama" item); office (admin and principal one row each, "tanpa penanggung jawab" counting a NULL owner and a removed owner); both roles (an admin owner gets only the office row, "1 milik Anda"); nothing to send (zero rows); second run the same day returns 0 and adds nothing; yesterday's log row does not block today; the removed owner gets no row; a non-ACTIVE project gets nothing; `DIGEST_RUN_DATE` for tomorrow; `authenticated` cannot execute the function; a supervisor reads zero log rows, an office role reads them. |
+| Closure, every row of §3.1 (30) | `cacat`, `isu`, `hambatan`: refused with no closure row; **(as built)** the full three-type matrix for a closure row whose object was never uploaded ("file missing") and for an event holding only a `context` photo ("only a context photo"); **(as built)** a closure row that reuses a non-closure row's own path is refused too (the context-photo reuse rule, §3.1); closed with row plus object; closed by a second member using a photo a first member uploaded. `butuh_keputusan`: refused with NULL, nine characters, ten newlines; closed with ten characters padded by spaces and newlines; 501 gets `SITE_EVENT_CLOSURE_NOTE`. `progres`, `info` close with nothing. A closed `cacat` with no photo gets `NOT_OPEN`, not the photo refusal. An outsider gets `AUTH`. Note stored trimmed; `closed_by`, `closed_at` set. |
+| Re-paste hazard (2 + 2) | Paste 097: a `cacat` with no photo closes (the revert is real). Paste 100 and 105: refused again. |
+| Digest | Owner only (one row, counts, the "Terlama" item); office (admin and principal one row each, "tanpa penanggung jawab" counting a NULL owner and a removed owner); both roles (an admin owner gets only the office row, "1 milik Anda"); nothing to send (zero rows); second run the same day returns 0 and adds nothing; yesterday's log row does not block today; the removed owner gets no row; a non-ACTIVE project gets nothing; `DIGEST_RUN_DATE` for tomorrow; `authenticated` and, **(as built)**, `service_role` cannot execute the digest function or `site_event_digest_day`; a supervisor reads zero log rows, an office role reads them. **(As built)** `DIGEST_NOT_LANDED`, forced by a trigger that drops the recipient's own notification row right after insert, leaving no log row and exactly one `WARNING`; the zero-count race, forced by a trigger that closes every open event right after the recipient query's own snapshot, so the later count comes back zero and the recipient gets no log row, no notification and no `WARNING`; "Terlama" ending "(menghambat sejak …)" when nothing the owner has is overdue; a due-date tie on "Terlama" breaking on the earlier `confirmed_at`. |
 | View under RLS | Outsider sees nothing; a supervisor sees the project's rows with `owner_on_project` NULL on colleagues' items; an office role sees exact values; due today is not overdue, due yesterday has `days_overdue = 1`; blocking confirmed today absent, yesterday present. |
-| Scheduler | `DROP EXTENSION IF EXISTS pg_cron`, paste 106 twice: the NOTICE, no error. `CREATE EXTENSION pg_cron` (preloaded in supabase/postgres images; the run fails if not, since that is the Dashboard's branch), paste 106 twice: exactly one `cron.job` named `site_event_digest` with schedule `0 0 * * 1-6`. |
+| *(Digest + View under RLS together: 39, all in `rehearse_106.sql`)* | |
+| Scheduler (3) | `DROP EXTENSION IF EXISTS pg_cron`, paste 106 twice: the NOTICE, no error (2 checks). `CREATE EXTENSION pg_cron` (preloaded in supabase/postgres images; the run fails if not, since that is the Dashboard's branch), paste 106 twice: exactly one `cron.job` named `site_event_digest` with schedule `0 0 * * 1-6` (1 check). |
 
 ### 8.3 Jest
 
 | File | Covers |
 |---|---|
 | `tools/__tests__/captureQueue.test.ts` | A v1 record and a legacy record with no `version` both upgrade to `version: 2`, `kind: 'capture'`, every field kept; v2 capture and close pass; version 3, an unknown `kind`, a close record missing `eventId` are null; the close transition table exhaustively; `nextStep` with and without a photo and through `not_open`; `superseded` neither ready nor waiting; `markUnrecoverable` per kind. |
-| `tools/__tests__/captureQueueWorker.test.ts` | Success calls upload, insert and RPC in order with carrier id `eventId`, then removes the entry; `NOT_OPEN` reads the event, ends `superseded` with the server's name and time, records no failure, never calls the RPC again, stays until acknowledged; a failed lookup retries only the lookup; a photo refusal flags at once with the mapped copy; a network error on the RPC flags after five. |
-| `tools/__tests__/captureQueueStore.test.ts` | A v1 record on disk loads and drains; `enqueueCloseJob` copies before writing and refuses a second pending job for the event; `discardEntryLocally` refuses a close job with an outcome. |
+| `tools/__tests__/captureQueueWorker.test.ts` | Success calls upload, insert and RPC in order with carrier id `eventId`, then removes the entry; `NOT_OPEN` reads the event, ends `superseded` with the server's name and time, records no failure, never calls the RPC again, stays until acknowledged; a failed lookup retries only the lookup; a photo refusal flags at once with the mapped copy; a network error on the RPC flags after five. **(As built)** a lost response — the close landed but its own reply never arrived — is resolved by the retry meeting `NOT_OPEN`, reading the server, and ending `superseded` after exactly two RPC calls total, never a guess at whose attempt won. |
+| `tools/__tests__/captureQueueStore.test.ts` | A v1 record on disk loads and drains; `enqueueCloseJob` copies before writing and refuses a second pending job for the event; `discardEntryLocally` refuses a close job with an outcome. **(As built)** the copy-before-write order holds for a close job too (photo copied, then the entry written; no entry at all if the copy fails); on `web`, where the queue is memory-only, no file is ever copied and `discardEntryLocally` works the same way minus the filesystem call. |
 | `tools/__tests__/siteEvents.test.ts` | The cross-check "RPC_ERROR_COPY vs migrations 097, 099 and 100" (about line 682) also reads `105_close_site_event_evidence.sql`, still with exact set equality; 106 is deliberately not read, since no client calls it. The mapper test adds both codes beside `SITE_EVENT_CLOSURE_NOTE`. `closeSiteEventRpc` classifies `NOT_OPEN`, other `SITE_EVENT_*`, `42501` and a network error. |
 | `workflows/__tests__/closureModel.test.ts`, `captureQueueModel.test.ts` | Requirement per type, blocker sentences, code-point counting with an emoji; close rows, their three actions, the superseded sentence with and without a name. |
 | `tools/__tests__/notificationRouting.test.ts`, `timeWindow.test.ts` | `RoomBoard` → `RoomBoard` for a supervisor, `Rooms` for admin, estimator, principal; `formatWibShort` across a UTC date boundary, its month list equal to the array parsed from 106's `site_event_digest_day`. |
@@ -485,7 +559,10 @@ first run applies 001-104; every run pastes 105 and 106 **twice** each, loads th
 | `workflows/screens/siteEvent/__tests__/ClosureForm.test.tsx` | Wajib and Opsional for all six types; disabled until the photo or the ten-character note; submit enqueues and never calls the RPC. |
 | `office/screens/rooms/__tests__/AttentionList.test.tsx` | Loading, error (no empty text), empty in both toggle states, rows, the Milik saya filter, the deeplink turning it on, "Menunggu kirim" on a pending row, a tap opening `SiteEventDetail`. |
 | `office/screens/rooms/__tests__/DigestHealthLine.test.tsx` | Last run, never sent, read error. |
-| `workflows/screens/__tests__/SiteEventDetailScreen.pendingClose.test.tsx` | A pending job shows "Menunggu kirim" and hides Selesai while the status label stays "Terbuka"; when the job disappears the screen reloads. |
+| `workflows/screens/__tests__/SiteEventDetailScreen.pendingClose.test.tsx` | A pending job shows "Menunggu kirim" and hides Selesai while the status label stays "Terbuka", and drops both once the server's own status is no longer open; when the job disappears the screen reloads. **(As built)** a flagged job offers exactly one of Coba lagi or Batalkan per `closeJobCancelKind`, the Batalkan confirm carrying the photo sentence only when `mediaInserted`; a superseded job names the server's closer and time, an unreadable one says only that the event is no longer open, "Mengerti" acknowledges either and reloads, and a superseded job takes precedence when both exist for the same event. |
+| `workflows/screens/siteEvent/__tests__/CaptureQueueCard.test.tsx` | **(As built, beyond the original list)** A superseded close names the server's closer and acknowledges on Mengerti; Batalkan on a refused close asks first, then discards; an unreadable close offers Mengerti, not Coba lagi; a failed Mengerti keeps the row so it can be pressed again; close rows keep the capture rows' own accessibility labels; a close still on its way counts as waiting for signal. |
+| `office/screens/rooms/__tests__/RoomBoardView.attention.test.tsx` | **(As built, beyond the original list)** The board hands `AttentionList` the viewer, the deeplink's `mineRequest` and this phone's pending closes; office layouts show owners and the digest health line; the board reads once on mount and once per later focus, with the list and health line reloading only on the later ones; a project switch shows the spinner, never the previous project's rows. |
+| `office/screens/__tests__/RoomsAdminScreen.digestDeeplink.test.tsx` | **(As built, beyond the original list)** A `SITE_EVENT_DIGEST` tap switches Kelola ruangan back to the board and hands on Milik saya. |
 
 ## 9. Scope boundaries
 
