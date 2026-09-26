@@ -38,6 +38,13 @@ function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 }
 
+/**
+ * What the server already did, said wherever a close job on this phone would
+ * otherwise imply the event is still open. An open event only ever becomes
+ * 'done' on the server (097: only a draft can be discarded).
+ */
+const CLOSED_ON_SERVER = 'Kejadian ini sudah ditutup di server.';
+
 /** Shown for a related event when the row is missing or unreadable (RLS), so the id isn't just a raw UUID. */
 function shortId(id: string): string {
   return id.slice(0, 8);
@@ -124,8 +131,15 @@ export default function SiteEventDetailScreen() {
   // (CLOSE_ALREADY_PENDING), so without it here such a job would sit on this
   // screen for good. The job leaves the phone; the event and every photo
   // already uploaded stay on the server as they are.
+  // The card cannot see the server and says "Kejadian tetap terbuka"; this
+  // screen can, and never says it once the server has closed the event.
+  const serverOpen = event?.status === 'open';
   const cancelConfirm =
-    pendingClose && closeJobCancelKind(pendingClose) === 'cancel' ? attentionRows([pendingClose])[0]?.confirm ?? null : null;
+    pendingClose && closeJobCancelKind(pendingClose) === 'cancel'
+      ? serverOpen
+        ? attentionRows([pendingClose])[0]?.confirm ?? null
+        : `Batalkan penutupan "${pendingClose.eventTitle}"? ${CLOSED_ON_SERVER} Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.`
+      : null;
   const [cancelling, setCancelling] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const cancelClose = async (jobId: string) => {
@@ -243,7 +257,8 @@ export default function SiteEventDetailScreen() {
                 <View style={s.chip}>
                   <Text style={s.chipText}>{SITE_EVENT_STATUS_LABELS[event.status]}</Text>
                 </View>
-                {pendingClose ? (
+                {/* Only while the server still has it open: after that the close is not "needed", only checked. */}
+                {pendingClose && event.status === 'open' ? (
                   <View style={[s.chip, { borderColor: COLORS.info, backgroundColor: COLORS.infoBg }]}>
                     <Text style={[s.chipText, { color: COLORS.info }]}>Menunggu kirim</Text>
                   </View>
@@ -367,9 +382,13 @@ export default function SiteEventDetailScreen() {
                       </TouchableOpacity>
                     ) : null}
                   </>
-                ) : (
+                ) : event.status === 'open' ? (
                   <Text style={s.bannerText}>
                     Penutupan tersimpan di ponsel ini dan menunggu kirim. Status tetap Terbuka sampai server menerimanya.
+                  </Text>
+                ) : (
+                  <Text style={s.bannerText}>
+                    {CLOSED_ON_SERVER} Penutupan yang tersimpan di ponsel ini akan dicek saat terkirim.
                   </Text>
                 )}
               </Card>

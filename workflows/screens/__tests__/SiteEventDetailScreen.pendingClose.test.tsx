@@ -183,6 +183,24 @@ describe('a close waiting on this phone', () => {
     expect(utils.queryByText('closure form')).toBeNull();
   });
 
+  // §1.1 rule 1 both ways: the queue must not make the screen claim the event
+  // is open when the server already closed it (someone else, while this job
+  // waited). The server's label stays; the phone's job is only "to be checked".
+  it('says the server already closed it, and drops Menunggu kirim, once the server status is not open', async () => {
+    (getSiteEventResult as jest.Mock).mockResolvedValue({ event: doneEvent('Sari') });
+    mockEntries = [closeJob('job1', 'ev1')];
+    const utils = render(<SiteEventDetailScreen />);
+
+    await waitFor(() => expect(utils.getByText('Ditutup oleh')).toBeTruthy());
+    expect(
+      utils.getByText('Kejadian ini sudah ditutup di server. Penutupan yang tersimpan di ponsel ini akan dicek saat terkirim.'),
+    ).toBeTruthy();
+    expect(utils.queryByText(/Status tetap Terbuka/)).toBeNull();
+    expect(utils.queryByText('Menunggu kirim')).toBeNull();
+    expect(utils.queryByText('Terbuka')).toBeNull();
+    expect(utils.getAllByText('Selesai').length).toBeGreaterThan(0);
+  });
+
   it('shows why a flagged close has not gone, and retries it on Coba lagi', async () => {
     mockEntries = [flaggedTransient('job1', 'ev1', 'Tandai selesai gagal: Network request failed')];
     const utils = render(<SiteEventDetailScreen />);
@@ -273,6 +291,21 @@ describe('a close the server refused, or whose photo vanished', () => {
     buttons[0].onPress?.();
     expect(discardEntryLocally).not.toHaveBeenCalled();
     expect(getSiteEventResult).toHaveBeenCalledTimes(1);
+  });
+
+  it('never says the event stays open when the server already closed it', async () => {
+    (getSiteEventResult as jest.Mock).mockResolvedValue({ event: doneEvent('Sari') });
+    mockEntries = [recordFailure(closeJob('job1', 'ev1'), REFUSAL, NOW, 'permanent')];
+    const utils = render(<SiteEventDetailScreen />);
+    await waitFor(() => expect(utils.getByText('Batalkan')).toBeTruthy());
+    expect(utils.queryByText('Menunggu kirim')).toBeNull();
+
+    fireEvent.press(utils.getByText('Batalkan'));
+    expect(alert).toHaveBeenCalledWith(
+      'Batalkan penutupan',
+      'Batalkan penutupan "Retak acian"? Kejadian ini sudah ditutup di server. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.',
+      expect.any(Array),
+    );
   });
 
   it('offers only Batalkan when the closure photo vanished: Coba lagi could never send it', async () => {
