@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { View, StyleSheet } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import Header from '../../workflows/components/Header';
 import { useProject } from '../../workflows/hooks/useProject';
 import RoomBoardView from './rooms/RoomBoardView';
@@ -16,14 +16,27 @@ import { COLORS } from '../../workflows/theme';
  * is not wrapped in another ScrollView here.
  */
 export default function PrincipalRoomsScreen() {
-  const { project } = useProject();
+  const { project, profile } = useProject();
   const navigation = useNavigation<any>();
+  const route = useRoute<any>();
+  // A SITE_EVENT_DIGEST tap resolves to this tab (tools/notificationRouting.ts)
+  // with { projectId, attention, mine } (closure spec §5.6).
+  const params = route.params as { attention?: boolean; mine?: boolean } | undefined;
+  const mineRequest = useMemo(
+    () => (params?.attention ? { mine: params.mine === true } : null),
+    [params],
+  );
 
   return (
     <View style={styles.flex}>
       <Header />
       <RoomBoardView
         projectId={project?.id ?? null}
+        viewerId={profile?.id ?? null}
+        showOwners
+        showDigestHealth
+        mineRequest={mineRequest}
+        onOpenEvent={(eventId, projectId) => navigation.navigate('SiteEventDetail', { eventId, projectId })}
         onOpenRoom={(row) => {
           if (!project || !row.room_code) return;
           navigation.navigate('RoomDetail', { projectCode: project.code, roomCode: row.room_code });

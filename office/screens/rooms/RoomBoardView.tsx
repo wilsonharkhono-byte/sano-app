@@ -10,8 +10,11 @@ import {
   lastUpdateLabel, openChips, type BoardFilters,
 } from '../../../tools/roomBoard';
 import { SITE_EVENT_TYPE_LABELS } from '../../../tools/constants';
+import { pendingCloseFor, useCaptureQueueEntries } from '../../../tools/captureQueueStore';
 import type { RoomBoardRow, SiteEventType } from '../../../tools/types';
 import { COLORS, FONTS, RADIUS_SM, SPACE, TYPE } from '../../../workflows/theme';
+import AttentionList from './AttentionList';
+import DigestHealthLine from './DigestHealthLine';
 
 /**
  * Papan Ruangan (spec §9). One read of v_room_board, the summary strip, the
@@ -38,8 +41,28 @@ export default function RoomBoardView(props: {
   headerAction?: React.ReactNode;
   /** Phone layout wraps the filter pills instead of overflowing a 360dp screen. */
   compact?: boolean;
+  /** The signed-in profile: "Milik saya" and this phone's pending closes. */
+  viewerId: string | null;
+  /** "Perlu ditindak" row tap (closure spec §5.6). */
+  onOpenEvent: (eventId: string, projectId: string) => void;
+  /** Office and principal layouts name each item's owner. */
+  showOwners?: boolean;
+  /** Office and principal layouts show when the morning digest last went out. */
+  showDigestHealth?: boolean;
+  /** From a digest notification's params; a fresh object per tap re-applies it. */
+  mineRequest?: { mine: boolean } | null;
 }) {
-  const { projectId, onOpenRoom, headerAction, compact } = props;
+  const { projectId, onOpenRoom, headerAction, compact, viewerId, onOpenEvent, showOwners, showDigestHealth, mineRequest } = props;
+
+  // Close jobs still on this phone, so "Perlu ditindak" can say "Menunggu
+  // kirim" on a row the server still has open (closure spec §4.5).
+  const queue = useCaptureQueueEntries(viewerId);
+  const pendingEventIds = useMemo(
+    () => new Set(queue.flatMap((e) => (e.kind === 'close' && pendingCloseFor(queue, e.eventId) ? [e.eventId] : []))),
+    [queue],
+  );
+  // Bumped on every board load, so the list and the health line refetch with it.
+  const [reloadKey, setReloadKey] = useState(0);
 
   const [rows, setRows] = useState<RoomBoardRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,6 +79,7 @@ export default function RoomBoardView(props: {
       return;
     }
     if (!opts.silent) setLoading(true);
+    setReloadKey((k) => k + 1);
     const result = await listRoomBoard(projectId);
     if ('error' in result) {
       // A fetch failure is never "no rooms" (CLAUDE.md §12): stale rows are
@@ -133,6 +157,17 @@ export default function RoomBoardView(props: {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} colors={[COLORS.primary]} />
       )}
     >
+      <AttentionList
+        projectId={projectId}
+        viewerId={viewerId}
+        showOwner={!!showOwners}
+        mineRequest={mineRequest}
+        pendingEventIds={pendingEventIds}
+        onOpenEvent={onOpenEvent}
+        reloadKey={reloadKey}
+      />
+      {showDigestHealth ? <DigestHealthLine reloadKey={reloadKey} /> : null}
+
       <Card title="Papan Ruangan" subtitle="Ringkasan kejadian per ruangan." rightAction={headerAction}>
         <View style={styles.strip}>
           <Stat label="Hambatan" value={summary.hambatan} color={COLORS.critical} />

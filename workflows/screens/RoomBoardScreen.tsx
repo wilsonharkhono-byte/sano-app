@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import { useProject } from '../hooks/useProject';
@@ -21,8 +21,17 @@ import { COLORS, FONTS, SPACE, TYPE } from '../theme';
  * board.
  */
 export default function RoomBoardScreen() {
-  const { project } = useProject();
+  const { project, profile } = useProject();
   const navigation = useNavigation<any>();
+  const route = useRoute<any>();
+  // A SITE_EVENT_DIGEST tap lands here with { projectId, attention, mine }
+  // (closure spec §5.6). routeDeeplink copies params per tap, so a second tap
+  // of the same notification is a new object and re-applies "Milik saya".
+  const params = route.params as { attention?: boolean; mine?: boolean } | undefined;
+  const mineRequest = useMemo(
+    () => (params?.attention ? { mine: params.mine === true } : null),
+    [params],
+  );
 
   return (
     <View style={styles.flex}>
@@ -34,6 +43,9 @@ export default function RoomBoardScreen() {
       <RoomBoardView
         compact
         projectId={project?.id ?? null}
+        viewerId={profile?.id ?? null}
+        mineRequest={mineRequest}
+        onOpenEvent={(eventId, projectId) => navigation.navigate('SiteEventDetail', { eventId, projectId })}
         onOpenRoom={(row) => {
           if (!project || !row.room_code) return;
           navigation.navigate('Room', { projectCode: project.code, roomCode: row.room_code });
