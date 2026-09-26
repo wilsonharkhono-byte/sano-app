@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
 import { useProject } from '../hooks/useProject';
 import RoomBoardView from '../../office/screens/rooms/RoomBoardView';
+import { attentionMineRequest } from '../../tools/siteEventAttention';
 import { COLORS, FONTS, SPACE, TYPE } from '../theme';
 
 /**
@@ -25,13 +26,8 @@ export default function RoomBoardScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   // A SITE_EVENT_DIGEST tap lands here with { projectId, attention, mine }
-  // (closure spec §5.6). routeDeeplink copies params per tap, so a second tap
-  // of the same notification is a new object and re-applies "Milik saya".
-  const params = route.params as { attention?: boolean; mine?: boolean } | undefined;
-  const mineRequest = useMemo(
-    () => (params?.attention ? { mine: params.mine === true } : null),
-    [params],
-  );
+  // (closure spec §5.6); see attentionMineRequest.
+  const mineRequest = useMemo(() => attentionMineRequest(route.params), [route.params]);
 
   return (
     <View style={styles.flex}>

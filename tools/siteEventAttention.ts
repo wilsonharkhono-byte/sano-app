@@ -82,6 +82,20 @@ export async function getDigestHealth(): Promise<DigestHealthResult> {
 
 // ─── Pure ────────────────────────────────────────────────────────────────────
 
+/**
+ * A SITE_EVENT_DIGEST tap lands on Papan Ruangan with { projectId, attention,
+ * mine } (spec §5.6). This turns those route params into the list's "Milik
+ * saya" request: null when the screen was not opened from a digest, else a
+ * NEW object on every call, so a second tap of the same notification
+ * (routeDeeplink copies params, workflows/pendingDeeplink.ts) re-applies it
+ * even when the list is already on screen. Screens memoise it on the params.
+ */
+export function attentionMineRequest(
+  params: Readonly<Record<string, unknown>> | null | undefined,
+): { mine: boolean } | null {
+  return params?.attention ? { mine: params.mine === true } : null;
+}
+
 /** "Milik saya": the same rows, filtered, with no second query. */
 export function filterMine(rows: ReadonlyArray<AttentionRow>, viewerId: string | null): AttentionRow[] {
   if (!viewerId) return [];

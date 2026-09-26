@@ -16,6 +16,7 @@ import {
   type ParsedRoomRow,
 } from '../../tools/rooms';
 import { exportRoomLabelSheet } from '../../tools/roomLabelsHtml';
+import { attentionMineRequest } from '../../tools/siteEventAttention';
 import { canSetProjectPhase, setProjectPhase } from '../../tools/projectPhase';
 import { AREA_TYPE_LABELS, PROJECT_PHASES } from '../../tools/constants';
 import type { ProjectPhase, Room } from '../../tools/types';
@@ -39,14 +40,10 @@ export default function RoomsAdminScreen() {
   // A SITE_EVENT_DIGEST tap resolves to this tab (tools/notificationRouting.ts)
   // with { projectId, attention, mine } (closure spec §5.6): show the board,
   // whatever sub-screen was open, and hand "Milik saya" to the list.
-  const params = route.params as { attention?: boolean; mine?: boolean } | undefined;
-  const mineRequest = useMemo(
-    () => (params?.attention ? { mine: params.mine === true } : null),
-    [params],
-  );
+  const mineRequest = useMemo(() => attentionMineRequest(route.params), [route.params]);
   useEffect(() => {
-    if (params?.attention) setSub('board');
-  }, [params]);
+    if (mineRequest) setSub('board');
+  }, [mineRequest]);
   const [mode, setMode] = useState<Mode>('none');
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);

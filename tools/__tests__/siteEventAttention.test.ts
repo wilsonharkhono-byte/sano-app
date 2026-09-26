@@ -13,6 +13,7 @@ import {
   attentionChips,
   attentionEmptyText,
   attentionHeading,
+  attentionMineRequest,
   attentionRoomLabel,
   filterMine,
   getDigestHealth,
@@ -91,6 +92,27 @@ describe('getDigestHealth', () => {
     mocked.from.mockReturnValueOnce(chain({ data: null, error: { message: 'permission denied' } }));
     expect(await getDigestHealth()).toEqual({ error: 'permission denied' });
     warn.mockRestore();
+  });
+});
+
+describe('attentionMineRequest', () => {
+  it('asks for nothing without params, or without attention', () => {
+    expect(attentionMineRequest(undefined)).toBeNull();
+    expect(attentionMineRequest(null)).toBeNull();
+    expect(attentionMineRequest({ projectId: 'p1', mine: true })).toBeNull();
+  });
+
+  it('turns Milik saya on only for mine: true', () => {
+    expect(attentionMineRequest({ projectId: 'p1', attention: true })).toEqual({ mine: false });
+    expect(attentionMineRequest({ projectId: 'p1', attention: true, mine: true })).toEqual({ mine: true });
+    expect(attentionMineRequest({ projectId: 'p1', attention: true, mine: false })).toEqual({ mine: false });
+  });
+
+  it('answers a second identical params object with a NEW object, so a second tap re-applies it', () => {
+    const first = attentionMineRequest({ projectId: 'p1', attention: true, mine: true });
+    const second = attentionMineRequest({ projectId: 'p1', attention: true, mine: true });
+    expect(second).toEqual(first);
+    expect(second).not.toBe(first);
   });
 });
 

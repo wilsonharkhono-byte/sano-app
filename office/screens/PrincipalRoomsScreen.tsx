@@ -4,6 +4,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import Header from '../../workflows/components/Header';
 import { useProject } from '../../workflows/hooks/useProject';
 import RoomBoardView from './rooms/RoomBoardView';
+import { attentionMineRequest } from '../../tools/siteEventAttention';
 import { COLORS } from '../../workflows/theme';
 
 /**
@@ -20,12 +21,9 @@ export default function PrincipalRoomsScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   // A SITE_EVENT_DIGEST tap resolves to this tab (tools/notificationRouting.ts)
-  // with { projectId, attention, mine } (closure spec §5.6).
-  const params = route.params as { attention?: boolean; mine?: boolean } | undefined;
-  const mineRequest = useMemo(
-    () => (params?.attention ? { mine: params.mine === true } : null),
-    [params],
-  );
+  // with { projectId, attention, mine } (closure spec §5.6); see
+  // attentionMineRequest.
+  const mineRequest = useMemo(() => attentionMineRequest(route.params), [route.params]);
 
   return (
     <View style={styles.flex}>
