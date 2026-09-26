@@ -9,6 +9,7 @@ import {
 } from './timelineModel';
 import { listRoomTimeline, signedMediaUrl, updateSiteEventAssignment, type TimelineEventRow } from '../../../tools/siteEvents';
 import { getProjectTeamResult, type TeamMember } from '../../../tools/projectManagement';
+import { pendingCloseFor, useCaptureQueueEntries } from '../../../tools/captureQueueStore';
 import { SITE_EVENT_STATUS_LABELS, SITE_EVENT_TYPE_LABELS } from '../../../tools/constants';
 import type { SiteEventStatus } from '../../../tools/types';
 import { COLORS, FONTS, RADIUS_SM, SPACE, TYPE } from '../../theme';
@@ -61,6 +62,9 @@ export default function RoomTimeline(props: {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<{ id: string; message: string } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Close jobs still on this phone (closure spec §4.5). The status badge
+  // keeps the server's word; a pending close only adds "Menunggu kirim".
+  const queue = useCaptureQueueEntries(viewer?.id ?? null);
 
   // Guards state writes after three awaits (load) or one (save) land after
   // the screen has lost focus or unmounted.
@@ -175,6 +179,7 @@ export default function RoomTimeline(props: {
         const open = expanded.has(e.id);
         const transcript = e.transcript_edited ?? e.transcript;
         const late = isOverdue(e, today);
+        const closePending = !!pendingCloseFor(queue, e.id);
         return (
           <View key={e.id} style={styles.row}>
             <View style={styles.head}>
@@ -192,6 +197,11 @@ export default function RoomTimeline(props: {
                       {SITE_EVENT_STATUS_LABELS[e.status]}
                     </Text>
                   </View>
+                  {closePending && (
+                    <View style={[styles.badge, styles.pendingBadge]}>
+                      <Text style={[styles.badgeText, styles.pendingBadgeText]}>Menunggu kirim</Text>
+                    </View>
+                  )}
                 </View>
                 <Text style={styles.meta}>
                   {e.event_type ? SITE_EVENT_TYPE_LABELS[e.event_type] : 'Draf'}
@@ -214,7 +224,7 @@ export default function RoomTimeline(props: {
             {open && transcript && <Text style={styles.transcript}>{transcript}</Text>}
 
             <View style={styles.actions}>
-              {canClose(e) && onOpenEvent && (
+              {canClose(e, closePending) && onOpenEvent && (
                 <TouchableOpacity
                   style={styles.actionBtn}
                   onPress={() => onOpenEvent(e.id)}
@@ -287,9 +297,11 @@ const styles = StyleSheet.create({
   thumbEmpty: { alignItems: 'center', justifyContent: 'center' },
   headBody: { flex: 1 },
   title: { fontSize: TYPE.base, fontFamily: FONTS.semibold, color: COLORS.text },
-  badgeRow: { flexDirection: 'row', marginTop: 3 },
+  badgeRow: { flexDirection: 'row', gap: SPACE.xs, marginTop: 3 },
   badge: { paddingHorizontal: SPACE.sm, paddingVertical: 2, borderRadius: RADIUS_SM },
   badgeText: { fontSize: TYPE.xs, fontFamily: FONTS.semibold },
+  pendingBadge: { backgroundColor: COLORS.infoBg },
+  pendingBadgeText: { color: COLORS.info },
   meta: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textSec, marginTop: 1 },
   due: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.textSec, marginTop: 2 },
   dueLate: { color: COLORS.high, fontFamily: FONTS.bold },

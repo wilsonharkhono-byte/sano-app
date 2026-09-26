@@ -59,9 +59,13 @@ export function canEditAssignment(
   return OFFICE_ROLES.includes(viewer.role ?? '') || ev.reporter_id === viewer.id;
 }
 
-/** "Selesai" is offered on an open event to any project member (097's close_site_event checks membership). */
-export function canClose(ev: Pick<TimelineEvent, 'status'>): boolean {
-  return ev.status === 'open';
+/**
+ * "Selesai" is offered on an open event to any project member (097's
+ * close_site_event checks membership), unless this phone already holds a
+ * close job for it that has not reached the server (closure spec §4.5).
+ */
+export function canClose(ev: Pick<TimelineEvent, 'status'>, closePending = false): boolean {
+  return ev.status === 'open' && !closePending;
 }
 
 /**

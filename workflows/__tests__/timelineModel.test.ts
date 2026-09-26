@@ -71,6 +71,11 @@ describe('canClose', () => {
     expect(canClose(ev({ id: 'a', status: 'done' }))).toBe(false);
     expect(canClose(ev({ id: 'a', status: 'draft' }))).toBe(false);
   });
+
+  it('hides Selesai while this phone holds a close for the event that has not reached the server', () => {
+    expect(canClose(ev({ id: 'a', status: 'open' }), true)).toBe(false);
+    expect(canClose(ev({ id: 'a', status: 'open' }), false)).toBe(true);
+  });
 });
 
 describe('validateAssignment', () => {
