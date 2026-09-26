@@ -10,6 +10,7 @@ import {
   discardEntryLocally,
   pendingCloseFor,
   supersededCloseFor,
+  unreadableCloseFor,
   useCaptureQueueEntries,
 } from '../../tools/captureQueueStore';
 import { retryQueueEntry } from '../../tools/captureQueueWorker';
@@ -23,7 +24,12 @@ import { formStyles as s } from './siteEvent/styles';
 import MediaStrip from './siteEvent/MediaStrip';
 import ClosureForm from './siteEvent/ClosureForm';
 import { detailActions, isOverdue, voStatusText } from './siteEvent/detailModel';
-import { attentionRows, closeJobCancelKind, supersededReason } from './siteEvent/captureQueueModel';
+import {
+  REASON_CLOSE_STATUS_UNREADABLE,
+  attentionRows,
+  closeJobCancelKind,
+  supersededReason,
+} from './siteEvent/captureQueueModel';
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -175,19 +181,28 @@ export default function SiteEventDetailScreen() {
     }
   };
 
-  // This phone's queued "Selesai" found the event already closed on the
-  // server. Office and principal phones have no Beranda queue card, and this
-  // screen is shared by every navigator, so "Mengerti" lives here too: it
-  // removes the job, then the screen reads the server again.
+  // This phone's queued "Selesai" the server already answered for good
+  // (closeJobCancelKind's 'acknowledge'): superseded - the event was already
+  // closed, and the lookup read who and when - or no longer open with a status
+  // that could not be read (unreadableCloseFor), where nothing about who
+  // closed it was read, so only REASON_CLOSE_STATUS_UNREADABLE is said, never
+  // a "Sudah ditutup oleh ..." sentence. Office and principal phones have no
+  // Beranda queue card, and this screen is shared by every navigator, so
+  // "Mengerti" lives here too: it removes the job, then the screen reads the
+  // server again. A superseded job goes first when both exist for the event,
+  // since it carries what the server said; the unreadable one follows once
+  // that is acknowledged, so neither is hidden for good.
   const supersededClose = event && !pendingClose ? supersededCloseFor(queue, event.id) : null;
+  const unreadableClose = event && !pendingClose && !supersededClose ? unreadableCloseFor(queue, event.id) : null;
+  const acknowledgeJob = supersededClose ?? unreadableClose;
   const [acknowledging, setAcknowledging] = useState(false);
   const [acknowledgeError, setAcknowledgeError] = useState<string | null>(null);
   const acknowledgeClose = async () => {
-    if (!profile || !supersededClose) return;
+    if (!profile || !acknowledgeJob) return;
     setAcknowledging(true);
     setAcknowledgeError(null);
     try {
-      const result = await acknowledgeCloseEntry(profile.id, supersededClose.id);
+      const result = await acknowledgeCloseEntry(profile.id, acknowledgeJob.id);
       if (result.error) {
         setAcknowledgeError(result.error);
         return;
@@ -394,10 +409,13 @@ export default function SiteEventDetailScreen() {
                   </Text>
                 )}
               </Card>
-            ) : supersededClose ? (
+            ) : acknowledgeJob ? (
               <Card title="Penutupan" borderColor={COLORS.info}>
-                {/* The Beranda card's own sentence: the server's closer, never the queue owner (spec §4.6). */}
-                <Text style={s.bannerText}>{supersededReason(supersededClose)}</Text>
+                {/* The Beranda card's own sentences: the server's closer, never the queue owner (spec §4.6);
+                    for a status that could not be read, only that the event is no longer open. */}
+                <Text style={s.bannerText}>
+                  {supersededClose ? supersededReason(supersededClose) : REASON_CLOSE_STATUS_UNREADABLE}
+                </Text>
                 {acknowledgeError ? <Text style={s.errorText}>{acknowledgeError}</Text> : null}
                 <TouchableOpacity
                   style={s.secondaryBtn}

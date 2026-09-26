@@ -8,7 +8,8 @@
 //
 // The queue reaches the screen the way it does on a phone: real close jobs
 // built with tools/captureQueue.ts, handed over by useCaptureQueueEntries,
-// and picked apart by the store's own pendingCloseFor and supersededCloseFor.
+// and picked apart by the store's own pendingCloseFor, supersededCloseFor
+// and unreadableCloseFor.
 // Only the I/O around them is mocked, so a job for another event, or a job
 // in the wrong state, is filtered exactly as it would be in the field.
 import React from 'react';
@@ -48,6 +49,7 @@ jest.mock('../../../tools/captureQueueStore', () => {
     ),
     pendingCloseFor: actual.pendingCloseFor,
     supersededCloseFor: actual.supersededCloseFor,
+    unreadableCloseFor: actual.unreadableCloseFor,
     // Like the store: an acknowledged job leaves the queue.
     acknowledgeCloseEntry: jest.fn(async (_userId: string, entryId: string) => {
       mockEntries = mockEntries.filter((e) => (e as { id: string }).id !== entryId);
@@ -92,6 +94,8 @@ import SiteEventDetailScreen from '../SiteEventDetailScreen';
 jest.setTimeout(20000);
 
 const NOW = '2026-09-17T07:00:00.000Z';
+/** captureQueueModel.ts's REASON_CLOSE_STATUS_UNREADABLE, spelled out so a change to the copy is a decision. */
+const UNREADABLE = 'Kejadian sudah tidak terbuka di server; statusnya tidak bisa dibaca.';
 const CLOSED_AT = '2026-09-17T07:05:00.000Z';
 
 /** A close job as enqueueCloseJob writes it: queued, no photo, owned by u1. */
@@ -118,6 +122,14 @@ const closeJobWithPhotoRowIn = (id: string, eventId: string): CloseJob =>
 const supersededJob = (id: string, eventId: string, closedByName: string | null): CloseJob => markCleanedUp(
   markClosedElsewhere(markCloseOutcome(closeJob(id, eventId), 'not_open', NOW), { closedByName, closedAt: CLOSED_AT }, NOW),
   NOW,
+);
+
+/** The RPC answered NOT_OPEN, then reading the event's status was refused for good: nothing can send it any more. */
+const unreadableJob = (id: string, eventId: string): CloseJob => recordFailure(
+  markCloseOutcome(closeJob(id, eventId), 'not_open', NOW),
+  'Baca status kejadian gagal: Hanya kejadian terbuka yang bisa ditandai selesai.',
+  NOW,
+  'permanent',
 );
 
 /** Five transient failures in a row: flagged, but still worth another try. */
@@ -160,10 +172,11 @@ describe('the queue it reads', () => {
     expect(useCaptureQueueEntries).not.toHaveBeenCalledWith(null);
   });
 
-  it('ignores close jobs for another event, pending or superseded', async () => {
+  it('ignores close jobs for another event, pending, superseded or unreadable', async () => {
     mockEntries = [
       flaggedTransient('job2', 'ev2', 'Tandai selesai gagal: Network request failed'),
       supersededJob('job3', 'ev2', 'Sari'),
+      unreadableJob('job4', 'ev2'),
     ];
     const utils = render(<SiteEventDetailScreen />);
 
@@ -173,6 +186,7 @@ describe('the queue it reads', () => {
     expect(utils.queryByText(/Penutupan belum terkirim/)).toBeNull();
     expect(utils.queryByText(/Penutupan tersimpan di ponsel ini/)).toBeNull();
     expect(utils.queryByText(/Sudah ditutup/)).toBeNull();
+    expect(utils.queryByText(UNREADABLE)).toBeNull();
     expect(utils.queryByText('Mengerti')).toBeNull();
   });
 });
@@ -437,5 +451,98 @@ describe('a close this phone queued, already closed on the server', () => {
     expect(acknowledgeCloseEntry).toHaveBeenCalledWith('u1', 'job1');
     expect(utils.getByText('Sudah ditutup oleh Sari pada 17 Sep 14.05.')).toBeTruthy();
     expect(getSiteEventResult).toHaveBeenCalledTimes(1);
+  });
+});
+
+// An office or principal phone has no Beranda queue card. Its queued Selesai
+// got NOT_OPEN, and reading the event's status was then refused for good
+// (isCloseStatusUnreadable): the job is neither pending nor superseded, so
+// without this card it would sit on the phone with no way to see or clear it.
+// Nothing about who closed the event was read, so no "Sudah ditutup oleh ..."
+// sentence may appear - only the card's own reason.
+describe('a close this phone queued, whose event is no longer open and whose status could not be read', () => {
+  // What the lookup could not accept: the event is not open, but not done with a closing time either.
+  const notReadableEvent = { ...baseEvent, status: 'done', closed_at: null, closed_by: null, closed_by_name: null };
+  beforeEach(() => {
+    mockProfile = { id: 'u1', role: 'admin' };
+    (getSiteEventResult as jest.Mock).mockResolvedValue({ event: notReadableEvent });
+  });
+
+  it('says only that the event is no longer open, and Mengerti acknowledges the job and reads the server again', async () => {
+    mockEntries = [unreadableJob('job5', 'ev1')];
+    const utils = render(<SiteEventDetailScreen />);
+
+    await waitFor(() => expect(utils.getByText(UNREADABLE)).toBeTruthy());
+    expect(utils.queryByText(/Sudah ditutup/)).toBeNull();
+    expect(utils.queryByText('Menunggu kirim')).toBeNull();
+    expect(utils.queryByText(/Penutupan belum terkirim/)).toBeNull();
+    expect(utils.queryByText('Coba lagi')).toBeNull();
+    expect(utils.queryByText('Batalkan')).toBeNull();
+    expect(getSiteEventResult).toHaveBeenCalledTimes(1);
+
+    fireEvent.press(utils.getByText('Mengerti'));
+    await waitFor(() => expect(acknowledgeCloseEntry).toHaveBeenCalledWith('u1', 'job5'));
+    await waitFor(() => expect(getSiteEventResult).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(utils.queryByText(UNREADABLE)).toBeNull());
+    expect(utils.queryByText('Mengerti')).toBeNull();
+  });
+
+  it('shows why Mengerti did not go through, keeps the reason, and does not read the server again', async () => {
+    mockEntries = [unreadableJob('job5', 'ev1')];
+    (acknowledgeCloseEntry as jest.Mock).mockResolvedValueOnce({ error: 'Penutupan ini belum selesai diproses.' });
+    const utils = render(<SiteEventDetailScreen />);
+    await waitFor(() => expect(utils.getByText('Mengerti')).toBeTruthy());
+
+    fireEvent.press(utils.getByText('Mengerti'));
+    await waitFor(() => expect(utils.getByText('Penutupan ini belum selesai diproses.')).toBeTruthy());
+    expect(acknowledgeCloseEntry).toHaveBeenCalledWith('u1', 'job5');
+    expect(utils.getByText(UNREADABLE)).toBeTruthy();
+    expect(getSiteEventResult).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the same card after an acknowledge that threw, and does not read the server again', async () => {
+    mockEntries = [unreadableJob('job5', 'ev1')];
+    (acknowledgeCloseEntry as jest.Mock).mockRejectedValueOnce(new Error('Penyimpanan ponsel tidak bisa dibaca.'));
+    const utils = render(<SiteEventDetailScreen />);
+    await waitFor(() => expect(utils.getByText('Mengerti')).toBeTruthy());
+
+    fireEvent.press(utils.getByText('Mengerti'));
+    await waitFor(() => expect(utils.getByText('Penyimpanan ponsel tidak bisa dibaca.')).toBeTruthy());
+    expect(utils.getByText(UNREADABLE)).toBeTruthy();
+    expect(getSiteEventResult).toHaveBeenCalledTimes(1);
+  });
+
+  // Precedence: a superseded job carries what the server said (who closed it,
+  // and when), so it goes first; the unreadable one is not hidden, it follows
+  // once the superseded one is acknowledged. Each Mengerti clears its own job.
+  it('puts a superseded job for the same event first, then offers the unreadable one', async () => {
+    (getSiteEventResult as jest.Mock).mockResolvedValue({ event: doneEvent('Sari') });
+    mockEntries = [unreadableJob('job5', 'ev1'), supersededJob('job6', 'ev1', 'Sari')];
+    const utils = render(<SiteEventDetailScreen />);
+
+    await waitFor(() => expect(utils.getByText('Sudah ditutup oleh Sari pada 17 Sep 14.05.')).toBeTruthy());
+    expect(utils.queryByText(UNREADABLE)).toBeNull();
+    expect(utils.getAllByText('Mengerti')).toHaveLength(1);
+
+    fireEvent.press(utils.getByText('Mengerti'));
+    await waitFor(() => expect(acknowledgeCloseEntry).toHaveBeenCalledWith('u1', 'job6'));
+    await waitFor(() => expect(getSiteEventResult).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(utils.getByText(UNREADABLE)).toBeTruthy());
+    expect(utils.queryByText('Sudah ditutup oleh Sari pada 17 Sep 14.05.')).toBeNull();
+
+    fireEvent.press(utils.getByText('Mengerti'));
+    await waitFor(() => expect(acknowledgeCloseEntry).toHaveBeenLastCalledWith('u1', 'job5'));
+    await waitFor(() => expect(getSiteEventResult).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(utils.queryByText('Mengerti')).toBeNull());
+  });
+
+  it('never shows the unreadable card beside a close still pending for the event', async () => {
+    mockEntries = [unreadableJob('job5', 'ev1'), closeJob('job1', 'ev1')];
+    (getSiteEventResult as jest.Mock).mockResolvedValue({ event: baseEvent });
+    const utils = render(<SiteEventDetailScreen />);
+
+    await waitFor(() => expect(utils.getByText('Menunggu kirim')).toBeTruthy());
+    expect(utils.queryByText(UNREADABLE)).toBeNull();
+    expect(utils.queryByText('Mengerti')).toBeNull();
   });
 });
