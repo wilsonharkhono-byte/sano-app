@@ -91,6 +91,17 @@ describe('migration 105 - the paste precondition', () => {
     expect(block).toContain("RAISE EXCEPTION 'MIGRATION_105_PRECONDITION: % tidak bisa membaca storage.objects melewati RLS', current_user;");
   });
 
+  // has_table_privilege resolves 'storage.objects' by name, and that lookup
+  // itself raises a bare "permission denied for schema storage" without
+  // USAGE: the schema check has to run first to be the one that speaks.
+  it('checks USAGE on the storage schema, before the table check, with its own message', () => {
+    const block = doBlock();
+    const usage = block.indexOf("IF NOT has_schema_privilege(current_user, 'storage', 'USAGE') THEN");
+    expect(usage).toBeGreaterThan(-1);
+    expect(usage).toBeLessThan(block.indexOf("has_table_privilege(current_user, 'storage.objects', 'SELECT')"));
+    expect(block).toContain("RAISE EXCEPTION 'MIGRATION_105_PRECONDITION: % tidak punya hak USAGE pada schema storage', current_user;");
+  });
+
   it('never uses a SITE_EVENT_ code, so no app copy is ever expected for it', () => {
     expect(doBlock()).not.toMatch(/SITE_EVENT_/);
   });

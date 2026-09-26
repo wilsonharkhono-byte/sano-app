@@ -40,9 +40,12 @@
 -- supabase_storage_admin owns with RLS on. If that role could not read the
 -- table past RLS, the rule would refuse EVERY closure photo, silently. The DO
 -- block below therefore stops the paste unless the pasting role (a) has
--- SELECT on storage.objects and (b) is a superuser, has BYPASSRLS, or holds
--- the privileges of the table's owner (and the table does not FORCE row
--- security). The message names which check failed. Its prefix is
+-- USAGE on schema storage, (b) has SELECT on storage.objects and (c) is a
+-- superuser, has BYPASSRLS, or holds the privileges of the table's owner
+-- (and the table does not FORCE row security). USAGE is checked first: the
+-- SELECT check names the table, and without USAGE that name lookup alone
+-- fails with a bare "permission denied for schema storage". The message
+-- names which check failed. Its prefix is
 -- MIGRATION_105_PRECONDITION, not SITE_EVENT_, so no app copy is ever
 -- expected for it.
 --
@@ -78,6 +81,10 @@ BEGIN
   WHERE n.nspname = 'storage' AND c.relname = 'objects';
   IF v_owner IS NULL THEN
     RAISE EXCEPTION 'MIGRATION_105_PRECONDITION: % tidak menemukan tabel storage.objects', current_user;
+  END IF;
+
+  IF NOT has_schema_privilege(current_user, 'storage', 'USAGE') THEN
+    RAISE EXCEPTION 'MIGRATION_105_PRECONDITION: % tidak punya hak USAGE pada schema storage', current_user;
   END IF;
 
   IF NOT has_table_privilege(current_user, 'storage.objects', 'SELECT') THEN
@@ -186,10 +193,11 @@ WHERE proname = 'close_site_event';
 --    this file: re-paste 100, then 105.
 --
 -- 3. The owner can read storage.objects (the precondition, run by hand):
---      SELECT has_table_privilege(current_user, 'storage.objects', 'SELECT') AS can_select,
+--      SELECT has_schema_privilege(current_user, 'storage', 'USAGE') AS can_use_schema,
+--             has_table_privilege(current_user, 'storage.objects', 'SELECT') AS can_select,
 --             (SELECT rolsuper OR rolbypassrls FROM pg_roles WHERE rolname = current_user) AS bypasses_rls;
---    EXPECTED: can_select = true, and bypasses_rls = true or the role holds
---    supabase_storage_admin's privileges.
+--    EXPECTED: can_use_schema = true, can_select = true, and bypasses_rls =
+--    true or the role holds supabase_storage_admin's privileges.
 --
 -- 4. A cacat with no closure photo is refused. Every check runs inside a
 --    session that HAS an identity - the SQL editor is `postgres` with no JWT,
