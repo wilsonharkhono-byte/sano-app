@@ -1,6 +1,9 @@
 /**
  * The words of the Rooms-tab DATUM card (spec 2026-09-27 §8.1).
  */
+// The model reads constants from tools/datumSync, which loads the client.
+jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
+
 import type { DatumRun, DatumSyncState } from '../../../../tools/datumSync';
 import {
   differenceGroups,
@@ -176,9 +179,39 @@ describe('importOffer and importResultLines', () => {
         { area_code: 'LT2-TERAS', line: 'LT2-TERAS · Teras · Lt. 2 · Teras / Balkon' },
         { area_code: 'FASAD', line: 'FASAD · Fasad Depan · tanpa lantai · Fasad' },
       ],
+      tooLong: [],
+      limitNote: null,
       buttonLabel: 'Ambil 2 ruangan dari DATUM',
       question: 'Ambil 2 ruangan dari DATUM proyek Citraland K2-7 Sonny? Ruangan dibuat di SANO dan ditautkan; setelah itu SANO yang menjadi acuan.',
     });
+  });
+
+  it('never sends a code longer than the request allows: it is listed apart, and 200 characters still go', () => {
+    const long = `L${'X'.repeat(200)}`;
+    const edge = 'E'.repeat(200);
+    const offer = importOffer(state({ latestFinished: run({ differences: { datum_only: [
+      { area_code: long, area_name: 'Gudang Belakang', floor: null, area_type: 'utility' },
+      { area_code: edge, area_name: 'Teras', floor: 'Lt. 2', area_type: 'terrace' },
+    ] } }) }));
+    expect(offer?.areas.map((a) => a.area_code)).toEqual([edge]);
+    expect(offer?.tooLong).toEqual([`L${'X'.repeat(39)}… · Gudang Belakang · tanpa lantai · Utilitas`]);
+    expect(offer?.buttonLabel).toBe('Ambil 1 ruangan dari DATUM');
+    expect(offer?.question).toMatch(/^Ambil 1 ruangan dari DATUM proyek/);
+
+    const onlyLong = importOffer(state({ latestFinished: run({ differences: { datum_only: [
+      { area_code: long, area_name: 'Gudang Belakang', floor: null, area_type: 'utility' },
+    ] } }) }));
+    expect(onlyLong).toMatchObject({ areas: [], buttonLabel: null });
+    expect(onlyLong?.tooLong).toHaveLength(1);
+  });
+
+  it('sends at most 500 codes and says how many are left for later', () => {
+    const many = Array.from({ length: 502 }, (_, i) => ({ area_code: `R-${i}`, area_name: `Ruang ${i}`, floor: null, area_type: 'general' }));
+    const offer = importOffer(state({ latestFinished: run({ differences: { datum_only: many } }) }));
+    expect(offer?.areas).toHaveLength(500);
+    expect(offer?.areas[499].area_code).toBe('R-499');
+    expect(offer?.buttonLabel).toBe('Ambil 500 ruangan dari DATUM');
+    expect(offer?.limitNote).toBe('Paling banyak 500 ruangan sekali ambil. 2 ruangan lainnya bisa diambil setelah ini.');
   });
 
   it('says how many came in and why each other one did not', () => {

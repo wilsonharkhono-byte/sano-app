@@ -7,6 +7,7 @@
 import { AREA_TYPE_LABELS } from '../../../tools/constants';
 import type { AreaType } from '../../../tools/types';
 import type { DatumRun, DatumSyncState } from '../../../tools/datumSync';
+import { DATUM_IMPORT_MAX_CODE_LENGTH, DATUM_IMPORT_MAX_CODES } from '../../../tools/datumSync';
 import type { ConflictField, GateStatusUnknownItem, GateWordDiff, RunReport, SyncStep } from '../../../tools/datumSyncPlan';
 import { STEP_ORDER } from '../../../tools/datumSyncPlan';
 import { formatWibShort, todayIsoWIB } from '../../../tools/timeWindow';
@@ -30,6 +31,7 @@ export const DATUM_CARD_COPY = {
   importCancel: 'Batal',
   importConfirm: 'Ambil',
   importing: 'Mengambil…',
+  importTooLong: 'Kode terlalu panjang, tidak bisa diambil',
 } as const;
 
 export const STEP_LABELS: Record<SyncStep, string> = {
@@ -172,25 +174,48 @@ export function staffView(run: DatumRun | null): StaffView | null {
 
 export interface ImportOffer {
   projectName: string;
+  /** Exactly what "Ambil" sends: codes the request can carry, at most DATUM_IMPORT_MAX_CODES. */
   areas: Array<{ area_code: string; line: string }>;
-  buttonLabel: string;
+  /** DATUM-only areas whose code is longer than the request allows: listed, never sent. */
+  tooLong: string[];
+  /** Said when more DATUM-only areas remain than one request carries. */
+  limitNote: string | null;
+  /** null when no code can be sent: the card then offers no button. */
+  buttonLabel: string | null;
   question: string;
 }
 
-/** "Ambil {n} ruangan dari DATUM": only when the latest finished run lists DATUM-only areas. */
+/** How a too-long code is shown: its first 40 characters, marked as cut. */
+const SHOWN_CODE_MAX = 40;
+
+function offerLine(a: { area_code: string; area_name: string; floor: string | null; area_type: string }): string {
+  const code = a.area_code.length > SHOWN_CODE_MAX ? `${a.area_code.slice(0, SHOWN_CODE_MAX)}…` : a.area_code;
+  return [code, a.area_name, a.floor ?? 'tanpa lantai', areaTypeLabel(a.area_type)].join(' · ');
+}
+
+/**
+ * "Ambil {n} ruangan dari DATUM": only when the latest finished run lists
+ * DATUM-only areas. A code the function's request would refuse is never
+ * sent (one would refuse the whole request): longer than 200 characters it
+ * is listed apart; past the first 500 the rest wait for the next import.
+ */
 export function importOffer(state: DatumSyncState): ImportOffer | null {
   const run = state.latestFinished;
   const only = run?.differences.datum_only ?? [];
   if (!run || only.length === 0) return null;
   const projectName = run.counts.datum_project_name ?? 'ini';
+  const fits = only.filter((a) => a.area_code.length >= 1 && a.area_code.length <= DATUM_IMPORT_MAX_CODE_LENGTH);
+  const sent = fits.slice(0, DATUM_IMPORT_MAX_CODES);
+  const left = fits.length - sent.length;
   return {
     projectName,
-    areas: only.map((a) => ({
-      area_code: a.area_code,
-      line: [a.area_code, a.area_name, a.floor ?? 'tanpa lantai', areaTypeLabel(a.area_type)].join(' · '),
-    })),
-    buttonLabel: `Ambil ${only.length} ruangan dari DATUM`,
-    question: `Ambil ${only.length} ruangan dari DATUM proyek ${projectName}? Ruangan dibuat di SANO dan ditautkan; setelah itu SANO yang menjadi acuan.`,
+    areas: sent.map((a) => ({ area_code: a.area_code, line: offerLine(a) })),
+    tooLong: only.filter((a) => a.area_code.length > DATUM_IMPORT_MAX_CODE_LENGTH).map(offerLine),
+    limitNote: left > 0
+      ? `Paling banyak ${DATUM_IMPORT_MAX_CODES} ruangan sekali ambil. ${left} ruangan lainnya bisa diambil setelah ini.`
+      : null,
+    buttonLabel: sent.length > 0 ? `Ambil ${sent.length} ruangan dari DATUM` : null,
+    question: `Ambil ${sent.length} ruangan dari DATUM proyek ${projectName}? Ruangan dibuat di SANO dan ditautkan; setelah itu SANO yang menjadi acuan.`,
   };
 }
 

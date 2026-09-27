@@ -165,7 +165,7 @@ export default function DatumSyncCard(props: {
 
       {offer && office ? (
         <View style={styles.block}>
-          {!importOpen ? (
+          {offer.buttonLabel === null ? null : !importOpen ? (
             <TouchableOpacity style={styles.ghostBtn} onPress={() => setImportOpen(true)} accessibilityRole="button">
               <Text style={styles.ghostText}>{offer.buttonLabel}</Text>
             </TouchableOpacity>
@@ -196,6 +196,13 @@ export default function DatumSyncCard(props: {
               </View>
             </View>
           )}
+          {offer.limitNote ? <Text style={styles.hint}>{offer.limitNote}</Text> : null}
+          {offer.tooLong.length > 0 ? (
+            <View style={[styles.group, styles.block]}>
+              <Text style={styles.groupTitle}>{T.importTooLong}</Text>
+              {offer.tooLong.map((line, i) => <Text key={`${i}:${line}`} style={styles.listLine}>{line}</Text>)}
+            </View>
+          ) : null}
         </View>
       ) : null}
       {importError ? <Text style={styles.error}>{importError}</Text> : null}

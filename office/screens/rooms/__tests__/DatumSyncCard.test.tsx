@@ -193,6 +193,33 @@ describe('Ambil dari DATUM', () => {
   });
 });
 
+describe('Ambil dari DATUM: what one request can carry', () => {
+  it('sends only codes DATUM accepts and lists a too-long one apart, never sent', async () => {
+    const long = `L${'X'.repeat(200)}`;
+    getState.mockResolvedValue(state({ latestFinished: run({ differences: { datum_only: [
+      { area_code: long, area_name: 'Gudang Belakang', floor: null, area_type: 'utility' },
+      { area_code: 'LT2-TERAS', area_name: 'Teras', floor: 'Lt. 2', area_type: 'terrace' },
+    ] } }) }));
+    doImport.mockResolvedValueOnce({ run: { ok: true, runId: 'r', error: null, counts: { steps: { import: 'ok' }, rooms_imported: 1 }, differences: {} } });
+    const utils = renderCard('admin');
+    await waitFor(() => expect(utils.getByText('Ambil 1 ruangan dari DATUM')).toBeTruthy());
+    expect(utils.getByText('Kode terlalu panjang, tidak bisa diambil')).toBeTruthy();
+    expect(utils.getByText(`L${'X'.repeat(39)}… · Gudang Belakang · tanpa lantai · Utilitas`)).toBeTruthy();
+    fireEvent.press(utils.getByText('Ambil 1 ruangan dari DATUM'));
+    await act(async () => { fireEvent.press(utils.getByText('Ambil')); });
+    expect(doImport).toHaveBeenCalledWith('p1', ['LT2-TERAS']);
+  });
+
+  it('offers no button when no code can be sent, and still says why', async () => {
+    getState.mockResolvedValue(state({ latestFinished: run({ differences: { datum_only: [
+      { area_code: `L${'X'.repeat(200)}`, area_name: 'Gudang Belakang', floor: null, area_type: 'utility' },
+    ] } }) }));
+    const utils = renderCard('admin');
+    await waitFor(() => expect(utils.getByText('Kode terlalu panjang, tidak bisa diambil')).toBeTruthy());
+    expect(utils.queryByText(/^Ambil \d+ ruangan dari DATUM$/)).toBeNull();
+  });
+});
+
 describe('differences and staff', () => {
   it('lists each difference group with the note, and the staff picture for every project', async () => {
     getState.mockResolvedValueOnce(state({ latestFinished: run({ differences: {

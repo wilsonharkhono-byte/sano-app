@@ -104,6 +104,15 @@ export function syncDatum(projectId: string): Promise<DatumCallResult> {
   return invokeDatumSync({ projectId }, false);
 }
 
+/**
+ * The function's request limits (supabase/functions/datum-sync/handler.ts
+ * MAX_IMPORT_CODES, MAX_IMPORT_CODE_LENGTH): one import carries 1-500 codes
+ * of 1-200 characters each, or the whole request is refused. The card sends
+ * only codes inside them.
+ */
+export const DATUM_IMPORT_MAX_CODES = 500;
+export const DATUM_IMPORT_MAX_CODE_LENGTH = 200;
+
 export function importFromDatum(projectId: string, areaCodes: string[]): Promise<DatumCallResult> {
   return invokeDatumSync({ projectId, importDatumOnly: true, areaCodes }, true);
 }
