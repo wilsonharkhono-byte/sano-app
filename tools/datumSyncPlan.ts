@@ -127,6 +127,7 @@ export interface RunCounts {
   field_conflicts?: number;
   retired_missing?: number;
   gate_rows?: number;
+  /** Status rows of areas no SANO room links to: counted, not stored. (Unknown gates or statuses are differences.gate_status_unknown.) */
   gate_rows_unlinked?: number;
   /** DATUM area ids the gate read covered (the linked rooms' areas at read time): the board says "no status" only for these. */
   gate_area_ids?: string[];
@@ -140,6 +141,13 @@ export interface RunCounts {
 
 export interface EscalateSkipItem { event_id: string; room_code: string; title: string; reason: string }
 
+/**
+ * DATUM status rows SANO could not store, one line per gate and status: the
+ * gate is not in gate_refs ('gate'), or the status is none of DATUM's six
+ * readiness words ('status'). rows = how many such rows the read held.
+ */
+export interface GateStatusUnknownItem { gate_code: string; status: string; unknown: 'gate' | 'status'; rows: number }
+
 /** datum_sync_runs.differences (spec §6.2). */
 export interface RunDifferences {
   datum_only?: Array<{ area_code: string; area_name: string; floor: string | null; area_type: string }>;
@@ -150,6 +158,7 @@ export interface RunDifferences {
   staff?: { unmatched: StaffNameItem[]; ambiguous: StaffAmbiguousItem[]; stale: StaffStaleItem[] };
   escalate_skipped?: EscalateSkipItem[];
   gate_words?: GateWordDiff[];
+  gate_status_unknown?: GateStatusUnknownItem[];
 }
 
 /** What the function answers the button with once the run row is written. */

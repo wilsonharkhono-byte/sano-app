@@ -28,6 +28,7 @@ import {
   staffCounts,
   type CreateFailedItem,
   type EscalateSkipItem,
+  type GateStatusUnknownItem,
   type ImportSkip,
   type PlanArea,
   type PlanProfile,
@@ -360,9 +361,19 @@ async function gateStatusStep(
     const syncedAt = ctx.now().toISOString();
     const rows: GateStatusCacheRow[] = [];
     let unlinked = 0;
+    const notKnown = new Map<string, GateStatusUnknownItem>();
     for (const s of reply.data.statuses) {
+      // SANO's words lagging DATUM's is a difference whether or not the area is linked.
+      const which = !known.has(s.gate_code) ? 'gate' : !READINESS.has(s.status) ? 'status' : null;
+      if (which) {
+        const key = JSON.stringify([s.gate_code, s.status]);
+        const item = notKnown.get(key) ?? { gate_code: s.gate_code, status: s.status, unknown: which, rows: 0 };
+        item.rows += 1;
+        notKnown.set(key, item);
+        continue;
+      }
       const roomIds = roomsByArea.get(s.area_id);
-      if (!roomIds || !known.has(s.gate_code) || !READINESS.has(s.status)) {
+      if (!roomIds) {
         unlinked += 1;
         continue;
       }
@@ -380,6 +391,10 @@ async function gateStatusStep(
     rec.counts.gate_area_ids = [...roomsByArea.keys()].sort();
     const words = diffGateWords(reply.data.gates, refs);
     if (words.length) rec.differences.gate_words = words;
+    if (notKnown.size) {
+      rec.differences.gate_status_unknown = [...notKnown.values()]
+        .sort((a, b) => (a.gate_code < b.gate_code ? -1 : a.gate_code > b.gate_code ? 1 : a.status < b.status ? -1 : a.status > b.status ? 1 : 0));
+    }
     rec.ok('gate_status');
   } catch (err) {
     rec.fail('gate_status', `Status gerbang DATUM gagal disimpan: ${message(err)}`);

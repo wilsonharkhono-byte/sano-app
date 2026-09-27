@@ -338,6 +338,25 @@ Deno.test('a gate word that differs from gate_refs is listed and nothing is writ
   assertEquals(JSON.stringify(w.store.gateRefs), before);
 });
 
+Deno.test('a status row with a gate or a status SANO does not know is a difference, not an unlinked row, and is not stored', async () => {
+  const w = world();
+  w.store.rooms[0].datum_area_id = AREA_KM1;
+  w.datum.state.statuses[1].status = 'menunggu_owner';
+  w.datum.state.statuses.push(
+    { project_id: DATUM_PROJECT_ID, area_id: AREA_KM1, gate_code: 'C', status: 'passed', stale: false, last_recomputed_at: null, updated_at: null },
+    { project_id: DATUM_PROJECT_ID, area_id: fakeUuid('a', 88), gate_code: 'C', status: 'passed', stale: false, last_recomputed_at: null, updated_at: null },
+    { project_id: DATUM_PROJECT_ID, area_id: fakeUuid('a', 88), gate_code: 'A', status: 'passed', stale: false, last_recomputed_at: null, updated_at: null },
+  );
+  const report = await sync(w);
+  assertEquals(report.counts.steps.gate_status, 'ok');
+  assertEquals(w.store.cache.map((c) => [c.gate_code, c.status]), [['A', 'passed']]);
+  assertEquals([report.counts.gate_rows, report.counts.gate_rows_unlinked], [1, 1]);
+  assertEquals(report.differences.gate_status_unknown, [
+    { gate_code: 'B', status: 'menunggu_owner', unknown: 'status', rows: 1 },
+    { gate_code: 'C', status: 'passed', unknown: 'gate', rows: 2 },
+  ]);
+});
+
 Deno.test('the import brings only confirmed, still DATUM-only areas, links them, reads their status, and posts nothing', async () => {
   const w = world();
   w.store.rooms = [];
