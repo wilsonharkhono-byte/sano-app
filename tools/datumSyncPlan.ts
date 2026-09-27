@@ -305,3 +305,43 @@ export function createGateOpen(plan: RoomSyncPlan, areaCount: number): boolean {
 export function createGateSentence(datumProjectName: string): string {
   return `Tidak ada ruangan yang cocok dengan area DATUM proyek ${datumProjectName}. Periksa kode proyek DATUM, atau ambil ruangannya dari DATUM.`;
 }
+
+// ─── The import (spec §6.3) ──────────────────────────────────────────────────
+
+export const IMPORT_GONE = 'Sudah ada di SANO atau tidak lagi ada di DATUM.';
+export const importBadCode = (code: string): string => `Kode DATUM ${code} tidak bisa menjadi kode ruangan SANO.`;
+export const importRaced = (code: string): string => `Ruangan ${code} sudah dibuat di SANO sebelum impor selesai.`;
+
+/**
+ * Only codes the user confirmed AND still DATUM-only in a fresh plan become
+ * rooms: nothing enters SANO that the user did not see.
+ */
+export function planImport(plan: RoomSyncPlan, confirmedCodes: ReadonlyArray<string>): ImportPlan {
+  const insert: ImportItem[] = [];
+  const skipped: ImportSkip[] = [];
+  const seen = new Set<string>();
+  for (const code of confirmedCodes) {
+    if (seen.has(code)) continue;
+    seen.add(code);
+    const area = plan.datumOnly.find((a) => a.area_code === code);
+    if (!area) {
+      skipped.push({ area_code: code, reason: IMPORT_GONE });
+      continue;
+    }
+    const roomCode = normalizeCode(area.area_code);
+    if (!isPlanValidRoomCode(roomCode)) {
+      skipped.push({ area_code: code, reason: importBadCode(area.area_code) });
+      continue;
+    }
+    insert.push({
+      area_id: area.area_id,
+      area_code: area.area_code,
+      room_code: roomCode,
+      room_name: area.area_name,
+      floor: area.floor,
+      area_type: area.area_type,
+      sort_order: area.sort_order,
+    });
+  }
+  return { insert, skipped };
+}
