@@ -30,8 +30,12 @@
 --
 -- RE-PASTE SAFETY. UPDATEs to fixed values, ADD COLUMN / CREATE TABLE /
 -- CREATE INDEX IF NOT EXISTS, constraints added inside pg_constraint guards,
--- DROP FUNCTION IF EXISTS by exact signature before each CREATE OR REPLACE,
--- DROP TRIGGER / POLICY IF EXISTS before each create, and the cron job
+-- DROP FUNCTION IF EXISTS by exact signature before CREATE OR REPLACE, but
+-- only for set_datum_project_code (the one function here whose signature
+-- could ever need to change); the three trigger functions keep one fixed
+-- signature for good and are replaced in place by CREATE OR REPLACE
+-- FUNCTION alone, no DROP needed first. DROP TRIGGER / POLICY IF EXISTS
+-- before each create, and the cron job
 -- unscheduled before it is scheduled again: a second paste changes nothing,
 -- EXCEPT that it writes DATUM's gate words again, overwriting any edit made in
 -- "Kelola gerbang" since the first paste (as 101 does).
@@ -471,11 +475,14 @@ ORDER BY g.sort_order;
 --    EXPECTED: one row, 0 * * * *. An error "relation cron.job does not exist"
 --    means pg_cron is not enabled: enable it and paste this file again.
 --
--- 8. Nobody is linked yet:
+-- 8. This file links nobody itself; only the sync does:
 --      SELECT count(*) FILTER (WHERE datum_staff_id IS NOT NULL) AS staff_links FROM profiles;
 --      SELECT count(*) FILTER (WHERE datum_area_id IS NOT NULL) AS room_links FROM rooms;
---    EXPECTED: 0 and 0 until the first "Sinkron DATUM".
+--    EXPECTED: 0 and 0 on a project that has never run "Sinkron DATUM". Once
+--    it has, these read however many links the sync made, and paste-order
+--    check 9 below still holds: a re-paste of 107 does not change them.
 --
 -- 9. Re-paste this whole file.
---    EXPECTED: no error, and checks 1-8 unchanged.
+--    EXPECTED: no error, and checks 1-8 read exactly as they did just before
+--    the re-paste (107 neither adds nor clears a link, sync or no sync).
 -- ═══════════════════════════════════════════════════════════════════════════
