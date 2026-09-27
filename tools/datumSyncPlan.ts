@@ -345,3 +345,86 @@ export function planImport(plan: RoomSyncPlan, confirmedCodes: ReadonlyArray<str
   }
   return { insert, skipped };
 }
+
+// ─── People (spec §6.4) ──────────────────────────────────────────────────────
+
+/** The one name rule: decompose, drop combining marks, trim, collapse spaces, lower case. */
+export function normalizePersonName(s: string | null | undefined): string {
+  return (s ?? '')
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+/**
+ * A link is set only on a unique exact match on BOTH sides: one active DATUM
+ * staff row and one SANO profile with that name, the profile unlinked, and the
+ * staff id held by no other profile. Anything else is listed, never guessed.
+ * An existing link that is no longer its unique match is `stale`: reported,
+ * never changed or cleared.
+ */
+export function planStaffLinks(profiles: ReadonlyArray<PlanProfile>, staff: ReadonlyArray<PlanStaff>): StaffLinkPlan {
+  const staffByKey = new Map<string, PlanStaff[]>();
+  for (const s of staff) {
+    const key = normalizePersonName(s.full_name);
+    if (!key) continue;
+    staffByKey.set(key, [...(staffByKey.get(key) ?? []), s]);
+  }
+  const profilesByKey = new Map<string, PlanProfile[]>();
+  for (const p of profiles) {
+    const key = normalizePersonName(p.full_name);
+    if (!key) continue;
+    profilesByKey.set(key, [...(profilesByKey.get(key) ?? []), p]);
+  }
+  const holderOf = new Map<string, string>();
+  for (const p of profiles) if (p.datum_staff_id) holderOf.set(p.datum_staff_id, p.id);
+  const staffById = new Map(staff.map((s) => [s.id, s]));
+
+  const plan: StaffLinkPlan = { set: [], unchanged: [], unmatched: [], ambiguous: [], stale: [] };
+  for (const p of profiles) {
+    const key = normalizePersonName(p.full_name);
+    const name = p.full_name ?? '';
+    const sameStaff = key ? staffByKey.get(key) ?? [] : [];
+    const sameProfiles = key ? profilesByKey.get(key) ?? [] : [];
+
+    if (p.datum_staff_id) {
+      const linked = staffById.get(p.datum_staff_id);
+      if (!linked) {
+        plan.stale.push({ profile_id: p.id, full_name: name, staff_id: p.datum_staff_id, staff_name: null, reason: 'staff_gone' });
+      } else if (normalizePersonName(linked.full_name) !== key) {
+        plan.stale.push({ profile_id: p.id, full_name: name, staff_id: linked.id, staff_name: linked.full_name, reason: 'name_differs' });
+      } else if (sameStaff.length !== 1 || sameProfiles.length !== 1) {
+        plan.stale.push({ profile_id: p.id, full_name: name, staff_id: linked.id, staff_name: linked.full_name, reason: 'not_unique' });
+      } else {
+        plan.unchanged.push(p.id);
+      }
+      continue;
+    }
+
+    if (sameStaff.length === 0) {
+      plan.unmatched.push({ profile_id: p.id, full_name: name });
+    } else if (sameStaff.length > 1) {
+      plan.ambiguous.push({ profile_id: p.id, full_name: name, side: 'datum' });
+    } else if (sameProfiles.length > 1) {
+      plan.ambiguous.push({ profile_id: p.id, full_name: name, side: 'sano' });
+    } else {
+      const target = sameStaff[0] as PlanStaff;
+      const holder = holderOf.get(target.id);
+      if (holder && holder !== p.id) plan.ambiguous.push({ profile_id: p.id, full_name: name, side: 'linked_elsewhere' });
+      else plan.set.push({ profile_id: p.id, staff_id: target.id });
+    }
+  }
+  return plan;
+}
+
+export function staffCounts(plan: StaffLinkPlan): StaffCounts {
+  return {
+    linked: plan.unchanged.length + plan.stale.length + plan.set.length,
+    linked_now: plan.set.length,
+    unmatched: plan.unmatched.length,
+    ambiguous: plan.ambiguous.length,
+    stale: plan.stale.length,
+  };
+}
