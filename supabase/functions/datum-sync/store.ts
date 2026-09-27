@@ -22,8 +22,10 @@ function check(what: string, error: { message: string } | null): void {
   if (error) throw new Error(`${what}: ${error.message}`);
 }
 
+// rooms!inner, not aliased, so the room's link filters the events themselves
+// (PostgREST: rooms.datum_area_id=is.null / not.is.null on an inner embed).
 const DUE_SELECT =
-  'id, title, summary, due_date, confirmed_at, room:rooms(room_code, room_name, datum_area_id), reporter:profiles!site_events_reporter_id_fkey(full_name, datum_staff_id), confirmer:profiles!site_events_confirmed_by_fkey(full_name, datum_staff_id), owner:profiles!site_events_owner_id_fkey(full_name)';
+  'id, title, summary, due_date, confirmed_at, rooms!inner(room_code, room_name, datum_area_id), reporter:profiles!site_events_reporter_id_fkey(full_name, datum_staff_id), confirmer:profiles!site_events_confirmed_by_fkey(full_name, datum_staff_id), owner:profiles!site_events_owner_id_fkey(full_name)';
 
 type Person = { full_name: string | null; datum_staff_id?: string | null } | null;
 type DueRow = {
@@ -32,7 +34,7 @@ type DueRow = {
   summary: string | null;
   due_date: string;
   confirmed_at: string;
-  room: { room_code: string; room_name: string; datum_area_id: string | null } | null;
+  rooms: { room_code: string; room_name: string; datum_area_id: string | null } | null;
   reporter: Person;
   confirmer: Person;
   owner: Person;
@@ -138,44 +140,34 @@ export function makeSupabaseStore(admin: SupabaseClient): SyncStore {
       check('profiles', error);
     },
 
-    async listEscalationDue(projectId, limit) {
-      const { data, error } = await admin.from('site_events')
-        .select(DUE_SELECT)
+    async listEscalationDue(projectId, rooms, limit) {
+      const { data, error, count } = await admin.from('site_events')
+        .select(DUE_SELECT, { count: 'exact' })
         .eq('project_id', projectId)
         .eq('status', 'open')
         .eq('event_type', 'butuh_keputusan')
         .not('confirmed_at', 'is', null)
         .is('datum_card_id', null)
+        .filter('rooms.datum_area_id', rooms === 'linked' ? 'not.is' : 'is', null)
         .order('confirmed_at', { ascending: true })
         .limit(limit);
       check('site_events', error);
-      return ((data ?? []) as unknown as DueRow[]).map((e): EscalationDue => ({
+      const rows = ((data ?? []) as unknown as DueRow[]).map((e): EscalationDue => ({
         id: e.id,
         title: e.title,
         summary: e.summary,
         due_date: e.due_date,
         confirmed_at: e.confirmed_at,
-        room_code: e.room?.room_code ?? '',
-        room_name: e.room?.room_name ?? '',
-        room_datum_area_id: e.room?.datum_area_id ?? null,
+        room_code: e.rooms?.room_code ?? '',
+        room_name: e.rooms?.room_name ?? '',
+        room_datum_area_id: e.rooms?.datum_area_id ?? null,
         reporter_name: e.reporter?.full_name ?? null,
         reporter_staff_id: e.reporter?.datum_staff_id ?? null,
         confirmer_name: e.confirmer?.full_name ?? null,
         confirmer_staff_id: e.confirmer?.datum_staff_id ?? null,
         owner_name: e.owner?.full_name ?? null,
       }));
-    },
-
-    async countEscalationDue(projectId) {
-      const { count, error } = await admin.from('site_events')
-        .select('id', { count: 'exact', head: true })
-        .eq('project_id', projectId)
-        .eq('status', 'open')
-        .eq('event_type', 'butuh_keputusan')
-        .not('confirmed_at', 'is', null)
-        .is('datum_card_id', null);
-      check('site_events', error);
-      return count ?? 0;
+      return { rows, total: count ?? rows.length };
     },
 
     async setEventCard(eventId, cardId, cardUrl, escalatedAtIso) {

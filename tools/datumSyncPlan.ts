@@ -512,6 +512,8 @@ export function diffGateWords(datum: ReadonlyArray<DatumGateWord>, sano: Readonl
 
 export const ESCALATE_BATCH = 20;
 export const ESCALATE_ROOM_UNLINKED = 'Ruangan belum tertaut ke area DATUM.';
+/** Another decision in a room whose area DATUM just answered UNKNOWN_AREA for: not sent again this run. */
+export const ESCALATE_AREA_UNKNOWN = 'DATUM tidak mengenal area ruangan ini; dicoba lagi pada sinkron berikutnya.';
 
 /** tools/roomLinks.ts buildRoomUrl, inlined: SANO has no web route to one event. */
 export function sanoRoomUrl(projectCode: string, roomCode: string): string {

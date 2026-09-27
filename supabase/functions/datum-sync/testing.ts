@@ -197,27 +197,24 @@ export class FakeStore implements SyncStore {
       .sort((a, b) => ((a.confirmed_at as string) < (b.confirmed_at as string) ? -1 : 1));
   }
 
-  listEscalationDue(projectId: string, limit: number): Promise<EscalationDue[]> {
+  listEscalationDue(projectId: string, rooms: 'linked' | 'unlinked', limit: number): Promise<{ rows: EscalationDue[]; total: number }> {
     this.maybeFail('listEscalationDue');
     const person = (id: string | null) => this.profiles.find((p) => p.id === id) ?? null;
-    return Promise.resolve(
-      this.due(projectId).slice(0, limit).map((e) => {
-        const room = this.rooms.find((r) => r.id === e.room_id)!;
-        const reporter = person(e.reporter_id);
-        const confirmer = person(e.confirmed_by);
-        return {
-          id: e.id, title: e.title, summary: e.summary, due_date: e.due_date, confirmed_at: e.confirmed_at as string,
-          room_code: room.room_code as string, room_name: room.room_name, room_datum_area_id: room.datum_area_id,
-          reporter_name: reporter?.full_name ?? null, reporter_staff_id: reporter?.datum_staff_id ?? null,
-          confirmer_name: confirmer?.full_name ?? null, confirmer_staff_id: confirmer?.datum_staff_id ?? null,
-          owner_name: person(e.owner_id)?.full_name ?? null,
-        };
-      }),
-    );
-  }
-
-  countEscalationDue(projectId: string): Promise<number> {
-    return Promise.resolve(this.due(projectId).length);
+    const roomOf = (e: FakeEvent) => this.rooms.find((r) => r.id === e.room_id)!;
+    const due = this.due(projectId).filter((e) => (roomOf(e).datum_area_id !== null) === (rooms === 'linked'));
+    const rows = due.slice(0, limit).map((e) => {
+      const room = roomOf(e);
+      const reporter = person(e.reporter_id);
+      const confirmer = person(e.confirmed_by);
+      return {
+        id: e.id, title: e.title, summary: e.summary, due_date: e.due_date, confirmed_at: e.confirmed_at as string,
+        room_code: room.room_code as string, room_name: room.room_name, room_datum_area_id: room.datum_area_id,
+        reporter_name: reporter?.full_name ?? null, reporter_staff_id: reporter?.datum_staff_id ?? null,
+        confirmer_name: confirmer?.full_name ?? null, confirmer_staff_id: confirmer?.datum_staff_id ?? null,
+        owner_name: person(e.owner_id)?.full_name ?? null,
+      };
+    });
+    return Promise.resolve({ rows, total: due.length });
   }
 
   setEventCard(eventId: string, cardId: string, cardUrl: string, escalatedAtIso: string): Promise<void> {

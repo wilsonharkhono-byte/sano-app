@@ -12,6 +12,7 @@
 // writes a column other than those store.ts names.
 
 import {
+  ESCALATE_AREA_UNKNOWN,
   ESCALATE_BATCH,
   ESCALATE_ROOM_UNLINKED,
   createGateOpen,
@@ -110,8 +111,13 @@ export interface SyncStore {
   upsertGateStatus(rows: GateStatusCacheRow[]): Promise<void>;
   listProfiles(): Promise<PlanProfile[]>;
   setProfileStaffLink(profileId: string, staffId: string): Promise<void>;
-  listEscalationDue(projectId: string, limit: number): Promise<EscalationDue[]>;
-  countEscalationDue(projectId: string): Promise<number>;
+  /**
+   * Open, confirmed butuh_keputusan with no card yet, oldest confirmed first,
+   * in rooms that have a DATUM area ('linked') or not ('unlinked'): at most
+   * `limit` rows, and the total. Filtered in the query, so decisions in
+   * unlinked rooms never take the batch from newer ones in linked rooms.
+   */
+  listEscalationDue(projectId: string, rooms: 'linked' | 'unlinked', limit: number): Promise<{ rows: EscalationDue[]; total: number }>;
   setEventCard(eventId: string, cardId: string, cardUrl: string, escalatedAtIso: string): Promise<void>;
 }
 
@@ -368,32 +374,36 @@ async function staffStep(ctx: RunContext, rec: Recorder): Promise<void> {
 }
 
 async function escalateStep(ctx: RunContext, rec: Recorder, project: PairedProject): Promise<void> {
-  let due: EscalationDue[];
-  let total: number;
+  let linked: { rows: EscalationDue[]; total: number };
+  let unlinked: { rows: EscalationDue[]; total: number };
   try {
-    [due, total] = await Promise.all([
-      ctx.store.listEscalationDue(project.id, ESCALATE_BATCH),
-      ctx.store.countEscalationDue(project.id),
+    [linked, unlinked] = await Promise.all([
+      ctx.store.listEscalationDue(project.id, 'linked', ESCALATE_BATCH),
+      ctx.store.listEscalationDue(project.id, 'unlinked', ESCALATE_BATCH),
     ]);
   } catch (err) {
     rec.fail('escalate', `Keputusan SANO gagal dibaca: ${message(err)}`);
     return;
   }
-  const skipped: EscalateSkipItem[] = [];
+  const skip = (ev: EscalationDue, reason: string): EscalateSkipItem => ({ event_id: ev.id, room_code: ev.room_code, title: ev.title, reason });
+  const skipped: EscalateSkipItem[] = unlinked.rows.map((ev) => skip(ev, ESCALATE_ROOM_UNLINKED));
   let escalated = 0;
   let asSystem = 0;
   let failed = 0;
-  let unlinked = 0;
+  let areaUnknown = 0;
   let firstError: string | null = null;
-  for (const ev of due) {
-    if (!ev.room_datum_area_id) {
-      unlinked += 1;
-      skipped.push({ event_id: ev.id, room_code: ev.room_code, title: ev.title, reason: ESCALATE_ROOM_UNLINKED });
+  /** Areas DATUM answered UNKNOWN_AREA for in this run: their other decisions would get the same answer. */
+  const unknownAreas = new Set<string>();
+  for (const ev of linked.rows) {
+    const areaId = ev.room_datum_area_id as string;
+    if (unknownAreas.has(areaId)) {
+      areaUnknown += 1;
+      skipped.push(skip(ev, ESCALATE_AREA_UNKNOWN));
       continue;
     }
     const body: DatumEscalateBody = {
       project_code: project.datum_project_code,
-      area_id: ev.room_datum_area_id,
+      area_id: areaId,
       sano_event_id: ev.id,
       sano_url: sanoRoomUrl(project.code, ev.room_code),
       title: ev.title,
@@ -410,7 +420,8 @@ async function escalateStep(ctx: RunContext, rec: Recorder, project: PairedProje
     if (!reply.ok) {
       failed += 1;
       firstError ??= reply.error;
-      skipped.push({ event_id: ev.id, room_code: ev.room_code, title: ev.title, reason: `Gagal dikirim: ${reply.error}` });
+      if (reply.code === 'UNKNOWN_AREA') unknownAreas.add(areaId);
+      skipped.push(skip(ev, `Gagal dikirim: ${reply.error}`));
       continue;
     }
     try {
@@ -421,14 +432,14 @@ async function escalateStep(ctx: RunContext, rec: Recorder, project: PairedProje
       failed += 1;
       const reason = `Kartu DATUM sudah dibuat, tetapi SANO gagal mencatatnya: ${message(err)}`;
       firstError ??= reason;
-      skipped.push({ event_id: ev.id, room_code: ev.room_code, title: ev.title, reason });
+      skipped.push(skip(ev, reason));
     }
   }
   rec.counts.escalated = escalated;
   rec.counts.escalated_as_system = asSystem;
   rec.counts.escalate_failed = failed;
-  rec.counts.escalate_skipped = unlinked;
-  rec.counts.escalate_deferred = Math.max(0, total - due.length);
+  rec.counts.escalate_skipped = unlinked.total + areaUnknown;
+  rec.counts.escalate_deferred = Math.max(0, linked.total - linked.rows.length);
   if (skipped.length) rec.differences.escalate_skipped = skipped;
   if (firstError) rec.fail('escalate', firstError);
   else rec.ok('escalate');

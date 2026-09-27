@@ -1,5 +1,5 @@
 import { assert, assertEquals } from 'std/assert';
-import { createGateSentence, IMPORT_GONE, importBadCode, importRaced } from './plan.ts';
+import { ESCALATE_AREA_UNKNOWN, ESCALATE_ROOM_UNLINKED, createGateSentence, IMPORT_GONE, importBadCode, importRaced } from './plan.ts';
 import { AREAS_UNREAD, PAIRING_MISSING, RUN_INTERRUPTED, executeImport, executeSync, startRun, type RunRequest } from './run.ts';
 import { AREA_KM1, DATUM_PROJECT_ID, PROJECT_ID, STAFF_BUDI, STAFF_SITI, decision, fakeUuid, newAreaId, world } from './testing.ts';
 
@@ -8,6 +8,7 @@ const STAFF_GONE = fakeUuid('5', 50);
 const AREA_TERAS = fakeUuid('a', 2);
 const AREA_LONG = fakeUuid('a', 3);
 const AREA_RACE = fakeUuid('a', 4);
+const AREA_DAPUR = fakeUuid('a', 5);
 
 const manual: RunRequest = { projectId: PROJECT_ID, source: 'manual', requestedBy: 'u-siti', requestId: null };
 
@@ -177,19 +178,58 @@ Deno.test('the same event is sent once; a lost SANO write is healed by the next 
   assertEquals(w.datum.state.calls.filter((c) => c.path === 'escalate').length, 2);
 });
 
-Deno.test('a decision in an unlinked room is skipped with its reason; the 21st is deferred', async () => {
+Deno.test('decisions in unlinked rooms no longer hold back newer ones: all counted, the oldest listed, the linked ones sent', async () => {
   const w = world();
   w.datum.state.failRoute = { areas: 500 };
-  decision(w.store, { room_id: 'room-dapur', title: 'Di dapur' });
-  for (let i = 0; i < 20; i++) decision(w.store);
+  for (let i = 0; i < 25; i++) decision(w.store, { room_id: 'room-dapur', title: `Di dapur ${i}` });
+  const sent = [decision(w.store), decision(w.store)];
   w.store.rooms[0].datum_area_id = AREA_KM1;
   const report = await sync(w);
-  assertEquals(report.counts.escalate_skipped, 1);
-  assertEquals(report.differences.escalate_skipped?.[0], {
-    event_id: w.store.events[0].id, room_code: 'LT1-DAPUR', title: 'Di dapur', reason: 'Ruangan belum tertaut ke area DATUM.',
-  });
-  assertEquals(report.counts.escalated, 19);
+  assertEquals(report.counts.escalated, 2);
+  assertEquals(sent.every((e) => e.datum_card_id !== null), true);
+  assertEquals(report.counts.escalate_skipped, 25);
+  assertEquals(report.counts.escalate_deferred, 0);
+  assertEquals(report.counts.steps.escalate, 'ok');
+  const listed = report.differences.escalate_skipped ?? [];
+  assertEquals(listed.length, 20);
+  assertEquals(listed[0], { event_id: w.store.events[0].id, room_code: 'LT1-DAPUR', title: 'Di dapur 0', reason: ESCALATE_ROOM_UNLINKED });
+  assertEquals(listed.every((x) => x.reason === ESCALATE_ROOM_UNLINKED), true);
+});
+
+Deno.test('the 21st decision in a linked room is deferred to the next run', async () => {
+  const w = world();
+  w.store.rooms[0].datum_area_id = AREA_KM1;
+  for (let i = 0; i < 21; i++) decision(w.store);
+  const report = await sync(w);
+  assertEquals(report.counts.escalated, 20);
   assertEquals(report.counts.escalate_deferred, 1);
+  assertEquals(w.store.events[20].datum_card_id, null);
+});
+
+Deno.test('an area DATUM answers UNKNOWN_AREA for is not sent again in the same run; other rooms still are', async () => {
+  const w = world();
+  const gone = fakeUuid('a', 77);
+  w.datum.state.areas.push({ id: AREA_DAPUR, project_id: DATUM_PROJECT_ID, area_code: 'LT1-DAPUR', area_name: 'Dapur', floor: 'Lt. 1', area_type: 'kitchen', sort_order: 1, tracked: true });
+  w.datum.state.failRoute = { areas: 500 };
+  w.store.rooms[0].datum_area_id = gone;
+  w.store.rooms[1].datum_area_id = AREA_DAPUR;
+  const [first, second, third] = [decision(w.store), decision(w.store), decision(w.store)];
+  const inDapur = decision(w.store, { room_id: 'room-dapur' });
+  const report = await sync(w);
+
+  const escalations = w.datum.state.calls.filter((c) => c.path === 'escalate').map((c) => (c.body as { sano_event_id: string }).sano_event_id);
+  assertEquals(escalations, [first.id, inDapur.id]);
+  assertEquals(report.counts.escalated, 1);
+  assertEquals(report.counts.escalate_failed, 1);
+  assertEquals(report.counts.escalate_skipped, 2);
+  assertEquals(report.counts.escalate_deferred, 0);
+  assertEquals(report.counts.steps.escalate, 'error');
+  assertEquals(report.differences.escalate_skipped?.map((x) => [x.event_id, x.reason]), [
+    [first.id, 'Gagal dikirim: DATUM menjawab 404 UNKNOWN_AREA: Area ini bukan milik proyek DATUM tersebut.'],
+    [second.id, ESCALATE_AREA_UNKNOWN],
+    [third.id, ESCALATE_AREA_UNKNOWN],
+  ]);
+  assertEquals(inDapur.datum_card_id !== null, true);
 });
 
 Deno.test('staff links are set only for unique matches; a stale link is reported and left alone', async () => {
