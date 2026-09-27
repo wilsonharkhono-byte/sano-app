@@ -171,3 +171,137 @@ export function runVerdict(counts: RunCounts): { ok: boolean; error: string | nu
   const first = recorded.find((s) => counts.steps[s] !== 'ok');
   return { ok, error: first ? counts.step_errors?.[first] ?? null : null };
 }
+
+// ─── Codes ───────────────────────────────────────────────────────────────────
+
+/** Mirrors 096's CHECK and tools/roomCodes.ts ROOM_CODE_MAX. */
+export const PLAN_ROOM_CODE_MAX = 40;
+
+/**
+ * DATUM's normalizeAreaCode, which is also SANO's normalizeRoomCode
+ * (tools/roomCodes.ts), inlined: this file may import nothing. jest proves the
+ * two agree on DATUM's own fixtures.
+ */
+export function normalizeCode(raw: string): string {
+  return raw
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^A-Z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, PLAN_ROOM_CODE_MAX);
+}
+
+/** tools/roomCodes.ts isValidRoomCode, inlined. */
+export function isPlanValidRoomCode(code: string): boolean {
+  return code.length > 0 && code.length <= PLAN_ROOM_CODE_MAX && /^[A-Z0-9]+(-[A-Z0-9]+)*$/.test(code);
+}
+
+// ─── Rooms against areas ─────────────────────────────────────────────────────
+
+export const UMUM_CODE = 'UMUM';
+export const NAME_TOO_LONG = 'Nama ruangan lebih dari 120 karakter; DATUM menolaknya.';
+
+/** Trim, collapse whitespace, case fold: "Kamar  Mandi 1" and "kamar mandi 1" are one name. */
+export function foldText(s: string | null | undefined): string {
+  return (s ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/** listRoomsResult's order: floor (no floor last), then sort_order, then name. */
+function boardOrder(a: PlanRoom, b: PlanRoom): number {
+  if (a.floor !== b.floor) {
+    if (a.floor === null) return 1;
+    if (b.floor === null) return -1;
+    return a.floor < b.floor ? -1 : 1;
+  }
+  if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+  return a.room_name < b.room_name ? -1 : a.room_name > b.room_name ? 1 : 0;
+}
+
+export function planRoomSync(rooms: ReadonlyArray<PlanRoom>, areas: ReadonlyArray<PlanArea>): RoomSyncPlan {
+  const byKey = new Map<string, PlanArea[]>();
+  for (const a of areas) {
+    const key = normalizeCode(a.area_code);
+    byKey.set(key, [...(byKey.get(key) ?? []), a]);
+  }
+  const datumDuplicates: DuplicateItem[] = [];
+  for (const [key, list] of byKey) {
+    if (list.length > 1) datumDuplicates.push({ key, area_codes: list.map((a) => a.area_code) });
+  }
+
+  const coded = rooms.filter((r): r is PlanRoom & { room_code: string } => r.room_code !== null);
+  const roomKeys = new Set(coded.map((r) => normalizeCode(r.room_code)));
+
+  const link: LinkItem[] = [];
+  const createCandidates: PlanRoom[] = [];
+  const fieldConflicts: FieldConflict[] = [];
+  const retiredMissing: string[] = [];
+  let matchedCount = 0;
+
+  for (const room of coded) {
+    const list = byKey.get(normalizeCode(room.room_code)) ?? [];
+    if (list.length > 1) continue; // listed under datumDuplicates; neither linked nor created
+    const area = list[0];
+    if (!area) {
+      if (room.active) createCandidates.push(room);
+      else retiredMissing.push(room.room_code);
+      continue;
+    }
+    matchedCount += 1;
+    if (room.datum_area_id !== area.id) link.push({ room_id: room.id, room_code: room.room_code, area_id: area.id });
+    if (foldText(room.room_name) !== foldText(area.area_name)) {
+      fieldConflicts.push({ room_code: room.room_code, field: 'name', sano: room.room_name, datum: area.area_name });
+    }
+    if (foldText(room.floor) !== foldText(area.floor)) {
+      fieldConflicts.push({ room_code: room.room_code, field: 'floor', sano: room.floor ?? '', datum: area.floor ?? '' });
+    }
+    if (room.area_type !== area.area_type) {
+      fieldConflicts.push({ room_code: room.room_code, field: 'area_type', sano: room.area_type, datum: area.area_type });
+    }
+  }
+
+  const create: CreateItem[] = [];
+  const createFailed: CreateFailedItem[] = [];
+  for (const room of [...createCandidates].sort(boardOrder)) {
+    const code = room.room_code as string;
+    if (room.room_name.trim().length > 120) {
+      createFailed.push({ room_code: code, reason: NAME_TOO_LONG });
+      continue;
+    }
+    create.push({
+      room_id: room.id,
+      area_code: code,
+      area_name: room.room_name.trim(),
+      floor: room.floor,
+      area_type: room.area_type,
+      tracked: code !== UMUM_CODE,
+    });
+  }
+
+  const datumOnly: DatumOnlyItem[] = [];
+  for (const [key, list] of byKey) {
+    if (list.length !== 1 || roomKeys.has(key)) continue;
+    const a = list[0] as PlanArea;
+    datumOnly.push({
+      area_id: a.id, area_code: a.area_code, area_name: a.area_name, floor: a.floor, area_type: a.area_type, sort_order: a.sort_order,
+    });
+  }
+  datumOnly.sort((a, b) => a.sort_order - b.sort_order || (a.area_code < b.area_code ? -1 : 1));
+
+  return { link, create, createFailed, datumOnly, fieldConflicts, datumDuplicates, retiredMissing, matchedCount };
+}
+
+/**
+ * The plausibility gate (spec §6.2 "create"): rooms are pushed to DATUM only
+ * when some room already matches an area by code, or DATUM's project has no
+ * areas yet. A mistyped code that names another real project must not receive
+ * this project's rooms; a project DATUM mapped first is steered to the import.
+ */
+export function createGateOpen(plan: RoomSyncPlan, areaCount: number): boolean {
+  return plan.matchedCount > 0 || areaCount === 0;
+}
+
+export function createGateSentence(datumProjectName: string): string {
+  return `Tidak ada ruangan yang cocok dengan area DATUM proyek ${datumProjectName}. Periksa kode proyek DATUM, atau ambil ruangannya dari DATUM.`;
+}
