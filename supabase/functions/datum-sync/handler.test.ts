@@ -2,7 +2,7 @@ import { assertEquals } from 'std/assert';
 import { FORBIDDEN_IMPORT, FORBIDDEN_SYNC, bearerMatches, createHandler, type CallerCheck, type HandlerDeps } from './handler.ts';
 import { importBadCode } from './plan.ts';
 import { PAIRING_MISSING, SYNC_RUNNING } from './run.ts';
-import { DATUM_PROJECT_ID, PROJECT_ID, fakeUuid, world } from './testing.ts';
+import { DATUM_PROJECT_ID, NOW, PROJECT_ID, fakeUuid, world } from './testing.ts';
 
 const WEBHOOK_SECRET = 'webhook-secret';
 const AREA_TERAS = fakeUuid('a', 2);
@@ -54,17 +54,25 @@ Deno.test('bearerMatches compares exactly "Bearer <secret>" and never opens on a
   assertEquals(await bearerMatches('Bearer ', ''), false);
 });
 
-Deno.test('the webhook secret takes the cron path: 202 at once, the run finishes in waitUntil and marks its request', async () => {
+Deno.test('the webhook secret takes the cron path: 202 while the run is still going, which then finishes in waitUntil and marks its request', async () => {
   const s = setup();
   s.w.store.requests.push({ id: REQUEST_ID, handled_at: null, run_id: null, error: null });
+  let release = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  s.w.datum.state.beforeReply = () => held;
+
   const res = await s.call(`Bearer ${WEBHOOK_SECRET}`, webhookBody);
   assertEquals(res.status, 202);
   const body = await res.json();
   assertEquals(body.code, 'ACCEPTED');
-  await Promise.all(s.pending);
   const run = s.w.store.runs.find((r) => r.id === body.runId)!;
-  assertEquals([run.source, run.requested_by, run.request_id, run.ok], ['cron', null, REQUEST_ID, true]);
-  assertEquals(s.w.store.requests[0], { id: REQUEST_ID, handled_at: '2026-09-27T03:00:00.000Z', run_id: body.runId, error: null });
+  assertEquals([run.finished_at, run.started_at], [null, NOW]);
+  assertEquals(s.pending.length, 1);
+
+  release();
+  await Promise.all(s.pending);
+  assertEquals([run.source, run.requested_by, run.request_id, run.ok, run.finished_at], ['cron', null, REQUEST_ID, true, NOW]);
+  assertEquals(s.w.store.requests[0], { id: REQUEST_ID, handled_at: NOW, run_id: body.runId, error: null });
 });
 
 Deno.test('a webhook body that is not a datum_sync_requests INSERT is 400', async () => {

@@ -64,6 +64,8 @@ export class FakeStore implements SyncStore {
   events: FakeEvent[] = [];
   /** Set to make the next call of that method throw. */
   failNext: Partial<Record<keyof SyncStore, string>> = {};
+  /** The database's clock (now()): world() points it at the run's clock. */
+  now: () => Date = () => new Date();
   /** Runs inside insertImportedRoom before the insert: a test makes a room "meanwhile" here. */
   beforeRoomInsert: ((row: ImportedRoomRow) => void) | null = null;
   private seq = 0;
@@ -101,7 +103,7 @@ export class FakeStore implements SyncStore {
     if (this.runs.some((r) => r.project_id === req.projectId && r.finished_at === null)) return Promise.resolve({ running: true });
     const run: FakeRun = {
       id: this.id('run'), project_id: req.projectId, source: req.source, requested_by: req.requestedBy,
-      request_id: req.requestId, started_at: new Date().toISOString(), finished_at: null, ok: null,
+      request_id: req.requestId, started_at: this.now().toISOString(), finished_at: null, ok: null,
       counts: { steps: {} }, differences: {}, error: null,
     };
     this.runs.push(run);
@@ -246,6 +248,11 @@ export interface FakeDatumState {
   /** Route path (e.g. 'areas', 'staff') to answer with this status instead. */
   failRoute: Record<string, number>;
   calls: Array<{ method: string; path: string; body: unknown }>;
+  /**
+   * Awaited before each answer: a test holds DATUM here (a promise it resolves
+   * later), moves the clock, or throws to make the call fail as the network does.
+   */
+  beforeReply?: (path: string, method: string) => Promise<void> | void;
 }
 
 // The real routes' rules (DATUM apps/web/lib/integrations/sano/areas.ts PostAreasBody and
@@ -417,7 +424,11 @@ export function fakeDatum(seed: Partial<FakeDatumState> = {}): { state: FakeDatu
     }
     return refuse(404, 'NOT_FOUND', 'no route');
   };
-  const fetchImpl = (input: string | URL | Request, init?: RequestInit): Promise<Response> => Promise.resolve(route(input, init));
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+    await state.beforeReply?.(url.pathname.replace(/^\/api\/integrations\/sano\//, ''), init?.method ?? 'GET');
+    return route(input, init);
+  };
   return { state, fetch: fetchImpl as typeof fetch };
 }
 
@@ -472,6 +483,7 @@ export function world() {
     ],
   });
   const clock = { now: new Date(NOW) };
+  store.now = () => clock.now;
   const ctx: RunContext = {
     store,
     datum: makeDatumApi({ baseUrl: 'https://datum.test/', secret: 'datum-secret', fetch: datum.fetch }),
