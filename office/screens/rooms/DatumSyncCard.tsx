@@ -181,8 +181,8 @@ export default function DatumSyncCard(props: {
           ) : (
             <View style={styles.confirm}>
               <Text style={styles.body}>{offer.question}</Text>
-              {offer.areas.map((a) => (
-                <Text key={a.area_code} style={styles.listLine}>{a.line}</Text>
+              {offer.areas.map((a, i) => (
+                <Text key={`${i}:${a.area_code}`} style={styles.listLine}>{a.line}</Text>
               ))}
               <View style={styles.row}>
                 <TouchableOpacity
@@ -215,7 +215,7 @@ export default function DatumSyncCard(props: {
         </View>
       ) : null}
       {importError ? <Text style={styles.error}>{importError}</Text> : null}
-      {importLines ? importLines.map((line) => <Text key={line} style={styles.body}>{line}</Text>) : null}
+      {importLines ? importLines.map((line, i) => <Text key={`${i}:${line}`} style={styles.body}>{line}</Text>) : null}
 
       {state && !('error' in state) ? <Differences state={state} /> : null}
     </Card>
@@ -239,8 +239,8 @@ function LastRun({ state, onRetry }: { state: DatumSyncState | { error: string }
   return (
     <View style={styles.block}>
       <Text style={[styles.body, view.tone === 'critical' && styles.criticalText]}>{view.line}</Text>
-      {view.details.map((d) => <Text key={d} style={styles.muted}>{d}</Text>)}
-      {view.steps.map((s) => <Text key={s} style={styles.criticalSmall}>{s}</Text>)}
+      {view.details.map((d, i) => <Text key={`${i}:${d}`} style={styles.muted}>{d}</Text>)}
+      {view.steps.map((s, i) => <Text key={`${i}:${s}`} style={styles.criticalSmall}>{s}</Text>)}
       {wait ? <Text style={styles.warning}>{wait}</Text> : null}
     </View>
   );
@@ -252,7 +252,7 @@ function Groups({ groups }: { groups: DifferenceGroup[] }) {
       {groups.map((g) => (
         <View key={g.title} style={styles.group}>
           <Text style={styles.groupTitle}>{g.title}</Text>
-          {g.lines.map((line) => <Text key={line} style={styles.listLine}>{line}</Text>)}
+          {g.lines.map((line, i) => <Text key={`${i}:${line}`} style={styles.listLine}>{line}</Text>)}
           {g.note ? <Text style={styles.hint}>{g.note}</Text> : null}
         </View>
       ))}

@@ -272,6 +272,19 @@ describe('the differences after an import', () => {
   });
 });
 
+describe('repeated lines', () => {
+  it('renders two identical lines as two, without a duplicate-key warning', async () => {
+    const errors = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const same = { event_id: 'e1', room_code: 'LT1-DAPUR', title: 'Pilih kran', reason: 'Ruangan belum tertaut ke area DATUM.' };
+    const synced = run({ differences: { escalate_skipped: [same, { ...same, event_id: 'e2' }] } });
+    getState.mockResolvedValueOnce(state({ latestFinished: synced, latestSync: synced }));
+    const utils = renderCard('admin');
+    await waitFor(() => expect(utils.getAllByText('LT1-DAPUR · Pilih kran · Ruangan belum tertaut ke area DATUM.')).toHaveLength(2));
+    expect(errors.mock.calls.map((c) => String(c[0])).filter((m) => /same key/.test(m))).toEqual([]);
+    errors.mockRestore();
+  });
+});
+
 describe('schedules DATUM could not build', () => {
   it('shows the group, one line per area, with its note', async () => {
     const synced = run({ differences: { schedule_warnings: [
