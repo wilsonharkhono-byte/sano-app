@@ -41,6 +41,7 @@ import {
   getSiteEvent,
   getSiteEventResult,
   insertSiteEvent,
+  lookupSiteEventCloser,
   invokeSiteEventAnalysis,
   isDuplicateUploadError,
   listConfirmedEventsForDay,
@@ -789,5 +790,114 @@ describe('error kind (transient vs permanent)', () => {
   it('reports no kind at all when the insert succeeded', async () => {
     const r = await insertSiteEvent(capture(), {});
     expect(r).toEqual({});
+  });
+});
+
+
+describe('getSiteEventResult and DATUM (migration 107)', () => {
+  it("asks for the confirmer through 107's foreign key and for the project's DATUM pairing", async () => {
+    mocked.from.mockImplementationOnce(() => makeChain({ data: null, error: null }));
+    await getSiteEventResult(EVENT);
+    const select = calls.find((c) => c.startsWith('select:')) ?? '';
+    expect(select).toContain('confirmer:profiles!site_events_confirmed_by_fkey(full_name)');
+    expect(select).toContain('project:projects(datum_project_code)');
+    expect(select).toContain('rooms(room_name, floor, datum_area_id)');
+  });
+
+  it("carries the room's DATUM link, and null when the room is unlinked or unread", async () => {
+    mocked.from.mockImplementationOnce(() =>
+      makeChain({ data: { id: EVENT, project_id: PROJECT, site_event_media: [], rooms: { room_name: 'Dapur', floor: 'Lt 1', datum_area_id: 'area-1' } }, error: null }),
+    );
+    expect((await getSiteEventResult(EVENT)).event?.room_datum_area_id).toBe('area-1');
+    mocked.from.mockImplementationOnce(() =>
+      makeChain({ data: { id: EVENT, project_id: PROJECT, site_event_media: [], rooms: { room_name: 'Dapur', floor: 'Lt 1', datum_area_id: null } }, error: null }),
+    );
+    expect((await getSiteEventResult(EVENT)).event?.room_datum_area_id).toBeNull();
+    mocked.from.mockImplementationOnce(() => makeChain({ data: { id: EVENT, project_id: PROJECT, site_event_media: [], rooms: null }, error: null }));
+    expect((await getSiteEventResult(EVENT)).event?.room_datum_area_id).toBeNull();
+  });
+
+  it('names the confirmer, carries the pairing and the card, and drops the embeds', async () => {
+    mocked.from.mockImplementationOnce(() =>
+      makeChain({
+        data: {
+          id: EVENT, project_id: PROJECT, title: 'Pilih nat', status: 'open', site_event_media: [], rooms: null,
+          owner: null, reporter: null, closer: null, confirmer: { full_name: 'Siti Aminah' },
+          project: { datum_project_code: 'K2-7' }, confirmed_by: 'u2', datum_card_id: 'card-1',
+        },
+        error: null,
+      }),
+    );
+    const r = await getSiteEventResult(EVENT);
+    expect(r.event?.confirmed_by_name).toBe('Siti Aminah');
+    expect(r.event?.project_datum_code).toBe('K2-7');
+    expect(r.event?.datum_card_id).toBe('card-1');
+    expect((r.event as unknown as { confirmer?: unknown; project?: unknown }).confirmer).toBeUndefined();
+    expect((r.event as unknown as { confirmer?: unknown; project?: unknown }).project).toBeUndefined();
+  });
+
+  it('leaves both null when the joins find nothing: an unknown confirmer is never guessed', async () => {
+    mocked.from.mockImplementationOnce(() =>
+      makeChain({ data: { id: EVENT, project_id: PROJECT, site_event_media: [], confirmer: null, project: null }, error: null }),
+    );
+    const r = await getSiteEventResult(EVENT);
+    expect(r.event?.confirmed_by_name).toBeNull();
+    expect(r.event?.project_datum_code).toBeNull();
+  });
+});
+
+describe('getSiteEventResult when the app ships before migration 107', () => {
+  // Without 107 there is no site_events_confirmed_by_fkey, so PostgREST
+  // refuses the confirmer embed with PGRST200 and every detail read failed.
+  const noRelationship = {
+    code: 'PGRST200',
+    message: "Could not find a relationship between 'site_events' and 'profiles' in the schema cache",
+  };
+  const row = {
+    id: EVENT, project_id: PROJECT, title: 'Pilih nat', status: 'done', closed_at: '2026-09-17T07:05:00.000Z',
+    site_event_media: [], rooms: { room_name: 'Dapur', floor: 'Lt 1', datum_area_id: null },
+    owner: null, reporter: null, closer: { full_name: 'Budi Santoso' }, project: { datum_project_code: null },
+  };
+  const selects = () => calls.filter((c) => c.startsWith('select:'));
+
+  it('reads once more without the confirmer embed, and names no confirmer', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mocked.from
+      .mockImplementationOnce(() => makeChain({ data: null, error: noRelationship }))
+      .mockImplementationOnce(() => makeChain({ data: row, error: null }));
+    const r = await getSiteEventResult(EVENT);
+    expect(r.error).toBeUndefined();
+    expect(r.event?.title).toBe('Pilih nat');
+    expect(r.event?.confirmed_by_name).toBeNull();
+    expect(r.event?.closed_by_name).toBe('Budi Santoso');
+    expect(selects()).toHaveLength(2);
+    expect(selects()[0]).toContain('confirmer:');
+    expect(selects()[1]).not.toContain('confirmer');
+    expect(selects()[1]).toContain('closer:profiles!site_events_closed_by_fkey(full_name)');
+    expect(selects()[1]).toContain('rooms(room_name, floor, datum_area_id)');
+    warn.mockRestore();
+  });
+
+  it('retries once only, and never on another error', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mocked.from
+      .mockImplementationOnce(() => makeChain({ data: null, error: noRelationship }))
+      .mockImplementationOnce(() => makeChain({ data: null, error: noRelationship }));
+    expect(await getSiteEventResult(EVENT)).toEqual({ event: null, error: noRelationship.message });
+    expect(selects()).toHaveLength(2);
+    calls.length = 0;
+    mocked.from.mockImplementationOnce(() => makeChain({ data: null, error: { code: '42501', message: 'permission denied' } }));
+    expect(await getSiteEventResult(EVENT)).toEqual({ event: null, error: 'permission denied' });
+    expect(selects()).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it("still gives lookupSiteEventCloser the server's closer", async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mocked.from
+      .mockImplementationOnce(() => makeChain({ data: null, error: noRelationship }))
+      .mockImplementationOnce(() => makeChain({ data: row, error: null }));
+    expect(await lookupSiteEventCloser(EVENT)).toEqual({ closedByName: 'Budi Santoso', closedAt: '2026-09-17T07:05:00.000Z' });
+    warn.mockRestore();
   });
 });

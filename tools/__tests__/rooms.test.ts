@@ -28,6 +28,7 @@ import {
   parseRoomPaste, roomsToDatumAreas, createRoom, ensureAreaUmum,
   updateRoom, setRoomActive, markRoomsPrinted, listRooms, listRoomsResult,
 } from '../rooms';
+import { AREA_TYPE_LABELS } from '../constants';
 import type { Room } from '../types';
 
 const mockSupabase = supabase as jest.Mocked<typeof supabase>;
@@ -81,6 +82,29 @@ describe('parseRoomPaste', () => {
     const { rows } = parseRoomPaste('Lt. 2 | Kamar Mandi Utama | Kamar mandi\nLt. 1 | Dapur | kitchen');
     expect(rows[0].area_type).toBe('bathroom');
     expect(rows[1].area_type).toBe('kitchen');
+  });
+
+  it("reads DATUM's four zone types in the words supervisors type", () => {
+    const { rows, warnings } = parseRoomPaste([
+      'Lt. 2 | Teras Depan | teras',
+      'Lt. 2 | Balkon Kamar | Balkon',
+      'Lt. 1 | Hall Utama | hall',
+      'Lt. 1 | Lobi | lobi',
+      'Lt. 1 | Lobby Tamu | Lobby',
+      'Luar | Fasad Depan | fasad',
+      'Luar | Fasad Samping | facade',
+      'Luar | Carport | luar',
+      'Luar | Taman Belakang | exterior',
+    ].join('\n'));
+    expect(rows.map((r) => r.area_type)).toEqual([
+      'terrace', 'terrace', 'hall', 'hall', 'hall', 'facade', 'facade', 'exterior', 'exterior',
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  it('only ever yields a type the app has a label for', () => {
+    const { rows } = parseRoomPaste(['A | Satu | teras', 'A | Dua | lobi', 'A | Tiga | luar', 'A | Empat | Surau', 'A | Lima'].join('\n'));
+    for (const r of rows) expect(AREA_TYPE_LABELS[r.area_type]).toEqual(expect.any(String));
   });
 
   it('falls back to general and warns on an unknown area type', () => {

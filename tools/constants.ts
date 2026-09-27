@@ -222,7 +222,10 @@ export const PROJECT_PHASE_LABELS: Record<ProjectPhase, string> = {
   SERAH_TERIMA: 'Serah Terima',
 };
 
-// ── Area types (096) - DATUM's nine values, Indonesian labels ────────────────
+// ── Area types (096, widened by 107) - DATUM's thirteen values ──────────────
+// The nine room types keep SANO's labels; the four zones use DATUM's own
+// (DATUM apps/web/components/area-setup/AreaSetup.tsx). migration107.test.ts
+// compares this list with the CHECK 107 installs.
 export const AREA_TYPES: ReadonlyArray<{ value: AreaType; label: string }> = [
   { value: 'bathroom',    label: 'Kamar mandi' },
   { value: 'kitchen',     label: 'Dapur' },
@@ -233,6 +236,10 @@ export const AREA_TYPES: ReadonlyArray<{ value: AreaType; label: string }> = [
   { value: 'circulation', label: 'Sirkulasi' },
   { value: 'utility',     label: 'Utilitas' },
   { value: 'general',     label: 'Umum' },
+  { value: 'facade',      label: 'Fasad' },
+  { value: 'terrace',     label: 'Teras / Balkon' },
+  { value: 'hall',        label: 'Hall / Lobi' },
+  { value: 'exterior',    label: 'Area luar lain' },
 ];
 
 export const AREA_TYPE_LABELS: Record<AreaType, string> = {
@@ -245,6 +252,10 @@ export const AREA_TYPE_LABELS: Record<AreaType, string> = {
   circulation: 'Sirkulasi',
   utility:     'Utilitas',
   general:     'Umum',
+  facade:      'Fasad',
+  terrace:     'Teras / Balkon',
+  hall:        'Hall / Lobi',
+  exterior:    'Area luar lain',
 };
 
 /**

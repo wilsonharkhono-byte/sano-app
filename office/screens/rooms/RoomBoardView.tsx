@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView, RefreshControl,
 } from 'react-native';
@@ -15,6 +15,10 @@ import type { RoomBoardRow, SiteEventType } from '../../../tools/types';
 import { COLORS, FONTS, RADIUS_SM, SPACE, TYPE } from '../../../workflows/theme';
 import AttentionList from './AttentionList';
 import DigestHealthLine from './DigestHealthLine';
+import DatumRoomLine from './DatumRoomLine';
+import {
+  DATUM_BOARD_COPY, datumChipsForRoom, listDatumGateStatus, type DatumGateStatusResult,
+} from '../../../tools/datumGateStatus';
 
 /**
  * Papan Ruangan (spec §9). One read of v_room_board, the summary strip, the
@@ -51,8 +55,15 @@ export default function RoomBoardView(props: {
   showDigestHealth?: boolean;
   /** From a digest notification's params; a fresh object per tap re-applies it. */
   mineRequest?: { mine: boolean } | null;
+  /** Rendered first inside the board's own scroll: the principal tab's DATUM section. */
+  aboveBoard?: React.ReactNode;
+  /** A new value asks for a silent re-read, as a focus does (e.g. after a DATUM sync or import). */
+  reloadSignal?: number;
 }) {
-  const { projectId, onOpenRoom, headerAction, compact, viewerId, onOpenEvent, showOwners, showDigestHealth, mineRequest } = props;
+  const {
+    projectId, onOpenRoom, headerAction, compact, viewerId, onOpenEvent, showOwners, showDigestHealth, mineRequest,
+    aboveBoard, reloadSignal,
+  } = props;
 
   // Close jobs still on this phone, so "Perlu ditindak" can say "Menunggu
   // kirim" on a row the server still has open (closure spec §4.5).
@@ -77,18 +88,29 @@ export default function RoomBoardView(props: {
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filters, setFilters] = useState<BoardFilters>({});
+  // DATUM's readiness (spec 2026-09-27 §8.2): null until its read answers, so
+  // nothing about DATUM shows while loading. Read beside the board, not
+  // before it: a slow DATUM cache never holds the board back.
+  const [datum, setDatum] = useState<DatumGateStatusResult | null>(null);
 
   const load = useCallback(async (opts: { silent?: boolean } = {}) => {
     const id = ++request.current;
     if (!projectId) {
       rowsFor.current = null;
       setRows([]);
+      setDatum(null);
       setLoadError(null);
       setLoading(false);
       setRefreshing(false);
       return;
     }
-    if (!opts.silent || rowsFor.current !== projectId) setLoading(true);
+    if (!opts.silent || rowsFor.current !== projectId) {
+      setLoading(true);
+      setDatum(null);
+    }
+    void listDatumGateStatus(projectId).then((next) => {
+      if (id === request.current) setDatum(next);
+    });
     const result = await listRoomBoard(projectId);
     if (id !== request.current) return;
     rowsFor.current = projectId;
@@ -127,6 +149,16 @@ export default function RoomBoardView(props: {
     setReloadKey((k) => k + 1);
     void load({ silent: true });
   }, [load]);
+
+  // The mount screen's own "read again" (e.g. rooms a DATUM import just
+  // created): silent like a focus, and only on a new value, never on mount.
+  const signalSeen = useRef(reloadSignal);
+  useEffect(() => {
+    if (reloadSignal === signalSeen.current) return;
+    signalSeen.current = reloadSignal;
+    setReloadKey((k) => k + 1);
+    void load({ silent: true });
+  }, [reloadSignal, load]);
 
   // v_room_board is read in full (active and inactive) so one query can both
   // show the board and say how many rooms are hidden from it, rather than
@@ -171,6 +203,7 @@ export default function RoomBoardView(props: {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} colors={[COLORS.primary]} />
       )}
     >
+      {aboveBoard}
       <AttentionList
         projectId={projectId}
         viewerId={viewerId}
@@ -190,6 +223,15 @@ export default function RoomBoardView(props: {
           <Stat label="Sepi > 3 hari" value={summary.quietRooms} color={COLORS.textMuted} />
         </View>
       </Card>
+
+      {datum && 'error' in datum ? (
+        <View style={styles.datumError}>
+          <Text style={styles.errorText}>{DATUM_BOARD_COPY.readError}</Text>
+          <TouchableOpacity onPress={() => void load()} accessibilityRole="button" style={styles.datumRetry}>
+            <Text style={styles.clear}>{DATUM_BOARD_COPY.retry}</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
       <Card title="Saringan">
         <View style={[styles.pillRow, compact && styles.pillRowWrap]}>
@@ -277,6 +319,7 @@ export default function RoomBoardView(props: {
                   : 'Belum ada gerbang'}
                 {' · '}{lastUpdateLabel(r.last_event_at)}
               </Text>
+              <DatumRoomLine state={datumChipsForRoom(r, datum, new Date().toISOString())} />
               <View style={styles.chipRow}>
                 {openChips(r).map((c) => (
                   <View key={c.type} style={styles.chip}>
@@ -354,5 +397,7 @@ const styles = StyleSheet.create({
   chipText: { fontSize: 10, fontFamily: FONTS.semibold, color: COLORS.accentDark },
   noneText: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textMuted },
   owners: { fontSize: TYPE.xs, fontFamily: FONTS.medium, color: COLORS.textSec, marginLeft: 'auto' },
+  datumError: { flexDirection: 'row', alignItems: 'center', gap: SPACE.sm, flexWrap: 'wrap', marginBottom: SPACE.sm, paddingHorizontal: SPACE.xs },
+  datumRetry: { minHeight: 44, justifyContent: 'center' },
   inactiveNote: { fontSize: TYPE.xs, fontFamily: FONTS.regular, color: COLORS.textMuted, textAlign: 'center', marginTop: SPACE.sm },
 });

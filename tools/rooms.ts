@@ -263,6 +263,10 @@ const AREA_TYPE_LOOKUP: Record<string, AreaType> = (() => {
     'koridor': 'circulation', 'tangga': 'circulation', 'lorong': 'circulation',
     'gudang': 'utility', 'shaft': 'utility', 'panel': 'utility',
     'umum': 'general', 'lain-lain': 'general',
+    // DATUM's four zones (107): 'fasad', 'facade', 'hall' and 'exterior' already come from AREA_TYPES.
+    'teras': 'terrace', 'balkon': 'terrace',
+    'lobi': 'hall', 'lobby': 'hall',
+    'luar': 'exterior',
   } as Record<string, AreaType>);
   return m;
 })();

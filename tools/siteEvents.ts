@@ -366,13 +366,32 @@ export interface SiteEventWithMedia extends SiteEvent {
   reporter_name: string | null;
   /** Who closed the event, via `closed_by` -> profiles. Null when unclosed or the join found no row. */
   closed_by_name: string | null;
+  /** Who confirmed it, via `confirmed_by` (107) -> profiles. Null when unknown: never guessed. */
+  confirmed_by_name: string | null;
+  /** The project's DATUM pairing, so the detail can say an escalation is still to come. */
+  project_datum_code: string | null;
+  /**
+   * The room's DATUM area (rooms.datum_area_id, 096). The sync sends a
+   * decision only from a linked room, so the detail promises "the next
+   * sync" only then. Null when unlinked or the room was not read.
+   */
+  room_datum_area_id: string | null;
 }
 
 // One string literal on purpose (the ROOM_COLUMNS / readBackUpdate.ts rule):
 // a concatenated select string types every row as GenericStringError under
 // supabase-js 2.100, forcing a double cast through `unknown`. Do not split it.
+// The confirmer embed names 107's site_events_confirmed_by_fkey: paste 107
+// before this code ships (Release step 2). Should the app reach a database
+// without it, PostgREST answers PGRST200 and the read is made once more with
+// EVENT_SELECT_NO_CONFIRMER, the same columns less the confirmer.
 const EVENT_SELECT =
-  '*, site_event_media(*), rooms(room_name, floor), owner:profiles!site_events_owner_id_fkey(full_name), reporter:profiles!site_events_reporter_id_fkey(full_name), closer:profiles!site_events_closed_by_fkey(full_name)';
+  '*, site_event_media(*), rooms(room_name, floor, datum_area_id), owner:profiles!site_events_owner_id_fkey(full_name), reporter:profiles!site_events_reporter_id_fkey(full_name), closer:profiles!site_events_closed_by_fkey(full_name), confirmer:profiles!site_events_confirmed_by_fkey(full_name), project:projects(datum_project_code)';
+const EVENT_SELECT_NO_CONFIRMER =
+  '*, site_event_media(*), rooms(room_name, floor, datum_area_id), owner:profiles!site_events_owner_id_fkey(full_name), reporter:profiles!site_events_reporter_id_fkey(full_name), closer:profiles!site_events_closed_by_fkey(full_name), project:projects(datum_project_code)';
+
+/** PostgREST's "no relationship found" (an embed whose foreign key is not in the schema cache). */
+const NO_RELATIONSHIP = 'PGRST200';
 
 /**
  * Either the event, "no such row" (`notFound: true`), or a read failure
@@ -389,7 +408,13 @@ export type SiteEventResult =
   | { event: null; notFound?: undefined; error: string };
 
 export async function getSiteEventResult(eventId: string): Promise<SiteEventResult> {
-  const { data, error } = await supabase.from('site_events').select(EVENT_SELECT).eq('id', eventId).maybeSingle();
+  let { data, error } = await supabase.from('site_events').select(EVENT_SELECT).eq('id', eventId).maybeSingle();
+  if (error && (error as { code?: string }).code === NO_RELATIONSHIP) {
+    // Migration 107 not applied yet: read once more without the confirmer,
+    // whose name then stays null (unknown, never guessed).
+    console.warn('getSiteEvent: no confirmer relationship (107 not applied?); reading without it:', error.message);
+    ({ data, error } = await supabase.from('site_events').select(EVENT_SELECT_NO_CONFIRMER).eq('id', eventId).maybeSingle());
+  }
   if (error) {
     console.warn('getSiteEvent failed:', error.message);
     return { event: null, error: error.message };
@@ -397,12 +422,14 @@ export async function getSiteEventResult(eventId: string): Promise<SiteEventResu
   if (!data) return { event: null, notFound: true };
   const row = data as SiteEvent & {
     site_event_media?: SiteEventMedia[] | null;
-    rooms?: { room_name?: string; floor?: string | null } | null;
+    rooms?: { room_name?: string; floor?: string | null; datum_area_id?: string | null } | null;
     owner?: { full_name?: string } | null;
     reporter?: { full_name?: string } | null;
     closer?: { full_name?: string } | null;
+    confirmer?: { full_name?: string } | null;
+    project?: { datum_project_code?: string | null } | null;
   };
-  const { site_event_media, rooms, owner, reporter, closer, ...event } = row;
+  const { site_event_media, rooms, owner, reporter, closer, confirmer, project, ...event } = row;
   return {
     event: {
       ...(event as SiteEvent),
@@ -412,6 +439,9 @@ export async function getSiteEventResult(eventId: string): Promise<SiteEventResu
       owner_name: owner?.full_name ?? null,
       reporter_name: reporter?.full_name ?? null,
       closed_by_name: closer?.full_name ?? null,
+      confirmed_by_name: confirmer?.full_name ?? null,
+      project_datum_code: project?.datum_project_code ?? null,
+      room_datum_area_id: rooms?.datum_area_id ?? null,
     },
   };
 }

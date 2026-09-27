@@ -22,9 +22,9 @@ import type { GateRef } from '../../tools/types';
 
 const gate = (over: Partial<GateRef> = {}): GateRef => ({
   code: 'B',
-  name_id: 'Waterproofing + kamar mandi',
-  short_label: 'Waterproofing + kamar mandi',
-  description: 'Lapisan waterproofing pada kamar mandi.',
+  name_id: 'Pekerjaan Basah / Waterproofing',
+  short_label: 'Pekerjaan Basah',
+  description: 'Material dinding/lantai (marmer/batu alam) dan sanitair. Sebelum plafon kamar mandi ditutup.',
   sort_order: 20,
   active: true,
   datum_gate_code: null,
@@ -32,9 +32,9 @@ const gate = (over: Partial<GateRef> = {}): GateRef => ({
   ...over,
 });
 
-const gateA = gate({ code: 'A', short_label: 'MEP rough-in + persiapan sipil', description: 'Deskripsi gerbang A.', sort_order: 10 });
-const gateB = gate({ code: 'B', short_label: 'Waterproofing + kamar mandi', description: 'Deskripsi gerbang B.', sort_order: 20 });
-const gateCInactive = gate({ code: 'C', short_label: 'Plafon + benangan', description: 'Deskripsi gerbang C.', sort_order: 30, active: false });
+const gateA = gate({ code: 'A', short_label: 'MEP Rough-in', description: 'Deskripsi gerbang A.', sort_order: 10 });
+const gateB = gate({ code: 'B', short_label: 'Pekerjaan Basah', description: 'Deskripsi gerbang B.', sort_order: 20 });
+const gateCInactive = gate({ code: 'C', short_label: 'Plafon', description: 'Deskripsi gerbang C.', sort_order: 30, active: false });
 
 const gates: GateRef[] = [gateA, gateB, gateCInactive];
 

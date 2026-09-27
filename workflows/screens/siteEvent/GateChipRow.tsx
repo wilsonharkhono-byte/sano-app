@@ -19,9 +19,9 @@ interface GateProps {
 
 /**
  * Gates as a vertical, selectable list — one row per active gate, tall enough
- * (48pt) for a title plus a two-line description, because each gate now names
- * two trades ("Waterproofing + kamar mandi") and a bare chip label no longer
- * carries enough meaning on its own. The description is the same text
+ * (48pt) for a title plus a two-line description, because a bare chip label
+ * ("Pekerjaan Basah", DATUM's word since migration 107) does not carry enough
+ * meaning on its own. The description is the same text
  * supabase/functions/site-event-analyze/prompt.ts feeds the AI classifier, so
  * a supervisor reading it here sees exactly what the model was told.
  * Tapping the selected row clears it: a gate is optional.

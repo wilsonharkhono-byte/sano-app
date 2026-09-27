@@ -22,6 +22,11 @@ jest.mock('../../../../tools/roomBoard', () => {
   const actual = jest.requireActual('../../../../tools/roomBoard');
   return { ...actual, listRoomBoard: jest.fn(async () => ({ rooms: [] })) };
 });
+// DATUM's readiness has its own suite (RoomBoardView.datum.test.tsx).
+jest.mock('../../../../tools/datumGateStatus', () => {
+  const actual = jest.requireActual('../../../../tools/datumGateStatus');
+  return { ...actual, listDatumGateStatus: jest.fn(async () => ({ paired: false })) };
+});
 let mockEntries: Array<Record<string, unknown>> = [];
 jest.mock('../../../../tools/captureQueueStore', () => ({
   useCaptureQueueEntries: jest.fn(() => mockEntries),

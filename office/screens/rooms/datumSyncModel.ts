@@ -1,0 +1,273 @@
+// The words of the Rooms-tab "DATUM" card (spec 2026-09-27 §8.1), pure, so
+// the card stays thin and every sentence is tested. Nothing here claims more
+// than the run row says: a failed run reads as failed with its reason, an
+// open run as running, no run as "never", and differences are listed, never
+// resolved.
+
+import { AREA_TYPE_LABELS } from '../../../tools/constants';
+import type { AreaType } from '../../../tools/types';
+import type { DatumRun, DatumSyncState } from '../../../tools/datumSync';
+import { DATUM_IMPORT_MAX_CODE_LENGTH, DATUM_IMPORT_MAX_CODES, DATUM_UNPAIRED } from '../../../tools/datumSync';
+import { datumAsOfLabel } from '../../../tools/datumGateStatus';
+import type { ConflictField, GateStatusUnknownItem, GateWordDiff, RunDifferences, RunReport, SyncStep } from '../../../tools/datumSyncPlan';
+import { STEP_ORDER } from '../../../tools/datumSyncPlan';
+import { formatWibShort } from '../../../tools/timeWindow';
+
+export const DATUM_CARD_COPY = {
+  title: 'DATUM',
+  pairingLabel: 'Kode proyek DATUM',
+  pairingPlaceholder: 'mis. K2-7',
+  pairingSave: 'Simpan',
+  pairingSaving: 'Menyimpan…',
+  unpaired: 'Belum ditautkan',
+  sync: 'Sinkron DATUM',
+  syncing: 'Menyinkronkan…',
+  syncNeedsPairing: DATUM_UNPAIRED,
+  never: 'Belum pernah disinkronkan.',
+  readError: 'Status sinkron gagal dimuat.',
+  retry: 'Coba lagi',
+  loading: 'Memuat status sinkron…',
+  differencesNote: 'Tidak diubah otomatis. Samakan di SANO atau DATUM bila perlu.',
+  staffNote: 'Samakan nama di SANO atau DATUM, lalu sinkron lagi. Kartu dari orang yang belum tertaut dibuat atas nama SANO (sistem).',
+  importCancel: 'Batal',
+  importConfirm: 'Ambil',
+  importing: 'Mengambil…',
+  importTooLong: 'Kode terlalu panjang, tidak bisa diambil',
+} as const;
+
+export const STEP_LABELS: Record<SyncStep, string> = {
+  areas: 'Baca area DATUM',
+  link: 'Tautkan ruangan',
+  create: 'Buat area di DATUM',
+  import: 'Ambil ruangan dari DATUM',
+  gate_status: 'Baca status gerbang',
+  staff: 'Tautkan staf',
+  escalate: 'Kirim keputusan',
+};
+
+const OUTCOME_WORDS = { ok: 'berhasil', error: 'gagal', skipped: 'dilewati' } as const;
+const FIELD_WORDS: Record<ConflictField, string> = { code: 'kode', name: 'nama', floor: 'lantai', area_type: 'tipe' };
+const GATE_FIELD_WORDS: Record<GateWordDiff['field'], string> = {
+  name: 'nama',
+  description: 'deskripsi',
+  missing_in_sano: 'tidak ada di SANO',
+};
+const SIDE_WORDS = {
+  datum: 'nama ganda di DATUM',
+  sano: 'nama ganda di SANO',
+  linked_elsewhere: 'staf DATUM ini sudah tertaut ke orang lain',
+} as const;
+
+export function areaTypeLabel(t: string): string {
+  return AREA_TYPE_LABELS[t as AreaType] ?? t;
+}
+
+export interface LastRunView {
+  tone: 'ok' | 'critical' | 'muted';
+  line: string;
+  /** Who started it, and DATUM's own name for the project. */
+  details: string[];
+  /** Each step that was not ok, with its reason. */
+  steps: string[];
+}
+
+function whoLine(run: DatumRun): string {
+  return run.source === 'cron' ? 'otomatis' : `oleh ${run.requester_name ?? 'pengguna tidak dikenal'}`;
+}
+
+export function lastRunView(state: DatumSyncState, nowIso: string): LastRunView {
+  const latest = state.latest;
+  if (!latest) return { tone: 'muted', line: DATUM_CARD_COPY.never, details: [], steps: [] };
+  if (latest.finished_at === null) {
+    return { tone: 'muted', line: `Sinkron sedang berjalan sejak ${datumAsOfLabel(latest.started_at, nowIso)}`, details: [whoLine(latest)], steps: [] };
+  }
+  const when = formatWibShort(latest.finished_at);
+  const details = [whoLine(latest)];
+  if (latest.counts.datum_project_name) details.push(`DATUM: ${latest.counts.datum_project_name}`);
+  if (latest.ok !== true) {
+    const steps = STEP_ORDER.filter((s) => latest.counts.steps[s] && latest.counts.steps[s] !== 'ok').map((s) => {
+      const reason = latest.counts.step_errors?.[s];
+      return `${STEP_LABELS[s]}: ${OUTCOME_WORDS[latest.counts.steps[s]!]}${reason ? ` · ${reason}` : ''}`;
+    });
+    return { tone: 'critical', line: `Sinkron terakhir gagal: ${when} · ${latest.error ?? 'tanpa keterangan'}`, details, steps };
+  }
+  const c = latest.counts;
+  const parts = [`${c.rooms_linked ?? 0} ruangan ditautkan`];
+  if (c.rooms_created) parts.push(`${c.rooms_created} dibuat`);
+  if (c.rooms_imported) parts.push(`${c.rooms_imported} diambil dari DATUM`);
+  if (c.datum_only) parts.push(`${c.datum_only} hanya di DATUM`);
+  if (c.escalated) parts.push(`${c.escalated} keputusan dikirim`);
+  return { tone: 'ok', line: `Sinkron terakhir: ${when} · ${parts.join(' · ')}`, details, steps: [] };
+}
+
+export function waitingLine(state: DatumSyncState): string | null {
+  if (!state.waiting) return null;
+  return `Sinkron otomatis menunggu: ${state.waiting.count} permintaan sejak ${formatWibShort(state.waiting.oldestAt)}. Periksa Database Webhook.`;
+}
+
+export interface DifferenceGroup {
+  title: string;
+  lines: string[];
+  /** A sentence under the lines, where the title alone could be misread. */
+  note?: string;
+}
+
+/**
+ * Under "Jadwal DATUM belum tersusun" (RunDifferences.schedule_warnings,
+ * SCHEDULE_FAILED or SEED_FAILED): the area was created and the room
+ * linked; only DATUM's schedule for it was not built.
+ */
+export const SCHEDULE_WARNINGS_NOTE =
+  'Ruangannya sudah dibuat dan ditautkan di DATUM. Susun jadwalnya dengan "Hitung ulang jadwal" di DATUM.';
+
+/**
+ * supabase/functions/datum-sync/run.ts's CREATE_DEFERRED reason text, exactly
+ * as it words it there. That module is Deno-only and not importable from the
+ * app (the same reason tools/datumSyncPlan.ts keeps plan.ts a byte-identical
+ * copy rather than an import), so this is a deliberate duplicate, matched
+ * verbatim - never by a substring of the copy. A create the run's clock did
+ * not reach before its create deadline is not a failure: DATUM never saw it,
+ * and it is sent again on the next sync, so it is split into its own group
+ * rather than sit under "Gagal dibuat di DATUM" - the card must never claim a
+ * failure that did not happen.
+ */
+export const CREATE_DEFERRED_REASON = 'Belum dikirim ke DATUM: waktu sinkron ini habis. Dikirim pada sinkron berikutnya.';
+
+/** One side of a conflict, quoted; an empty side (a floor left blank) reads "(kosong)", never "". */
+function conflictValue(v: string): string {
+  return v.trim() ? `"${v}"` : '(kosong)';
+}
+
+/** A gate SANO has no gate_refs row for, or a status that is none of DATUM's six words: counted, never stored. */
+function gateStatusUnknownLine(x: GateStatusUnknownItem): string {
+  const areas = `${x.rows} area`;
+  return x.unknown === 'gate'
+    ? `Gerbang ${x.gate_code} tidak ada di SANO · status "${x.status}" · ${areas}`
+    : `Gerbang ${x.gate_code} · status "${x.status}" tidak dikenal SANO · ${areas}`;
+}
+
+/**
+ * `run` is the newest finished run; `syncRun` the newest finished run that is
+ * not an import (DatumSyncState.latestSync). What only a sync writes - rooms
+ * it could not create, schedules DATUM did not build, decisions not sent -
+ * comes from syncRun, so an import run (which writes none of it) does not
+ * make it vanish. Everything else is the newest run's.
+ */
+export function differenceGroups(run: DatumRun | null, syncRun: DatumRun | null = run): DifferenceGroup[] {
+  if (!run) return [];
+  const d: RunDifferences = run.differences;
+  const s: RunDifferences = syncRun?.differences ?? {};
+  const deferred = syncRun?.counts.escalate_deferred ?? 0;
+  // A deadline-deferred create (CREATE_DEFERRED_REASON) is waiting, not failed:
+  // split it out by the exact reason text, never a substring of the copy.
+  const createFailed = (s.create_failed ?? []).filter((x) => x.reason !== CREATE_DEFERRED_REASON);
+  const createDeferred = (s.create_failed ?? []).filter((x) => x.reason === CREATE_DEFERRED_REASON);
+  const groups: DifferenceGroup[] = [
+    {
+      title: 'Hanya di DATUM',
+      lines: (d.datum_only ?? []).map((a) => [a.area_code, a.area_name, a.floor, areaTypeLabel(a.area_type)].filter(Boolean).join(' · ')),
+    },
+    {
+      title: 'Berbeda dengan DATUM',
+      lines: (d.field_conflicts ?? []).map((f) => {
+        const word = (v: string) => (f.field === 'area_type' ? areaTypeLabel(v) : v);
+        return `${f.room_code} · ${FIELD_WORDS[f.field]} — SANO ${conflictValue(word(f.sano))} · DATUM ${conflictValue(word(f.datum))}`;
+      }),
+    },
+    { title: 'Kode ganda di DATUM', lines: (d.datum_duplicates ?? []).map((x) => `${x.key}: ${x.area_codes.join(', ')}`) },
+    { title: 'Gagal dibuat di DATUM', lines: createFailed.map((x) => `${x.room_code} · ${x.reason}`) },
+    { title: 'Belum dibuat di DATUM (menunggu sinkron berikutnya)', lines: createDeferred.map((x) => `${x.room_code} · ${x.reason}`) },
+    {
+      title: 'Jadwal DATUM belum tersusun',
+      lines: (s.schedule_warnings ?? []).map((x) => `${x.area_code}: ${x.reason || x.code}`),
+      note: SCHEDULE_WARNINGS_NOTE,
+    },
+    { title: 'Tidak diambil dari DATUM', lines: (d.import_skipped ?? []).map((x) => `${x.area_code} · ${x.reason}`) },
+    {
+      title: 'Keputusan belum terkirim',
+      lines: [
+        ...(s.escalate_skipped ?? []).map((x) => `${x.room_code} · ${x.title} · ${x.reason}`),
+        // Linked decisions the run's time did not reach (counts.escalate_deferred): not sent, not failed.
+        ...(deferred > 0 ? [`${deferred} keputusan menunggu sinkron berikutnya`] : []),
+      ],
+    },
+    { title: 'Kata gerbang berbeda dengan DATUM', lines: (d.gate_words ?? []).map((g) => `Gerbang ${g.code} · ${GATE_FIELD_WORDS[g.field]}`) },
+    { title: 'Status gerbang DATUM tidak tersimpan', lines: (d.gate_status_unknown ?? []).map(gateStatusUnknownLine) },
+  ];
+  return groups.filter((g) => g.lines.length > 0);
+}
+
+export interface StaffView { heading: string; groups: DifferenceGroup[]; linkedLine: string }
+
+export function staffView(run: DatumRun | null): StaffView | null {
+  if (!run || !run.finished_at || run.counts.steps.staff !== 'ok') return null;
+  const staff = run.differences.staff ?? { unmatched: [], ambiguous: [], stale: [] };
+  const groups: DifferenceGroup[] = [
+    { title: 'Tidak ada di DATUM', lines: staff.unmatched.map((s) => s.full_name || '(tanpa nama)') },
+    { title: 'Nama ganda', lines: staff.ambiguous.map((s) => `${s.full_name || '(tanpa nama)'} · ${SIDE_WORDS[s.side]}`) },
+    {
+      title: 'Tautan lama tidak cocok',
+      lines: staff.stale.map((s) => `${s.full_name || '(tanpa nama)'} · ${s.staff_name ? `tertaut ke "${s.staff_name}"` : 'staf DATUM-nya tidak aktif lagi'}`),
+    },
+  ].filter((g) => g.lines.length > 0);
+  return {
+    heading: `Staf (semua proyek), per ${formatWibShort(run.finished_at)}`,
+    groups,
+    linkedLine: `${run.counts.staff?.linked ?? 0} staf tertaut`,
+  };
+}
+
+export interface ImportOffer {
+  projectName: string;
+  /** Exactly what "Ambil" sends: codes the request can carry, at most DATUM_IMPORT_MAX_CODES. */
+  areas: Array<{ area_code: string; line: string }>;
+  /** DATUM-only areas whose code is longer than the request allows: listed, never sent. */
+  tooLong: string[];
+  /** Said when more DATUM-only areas remain than one request carries. */
+  limitNote: string | null;
+  /** null when no code can be sent: the card then offers no button. */
+  buttonLabel: string | null;
+  question: string;
+}
+
+/** How a too-long code is shown: its first 40 characters, marked as cut. */
+const SHOWN_CODE_MAX = 40;
+
+function offerLine(a: { area_code: string; area_name: string; floor: string | null; area_type: string }): string {
+  const code = a.area_code.length > SHOWN_CODE_MAX ? `${a.area_code.slice(0, SHOWN_CODE_MAX)}…` : a.area_code;
+  return [code, a.area_name, a.floor ?? 'tanpa lantai', areaTypeLabel(a.area_type)].join(' · ');
+}
+
+/**
+ * "Ambil {n} ruangan dari DATUM": only when the latest finished run lists
+ * DATUM-only areas. A code the function's request would refuse is never
+ * sent (one would refuse the whole request): longer than 200 characters it
+ * is listed apart; past the first 500 the rest wait for the next import.
+ */
+export function importOffer(state: DatumSyncState): ImportOffer | null {
+  const run = state.latestFinished;
+  const only = run?.differences.datum_only ?? [];
+  if (!run || only.length === 0) return null;
+  const projectName = run.counts.datum_project_name ?? 'ini';
+  const fits = only.filter((a) => a.area_code.length >= 1 && a.area_code.length <= DATUM_IMPORT_MAX_CODE_LENGTH);
+  const sent = fits.slice(0, DATUM_IMPORT_MAX_CODES);
+  const left = fits.length - sent.length;
+  return {
+    projectName,
+    areas: sent.map((a) => ({ area_code: a.area_code, line: offerLine(a) })),
+    tooLong: only.filter((a) => a.area_code.length > DATUM_IMPORT_MAX_CODE_LENGTH).map(offerLine),
+    limitNote: left > 0
+      ? `Paling banyak ${DATUM_IMPORT_MAX_CODES} ruangan sekali ambil. ${left} ruangan lainnya bisa diambil setelah ini.`
+      : null,
+    buttonLabel: sent.length > 0 ? `Ambil ${sent.length} ruangan dari DATUM` : null,
+    question: `Ambil ${sent.length} ruangan dari DATUM proyek ${projectName}? Ruangan dibuat di SANO dan ditautkan; setelah itu SANO yang menjadi acuan.`,
+  };
+}
+
+/** What the card says after the import answered. */
+export function importResultLines(report: RunReport): string[] {
+  const lines = [`${report.counts.rooms_imported ?? 0} ruangan diambil`];
+  for (const s of report.differences.import_skipped ?? []) lines.push(`${s.area_code}: ${s.reason}`);
+  if (!report.ok && report.error) lines.push(`Gagal: ${report.error}`);
+  return lines;
+}
