@@ -108,4 +108,17 @@ describe('RoomsAdminScreen and the DATUM card', () => {
     expect(props.role).toBe('admin');
     expect(props.onPaired).toBe(mockProjectContext.refresh);
   });
+
+  it('reads the room list again when the card says its rooms changed', async () => {
+    const { listRoomsResult } = jest.requireMock('../../../tools/rooms') as { listRoomsResult: jest.Mock };
+    const utils = render(<RoomsAdminScreen />);
+    await act(async () => {});
+    fireEvent.press(utils.getByText('Kelola ruangan'));
+    await waitFor(() => expect(utils.getByText('kartu datum')).toBeTruthy());
+    const before = listRoomsResult.mock.calls.length;
+    const props = mockDatumCardProps[mockDatumCardProps.length - 1];
+    await act(async () => { await (props.onRoomsChanged as () => Promise<void>)(); });
+    expect(listRoomsResult.mock.calls.length).toBe(before + 1);
+    expect(listRoomsResult).toHaveBeenLastCalledWith('p1', { includeInactive: true });
+  });
 });

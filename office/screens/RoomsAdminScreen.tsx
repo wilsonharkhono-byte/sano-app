@@ -371,7 +371,7 @@ export default function RoomsAdminScreen() {
               </Text>
             </Card>
 
-            <DatumSyncCard project={project} role={profile?.role} onPaired={refresh} />
+            <DatumSyncCard project={project} role={profile?.role} onPaired={refresh} onRoomsChanged={load} />
 
             <Card title="Ekspor untuk DATUM" subtitle="Berkas JSON dalam bentuk area DATUM.">
               <TouchableOpacity

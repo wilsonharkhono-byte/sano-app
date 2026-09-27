@@ -47,8 +47,8 @@ const deferred = <T,>() => {
   return { promise, resolve };
 };
 
-const renderCard = (role: string, over: Partial<typeof project> = {}, onPaired = jest.fn()) =>
-  render(<DatumSyncCard project={{ ...project, ...over }} role={role as never} onPaired={onPaired} />);
+const renderCard = (role: string, over: Partial<typeof project> = {}, onPaired = jest.fn(), onRoomsChanged = jest.fn()) =>
+  render(<DatumSyncCard project={{ ...project, ...over }} role={role as never} onPaired={onPaired} onRoomsChanged={onRoomsChanged} />);
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -217,6 +217,40 @@ describe('Ambil dari DATUM: what one request can carry', () => {
     const utils = renderCard('admin');
     await waitFor(() => expect(utils.getByText('Kode terlalu panjang, tidak bisa diambil')).toBeTruthy());
     expect(utils.queryByText(/^Ambil \d+ ruangan dari DATUM$/)).toBeNull();
+  });
+});
+
+describe('the rooms behind the card', () => {
+  const withOnly = () => state({ latestFinished: run({ differences: { datum_only: [
+    { area_code: 'LT2-TERAS', area_name: 'Teras', floor: 'Lt. 2', area_type: 'terrace' },
+  ] } }) });
+  const report = { ok: true, runId: 'r', error: null, counts: { steps: { import: 'ok' }, rooms_imported: 1 }, differences: {} };
+
+  it('tells the screen its rooms changed after an import the server answered with a run', async () => {
+    getState.mockResolvedValue(withOnly());
+    doImport.mockResolvedValueOnce({ run: report });
+    const onRoomsChanged = jest.fn();
+    const utils = renderCard('admin', {}, jest.fn(), onRoomsChanged);
+    await waitFor(() => expect(utils.getByText('Ambil 1 ruangan dari DATUM')).toBeTruthy());
+    fireEvent.press(utils.getByText('Ambil 1 ruangan dari DATUM'));
+    await act(async () => { fireEvent.press(utils.getByText('Ambil')); });
+    expect(onRoomsChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('also after a sync answered with a run (it may link rooms), and never after a refusal', async () => {
+    getState.mockResolvedValue(withOnly());
+    const onRoomsChanged = jest.fn();
+    const utils = renderCard('admin', {}, jest.fn(), onRoomsChanged);
+    await waitFor(() => expect(utils.getByText('Ambil 1 ruangan dari DATUM')).toBeTruthy());
+    doImport.mockResolvedValueOnce({ error: 'Sinkron DATUM untuk proyek ini sedang berjalan.', code: 'SYNC_RUNNING' });
+    fireEvent.press(utils.getByText('Ambil 1 ruangan dari DATUM'));
+    await act(async () => { fireEvent.press(utils.getByText('Ambil')); });
+    sync.mockResolvedValueOnce({ error: 'Sinkron DATUM untuk proyek ini sedang berjalan.', code: 'SYNC_RUNNING' });
+    await act(async () => { fireEvent.press(utils.getByText('Sinkron DATUM')); });
+    expect(onRoomsChanged).not.toHaveBeenCalled();
+    sync.mockResolvedValueOnce({ run: { ...report, counts: { steps: { areas: 'ok' } } } });
+    await act(async () => { fireEvent.press(utils.getByText('Sinkron DATUM')); });
+    expect(onRoomsChanged).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -40,8 +40,15 @@ export default function DatumSyncCard(props: {
   role: UserRoleType | null | undefined;
   /** Reloads the project after the pairing changed (useProject().refresh). */
   onPaired: () => void | Promise<void>;
+  /**
+   * Called once the server answered a sync or an import with a run: an
+   * import creates rooms and a sync may link them, so the screen reads its
+   * rooms again (Kelola ruangan's list, the principal's board). Never after
+   * a refusal, which changed nothing.
+   */
+  onRoomsChanged: () => void | Promise<void>;
 }) {
-  const { project, role, onPaired } = props;
+  const { project, role, onPaired, onRoomsChanged } = props;
   const office = canPairDatum(role);
   const maySync = canSyncDatum(role);
 
@@ -95,6 +102,7 @@ export default function DatumSyncCard(props: {
     setSyncing(false);
     if (res.error !== undefined) setSyncError(res.error);
     await load();
+    if (res.run) await onRoomsChanged();
   };
 
   const offer = useMemo(() => (state && !('error' in state) ? importOffer(state) : null), [state]);
@@ -113,6 +121,7 @@ export default function DatumSyncCard(props: {
       setImportOpen(false);
     }
     await load();
+    if (res.run) await onRoomsChanged();
   };
 
   const syncDisabled = syncing || !pairedCode || !maySync;
