@@ -56,13 +56,16 @@ export interface ProjectAssignment {
 export type ProjectPhase = 'STRUKTUR' | 'FINISHING' | 'SERAH_TERIMA';
 
 /**
- * DATUM's nine area types, verbatim
- * (DATUM packages/core/src/areas/mutations.ts:7-16). Do not add a tenth
- * without adding it in DATUM first - the release-2 link upserts on this value.
+ * DATUM's thirteen area types, verbatim (DATUM
+ * packages/core/src/areas/extract.ts AREA_TYPES): the nine room types plus the
+ * four zones DATUM added (facade, terrace, hall, exterior). Migration 107
+ * widens rooms_area_type_check to exactly these. Do not add another without
+ * adding it in DATUM first - the DATUM sync creates areas with this value.
  */
 export type AreaType =
   | 'bathroom' | 'kitchen' | 'bedroom' | 'living' | 'dining'
-  | 'garden' | 'circulation' | 'utility' | 'general';
+  | 'garden' | 'circulation' | 'utility' | 'general'
+  | 'facade' | 'terrace' | 'hall' | 'exterior';
 
 export interface Room {
   id: string;
