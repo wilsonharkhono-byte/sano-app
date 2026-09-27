@@ -33,6 +33,8 @@ jest.mock('../../../tools/captureQueueStore', () => ({
 jest.mock('../../../tools/captureQueueWorker', () => ({ retryQueueEntry: jest.fn() }));
 jest.mock('../siteEvent/MediaStrip', () => ({ __esModule: true, default: () => null }));
 jest.mock('../siteEvent/ClosureForm', () => ({ __esModule: true, default: () => null }));
+const mockToast = jest.fn();
+jest.mock('../../components/Toast', () => ({ useToast: () => ({ show: mockToast }) }));
 
 import { getSiteEventResult } from '../../../tools/siteEvents';
 import SiteEventDetailScreen from '../SiteEventDetailScreen';
@@ -74,6 +76,15 @@ describe('SiteEventDetailScreen and DATUM', () => {
     open.mockRestore();
   });
 
+  it('says so when the card link cannot be opened, instead of failing silently', async () => {
+    const open = jest.spyOn(Linking, 'openURL').mockRejectedValue(new Error('No app to open the URL'));
+    const utils = show({ datum_card_id: 'card-1', datum_card_url: 'https://datum.example/c/1', datum_escalated_at: '2026-09-27T03:00:00.000Z' });
+    await waitFor(() => expect(utils.getByText('Buka kartu DATUM')).toBeTruthy());
+    fireEvent.press(utils.getByText('Buka kartu DATUM'));
+    await waitFor(() => expect(mockToast).toHaveBeenCalledWith('Kartu DATUM gagal dibuka: No app to open the URL', 'critical'));
+    open.mockRestore();
+  });
+
   it('says an open decision on a paired project goes on the next sync, when its room is linked', async () => {
     const utils = show({});
     await waitFor(() => expect(utils.getByText('Belum dikirim ke DATUM. Terkirim pada sinkron berikutnya.')).toBeTruthy());
@@ -95,12 +106,13 @@ describe('SiteEventDetailScreen and DATUM', () => {
     }
   });
 
-  it('adds "oleh" to Dikonfirmasi only when the confirmer is known', async () => {
+  it('adds "oleh" to Dikonfirmasi only when the confirmer is known, in WIB like the DATUM row', async () => {
     const known = show({ confirmed_by: 'u2', confirmed_by_name: 'Siti Aminah' });
-    await waitFor(() => expect(known.getByText(/ · oleh Siti Aminah$/)).toBeTruthy());
+    await waitFor(() => expect(known.getByText('26 Sep 10.00 · oleh Siti Aminah')).toBeTruthy());
     known.unmount();
     const unknown = show({});
     await waitFor(() => expect(unknown.getByText('Dikonfirmasi')).toBeTruthy());
+    expect(unknown.getByText('26 Sep 10.00')).toBeTruthy();
     expect(unknown.queryByText(/oleh/)).toBeNull();
   });
 });
