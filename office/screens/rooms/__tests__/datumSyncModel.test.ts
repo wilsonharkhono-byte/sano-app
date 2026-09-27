@@ -105,6 +105,20 @@ describe('differenceGroups', () => {
   });
 });
 
+describe('differenceGroups: status rows SANO could not store', () => {
+  it('lists one line per gate and status, saying which side SANO does not know and for how many areas', () => {
+    expect(differenceGroups(run({ differences: { gate_status_unknown: [
+      { gate_code: 'Z', status: 'passed', unknown: 'gate', rows: 3 },
+      { gate_code: 'B', status: 'waiting', unknown: 'status', rows: 1 },
+    ] } }))).toEqual([
+      { title: 'Status gerbang DATUM tidak tersimpan', lines: [
+        'Gerbang Z tidak ada di SANO · status "passed" · 3 area',
+        'Gerbang B · status "waiting" tidak dikenal SANO · 1 area',
+      ] },
+    ]);
+  });
+});
+
 describe('staffView', () => {
   it('shows the newest good staff step, labelled for every project, with each group and the linked count', () => {
     const view = staffView(run({

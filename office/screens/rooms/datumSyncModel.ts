@@ -7,7 +7,7 @@
 import { AREA_TYPE_LABELS } from '../../../tools/constants';
 import type { AreaType } from '../../../tools/types';
 import type { DatumRun, DatumSyncState } from '../../../tools/datumSync';
-import type { ConflictField, GateWordDiff, RunReport, SyncStep } from '../../../tools/datumSyncPlan';
+import type { ConflictField, GateStatusUnknownItem, GateWordDiff, RunReport, SyncStep } from '../../../tools/datumSyncPlan';
 import { STEP_ORDER } from '../../../tools/datumSyncPlan';
 import { formatWibShort, todayIsoWIB } from '../../../tools/timeWindow';
 
@@ -110,6 +110,14 @@ export function waitingLine(state: DatumSyncState): string | null {
 
 export interface DifferenceGroup { title: string; lines: string[] }
 
+/** A gate SANO has no gate_refs row for, or a status that is none of DATUM's six words: counted, never stored. */
+function gateStatusUnknownLine(x: GateStatusUnknownItem): string {
+  const areas = `${x.rows} area`;
+  return x.unknown === 'gate'
+    ? `Gerbang ${x.gate_code} tidak ada di SANO · status "${x.status}" · ${areas}`
+    : `Gerbang ${x.gate_code} · status "${x.status}" tidak dikenal SANO · ${areas}`;
+}
+
 export function differenceGroups(run: DatumRun | null): DifferenceGroup[] {
   if (!run) return [];
   const d = run.differences;
@@ -130,6 +138,7 @@ export function differenceGroups(run: DatumRun | null): DifferenceGroup[] {
     { title: 'Tidak diambil dari DATUM', lines: (d.import_skipped ?? []).map((x) => `${x.area_code} · ${x.reason}`) },
     { title: 'Keputusan belum terkirim', lines: (d.escalate_skipped ?? []).map((x) => `${x.room_code} · ${x.title} · ${x.reason}`) },
     { title: 'Kata gerbang berbeda dengan DATUM', lines: (d.gate_words ?? []).map((g) => `Gerbang ${g.code} · ${GATE_FIELD_WORDS[g.field]}`) },
+    { title: 'Status gerbang DATUM tidak tersimpan', lines: (d.gate_status_unknown ?? []).map(gateStatusUnknownLine) },
   ];
   return groups.filter((g) => g.lines.length > 0);
 }
