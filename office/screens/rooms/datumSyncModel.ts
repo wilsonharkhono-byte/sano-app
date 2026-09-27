@@ -136,7 +136,14 @@ export function differenceGroups(run: DatumRun | null): DifferenceGroup[] {
     { title: 'Kode ganda di DATUM', lines: (d.datum_duplicates ?? []).map((x) => `${x.key}: ${x.area_codes.join(', ')}`) },
     { title: 'Gagal dibuat di DATUM', lines: (d.create_failed ?? []).map((x) => `${x.room_code} · ${x.reason}`) },
     { title: 'Tidak diambil dari DATUM', lines: (d.import_skipped ?? []).map((x) => `${x.area_code} · ${x.reason}`) },
-    { title: 'Keputusan belum terkirim', lines: (d.escalate_skipped ?? []).map((x) => `${x.room_code} · ${x.title} · ${x.reason}`) },
+    {
+      title: 'Keputusan belum terkirim',
+      lines: [
+        ...(d.escalate_skipped ?? []).map((x) => `${x.room_code} · ${x.title} · ${x.reason}`),
+        // Linked decisions the run's time did not reach (counts.escalate_deferred): not sent, not failed.
+        ...(run.counts.escalate_deferred ? [`${run.counts.escalate_deferred} keputusan menunggu sinkron berikutnya`] : []),
+      ],
+    },
     { title: 'Kata gerbang berbeda dengan DATUM', lines: (d.gate_words ?? []).map((g) => `Gerbang ${g.code} · ${GATE_FIELD_WORDS[g.field]}`) },
     { title: 'Status gerbang DATUM tidak tersimpan', lines: (d.gate_status_unknown ?? []).map(gateStatusUnknownLine) },
   ];

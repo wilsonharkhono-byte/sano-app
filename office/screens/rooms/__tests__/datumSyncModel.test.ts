@@ -105,6 +105,22 @@ describe('differenceGroups', () => {
   });
 });
 
+describe('differenceGroups: decisions a run did not reach', () => {
+  it('says how many linked decisions wait for the next sync, under the decisions not sent', () => {
+    expect(differenceGroups(run({ counts: { ...run().counts, escalate_deferred: 0 } }))).toEqual([]);
+    expect(differenceGroups(run({ counts: { ...run().counts, escalate_deferred: 4 } }))).toEqual([
+      { title: 'Keputusan belum terkirim', lines: ['4 keputusan menunggu sinkron berikutnya'] },
+    ]);
+    const both = differenceGroups(run({
+      counts: { ...run().counts, escalate_deferred: 2 },
+      differences: { escalate_skipped: [{ event_id: 'e1', room_code: 'LT1-DAPUR', title: 'Pilih kran', reason: 'Ruangan belum tertaut ke area DATUM.' }] },
+    }));
+    expect(both).toEqual([
+      { title: 'Keputusan belum terkirim', lines: ['LT1-DAPUR · Pilih kran · Ruangan belum tertaut ke area DATUM.', '2 keputusan menunggu sinkron berikutnya'] },
+    ]);
+  });
+});
+
 describe('differenceGroups: status rows SANO could not store', () => {
   it('lists one line per gate and status, saying which side SANO does not know and for how many areas', () => {
     expect(differenceGroups(run({ differences: { gate_status_unknown: [
