@@ -88,8 +88,8 @@ Base: `${DATUM_API_BASE_URL}/api/integrations/sano`. Every request carries `Auth
 ```ts
 // Refusals, every route: { ok: false, code, error } where
 //   UNAUTHORIZED 401 · NOT_CONFIGURED 503 · BAD_REQUEST 400 · UNKNOWN_PROJECT 404
-//   UNKNOWN_AREA 404 · TOPIC_MISSING 409 · DB_ERROR 500
-// Item errors of POST areas: 'CODE_NOT_NORMALIZED' | 'INVALID' | 'DB_ERROR'
+//   UNKNOWN_AREA 404 · TOPIC_MISSING 409 · EVENT_IN_OTHER_PROJECT 409 (as built) · DB_ERROR 500
+// Item errors of POST areas: 'CODE_NOT_NORMALIZED' | 'INVALID' | 'DB_ERROR', each with a `reason` (as built)
 
 // GET areas?project_code=K2-7                                  (D-T3)
 { ok: true, project: { id: string; project_code: string; project_name: string },
@@ -106,8 +106,10 @@ Base: `${DATUM_API_BASE_URL}/api/integrations/sano`. Every request carries `Auth
 { ok: true, staff: Array<{ id: string; full_name: string }> }
 
 // POST areas  body { project_code, areas: Array<{ area_code; area_name; floor: string | null; area_type; tracked?: boolean }> } (1-200)   (D-T4)
-{ ok: true, areas: Array<{ area_code: string; id: string; created: boolean }>,
-  errors: Array<{ area_code: string; code: 'CODE_NOT_NORMALIZED' | 'INVALID' | 'DB_ERROR' }> }
+// As built: a created area also gets DATUM's own gate schedule (ensureGateScheduleForArea + writePlannedDates), best effort, so
+// an item can carry a `warning`; item errors carry a `reason` string.
+{ ok: true, areas: Array<{ area_code: string; id: string; created: boolean; warning?: { code: 'SCHEDULE_FAILED' | 'SEED_FAILED'; reason: string } }>,
+  errors: Array<{ area_code: string; code: 'CODE_NOT_NORMALIZED' | 'INVALID' | 'DB_ERROR'; reason: string }> }
 
 // POST escalate  body (D-T5):
 { project_code: string; area_id: string /* uuid */; sano_event_id: string /* uuid */; sano_url: string;
@@ -133,7 +135,7 @@ export interface LinkItem { room_id: string; room_code: string; area_id: string 
 export interface CreateItem { room_id: string; area_code: string; area_name: string; floor: string | null; area_type: string; tracked: boolean }
 export interface CreateFailedItem { room_code: string; reason: string }
 export interface DatumOnlyItem { area_id: string; area_code: string; area_name: string; floor: string | null; area_type: string; sort_order: number }
-export type ConflictField = 'name' | 'floor' | 'area_type';
+export type ConflictField = 'code' | 'name' | 'floor' | 'area_type';   // as built: 'code' added — a linked area's code can drift without breaking the link
 export interface FieldConflict { room_code: string; field: ConflictField; sano: string; datum: string }
 export interface DuplicateItem { key: string; area_codes: string[] }
 export interface RoomSyncPlan { link: LinkItem[]; create: CreateItem[]; createFailed: CreateFailedItem[]; datumOnly: DatumOnlyItem[];
@@ -158,10 +160,14 @@ export interface RunCounts { steps: Partial<Record<SyncStep, StepOutcome>>; step
   datum_only?: number; field_conflicts?: number; retired_missing?: number; gate_rows?: number; gate_rows_unlinked?: number; gate_area_ids?: string[];
   staff?: StaffCounts; escalated?: number; escalated_as_system?: number; escalate_failed?: number; escalate_skipped?: number; escalate_deferred?: number }
 export interface EscalateSkipItem { event_id: string; room_code: string; title: string; reason: string }
+// as built: two items added once POST areas could warn and gate-status could see a code SANO doesn't know
+export interface ScheduleWarningItem { area_code: string; code: string; reason: string }
+export interface GateStatusUnknownItem { gate_code: string; status: string; unknown: 'gate' | 'status'; rows: number }
 export interface RunDifferences { datum_only?: Array<{ area_code: string; area_name: string; floor: string | null; area_type: string }>;
-  field_conflicts?: FieldConflict[]; datum_duplicates?: DuplicateItem[]; create_failed?: CreateFailedItem[]; import_skipped?: ImportSkip[];
+  field_conflicts?: FieldConflict[]; datum_duplicates?: DuplicateItem[]; create_failed?: CreateFailedItem[];
+  schedule_warnings?: ScheduleWarningItem[]; import_skipped?: ImportSkip[];
   staff?: { unmatched: StaffNameItem[]; ambiguous: StaffAmbiguousItem[]; stale: StaffStaleItem[] };
-  escalate_skipped?: EscalateSkipItem[]; gate_words?: GateWordDiff[] }
+  escalate_skipped?: EscalateSkipItem[]; gate_words?: GateWordDiff[]; gate_status_unknown?: GateStatusUnknownItem[] }
 export interface RunReport { ok: boolean; runId: string; counts: RunCounts; differences: RunDifferences; error: string | null }
 export const STEP_ORDER: ReadonlyArray<SyncStep>;           // ['areas','link','create','import','gate_status','staff','escalate']
 export function runVerdict(counts: RunCounts): { ok: boolean; error: string | null };
@@ -176,11 +182,15 @@ export function foldText(s: string | null | undefined): string;
 export function planRoomSync(rooms: ReadonlyArray<PlanRoom>, areas: ReadonlyArray<PlanArea>): RoomSyncPlan;
 export function createGateOpen(plan: RoomSyncPlan, areaCount: number): boolean;
 export function createGateSentence(datumProjectName: string): string;
+export const codeHeldElsewhere: (code: string, holder: string) => string;   // as built: the create_failed reason when a code-matched area is already another room's link
 
 // F-T3 - the import
 export const IMPORT_GONE: string;                            // 'Sudah ada di SANO atau tidak lagi ada di DATUM.'
 export const importBadCode: (code: string) => string;
+export const importBadType: (code: string, type: string) => string;   // as built
+export const importNoName: (code: string) => string;                  // as built
 export const importRaced: (code: string) => string;
+export const PLAN_AREA_TYPES: ReadonlyArray<string>;          // as built: DATUM's thirteen area_type values, inlined (jest proves it equals tools/constants.ts AREA_TYPES)
 export function planImport(plan: RoomSyncPlan, confirmedCodes: ReadonlyArray<string>): ImportPlan;
 
 // F-T4 - people
@@ -192,6 +202,7 @@ export function staffCounts(plan: StaffLinkPlan): StaffCounts;
 export function diffGateWords(datum: ReadonlyArray<DatumGateWord>, sano: ReadonlyArray<SanoGateWord>): GateWordDiff[];
 export const ESCALATE_BATCH = 20;
 export const ESCALATE_ROOM_UNLINKED: string;                 // 'Ruangan belum tertaut ke area DATUM.'
+export const ESCALATE_AREA_UNKNOWN: string;                  // as built: skip reason once DATUM has answered UNKNOWN_AREA for that area this run
 export function sanoRoomUrl(projectCode: string, roomCode: string): string;   // === buildRoomUrl
 export function escalationAuthor(reporterStaffId: string | null, confirmerStaffId: string | null): string | null;
 ```
@@ -201,7 +212,7 @@ export function escalationAuthor(reporterStaffId: string | null, confirmerStaffI
 ```ts
 // POST, deployed --no-verify-jwt; handler.ts checks both ways in.
 // 1. Button:  Authorization: Bearer <user JWT>, body { projectId: uuid }                                 source 'manual'
-// 2. Import:  Authorization: Bearer <user JWT>, body { projectId, importDatumOnly: true, areaCodes: string[] /* 1-200, each 1-40 */ }  source 'import'
+// 2. Import:  Authorization: Bearer <user JWT>, body { projectId, importDatumOnly: true, areaCodes: string[] /* as built: 1-500, each 1-200 chars (MAX_IMPORT_CODES, MAX_IMPORT_CODE_LENGTH) */ }  source 'import'
 //    Both need is_office_role() (admin, principal, estimator).
 // 3. Webhook: Authorization: Bearer <WEBHOOK_AUTH_SECRET>, body { type: 'INSERT', table: 'datum_sync_requests', record: { id, project_id } }  source 'cron'
 //
@@ -260,8 +271,11 @@ export function syncDatum(projectId: string): Promise<DatumCallResult>;
 export function importFromDatum(projectId: string, areaCodes: string[]): Promise<DatumCallResult>;
 export interface DatumRun { id; project_id; source; requested_by; requester_name: string | null; started_at; finished_at: string | null;
   ok: boolean | null; counts: RunCounts; differences: RunDifferences; error: string | null }
-export interface DatumSyncState { latest: DatumRun | null; latestFinished: DatumRun | null; staffRun: DatumRun | null; waiting: { count: number; oldestAt: string } | null }
+export interface DatumSyncState { latest: DatumRun | null; latestFinished: DatumRun | null; latestSync: DatumRun | null; staffRun: DatumRun | null; waiting: { count: number; oldestAt: string } | null }
+  // as built: latestSync added — the newest finished non-import run, since an import run writes no create_failed, schedule_warnings or escalate_skipped and would otherwise make those vanish from the card
 export async function getDatumSyncState(projectId: string, nowIso?: string): Promise<DatumSyncState | { error: string }>;
+// as built, tools/datumSync.ts also exports DATUM_IMPORT_MAX_CODES = 500 and DATUM_IMPORT_MAX_CODE_LENGTH = 200, mirroring the
+// function's own MAX_IMPORT_CODES/MAX_IMPORT_CODE_LENGTH above, so the Rooms-tab card never sends a request the function would refuse.
 
 // tools/siteEvents.ts - U-T7: SiteEventWithMedia gains
 //   confirmed_by_name: string | null; project_datum_code: string | null
