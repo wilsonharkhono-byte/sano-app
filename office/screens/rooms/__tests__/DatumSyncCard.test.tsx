@@ -30,9 +30,8 @@ const sync = syncDatum as jest.Mock;
 const doImport = importFromDatum as jest.Mock;
 const pair = setDatumProjectCode as jest.Mock;
 
-const project: { id: string; code: string; name: string; datum_project_code: string | null } = {
-  id: 'p1', code: 'SANO-K27', name: 'Citraland K2-7', datum_project_code: 'K2-7',
-};
+// Only what the card reads: the id and the DATUM pairing.
+const project: { id: string; datum_project_code: string | null } = { id: 'p1', datum_project_code: 'K2-7' };
 const run = (over: Partial<DatumRun> = {}): DatumRun => ({
   id: 'run-1', project_id: 'p1', source: 'manual', requested_by: 'u1', requester_name: 'Siti Aminah',
   started_at: '2026-09-26T03:00:00.000Z', finished_at: '2026-09-26T03:00:05.000Z', ok: true,

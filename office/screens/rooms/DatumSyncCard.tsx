@@ -36,7 +36,8 @@ import {
  * import (the owner's 2026-09-27 decision); others only read.
  */
 export default function DatumSyncCard(props: {
-  project: Pick<Project, 'id' | 'code' | 'name' | 'datum_project_code'>;
+  /** Only the id and the DATUM pairing are read; callers pass their whole project. */
+  project: Pick<Project, 'id' | 'datum_project_code'>;
   role: UserRoleType | null | undefined;
   /** Reloads the project after the pairing changed (useProject().refresh). */
   onPaired: () => void | Promise<void>;
