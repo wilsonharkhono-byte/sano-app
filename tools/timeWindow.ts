@@ -144,3 +144,29 @@ export function dayRangeWIB(dateFrom: string, dateTo: string): WibDayRange {
     toIso: wibEndOfDayExclusiveIso(dateTo),
   };
 }
+
+/**
+ * Indonesian month abbreviations, index 0 = January. Migration 106's
+ * site_event_digest_day() spells the same twelve; migration106.test.ts
+ * compares the two lists so a push and the app never name a month
+ * differently.
+ */
+export const WIB_MONTH_ABBR: ReadonlyArray<string> = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des',
+];
+
+/**
+ * "17 Sep 14.05": an instant as a WIB day, short month and 24-hour time with
+ * a dot, the Indonesian convention. Same fixed +7 h arithmetic as
+ * todayIsoWIB. The day carries no leading zero, like the SQL 'FMDD' in 106.
+ * An unparseable input is returned unchanged rather than turned into a
+ * made-up time.
+ */
+export function formatWibShort(iso: string): string {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return iso;
+  const shifted = new Date(ms + WIB_OFFSET_MS);
+  const hh = String(shifted.getUTCHours()).padStart(2, '0');
+  const mm = String(shifted.getUTCMinutes()).padStart(2, '0');
+  return `${shifted.getUTCDate()} ${WIB_MONTH_ABBR[shifted.getUTCMonth()]} ${hh}.${mm}`;
+}

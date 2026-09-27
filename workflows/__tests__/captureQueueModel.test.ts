@@ -4,10 +4,24 @@ import {
   markInserted,
   markUnrecoverable,
   markUploaded,
+  enqueueClose,
+  markCleanedUp,
+  markClosedElsewhere,
+  markCloseOutcome,
+  markClosureMediaInserted,
+  REASON_CLOSURE_PHOTO_MISSING,
   recordFailure,
-  type CaptureQueueEntry,
+  type CaptureJob,
+  type CloseJob,
 } from '../../tools/captureQueue';
-import { WEB_QUEUE_WARNING, WEB_QUEUED_TOAST, attentionRows, queueBadgeText } from '../screens/siteEvent/captureQueueModel';
+import {
+  REASON_CLOSE_STATUS_UNREADABLE,
+  WEB_QUEUE_WARNING,
+  WEB_QUEUED_TOAST,
+  attentionRows,
+  closeJobCancelKind,
+  queueBadgeText,
+} from '../screens/siteEvent/captureQueueModel';
 import type { NewSiteEvent } from '../../tools/siteEvents';
 
 const NOW = '2026-09-11T03:00:00.000Z';
@@ -17,7 +31,7 @@ const event = (id: string, rawText: string | null): NewSiteEvent => ({
   media: [{ id: `${id}-m`, localUri: 'file:///x.jpg', kind: 'photo', role: 'context', mimeType: 'image/jpeg', ext: 'jpg', durationS: null, sortOrder: 0, capturedAt: NOW }],
 });
 
-const fresh = (id: string, rawText: string | null = null): CaptureQueueEntry =>
+const fresh = (id: string, rawText: string | null = null): CaptureJob =>
   enqueueCapture({ event: event(id, rawText), ownerId: 'u1', workGroupNames: [], nowIso: NOW });
 
 describe('WEB_QUEUE_WARNING', () => {
@@ -59,7 +73,7 @@ describe('attentionRows', () => {
 });
 
 /** Uploaded, inserted, analysis kicked off - the state the badge's second half counts. */
-const kickedOff = (id: string): CaptureQueueEntry => {
+const kickedOff = (id: string): CaptureJob => {
   const e = fresh(id);
   return markAnalysisRequested(markInserted(markUploaded(e, `${id}-m`, 1, NOW), NOW), NOW);
 };
@@ -113,5 +127,155 @@ describe('attentionRows escape hatches', () => {
       action: 'retry',
       reason: 'Sudah terkirim ke server; buka Draf menunggu.',
     });
+  });
+});
+
+// ─── Close jobs (closure spec 2026-09-26 §4.6) ────────────────────────────────
+
+const closeJob = (photo = true): CloseJob => enqueueClose({
+  id: 'job1', ownerId: 'u1', eventId: 'ev1', projectId: 'p1', roomId: 'r1', eventTitle: 'Retak acian', note: 'Sudah ditambal',
+  closurePhoto: photo
+    ? { id: 'cm1', localUri: 'file:///q/cm1.jpg', kind: 'photo', role: 'closure', mimeType: 'image/jpeg', ext: 'jpg', durationS: null, sortOrder: 0, capturedAt: NOW }
+    : null,
+  nowIso: NOW,
+});
+
+const supersededJob = (closedByName: string | null): CloseJob => markCleanedUp(
+  markClosedElsewhere(markCloseOutcome(closeJob(false), 'not_open', NOW), { closedByName, closedAt: '2026-09-17T07:05:00.000Z' }, NOW),
+  NOW,
+);
+
+describe('attentionRows for close jobs', () => {
+  it('offers Coba lagi on a transient failure that ran out of attempts, titled with the event', () => {
+    let j = closeJob(false);
+    for (let i = 0; i < 5; i++) j = recordFailure(j, 'Tandai selesai gagal: Gagal menyimpan: Network request failed', NOW);
+    expect(attentionRows([j])).toEqual([
+      { id: 'job1', title: 'Selesai: Retak acian', reason: 'Tandai selesai gagal: Gagal menyimpan: Network request failed', action: 'retry' },
+    ]);
+  });
+
+  it('offers Batalkan, confirmed first, on a permanent refusal before any outcome', () => {
+    const j = recordFailure(closeJob(false), 'Tandai selesai gagal: Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.', NOW, 'permanent');
+    expect(attentionRows([j])).toEqual([{
+      id: 'job1',
+      title: 'Selesai: Retak acian',
+      reason: 'Tandai selesai gagal: Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.',
+      action: 'cancel',
+      confirm: 'Batalkan penutupan "Retak acian"? Kejadian tetap terbuka.',
+    }]);
+  });
+
+  /**
+   * "Foto yang sudah terkirim tetap tersimpan sebagai bukti" is only true once
+   * the photo's media row is in: an uploaded file whose row insert was refused
+   * is in storage but on no event, so the sentence would promise evidence that
+   * nobody can see.
+   */
+  it('promises the photo stays as evidence only once its media row is in', () => {
+    const inserted = recordFailure(
+      markClosureMediaInserted(markUploaded(closeJob(), 'cm1', 1, NOW), NOW),
+      'Tandai selesai gagal: Anda tidak ditugaskan ke proyek ini.',
+      NOW,
+      'permanent',
+    );
+    expect(attentionRows([inserted])[0].confirm).toBe(
+      'Batalkan penutupan "Retak acian"? Kejadian tetap terbuka. Foto yang sudah terkirim tetap tersimpan sebagai bukti di kejadian itu.',
+    );
+
+    const uploadedButRefused = recordFailure(
+      markUploaded(closeJob(), 'cm1', 1, NOW),
+      'Simpan foto penutupan gagal: Lokasi berkas media tidak sesuai kejadian.',
+      NOW,
+      'permanent',
+    );
+    expect(attentionRows([uploadedButRefused])[0].confirm).toBe('Batalkan penutupan "Retak acian"? Kejadian tetap terbuka.');
+  });
+
+  it('offers Batalkan on a job whose photo vanished, with the sentence the store flagged it with', () => {
+    const j = markUnrecoverable(closeJob(), REASON_CLOSURE_PHOTO_MISSING);
+    expect(attentionRows([j])[0]).toMatchObject({
+      action: 'cancel',
+      reason: 'Foto penutupan hilang dari HP sebelum terkirim. Batalkan, lalu tandai selesai lagi dengan foto baru.',
+    });
+  });
+
+  /**
+   * NOT_OPEN, then the status read refused for good: "Coba lagi" would only
+   * repeat the same refusal, and "Batalkan" would hide that the server already
+   * answered. The row says what is known and lets the person dismiss it.
+   */
+  it('offers Mengerti, never Coba lagi or Batalkan, when the event is no longer open and its status cannot be read', () => {
+    const j = recordFailure(markCloseOutcome(closeJob(false), 'not_open', NOW), 'Baca status kejadian gagal: Hanya kejadian terbuka yang bisa ditandai selesai.', NOW, 'permanent');
+    expect(attentionRows([j])).toEqual([{
+      id: 'job1',
+      title: 'Selesai: Retak acian',
+      reason: 'Kejadian sudah tidak terbuka di server; statusnya tidak bisa dibaca.',
+      action: 'acknowledge',
+    }]);
+    expect(REASON_CLOSE_STATUS_UNREADABLE).toBe('Kejadian sudah tidak terbuka di server; statusnya tidak bisa dibaca.');
+  });
+
+  it('keeps Coba lagi on a status read that failed only transiently, five times running', () => {
+    let j = markCloseOutcome(closeJob(false), 'not_open', NOW);
+    for (let i = 0; i < 5; i++) j = recordFailure(j, 'Baca status kejadian gagal: network down', NOW);
+    expect(attentionRows([j])[0]).toMatchObject({ action: 'retry', reason: 'Baca status kejadian gagal: network down' });
+  });
+
+  it("names the server's closer and time on a superseded job, and offers Mengerti", () => {
+    expect(attentionRows([supersededJob('Budi Santoso')])).toEqual([
+      { id: 'job1', title: 'Retak acian', reason: 'Sudah ditutup oleh Budi Santoso pada 17 Sep 14.05.', action: 'acknowledge' },
+    ]);
+  });
+
+  it('says only when, never a guessed name, when the server recorded no closer', () => {
+    expect(attentionRows([supersededJob(null)])[0].reason).toBe('Sudah ditutup pada 17 Sep 14.05.');
+  });
+
+  it('lists nothing for a close job that is simply waiting, and counts it as waiting for signal', () => {
+    const j = markClosureMediaInserted(markUploaded(closeJob(), 'cm1', 1, NOW), NOW);
+    expect(attentionRows([j])).toEqual([]);
+    expect(queueBadgeText([j])).toBe('Antrean: 1 menunggu sinyal');
+  });
+});
+
+/**
+ * The one rule for what a person can do with a close job, shared by the
+ * Beranda card and (in a follow-up) the detail screen, so the two can never
+ * offer different ways out of the same job.
+ */
+describe('closeJobCancelKind', () => {
+  const flaggedTransient = (j: CloseJob): CloseJob => {
+    let out = j;
+    for (let i = 0; i < 5; i++) out = recordFailure(out, 'jaringan turun', NOW);
+    return out;
+  };
+
+  it('offers nothing while the job is simply on its way, or once it is done', () => {
+    expect(closeJobCancelKind(closeJob())).toBeNull();
+    expect(closeJobCancelKind(recordFailure(closeJob(false), 'jaringan turun', NOW))).toBeNull();
+    const done = markCleanedUp(markCloseOutcome(closeJob(false), 'closed', NOW), NOW);
+    expect(done.state).toBe('done');
+    expect(closeJobCancelKind(done)).toBeNull();
+  });
+
+  it('retries a transient failure that ran out of attempts, before or after an outcome', () => {
+    expect(closeJobCancelKind(flaggedTransient(closeJob(false)))).toBe('retry');
+    expect(closeJobCancelKind(flaggedTransient(markCloseOutcome(closeJob(false), 'not_open', NOW)))).toBe('retry');
+  });
+
+  it('cancels a permanent refusal or a vanished photo while no outcome is recorded', () => {
+    expect(closeJobCancelKind(recordFailure(closeJob(false), 'x', NOW, 'permanent'))).toBe('cancel');
+    expect(closeJobCancelKind(markUnrecoverable(closeJob(), 'x'))).toBe('cancel');
+  });
+
+  it('never cancels once the close landed: a permanent failure after it is only retried', () => {
+    const j = recordFailure(markCloseOutcome(closeJob(false), 'closed', NOW), 'x', NOW, 'permanent');
+    expect(closeJobCancelKind(j)).toBe('retry');
+  });
+
+  it('acknowledges a superseded job and a job whose event is no longer open with an unreadable status', () => {
+    expect(closeJobCancelKind(supersededJob('Budi Santoso'))).toBe('acknowledge');
+    const unreadable = recordFailure(markCloseOutcome(closeJob(false), 'not_open', NOW), 'x', NOW, 'permanent');
+    expect(closeJobCancelKind(unreadable)).toBe('acknowledge');
   });
 });

@@ -41,9 +41,15 @@ import { Platform } from 'react-native';
 import { useEffect, useState } from 'react';
 import {
   enqueueCapture,
+  enqueueClose,
+  isCloseStatusUnreadable,
   markUnrecoverable,
+  needsLocalMedia,
+  REASON_CLOSURE_PHOTO_MISSING,
   upgradeEntry,
+  type CaptureJob,
   type CaptureQueueEntry,
+  type CloseJob,
 } from './captureQueue';
 import type { LocalSiteEventMedia, NewSiteEvent } from './siteEvents';
 
@@ -312,11 +318,11 @@ export async function removeEntry(userId: string, entryId: string): Promise<void
 }
 
 async function recoverMissingMedia(entry: CaptureQueueEntry): Promise<CaptureQueueEntry> {
-  // Upload always finishes before insert is attempted (captureQueue.ts's
-  // nextStep ordering), so a still-needed local file can only go missing
-  // before eventInserted flips true. After that, or once already flagged,
+  // A capture job needs its files until the event is inserted (upload always
+  // finishes first); a close job needs its photo until it is uploaded
+  // (captureQueue.ts's needsLocalMedia). After that, or once already flagged,
   // there is nothing new to check.
-  if (entry.eventInserted || entry.unrecoverable) return entry;
+  if (!needsLocalMedia(entry) || entry.unrecoverable) return entry;
   for (const m of entry.media) {
     if (m.uploaded) continue;
     let info: Awaited<ReturnType<typeof FileSystem.getInfoAsync>>;
@@ -331,7 +337,7 @@ async function recoverMissingMedia(entry: CaptureQueueEntry): Promise<CaptureQue
       continue;
     }
     if (!info.exists) {
-      const fixed = markUnrecoverable(entry, REASON_MEDIA_MISSING);
+      const fixed = markUnrecoverable(entry, entry.kind === 'close' ? REASON_CLOSURE_PHOTO_MISSING : REASON_MEDIA_MISSING);
       await saveEntry(fixed);
       return fixed;
     }
@@ -394,7 +400,7 @@ export interface NewCaptureRequest {
  * nothing to find (just an orphaned, harmless directory), never a
  * half-registered entry.
  */
-export async function enqueueNewCapture(request: NewCaptureRequest): Promise<CaptureQueueEntry> {
+export async function enqueueNewCapture(request: NewCaptureRequest): Promise<CaptureJob> {
   const media =
     Platform.OS === 'web' ? request.event.media : await copyMediaIntoQueueDir(request.userId, request.event.id, request.event.media);
   const entry = enqueueCapture({
@@ -405,6 +411,145 @@ export async function enqueueNewCapture(request: NewCaptureRequest): Promise<Cap
   });
   await saveEntry(entry);
   return entry;
+}
+
+// ─── Close jobs (closure spec 2026-09-26 §4) ──────────────────────────────────
+
+export interface NewCloseRequest {
+  userId: string;
+  /** A fresh client uuid for the job (the form calls newSiteEventId()); never the event id. */
+  jobId: string;
+  eventId: string;
+  projectId: string;
+  roomId: string;
+  eventTitle: string;
+  /** The note as typed; the job stores it trimmed, or null when blank. */
+  note: string;
+  closurePhoto: LocalSiteEventMedia | null;
+  nowIso: string;
+}
+
+export type EnqueueCloseResult =
+  | { entry: CloseJob; error?: undefined }
+  | { entry?: undefined; error: string };
+
+export const CLOSE_ALREADY_PENDING = 'Penutupan kejadian ini sudah menunggu kirim.';
+
+/**
+ * The event's close job while it will still try, or null: not `done`, not
+ * `superseded`, and not one whose event is no longer open with a status that
+ * cannot be read (captureQueue.ts's isCloseStatusUnreadable - nothing can send
+ * that job any more; unreadableCloseFor finds it). A job the server refused
+ * before any outcome IS still pending: the event is still open on the server
+ * and the person has to act on the job (closeJobCancelKind: "Batalkan" on a
+ * permanent refusal, "Coba lagi" after transient ones). Null, like
+ * supersededCloseFor and unreadableCloseFor, so callers test it the same way.
+ */
+export function pendingCloseFor(entries: ReadonlyArray<CaptureQueueEntry>, eventId: string): CloseJob | null {
+  return (
+    entries.find(
+      (e): e is CloseJob =>
+        e.kind === 'close' &&
+        e.eventId === eventId &&
+        e.state !== 'done' &&
+        e.state !== 'superseded' &&
+        !isCloseStatusUnreadable(e),
+    ) ?? null
+  );
+}
+
+/** The newest (by createdAt) close job of `eventId` matching `pick`, or null. */
+function newestCloseFor(
+  entries: ReadonlyArray<CaptureQueueEntry>,
+  eventId: string,
+  pick: (job: CloseJob) => boolean,
+): CloseJob | null {
+  let newest: CloseJob | null = null;
+  for (const e of entries) {
+    if (e.kind !== 'close' || e.eventId !== eventId || !pick(e)) continue;
+    if (newest === null || e.createdAt > newest.createdAt) newest = e;
+  }
+  return newest;
+}
+
+/**
+ * The event's newest (by createdAt) superseded close job, or null: this
+ * user's queued "Selesai" found the event already closed on the server and
+ * nobody has pressed "Mengerti" yet. Office and principal phones have no
+ * Beranda queue card, so the detail screen renders this with "Mengerti" ->
+ * acknowledgeCloseEntry. createdAt is always toISOString() output (UTC, one
+ * fixed format), so comparing the strings orders them by time.
+ */
+export function supersededCloseFor(entries: ReadonlyArray<CaptureQueueEntry>, eventId: string): CloseJob | null {
+  return newestCloseFor(entries, eventId, (job) => job.state === 'superseded');
+}
+
+/**
+ * The event's newest close job that can never send (isCloseStatusUnreadable),
+ * or null: close_site_event answered NOT_OPEN and the status read was refused
+ * for good. Kept apart from supersededCloseFor on purpose - nothing was read
+ * about who closed the event, so no "Sudah ditutup oleh ..." sentence may be
+ * built from it. For a surface with no Beranda card (the detail screen) to
+ * offer "Mengerti" -> acknowledgeCloseEntry.
+ */
+export function unreadableCloseFor(entries: ReadonlyArray<CaptureQueueEntry>, eventId: string): CloseJob | null {
+  return newestCloseFor(entries, eventId, isCloseStatusUnreadable);
+}
+
+/**
+ * "Tandai selesai". Copies the closure photo into the job's own folder
+ * (native), THEN writes the entry - the same "media copies first, then the
+ * entry record" order enqueueNewCapture keeps. Refuses a second job for an
+ * event this user already has a pending close for. Throws on a copy failure,
+ * like enqueueNewCapture; the form shows the message.
+ */
+export async function enqueueCloseJob(request: NewCloseRequest): Promise<EnqueueCloseResult> {
+  if (pendingCloseFor(await loadQueue(request.userId), request.eventId)) {
+    return { error: CLOSE_ALREADY_PENDING };
+  }
+  const photos = request.closurePhoto ? [request.closurePhoto] : [];
+  const media =
+    Platform.OS === 'web' || photos.length === 0 ? photos : await copyMediaIntoQueueDir(request.userId, request.jobId, photos);
+  const entry = enqueueClose({
+    id: request.jobId,
+    ownerId: request.userId,
+    eventId: request.eventId,
+    projectId: request.projectId,
+    roomId: request.roomId,
+    eventTitle: request.eventTitle,
+    note: request.note,
+    closurePhoto: media[0] ?? null,
+    nowIso: request.nowIso,
+  });
+  await saveEntry(entry);
+  return { entry };
+}
+
+/**
+ * "Mengerti" on a close job the server already answered for good: a
+ * superseded one (the event was closed by somebody else, or by this job's own
+ * earlier attempt whose response was lost, and the person has read who and
+ * when), or one whose event is no longer open with a status that cannot be
+ * read (isCloseStatusUnreadable). Anything else still has work to do, can
+ * still be cancelled, or is not a close.
+ */
+export async function acknowledgeCloseEntry(userId: string, entryId: string): Promise<{ error?: string }> {
+  const entry = await readEntryForUser(userId, entryId);
+  if (!entry) return {};
+  if (entry.kind !== 'close' || (entry.state !== 'superseded' && !isCloseStatusUnreadable(entry))) {
+    return { error: 'Penutupan ini belum selesai diproses.' };
+  }
+  // The key first: once it is gone the job is gone, whatever happens to its
+  // folder. A folder that cannot be deleted now (a locked file, an unmounted
+  // SD card) is an orphan the next session's sweep reclaims (sweepOrphanedFiles);
+  // failing "Mengerti" over it would leave the person no way to dismiss the row.
+  await removeEntry(userId, entryId);
+  try {
+    await deleteLocalMedia(userId, entryId);
+  } catch (err) {
+    console.warn(`captureQueueStore: could not delete the folder of acknowledged close job ${entryId}; the orphan sweep will`, err);
+  }
+  return {};
 }
 
 /** The cleanup step (captureQueueWorker.ts task 3). No-op on web: nothing was ever copied. */
@@ -423,8 +568,16 @@ export async function deleteLocalMedia(userId: string, entryId: string): Promise
 export async function discardEntryLocally(userId: string, entryId: string): Promise<{ error?: string }> {
   const entry = await readEntryForUser(userId, entryId);
   if (!entry) return {};
-  if (entry.eventInserted) {
+  if (entry.kind === 'capture' && entry.eventInserted) {
     return { error: 'Kejadian ini sudah tersimpan di server; buang lewat layar konfirmasi.' };
+  }
+  // A close job with an outcome already reached the server: "Batalkan" would
+  // only hide what happened there (closure spec §4.6). NOT_OPEN says only that
+  // the event is no longer open - not that it was closed, nor by whom.
+  if (entry.kind === 'close' && entry.closeOutcome !== null) {
+    return {
+      error: entry.closeOutcome === 'closed' ? 'Kejadian sudah ditutup di server.' : 'Kejadian sudah tidak terbuka di server.',
+    };
   }
   await deleteLocalMedia(userId, entryId);
   await removeEntry(userId, entryId);

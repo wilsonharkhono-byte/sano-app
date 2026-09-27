@@ -34,7 +34,6 @@ import {
   buildConfirmRpcArgs,
   buildEventRow,
   buildMediaRows,
-  closeSiteEvent,
   confirmSiteEvent,
   createSiteEventWithMedia,
   discardSiteEvent,
@@ -203,6 +202,12 @@ describe('pure helpers', () => {
     expect(mapSiteEventRpcError('SITE_EVENT_STEP: langkah "D1" tidak aktif atau tidak ada')).toBe('Langkah yang dipilih sudah tidak aktif. Pilih langkah lain.');
     expect(mapSiteEventRpcError('SITE_EVENT_STATE: kejadian berstatus open')).toMatch(/sudah dikonfirmasi/);
     expect(mapSiteEventRpcError('SITE_EVENT_HUMAN_FIELDS: isi kejadian')).toMatch(/Konfirmasi atau Selesai/);
+    // Migration 105: the two evidence codes, beside 097's SITE_EVENT_CLOSURE_NOTE they must not collide with.
+    expect(mapSiteEventRpcError('SITE_EVENT_CLOSURE_NOTE: catatan penutupan maksimal 500 karakter')).toBe('Catatan penutupan maksimal 500 karakter.');
+    expect(mapSiteEventRpcError('SITE_EVENT_CLOSURE_NOTE_REQUIRED: kejadian butuh keputusan wajib punya catatan keputusan minimal 10 karakter.'))
+      .toBe('Catatan keputusan wajib diisi, minimal 10 karakter.');
+    expect(mapSiteEventRpcError('SITE_EVENT_CLOSURE_PHOTO_REQUIRED: kejadian cacat hanya bisa ditandai selesai dengan foto penutupan. Perbarui aplikasi, lalu ambil foto hasil perbaikan.'))
+      .toBe('Foto penutupan wajib untuk jenis ini. Ambil foto hasil perbaikan lalu tandai selesai lagi.');
     expect(mapSiteEventRpcError('network down')).toBe('Gagal menyimpan: network down');
     expect(mapSiteEventRpcError(null)).toBe('Gagal menyimpan. Coba lagi.');
   });
@@ -361,24 +366,6 @@ describe('saveTranscriptEdit', () => {
     mocked.from.mockImplementationOnce(() => makeChain({ data: [{ id: EVENT }], error: null }));
     await saveTranscriptEdit(EVENT, '   ');
     expect(calls).toContain('update:{"transcript_edited":null}');
-  });
-});
-
-describe('closeSiteEvent', () => {
-  it('maps SITE_EVENT_NOT_OPEN to its Indonesian copy', async () => {
-    mocked.rpc.mockResolvedValueOnce({
-      data: null,
-      error: { message: 'SITE_EVENT_NOT_OPEN: hanya kejadian terbuka yang bisa ditandai selesai (status sekarang done)' },
-    });
-    const r = await closeSiteEvent({ eventId: EVENT, projectId: PROJECT, note: 'selesai' });
-    expect(r.error).toBe('Hanya kejadian terbuka yang bisa ditandai selesai.');
-  });
-
-  it('returns ok, trimming the closure note, on success', async () => {
-    mocked.rpc.mockResolvedValueOnce({ data: { event_id: EVENT, status: 'done' }, error: null });
-    const r = await closeSiteEvent({ eventId: EVENT, projectId: PROJECT, note: '  selesai dikerjakan  ' });
-    expect(r.error).toBeUndefined();
-    expect(mocked.rpc).toHaveBeenCalledWith('close_site_event', { p_event_id: EVENT, p_closure_note: 'selesai dikerjakan' });
   });
 });
 
@@ -680,8 +667,8 @@ describe('updateSiteEventAssignment', () => {
   });
 });
 
-describe('RPC_ERROR_COPY vs migrations 097, 099 and 100', () => {
-  it('covers exactly the SITE_EVENT_* codes 097, 099 and 100 actually raise — no more, no less', () => {
+describe('RPC_ERROR_COPY vs migrations 097, 099, 100 and 105', () => {
+  it('covers exactly the SITE_EVENT_* codes 097, 099, 100 and 105 actually raise — no more, no less', () => {
     // Only text inside `RAISE EXCEPTION '<CODE>:` counts as a code the client
     // must translate — SITE_EVENT_ASSIGNED, mentioned in 099's header comment
     // and passed to enqueue_notification_user, is a notification type, not an
@@ -695,10 +682,14 @@ describe('RPC_ERROR_COPY vs migrations 097, 099 and 100', () => {
     // matches on the `CODE:` prefix, so only the sentence after it grew). It is
     // read anyway: the day 100 is edited to raise a NEW code, this fails until
     // the copy exists.
+    // 105 re-creates close_site_event with two evidence refusals. 106 is
+    // deliberately not read: its only function has no grant to any app role,
+    // so no client ever sees a refusal from it.
     const raised = new Set([
       ...codesIn('097_site_events.sql'),
       ...codesIn('099_site_event_assignment.sql'),
       ...codesIn('100_confirm_vo_evidence_recheck.sql'),
+      ...codesIn('105_close_site_event_evidence.sql'),
     ]);
     const covered = new Set(RPC_ERROR_COPY.map(([code]) => code));
     expect(raised.size).toBeGreaterThan(0);

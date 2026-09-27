@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView, RefreshControl,
 } from 'react-native';
@@ -10,8 +10,11 @@ import {
   lastUpdateLabel, openChips, type BoardFilters,
 } from '../../../tools/roomBoard';
 import { SITE_EVENT_TYPE_LABELS } from '../../../tools/constants';
+import { pendingCloseFor, useCaptureQueueEntries } from '../../../tools/captureQueueStore';
 import type { RoomBoardRow, SiteEventType } from '../../../tools/types';
 import { COLORS, FONTS, RADIUS_SM, SPACE, TYPE } from '../../../workflows/theme';
+import AttentionList from './AttentionList';
+import DigestHealthLine from './DigestHealthLine';
 
 /**
  * Papan Ruangan (spec §9). One read of v_room_board, the summary strip, the
@@ -38,8 +41,36 @@ export default function RoomBoardView(props: {
   headerAction?: React.ReactNode;
   /** Phone layout wraps the filter pills instead of overflowing a 360dp screen. */
   compact?: boolean;
+  /** The signed-in profile: "Milik saya" and this phone's pending closes. */
+  viewerId: string | null;
+  /** "Perlu ditindak" row tap (closure spec §5.6). */
+  onOpenEvent: (eventId: string, projectId: string) => void;
+  /** Office and principal layouts name each item's owner. */
+  showOwners?: boolean;
+  /** Office and principal layouts show when the morning digest last went out. */
+  showDigestHealth?: boolean;
+  /** From a digest notification's params; a fresh object per tap re-applies it. */
+  mineRequest?: { mine: boolean } | null;
 }) {
-  const { projectId, onOpenRoom, headerAction, compact } = props;
+  const { projectId, onOpenRoom, headerAction, compact, viewerId, onOpenEvent, showOwners, showDigestHealth, mineRequest } = props;
+
+  // Close jobs still on this phone, so "Perlu ditindak" can say "Menunggu
+  // kirim" on a row the server still has open (closure spec §4.5).
+  const queue = useCaptureQueueEntries(viewerId);
+  const pendingEventIds = useMemo(
+    () => new Set(queue.flatMap((e) => (e.kind === 'close' && pendingCloseFor(queue, e.eventId) ? [e.eventId] : []))),
+    [queue],
+  );
+  // The list and the health line read once on mount by themselves; this is
+  // bumped on every focus after the first and on pull-to-refresh, so they
+  // refetch with the board: one read each on mount, one per focus.
+  const [reloadKey, setReloadKey] = useState(0);
+  const focusedBefore = useRef(false);
+  // The project the rows on screen were read for, and the number of the
+  // latest read: a refetch of the same project is silent, a project switch
+  // shows the spinner, and a slow earlier answer never overwrites a newer one.
+  const rowsFor = useRef<string | null>(null);
+  const request = useRef(0);
 
   const [rows, setRows] = useState<RoomBoardRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,15 +79,19 @@ export default function RoomBoardView(props: {
   const [filters, setFilters] = useState<BoardFilters>({});
 
   const load = useCallback(async (opts: { silent?: boolean } = {}) => {
+    const id = ++request.current;
     if (!projectId) {
+      rowsFor.current = null;
       setRows([]);
       setLoadError(null);
       setLoading(false);
       setRefreshing(false);
       return;
     }
-    if (!opts.silent) setLoading(true);
+    if (!opts.silent || rowsFor.current !== projectId) setLoading(true);
     const result = await listRoomBoard(projectId);
+    if (id !== request.current) return;
+    rowsFor.current = projectId;
     if ('error' in result) {
       // A fetch failure is never "no rooms" (CLAUDE.md §12): stale rows are
       // dropped so the error state below is the only thing shown, rather than
@@ -71,22 +106,25 @@ export default function RoomBoardView(props: {
     setRefreshing(false);
   }, [projectId]);
 
-  useEffect(() => { void load(); }, [load]);
-
-  // Refetch whenever this screen regains focus. Bottom-tab navigators keep
-  // screens mounted across tab switches, so without this a supervisor who
-  // confirms a site event elsewhere and comes back to Papan Ruangan would see
-  // stale open-counts and overdue badges until a full app reload. Silent: no
+  // The one load on mount, and a refetch whenever this screen regains focus
+  // (useFocusEffect runs on mount when the screen is focused, and again when
+  // `load` changes with the project). Bottom-tab navigators keep screens
+  // mounted across tab switches, so without this a supervisor who confirms a
+  // site event elsewhere and comes back to Papan Ruangan would see stale
+  // open-counts and overdue badges until a full app reload. Silent: no
   // full-screen spinner on every tab switch (same convention as
   // NotificationsScreen's focus refetch).
   useFocusEffect(
     useCallback(() => {
+      if (focusedBefore.current) setReloadKey((k) => k + 1);
+      focusedBefore.current = true;
       void load({ silent: true });
     }, [load]),
   );
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
+    setReloadKey((k) => k + 1);
     void load({ silent: true });
   }, [load]);
 
@@ -133,6 +171,17 @@ export default function RoomBoardView(props: {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} colors={[COLORS.primary]} />
       )}
     >
+      <AttentionList
+        projectId={projectId}
+        viewerId={viewerId}
+        showOwner={!!showOwners}
+        mineRequest={mineRequest}
+        pendingEventIds={pendingEventIds}
+        onOpenEvent={onOpenEvent}
+        reloadKey={reloadKey}
+      />
+      {showDigestHealth ? <DigestHealthLine reloadKey={reloadKey} /> : null}
+
       <Card title="Papan Ruangan" subtitle="Ringkasan kejadian per ruangan." rightAction={headerAction}>
         <View style={styles.strip}>
           <Stat label="Hambatan" value={summary.hambatan} color={COLORS.critical} />

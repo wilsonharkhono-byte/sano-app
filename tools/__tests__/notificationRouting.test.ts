@@ -104,3 +104,17 @@ describe('resolveNotificationRoute - progress claims', () => {
     }
   });
 });
+
+// ── Morning digest (closure spec 2026-09-26 §5.5, migration 106) ──────────
+describe('resolveNotificationRoute - morning digest', () => {
+  it('declares the RoomBoard deeplink', () => {
+    expect(KNOWN_DEEPLINK_SCREENS).toContain('RoomBoard');
+  });
+
+  it("opens the supervisor's RoomBoard and everyone else's Ruangan tab", () => {
+    expect(resolveNotificationRoute('RoomBoard', 'supervisor')).toBe('RoomBoard');
+    for (const role of ['admin', 'estimator', 'principal', undefined, null]) {
+      expect(resolveNotificationRoute('RoomBoard', role)).toBe('Rooms');
+    }
+  });
+});

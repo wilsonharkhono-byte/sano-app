@@ -77,13 +77,18 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 const upload = jest.fn();
 const insert = jest.fn();
 const invoke = jest.fn();
+const insertClosure = jest.fn();
+const closeRpc = jest.fn();
 jest.mock('../siteEvents', () => ({
   uploadSiteEventMedia: (...args: unknown[]) => upload(...args),
   insertSiteEvent: (...args: unknown[]) => insert(...args),
   invokeSiteEventAnalysis: (...args: unknown[]) => invoke(...args),
+  insertClosureMedia: (...args: unknown[]) => insertClosure(...args),
+  closeSiteEventRpc: (...args: unknown[]) => closeRpc(...args),
 }));
 
 import {
+  enqueueCloseJob,
   enqueueNewCapture,
   loadQueue,
   subscribeToQueue,
@@ -135,6 +140,8 @@ beforeEach(() => {
   }));
   insert.mockImplementation(async () => ({}));
   invoke.mockImplementation(async () => ({ ok: true, code: 'ANALYZED', status: 'draft' }));
+  insertClosure.mockReset().mockImplementation(async () => ({}));
+  closeRpc.mockReset().mockImplementation(async () => ({ ok: true }));
   stopCaptureQueueWorker();
 });
 
@@ -221,4 +228,40 @@ it('still reaches draft_ready then done when the analyze call resolves as a 409 
   expect(seenStates.some((states) => states.includes('failed'))).toBe(false);
   expect(seenStates.some((states) => states.includes('draft_ready'))).toBe(true);
   expect(await loadQueue(USER)).toEqual([]);
+});
+
+it('queues a close on web in memory only, copying nothing, and drains it into the event\'s folder', async () => {
+  const photoUri = 'blob:https://sano-app.vercel.app/cm1';
+  const result = await enqueueCloseJob({
+    userId: USER,
+    jobId: 'job1',
+    eventId: 'ev1',
+    projectId: 'p1',
+    roomId: 'r1',
+    eventTitle: 'Retak acian',
+    note: ' Sudah ditambal ',
+    closurePhoto: {
+      id: 'cm1', localUri: photoUri, kind: 'photo', role: 'closure', mimeType: 'image/jpeg', ext: 'jpg',
+      durationS: null, sortOrder: 0, capturedAt: '2026-09-17T02:00:00.000Z',
+    },
+    nowIso: '2026-09-17T02:00:01.000Z',
+  });
+
+  // The blob: URL is either usable this session or gone; there is nothing to copy.
+  expect(result.entry?.media[0].localUri).toBe(photoUri);
+  expect(fsCalls).toEqual([]);
+  expect(storageCalls).toEqual([]);
+  expect((await loadQueue(USER)).map((e) => e.id)).toEqual(['job1']);
+
+  startCaptureQueueWorker(USER);
+  await flush();
+  await flush();
+  await flush();
+
+  expect(upload).toHaveBeenCalledWith({ id: 'ev1', projectId: 'p1', media: [expect.objectContaining({ id: 'cm1', localUri: photoUri })] });
+  expect(insertClosure).toHaveBeenCalledTimes(1);
+  expect(closeRpc).toHaveBeenCalledWith('ev1', 'Sudah ditambal');
+  expect(await loadQueue(USER)).toEqual([]);
+  expect(fsCalls).toEqual([]);
+  expect(storageCalls).toEqual([]);
 });
