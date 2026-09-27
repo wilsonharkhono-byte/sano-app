@@ -20,7 +20,8 @@
 // them; they are a release step.
 
 import { createClient } from '@supabase/supabase-js';
-import { createHandler, type CallerCheck } from './handler.ts';
+import { makeVerifyCaller, supabaseCallerClient } from './caller.ts';
+import { createHandler } from './handler.ts';
 import { makeDatumApi } from './datum.ts';
 import { makeSupabaseStore } from './store.ts';
 
@@ -31,27 +32,18 @@ const DATUM_API_BASE_URL = Deno.env.get('DATUM_API_BASE_URL') ?? '';
 const DATUM_SANO_SECRET = Deno.env.get('DATUM_SANO_SECRET') ?? '';
 const WEBHOOK_AUTH_SECRET = Deno.env.get('WEBHOOK_AUTH_SECRET') ?? '';
 
-async function verifyCaller(authHeader: string, projectId: string): Promise<CallerCheck> {
-  const caller = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    global: { headers: { Authorization: authHeader } },
-    auth: { persistSession: false },
-  });
-  const { data: userData, error: authError } = await caller.auth.getUser();
-  if (authError || !userData?.user) return { ok: false, status: 401, code: 'AUTH', error: 'Sesi tidak valid.' };
-  const { data: visible } = await caller.from('projects').select('id').eq('id', projectId).maybeSingle();
-  if (!visible) {
-    return { ok: false, status: 404, code: 'NOT_FOUND', error: 'Proyek tidak ditemukan atau Anda tidak punya akses.' };
-  }
-  const office = await caller.rpc('is_office_role');
-  return { ok: true, userId: userData.user.id, isOffice: office.data === true };
-}
-
 type EdgeRuntimeGlobal = { EdgeRuntime?: { waitUntil(work: Promise<unknown>): void } };
 
 export const handle = createHandler({
   configured: !!(SUPABASE_URL && SUPABASE_ANON_KEY && SUPABASE_SERVICE_ROLE_KEY && DATUM_API_BASE_URL && DATUM_SANO_SECRET),
   webhookSecret: WEBHOOK_AUTH_SECRET,
-  verifyCaller,
+  // The caller's own client: their JWT, their RLS. caller.ts holds the check.
+  verifyCaller: makeVerifyCaller((authHeader) =>
+    supabaseCallerClient(createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false },
+    }))
+  ),
   openContext: () => ({
     store: makeSupabaseStore(createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })),
     datum: makeDatumApi({ baseUrl: DATUM_API_BASE_URL, secret: DATUM_SANO_SECRET, fetch }),
