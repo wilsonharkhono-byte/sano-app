@@ -112,6 +112,18 @@ else
 fi
 pg -U supabase_admin -q -c 'DROP EXTENSION IF EXISTS pg_cron' >/dev/null 2>&1 || true
 
+# The catalog snapshot taken right after the fixture's two pastes must still
+# match now, after 097, 096, 101 and four more 107 pastes (twice without
+# pg_cron, twice with it): none of them may leave behind a duplicate
+# constraint, foreign key, trigger or policy.
+catalog_now="$(pg -U postgres -tAc 'select rehearsal_ds.datum_catalog_count()')"
+catalog_snap="$(pg -U postgres -tAc 'select n from rehearsal_ds.catalog_snapshot')"
+if [ "$catalog_now" = "$catalog_snap" ]; then
+  out="$out"$'\n'"PASS 107 the catalog count 107 created is still unchanged after every re-paste in this run"
+else
+  out="$out"$'\n'"FAIL 107 the catalog count 107 created changed :: was $catalog_snap now $catalog_now"
+fi
+
 printf '%s\n' "$out" | grep -E '^FAIL|ERROR' || true
 pass="$(printf '%s\n' "$out" | grep -c '^PASS' || true)"
 fail="$(printf '%s\n' "$out" | grep -c '^FAIL' || true)"

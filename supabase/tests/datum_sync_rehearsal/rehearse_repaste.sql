@@ -22,3 +22,6 @@ SELECT rehearsal_ds.expect('107 after re-pasting 096 a terrace is still an accep
 ROLLBACK;
 SELECT rehearsal_ds.expect('107 after re-pasting 096 the area_type CHECK still lists exterior', (
   SELECT pg_get_constraintdef(oid) LIKE '%''exterior''%' FROM pg_constraint WHERE conname = 'rooms_area_type_check'));
+
+SELECT rehearsal_ds.expect('107 after re-pasting 097 and 096 the catalog count 107 created is unchanged (no duplicate constraint, trigger or policy)', (
+  SELECT n = rehearsal_ds.datum_catalog_count() FROM rehearsal_ds.catalog_snapshot));

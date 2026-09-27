@@ -33,11 +33,20 @@ SELECT rehearsal_ds.expect_error('107 a supervisor cannot insert an event carryi
 SELECT rehearsal_ds.expect_error('107 a supervisor cannot insert an event carrying confirmed_by', format(
   'INSERT INTO site_events (id, project_id, room_id, reporter_id, captured_at, confirmed_by) VALUES (%L, %L, %L, %L, now(), %L)',
   rehearsal_ds.ev('new2'), rehearsal_ds.p(1), rehearsal_ds.room(1), rehearsal_ds.u('sup'), rehearsal_ds.u('sup')), 'SITE_EVENT_SYSTEM_COLUMNS:');
+SELECT rehearsal_ds.expect_error('107 a supervisor cannot insert an event carrying datum_card_url', format(
+  'INSERT INTO site_events (id, project_id, room_id, reporter_id, captured_at, datum_card_url) VALUES (%L, %L, %L, %L, now(), %L)',
+  rehearsal_ds.ev('new4'), rehearsal_ds.p(1), rehearsal_ds.room(1), rehearsal_ds.u('sup'), 'https://x'), 'SITE_EVENT_SYSTEM_COLUMNS:');
+SELECT rehearsal_ds.expect_error('107 a supervisor cannot insert an event carrying datum_escalated_at', format(
+  'INSERT INTO site_events (id, project_id, room_id, reporter_id, captured_at, datum_escalated_at) VALUES (%L, %L, %L, %L, now(), now())',
+  rehearsal_ds.ev('new5'), rehearsal_ds.p(1), rehearsal_ds.room(1), rehearsal_ds.u('sup')), 'SITE_EVENT_SYSTEM_COLUMNS:');
 SELECT rehearsal_ds.expect('107 close_site_event still works for a member', (close_site_event(rehearsal_ds.ev('prog'), NULL) ->> 'status') = 'done');
 COMMIT;
 
 BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal_ds.as_user('adm') IS NOT NULL AS ok \gset
 SELECT rehearsal_ds.expect_error('107 an admin cannot set datum_card_id either', format('UPDATE site_events SET datum_card_id = gen_random_uuid() WHERE id = %L', rehearsal_ds.ev('open')), 'SITE_EVENT_SYSTEM_COLUMNS:');
+SELECT rehearsal_ds.expect_error('107 an admin cannot insert an event carrying the guarded columns either', format(
+  'INSERT INTO site_events (id, project_id, room_id, reporter_id, captured_at, datum_card_id, confirmed_by) VALUES (%L, %L, %L, %L, now(), gen_random_uuid(), %L)',
+  rehearsal_ds.ev('new3'), rehearsal_ds.p(1), rehearsal_ds.room(1), rehearsal_ds.u('adm'), rehearsal_ds.u('adm')), 'SITE_EVENT_SYSTEM_COLUMNS:');
 ROLLBACK;
 
 BEGIN; SET LOCAL ROLE service_role; SELECT rehearsal_ds.as_service() IS NOT NULL AS ok \gset
@@ -53,6 +62,14 @@ ROLLBACK;
 
 SELECT rehearsal_ds.expect('107 the card columns landed as the service role wrote them', (
   SELECT datum_card_id = '00000000-0000-4000-8000-00000000f701' AND datum_escalated_at IS NOT NULL FROM site_events WHERE id = rehearsal_ds.ev('open')));
+
+-- confirm_site_event is the usual path to confirmed_by (checked in section
+-- C below), but the sync itself must also be free to write it directly, the
+-- same way it writes the other three system columns.
+BEGIN; SET LOCAL ROLE service_role; SELECT rehearsal_ds.as_service() IS NOT NULL AS ok \gset
+SELECT rehearsal_ds.expect('107 service_role writes confirmed_by directly, not only through confirm_site_event', rehearsal_ds.touched(format(
+  'UPDATE site_events SET confirmed_by = %L WHERE id = %L', rehearsal_ds.u('adm'), rehearsal_ds.ev('open'))) = 1);
+COMMIT;
 
 -- C. The confirmer stamp. c1 is reported and owned by sup (fixture.sql /
 -- owner_id below) but confirmed by est and closed by adm: a guard that
