@@ -6,6 +6,12 @@ jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
 
 import type { DatumRun, DatumSyncState } from '../../../../tools/datumSync';
 import {
+  ESCALATE_AREA_UNKNOWN,
+  codeHeldElsewhere,
+  importBadType,
+  importNoName,
+} from '../../../../tools/datumSyncPlan';
+import {
   differenceGroups,
   importOffer,
   importResultLines,
@@ -105,6 +111,48 @@ describe('differenceGroups', () => {
       { title: 'Keputusan belum terkirim', lines: ['LT1-DAPUR · Pilih kran · Ruangan belum tertaut ke area DATUM.'] },
       { title: 'Kata gerbang berbeda dengan DATUM', lines: ['Gerbang B · deskripsi'] },
     ]);
+  });
+});
+
+describe("differenceGroups: the planner's and the function's reasons", () => {
+  it('shows every reason as the server worded it, and never "undefined"', () => {
+    // run.ts CREATE_DEFERRED and a DATUM item error, as run.ts words them (supabase/functions is not importable here).
+    const deferred = 'Belum dikirim ke DATUM: waktu sinkron ini habis. Dikirim pada sinkron berikutnya.';
+    const groups = differenceGroups(run({
+      counts: { ...run().counts, escalate_deferred: 1 },
+      differences: {
+        create_failed: [
+          { room_code: 'LT1-KM', reason: codeHeldElsewhere('LT1-KM', 'LT1-KM-LAMA') },
+          { room_code: 'LT2-KM', reason: deferred },
+          { room_code: 'LT3-KM', reason: 'DATUM menolak nama, lantai atau tipenya.' },
+        ],
+        import_skipped: [
+          { area_code: 'ZONA-X', reason: importBadType('ZONA-X', 'rooftop') },
+          { area_code: 'TANPA', reason: importNoName('TANPA') },
+        ],
+        escalate_skipped: [
+          { event_id: 'e1', room_code: 'LT1-DAPUR', title: 'Pilih kran', reason: ESCALATE_AREA_UNKNOWN },
+          { event_id: 'e2', room_code: 'LT1-DAPUR', title: 'Pilih keramik', reason: 'Gagal dikirim: Kejadian ini sudah terkirim dari proyek lain di DATUM.' },
+        ],
+      },
+    }));
+    expect(groups).toEqual([
+      { title: 'Gagal dibuat di DATUM', lines: [
+        'LT1-KM · Area DATUM dengan kode LT1-KM sudah tertaut ke ruangan LT1-KM-LAMA. Samakan kodenya di SANO atau DATUM.',
+        `LT2-KM · ${deferred}`,
+        'LT3-KM · DATUM menolak nama, lantai atau tipenya.',
+      ] },
+      { title: 'Tidak diambil dari DATUM', lines: [
+        'ZONA-X · Tipe area DATUM "rooftop" untuk ZONA-X tidak dikenal SANO.',
+        'TANPA · Area DATUM TANPA tidak punya nama.',
+      ] },
+      { title: 'Keputusan belum terkirim', lines: [
+        'LT1-DAPUR · Pilih kran · DATUM tidak mengenal area ruangan ini; dicoba lagi pada sinkron berikutnya.',
+        'LT1-DAPUR · Pilih keramik · Gagal dikirim: Kejadian ini sudah terkirim dari proyek lain di DATUM.',
+        '1 keputusan menunggu sinkron berikutnya',
+      ] },
+    ]);
+    expect(JSON.stringify(groups)).not.toMatch(/undefined|null/);
   });
 });
 
