@@ -41,6 +41,7 @@ import {
   getSiteEvent,
   getSiteEventResult,
   insertSiteEvent,
+  lookupSiteEventCloser,
   invokeSiteEventAnalysis,
   isDuplicateUploadError,
   listConfirmedEventsForDay,
@@ -842,5 +843,61 @@ describe('getSiteEventResult and DATUM (migration 107)', () => {
     const r = await getSiteEventResult(EVENT);
     expect(r.event?.confirmed_by_name).toBeNull();
     expect(r.event?.project_datum_code).toBeNull();
+  });
+});
+
+describe('getSiteEventResult when the app ships before migration 107', () => {
+  // Without 107 there is no site_events_confirmed_by_fkey, so PostgREST
+  // refuses the confirmer embed with PGRST200 and every detail read failed.
+  const noRelationship = {
+    code: 'PGRST200',
+    message: "Could not find a relationship between 'site_events' and 'profiles' in the schema cache",
+  };
+  const row = {
+    id: EVENT, project_id: PROJECT, title: 'Pilih nat', status: 'done', closed_at: '2026-09-17T07:05:00.000Z',
+    site_event_media: [], rooms: { room_name: 'Dapur', floor: 'Lt 1', datum_area_id: null },
+    owner: null, reporter: null, closer: { full_name: 'Budi Santoso' }, project: { datum_project_code: null },
+  };
+  const selects = () => calls.filter((c) => c.startsWith('select:'));
+
+  it('reads once more without the confirmer embed, and names no confirmer', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mocked.from
+      .mockImplementationOnce(() => makeChain({ data: null, error: noRelationship }))
+      .mockImplementationOnce(() => makeChain({ data: row, error: null }));
+    const r = await getSiteEventResult(EVENT);
+    expect(r.error).toBeUndefined();
+    expect(r.event?.title).toBe('Pilih nat');
+    expect(r.event?.confirmed_by_name).toBeNull();
+    expect(r.event?.closed_by_name).toBe('Budi Santoso');
+    expect(selects()).toHaveLength(2);
+    expect(selects()[0]).toContain('confirmer:');
+    expect(selects()[1]).not.toContain('confirmer');
+    expect(selects()[1]).toContain('closer:profiles!site_events_closed_by_fkey(full_name)');
+    expect(selects()[1]).toContain('rooms(room_name, floor, datum_area_id)');
+    warn.mockRestore();
+  });
+
+  it('retries once only, and never on another error', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mocked.from
+      .mockImplementationOnce(() => makeChain({ data: null, error: noRelationship }))
+      .mockImplementationOnce(() => makeChain({ data: null, error: noRelationship }));
+    expect(await getSiteEventResult(EVENT)).toEqual({ event: null, error: noRelationship.message });
+    expect(selects()).toHaveLength(2);
+    calls.length = 0;
+    mocked.from.mockImplementationOnce(() => makeChain({ data: null, error: { code: '42501', message: 'permission denied' } }));
+    expect(await getSiteEventResult(EVENT)).toEqual({ event: null, error: 'permission denied' });
+    expect(selects()).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it("still gives lookupSiteEventCloser the server's closer", async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mocked.from
+      .mockImplementationOnce(() => makeChain({ data: null, error: noRelationship }))
+      .mockImplementationOnce(() => makeChain({ data: row, error: null }));
+    expect(await lookupSiteEventCloser(EVENT)).toEqual({ closedByName: 'Budi Santoso', closedAt: '2026-09-17T07:05:00.000Z' });
+    warn.mockRestore();
   });
 });

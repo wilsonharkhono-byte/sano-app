@@ -382,9 +382,16 @@ export interface SiteEventWithMedia extends SiteEvent {
 // a concatenated select string types every row as GenericStringError under
 // supabase-js 2.100, forcing a double cast through `unknown`. Do not split it.
 // The confirmer embed names 107's site_events_confirmed_by_fkey: paste 107
-// before this code ships (Release step 2), or every detail read fails.
+// before this code ships (Release step 2). Should the app reach a database
+// without it, PostgREST answers PGRST200 and the read is made once more with
+// EVENT_SELECT_NO_CONFIRMER, the same columns less the confirmer.
 const EVENT_SELECT =
   '*, site_event_media(*), rooms(room_name, floor, datum_area_id), owner:profiles!site_events_owner_id_fkey(full_name), reporter:profiles!site_events_reporter_id_fkey(full_name), closer:profiles!site_events_closed_by_fkey(full_name), confirmer:profiles!site_events_confirmed_by_fkey(full_name), project:projects(datum_project_code)';
+const EVENT_SELECT_NO_CONFIRMER =
+  '*, site_event_media(*), rooms(room_name, floor, datum_area_id), owner:profiles!site_events_owner_id_fkey(full_name), reporter:profiles!site_events_reporter_id_fkey(full_name), closer:profiles!site_events_closed_by_fkey(full_name), project:projects(datum_project_code)';
+
+/** PostgREST's "no relationship found" (an embed whose foreign key is not in the schema cache). */
+const NO_RELATIONSHIP = 'PGRST200';
 
 /**
  * Either the event, "no such row" (`notFound: true`), or a read failure
@@ -401,7 +408,13 @@ export type SiteEventResult =
   | { event: null; notFound?: undefined; error: string };
 
 export async function getSiteEventResult(eventId: string): Promise<SiteEventResult> {
-  const { data, error } = await supabase.from('site_events').select(EVENT_SELECT).eq('id', eventId).maybeSingle();
+  let { data, error } = await supabase.from('site_events').select(EVENT_SELECT).eq('id', eventId).maybeSingle();
+  if (error && (error as { code?: string }).code === NO_RELATIONSHIP) {
+    // Migration 107 not applied yet: read once more without the confirmer,
+    // whose name then stays null (unknown, never guessed).
+    console.warn('getSiteEvent: no confirmer relationship (107 not applied?); reading without it:', error.message);
+    ({ data, error } = await supabase.from('site_events').select(EVENT_SELECT_NO_CONFIRMER).eq('id', eventId).maybeSingle());
+  }
   if (error) {
     console.warn('getSiteEvent failed:', error.message);
     return { event: null, error: error.message };
