@@ -181,7 +181,7 @@ describe('differenceGroups after an import', () => {
         create_failed: [{ room_code: 'LT3-PANJANG', reason: 'Nama ruangan lebih dari 120 karakter; DATUM menolaknya.' }],
         escalate_skipped: [{ event_id: 'e1', room_code: 'LT1-DAPUR', title: 'Pilih kran', reason: 'Ruangan belum tertaut ke area DATUM.' }],
         schedule_warnings: [{ area_code: 'LT2-TERAS', code: 'SCHEDULE_FAILED', reason: 'Jadwal area gagal disusun.' }],
-      } as DatumRun['differences'],
+      },
     });
     const imported = run({
       id: 'run-2', source: 'import',
@@ -222,7 +222,7 @@ describe('differenceGroups: DATUM schedules not built', () => {
     const groups = differenceGroups(run({ differences: { schedule_warnings: [
       { area_code: 'LT2-TERAS', code: 'SCHEDULE_FAILED', reason: 'Jadwal area gagal disusun.' },
       { area_code: 'LT2-KM', code: 'SEED_FAILED', reason: '' },
-    ] } as DatumRun['differences'] }));
+    ] } }));
     expect(groups).toEqual([
       {
         title: 'Jadwal DATUM belum tersusun',

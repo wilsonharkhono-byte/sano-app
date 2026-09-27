@@ -113,15 +113,10 @@ export interface DifferenceGroup {
 }
 
 /**
- * DATUM's non-fatal warning on POST areas (SCHEDULE_FAILED, SEED_FAILED):
- * the area was created and linked, only its schedule was not built. The
- * planner's RunDifferences gains `schedule_warnings` with this shape; it is
- * declared here as well so the card reads it whether or not that type has
- * landed, and a run row written before it reads as none.
+ * Under "Jadwal DATUM belum tersusun" (RunDifferences.schedule_warnings,
+ * SCHEDULE_FAILED or SEED_FAILED): the area was created and the room
+ * linked; only DATUM's schedule for it was not built.
  */
-export interface ScheduleWarningItem { area_code: string; code: string; reason: string }
-type CardDifferences = RunDifferences & { schedule_warnings?: ScheduleWarningItem[] };
-
 export const SCHEDULE_WARNINGS_NOTE =
   'Ruangannya sudah dibuat dan ditautkan di DATUM. Susun jadwalnya dengan "Hitung ulang jadwal" di DATUM.';
 
@@ -147,8 +142,8 @@ function gateStatusUnknownLine(x: GateStatusUnknownItem): string {
  */
 export function differenceGroups(run: DatumRun | null, syncRun: DatumRun | null = run): DifferenceGroup[] {
   if (!run) return [];
-  const d: CardDifferences = run.differences;
-  const s: CardDifferences = syncRun?.differences ?? {};
+  const d: RunDifferences = run.differences;
+  const s: RunDifferences = syncRun?.differences ?? {};
   const deferred = syncRun?.counts.escalate_deferred ?? 0;
   const groups: DifferenceGroup[] = [
     {

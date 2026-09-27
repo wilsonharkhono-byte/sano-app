@@ -346,7 +346,7 @@ describe('schedules DATUM could not build', () => {
   it('shows the group, one line per area, with its note', async () => {
     const synced = run({ differences: { schedule_warnings: [
       { area_code: 'LT2-TERAS', code: 'SCHEDULE_FAILED', reason: 'Jadwal area gagal disusun.' },
-    ] } as DatumRun['differences'] });
+    ] } });
     getState.mockResolvedValueOnce(state({ latestFinished: synced, latestSync: synced }));
     const utils = renderCard('admin');
     await waitFor(() => expect(utils.getByText('Jadwal DATUM belum tersusun')).toBeTruthy());
