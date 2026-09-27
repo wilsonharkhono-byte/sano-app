@@ -90,6 +90,22 @@ Deno.test('a code edited in DATUM keeps the link: no second area, a code conflic
   assertEquals(report.counts.steps.create, 'ok');
 });
 
+Deno.test('rooms are created in batches of at most 200, as DATUM takes them, and every batch is linked', async () => {
+  const w = world();
+  for (let i = 0; i < 250; i++) {
+    w.store.rooms.push({
+      id: `room-x${i}`, project_id: PROJECT_ID, room_code: `LT2-R-${String(i).padStart(3, '0')}`, room_name: `Ruang ${i}`,
+      floor: 'Lt. 2', area_type: 'general', sort_order: i, active: true, datum_area_id: null,
+    });
+  }
+  const report = await sync(w);
+  const posts = w.datum.state.calls.filter((c) => c.method === 'POST' && c.path === 'areas');
+  assertEquals(posts.map((c) => (c.body as { areas: unknown[] }).areas.length), [200, 52]);
+  assertEquals(report.counts.steps.create, 'ok');
+  assertEquals(report.counts.rooms_created, 252);
+  assertEquals(w.store.rooms.every((r) => r.datum_area_id !== null), true);
+});
+
 Deno.test('a DATUM project with no areas opens the gate: every active room is created', async () => {
   const w = world();
   w.datum.state.areas = [];

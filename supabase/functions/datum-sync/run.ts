@@ -128,6 +128,8 @@ export const PAIRING_MISSING = 'Proyek ini belum ditautkan ke DATUM.';
 export const SYNC_RUNNING = 'Sinkron DATUM untuk proyek ini sedang berjalan.';
 export const AREAS_UNREAD = 'Area DATUM tidak terbaca pada sinkron ini.';
 export const STALE_RUN_MS = 10 * 60 * 1000;
+/** DATUM's POST areas takes 1-200 items per call. */
+export const CREATE_BATCH = 200;
 
 const READINESS = new Set(['not_started', 'in_progress', 'ready_for_handoff', 'blocked', 'passed', 'not_applicable']);
 
@@ -256,15 +258,18 @@ async function linkAndCreate(
   } else if (plan.create.length === 0) {
     rec.ok('create');
   } else {
-    const posted = await ctx.datum.postAreas(
-      project.datum_project_code,
-      plan.create.map(({ area_code, area_name, floor, area_type, tracked }) => ({ area_code, area_name, floor, area_type, tracked })),
-    );
-    if (!posted.ok) {
-      rec.fail('create', posted.error);
-    } else {
-      let createError: string | null = null;
-      const byCode = new Map(plan.create.map((c) => [c.area_code, c]));
+    let createError: string | null = null;
+    const byCode = new Map(plan.create.map((c) => [c.area_code, c]));
+    for (let start = 0; start < plan.create.length; start += CREATE_BATCH) {
+      const batch = plan.create.slice(start, start + CREATE_BATCH);
+      const posted = await ctx.datum.postAreas(
+        project.datum_project_code,
+        batch.map(({ area_code, area_name, floor, area_type, tracked }) => ({ area_code, area_name, floor, area_type, tracked })),
+      );
+      if (!posted.ok) {
+        createError ??= posted.error;
+        continue;
+      }
       for (const area of posted.data.areas) {
         const item = byCode.get(area.area_code);
         if (!item) continue;
@@ -280,9 +285,9 @@ async function linkAndCreate(
       for (const e of posted.data.errors) {
         createFailed.push({ room_code: e.area_code, reason: CREATE_ITEM_ERRORS[e.code] ?? `DATUM menolak: ${e.code}` });
       }
-      if (createError) rec.fail('create', createError);
-      else rec.ok('create');
     }
+    if (createError) rec.fail('create', createError);
+    else rec.ok('create');
   }
   rec.counts.rooms_linked_now = linkedNow;
   rec.counts.rooms_created = created;
