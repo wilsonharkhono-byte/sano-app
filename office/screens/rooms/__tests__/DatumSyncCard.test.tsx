@@ -192,6 +192,64 @@ describe('Ambil dari DATUM', () => {
   });
 });
 
+describe('Ambil dari DATUM: after the server answered', () => {
+  const offered = () => state({ latestFinished: run({ differences: { datum_only: [
+    { area_code: 'LT2-TERAS', area_name: 'Teras', floor: 'Lt. 2', area_type: 'terrace' },
+    { area_code: 'LT2-KM', area_name: 'Kamar Mandi', floor: 'Lt. 2', area_type: 'bathroom' },
+  ] } }) });
+  const question = 'Ambil 2 ruangan dari DATUM proyek Citraland K2-7 Sonny? Ruangan dibuat di SANO dan ditautkan; setelah itu SANO yang menjadi acuan.';
+  const openConfirmation = async () => {
+    const utils = renderCard('admin');
+    await waitFor(() => expect(utils.getByText('Ambil 2 ruangan dari DATUM')).toBeTruthy());
+    fireEvent.press(utils.getByText('Ambil 2 ruangan dari DATUM'));
+    return utils;
+  };
+
+  it('reads the run table again and shows the import run the server wrote, with no offer left', async () => {
+    getState.mockResolvedValueOnce(offered());
+    doImport.mockResolvedValueOnce({ run: { ok: true, runId: 'run-2', error: null, counts: { steps: { import: 'ok' }, rooms_imported: 2 }, differences: {} } });
+    const utils = await openConfirmation();
+    const imported = run({
+      id: 'run-2', source: 'import', finished_at: '2026-09-27T03:00:05.000Z',
+      counts: { steps: { areas: 'ok', import: 'ok', gate_status: 'ok' }, datum_project_name: 'Citraland K2-7 Sonny', rooms_linked: 14, rooms_imported: 2 },
+      differences: {},
+    });
+    getState.mockResolvedValueOnce(state({ latest: imported, latestFinished: imported }));
+    await act(async () => { fireEvent.press(utils.getByText('Ambil')); });
+    expect(getState).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(utils.getByText('Sinkron terakhir: 27 Sep 10.00 · 14 ruangan ditautkan · 2 diambil dari DATUM')).toBeTruthy());
+    expect(utils.getByText('2 ruangan diambil')).toBeTruthy();
+    expect(utils.queryByText(/^Ambil \d+ ruangan dari DATUM$/)).toBeNull();
+    expect(utils.queryByText(question)).toBeNull();
+  });
+
+  it('shows a refusal as written, claims nothing taken, and keeps the confirmation open', async () => {
+    getState.mockResolvedValue(offered());
+    doImport.mockResolvedValueOnce({ error: 'Peran Anda tidak dapat diperiksa: permission denied', code: 'FORBIDDEN' });
+    const utils = await openConfirmation();
+    await act(async () => { fireEvent.press(utils.getByText('Ambil')); });
+    expect(utils.getByText('Peran Anda tidak dapat diperiksa: permission denied')).toBeTruthy();
+    expect(utils.queryByText(/ruangan diambil$/)).toBeNull();
+    expect(utils.getByText(question)).toBeTruthy();
+    expect(utils.getByText('Ambil')).toBeTruthy();
+    expect(getState).toHaveBeenCalledTimes(2);
+  });
+
+  it('says "Gagal:" with the reason when the import run was not ok, beside what did come in', async () => {
+    getState.mockResolvedValue(offered());
+    doImport.mockResolvedValueOnce({ run: {
+      ok: false, runId: 'run-2', error: 'Gagal dibuat di SANO: duplicate key value',
+      counts: { steps: { areas: 'ok', import: 'error' }, rooms_imported: 1 },
+      differences: { import_skipped: [{ area_code: 'LT2-KM', reason: 'Gagal dibuat di SANO: duplicate key value' }] },
+    } });
+    const utils = await openConfirmation();
+    await act(async () => { fireEvent.press(utils.getByText('Ambil')); });
+    expect(utils.getByText('1 ruangan diambil')).toBeTruthy();
+    expect(utils.getByText('LT2-KM: Gagal dibuat di SANO: duplicate key value')).toBeTruthy();
+    expect(utils.getByText('Gagal: Gagal dibuat di SANO: duplicate key value')).toBeTruthy();
+  });
+});
+
 describe('Ambil dari DATUM: what one request can carry', () => {
   it('sends only codes DATUM accepts and lists a too-long one apart, never sent', async () => {
     const long = `L${'X'.repeat(200)}`;
