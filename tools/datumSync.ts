@@ -56,21 +56,30 @@ export async function setDatumProjectCode(
 
 export type DatumCallResult = { run: RunReport; error?: undefined } | { error: string; code: string; run?: undefined };
 
-/** The sentence for each refusal the function can give (its codes, handler.ts). */
+/**
+ * The app's own sentence for each refusal whose meaning is fixed (the
+ * function's codes, handler.ts); each also says what to do. Every other
+ * code - FORBIDDEN, BAD_REQUEST, UNEXPECTED and any code added later -
+ * carries a reason that varies ("Peran Anda tidak dapat diperiksa: ...",
+ * "Proyek gagal dibaca: ..."), so the server's own sentence is shown and
+ * never covered by a fixed one.
+ */
 export const DATUM_SYNC_REFUSALS: Record<string, string> = {
   AUTH: 'Sesi Anda berakhir. Masuk lagi, lalu coba sinkron lagi.',
   NOT_FOUND: 'Proyek tidak ditemukan atau Anda tidak punya akses.',
-  FORBIDDEN: 'Hanya peran kantor (admin, prinsipal, estimator) yang dapat menyinkronkan DATUM.',
   PAIRING_MISSING: 'Proyek ini belum ditautkan ke DATUM.',
   SYNC_RUNNING: 'Sinkron DATUM untuk proyek ini sedang berjalan.',
-  BAD_REQUEST: 'Permintaan sinkron tidak valid.',
   CONFIG: 'Sinkron DATUM belum dikonfigurasi di server.',
 };
+/** FORBIDDEN's sentences, only for a refusal that came without one (handler.ts FORBIDDEN_SYNC / FORBIDDEN_IMPORT). */
+export const DATUM_SYNC_FORBIDDEN = 'Hanya peran kantor (admin, prinsipal, estimator) yang dapat menyinkronkan DATUM.';
 export const DATUM_IMPORT_FORBIDDEN = 'Hanya peran kantor yang dapat mengambil ruangan dari DATUM.';
 
-export function mapDatumSyncRefusal(code: string, fallback: string | null | undefined, importing = false): string {
-  if (importing && code === 'FORBIDDEN') return DATUM_IMPORT_FORBIDDEN;
-  return DATUM_SYNC_REFUSALS[code] ?? `Sinkron DATUM gagal: ${fallback || code}`;
+export function mapDatumSyncRefusal(code: string, serverMessage: string | null | undefined, importing = false): string {
+  const fixed = DATUM_SYNC_REFUSALS[code];
+  if (fixed) return fixed;
+  if (code === 'FORBIDDEN') return serverMessage || (importing ? DATUM_IMPORT_FORBIDDEN : DATUM_SYNC_FORBIDDEN);
+  return `${importing ? 'Ambil ruangan dari DATUM gagal' : 'Sinkron DATUM gagal'}: ${serverMessage || code}`;
 }
 
 interface FunctionReply extends Partial<RunReport> {

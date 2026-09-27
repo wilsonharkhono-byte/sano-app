@@ -10,6 +10,7 @@ jest.mock('../supabase', () => ({
 import { supabase } from '../supabase';
 import {
   DATUM_IMPORT_FORBIDDEN,
+  DATUM_SYNC_FORBIDDEN,
   DATUM_SYNC_REFUSALS,
   canPairDatum,
   canSyncDatum,
@@ -84,14 +85,33 @@ describe('syncDatum and importFromDatum', () => {
     ]);
   });
 
-  it.each(Object.entries(DATUM_SYNC_REFUSALS))('maps %s to its sentence', async (code, sentence) => {
+  it.each(Object.entries(DATUM_SYNC_REFUSALS))('maps %s, whose meaning is fixed, to its sentence', async (code, sentence) => {
     mocked.functions.invoke.mockResolvedValueOnce({ data: null, error: httpError({ ok: false, code, error: 'x' }) });
     expect(await syncDatum('p1')).toEqual({ error: sentence, code });
   });
 
-  it('gives the import its own refusal sentence', async () => {
-    mocked.functions.invoke.mockResolvedValueOnce({ data: null, error: httpError({ ok: false, code: 'FORBIDDEN', error: 'x' }) });
+  it("shows the server's own reason where it varies, never a fixed sentence over it", async () => {
+    const refuse = (code: string, error?: string) =>
+      mocked.functions.invoke.mockResolvedValueOnce({ data: null, error: httpError({ ok: false, code, ...(error ? { error } : {}) }) });
+    refuse('FORBIDDEN', 'Peran Anda tidak dapat diperiksa: permission denied for function is_office_role');
+    expect(await syncDatum('p1')).toEqual({ error: 'Peran Anda tidak dapat diperiksa: permission denied for function is_office_role', code: 'FORBIDDEN' });
+    refuse('FORBIDDEN', 'Hanya peran kantor yang dapat mengambil ruangan dari DATUM.');
+    expect(await importFromDatum('p1', ['A-1'])).toEqual({ error: 'Hanya peran kantor yang dapat mengambil ruangan dari DATUM.', code: 'FORBIDDEN' });
+    refuse('UNEXPECTED', 'Proyek gagal dibaca: canceling statement due to statement timeout');
+    expect(await syncDatum('p1')).toEqual({ error: 'Sinkron DATUM gagal: Proyek gagal dibaca: canceling statement due to statement timeout', code: 'UNEXPECTED' });
+    refuse('UNEXPECTED', 'Proyek gagal dibaca: offline');
+    expect(await importFromDatum('p1', ['A-1'])).toEqual({ error: 'Ambil ruangan dari DATUM gagal: Proyek gagal dibaca: offline', code: 'UNEXPECTED' });
+    refuse('BAD_REQUEST', 'areaCodes harus 1-500 kode DATUM, masing-masing 1-200 karakter.');
+    expect(await importFromDatum('p1', ['A-1'])).toEqual({ error: 'Ambil ruangan dari DATUM gagal: areaCodes harus 1-500 kode DATUM, masing-masing 1-200 karakter.', code: 'BAD_REQUEST' });
+  });
+
+  it('falls back to its own sentence only when the server gave none', async () => {
+    mocked.functions.invoke.mockResolvedValueOnce({ data: null, error: httpError({ ok: false, code: 'FORBIDDEN' }) });
+    expect(await syncDatum('p1')).toEqual({ error: DATUM_SYNC_FORBIDDEN, code: 'FORBIDDEN' });
+    mocked.functions.invoke.mockResolvedValueOnce({ data: null, error: httpError({ ok: false, code: 'FORBIDDEN' }) });
     expect(await importFromDatum('p1', ['A-1'])).toEqual({ error: DATUM_IMPORT_FORBIDDEN, code: 'FORBIDDEN' });
+    mocked.functions.invoke.mockResolvedValueOnce({ data: null, error: httpError({ ok: false, code: 'METHOD' }) });
+    expect(await syncDatum('p1')).toEqual({ error: 'Sinkron DATUM gagal: METHOD', code: 'METHOD' });
   });
 
   it('never claims a run it did not get: an unknown answer or a dead network is an error', async () => {
