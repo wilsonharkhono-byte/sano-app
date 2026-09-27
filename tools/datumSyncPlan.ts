@@ -428,3 +428,36 @@ export function staffCounts(plan: StaffLinkPlan): StaffCounts {
     stale: plan.stale.length,
   };
 }
+
+// ─── Gate words (spec §2 decision 3) ─────────────────────────────────────────
+
+/** Reports, never writes: a DATUM word that differs from gate_refs is listed. */
+export function diffGateWords(datum: ReadonlyArray<DatumGateWord>, sano: ReadonlyArray<SanoGateWord>): GateWordDiff[] {
+  const out: GateWordDiff[] = [];
+  const mine = new Map(sano.map((g) => [g.code, g]));
+  for (const g of [...datum].sort((a, b) => (a.code < b.code ? -1 : 1))) {
+    const s = mine.get(g.code);
+    if (!s) {
+      out.push({ code: g.code, field: 'missing_in_sano' });
+      continue;
+    }
+    if (g.name.trim() !== s.name_id.trim()) out.push({ code: g.code, field: 'name' });
+    if ((g.description ?? '').trim() !== (s.description ?? '').trim()) out.push({ code: g.code, field: 'description' });
+  }
+  return out;
+}
+
+// ─── Escalation (spec §5.3, §6.2 "escalate") ─────────────────────────────────
+
+export const ESCALATE_BATCH = 20;
+export const ESCALATE_ROOM_UNLINKED = 'Ruangan belum tertaut ke area DATUM.';
+
+/** tools/roomLinks.ts buildRoomUrl, inlined: SANO has no web route to one event. */
+export function sanoRoomUrl(projectCode: string, roomCode: string): string {
+  return `https://sano-app.vercel.app/r/${encodeURIComponent(projectCode)}/${encodeURIComponent(roomCode)}`;
+}
+
+/** The reporter's DATUM account, else the confirmer's, else none (DATUM then uses SANO (sistem)). */
+export function escalationAuthor(reporterStaffId: string | null, confirmerStaffId: string | null): string | null {
+  return reporterStaffId ?? confirmerStaffId ?? null;
+}
