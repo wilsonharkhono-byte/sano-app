@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView, RefreshControl,
 } from 'react-native';
@@ -55,8 +55,15 @@ export default function RoomBoardView(props: {
   showDigestHealth?: boolean;
   /** From a digest notification's params; a fresh object per tap re-applies it. */
   mineRequest?: { mine: boolean } | null;
+  /** Rendered first inside the board's own scroll: the principal tab's DATUM section. */
+  aboveBoard?: React.ReactNode;
+  /** A new value asks for a silent re-read, as a focus does (e.g. after a DATUM sync or import). */
+  reloadSignal?: number;
 }) {
-  const { projectId, onOpenRoom, headerAction, compact, viewerId, onOpenEvent, showOwners, showDigestHealth, mineRequest } = props;
+  const {
+    projectId, onOpenRoom, headerAction, compact, viewerId, onOpenEvent, showOwners, showDigestHealth, mineRequest,
+    aboveBoard, reloadSignal,
+  } = props;
 
   // Close jobs still on this phone, so "Perlu ditindak" can say "Menunggu
   // kirim" on a row the server still has open (closure spec §4.5).
@@ -143,6 +150,16 @@ export default function RoomBoardView(props: {
     void load({ silent: true });
   }, [load]);
 
+  // The mount screen's own "read again" (e.g. rooms a DATUM import just
+  // created): silent like a focus, and only on a new value, never on mount.
+  const signalSeen = useRef(reloadSignal);
+  useEffect(() => {
+    if (reloadSignal === signalSeen.current) return;
+    signalSeen.current = reloadSignal;
+    setReloadKey((k) => k + 1);
+    void load({ silent: true });
+  }, [reloadSignal, load]);
+
   // v_room_board is read in full (active and inactive) so one query can both
   // show the board and say how many rooms are hidden from it, rather than
   // hiding inactive rooms silently with no way to tell "no hambatan" from
@@ -186,6 +203,7 @@ export default function RoomBoardView(props: {
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} colors={[COLORS.primary]} />
       )}
     >
+      {aboveBoard}
       <AttentionList
         projectId={projectId}
         viewerId={viewerId}

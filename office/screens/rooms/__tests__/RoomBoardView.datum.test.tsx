@@ -109,3 +109,28 @@ describe('RoomBoardView and DATUM readiness', () => {
     await waitFor(() => expect(utils.getByText(/ · lama · sebagian menunggu hitung ulang di DATUM$/)).toBeTruthy());
   });
 });
+
+describe('RoomBoardView and the screen around it', () => {
+  it('shows what the screen puts above the board, and reads again silently when the screen asks', async () => {
+    const { Text } = require('react-native');
+    datumRead.mockResolvedValue(paired());
+    const props = { projectId: 'p1', viewerId: 'u1', onOpenRoom: jest.fn(), onOpenEvent: jest.fn(), aboveBoard: <Text>di atas papan</Text> };
+    const utils = render(<RoomBoardView {...props} reloadSignal={0} />);
+    await waitFor(() => expect(utils.getByText('A lolos')).toBeTruthy());
+    expect(utils.getByText('di atas papan')).toBeTruthy();
+    expect(board).toHaveBeenCalledTimes(1);
+    expect(datumRead).toHaveBeenCalledTimes(1);
+
+    board.mockReturnValueOnce(new Promise(() => {}));
+    utils.rerender(<RoomBoardView {...props} reloadSignal={1} />);
+    await act(async () => {});
+    expect(board).toHaveBeenCalledTimes(2);
+    expect(datumRead).toHaveBeenCalledTimes(2);
+    // Silent: the rooms already on screen stay while the new read runs.
+    expect(utils.getByText('Kamar Mandi 1')).toBeTruthy();
+
+    utils.rerender(<RoomBoardView {...props} reloadSignal={1} />);
+    await act(async () => {});
+    expect(board).toHaveBeenCalledTimes(2);
+  });
+});
