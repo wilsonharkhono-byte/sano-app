@@ -38,6 +38,18 @@ jest.mock('../../../tools/projectPhase', () => ({ canSetProjectPhase: () => fals
 jest.mock('../GatesAdminScreen', () => ({ __esModule: true, default: () => null }));
 jest.mock('../rooms/RoomForm', () => ({ __esModule: true, default: () => null }));
 jest.mock('../rooms/RoomPasteImport', () => ({ __esModule: true, default: () => null }));
+const mockDatumCardProps: Array<Record<string, unknown>> = [];
+jest.mock('../rooms/DatumSyncCard', () => {
+  const ReactLocal = require('react');
+  const { Text } = require('react-native');
+  return {
+    __esModule: true,
+    default: (props: Record<string, unknown>) => {
+      mockDatumCardProps.push(props);
+      return ReactLocal.createElement(Text, null, 'kartu datum');
+    },
+  };
+});
 const mockBoardProps: Array<Record<string, unknown>> = [];
 jest.mock('../rooms/RoomBoardView', () => {
   const ReactLocal = require('react');
@@ -61,6 +73,7 @@ jest.setTimeout(20000);
 beforeEach(() => {
   mockParams = undefined;
   mockBoardProps.length = 0;
+  mockDatumCardProps.length = 0;
 });
 
 describe('RoomsAdminScreen and the digest deeplink', () => {
@@ -79,5 +92,20 @@ describe('RoomsAdminScreen and the digest deeplink', () => {
     await waitFor(() => expect(utils.getByText('papan ruangan')).toBeTruthy());
     expect(utils.queryByText('Tambah ruangan')).toBeNull();
     expect(mockBoardProps[mockBoardProps.length - 1].mineRequest).toEqual({ mine: true });
+  });
+});
+
+
+describe('RoomsAdminScreen and the DATUM card', () => {
+  it('shows the card on Kelola ruangan with the project, the role and the project reload', async () => {
+    const utils = render(<RoomsAdminScreen />);
+    await act(async () => {});
+    expect(utils.queryByText('kartu datum')).toBeNull();
+    fireEvent.press(utils.getByText('Kelola ruangan'));
+    await waitFor(() => expect(utils.getByText('kartu datum')).toBeTruthy());
+    const props = mockDatumCardProps[mockDatumCardProps.length - 1];
+    expect(props.project).toBe(mockProjectContext.project);
+    expect(props.role).toBe('admin');
+    expect(props.onPaired).toBe(mockProjectContext.refresh);
   });
 });

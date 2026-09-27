@@ -11,6 +11,7 @@ import GatesAdminScreen from './GatesAdminScreen';
 import RoomBoardView from './rooms/RoomBoardView';
 import RoomForm from './rooms/RoomForm';
 import RoomPasteImport from './rooms/RoomPasteImport';
+import DatumSyncCard from './rooms/DatumSyncCard';
 import {
   listRoomsResult, createRoom, setRoomActive, ensureAreaUmum, roomsToDatumAreas,
   type ParsedRoomRow,
@@ -369,6 +370,8 @@ export default function RoomsAdminScreen() {
                 Mencetak mengunci kode ruangan: label yang sudah menempel di dinding tidak boleh berubah artinya.
               </Text>
             </Card>
+
+            <DatumSyncCard project={project} role={profile?.role} onPaired={refresh} />
 
             <Card title="Ekspor untuk DATUM" subtitle="Berkas JSON dalam bentuk area DATUM.">
               <TouchableOpacity
