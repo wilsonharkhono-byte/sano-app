@@ -791,3 +791,42 @@ describe('error kind (transient vs permanent)', () => {
     expect(r).toEqual({});
   });
 });
+
+
+describe('getSiteEventResult and DATUM (migration 107)', () => {
+  it("asks for the confirmer through 107's foreign key and for the project's DATUM pairing", async () => {
+    mocked.from.mockImplementationOnce(() => makeChain({ data: null, error: null }));
+    await getSiteEventResult(EVENT);
+    const select = calls.find((c) => c.startsWith('select:')) ?? '';
+    expect(select).toContain('confirmer:profiles!site_events_confirmed_by_fkey(full_name)');
+    expect(select).toContain('project:projects(datum_project_code)');
+  });
+
+  it('names the confirmer, carries the pairing and the card, and drops the embeds', async () => {
+    mocked.from.mockImplementationOnce(() =>
+      makeChain({
+        data: {
+          id: EVENT, project_id: PROJECT, title: 'Pilih nat', status: 'open', site_event_media: [], rooms: null,
+          owner: null, reporter: null, closer: null, confirmer: { full_name: 'Siti Aminah' },
+          project: { datum_project_code: 'K2-7' }, confirmed_by: 'u2', datum_card_id: 'card-1',
+        },
+        error: null,
+      }),
+    );
+    const r = await getSiteEventResult(EVENT);
+    expect(r.event?.confirmed_by_name).toBe('Siti Aminah');
+    expect(r.event?.project_datum_code).toBe('K2-7');
+    expect(r.event?.datum_card_id).toBe('card-1');
+    expect((r.event as unknown as { confirmer?: unknown; project?: unknown }).confirmer).toBeUndefined();
+    expect((r.event as unknown as { confirmer?: unknown; project?: unknown }).project).toBeUndefined();
+  });
+
+  it('leaves both null when the joins find nothing: an unknown confirmer is never guessed', async () => {
+    mocked.from.mockImplementationOnce(() =>
+      makeChain({ data: { id: EVENT, project_id: PROJECT, site_event_media: [], confirmer: null, project: null }, error: null }),
+    );
+    const r = await getSiteEventResult(EVENT);
+    expect(r.event?.confirmed_by_name).toBeNull();
+    expect(r.event?.project_datum_code).toBeNull();
+  });
+});

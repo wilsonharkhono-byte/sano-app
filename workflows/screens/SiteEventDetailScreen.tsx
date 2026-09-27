@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Platform, ScrollView, View, Text, TouchableOpacity } from 'react-native';
+import { Alert, Linking, Platform, ScrollView, View, Text, TouchableOpacity } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import Header from '../components/Header';
@@ -23,6 +23,7 @@ import { COLORS, SPACE } from '../theme';
 import { formStyles as s } from './siteEvent/styles';
 import MediaStrip from './siteEvent/MediaStrip';
 import ClosureForm from './siteEvent/ClosureForm';
+import { DATUM_DETAIL_COPY, confirmedLine, datumEscalationView } from './siteEvent/datumEscalation';
 import { detailActions, isOverdue, voStatusText } from './siteEvent/detailModel';
 import {
   REASON_CLOSE_STATUS_UNREADABLE,
@@ -37,6 +38,22 @@ function Row({ label, value }: { label: string; value: string }) {
       <Text style={s.rowLabel}>{label}</Text>
       <Text style={s.rowValue}>{value}</Text>
     </View>
+  );
+}
+
+function DatumEscalationRows({ event }: { event: SiteEventWithMedia }) {
+  const view = datumEscalationView(event);
+  if (view.kind === 'none') return null;
+  if (view.kind === 'waiting') return <Text style={s.hint}>{view.label}</Text>;
+  return (
+    <>
+      <Row label={DATUM_DETAIL_COPY.sentLabel} value={view.label} />
+      {view.url ? (
+        <TouchableOpacity style={s.row} onPress={() => void Linking.openURL(view.url as string)} accessibilityRole="link">
+          <Text style={[s.rowValue, { color: COLORS.primary }]}>{DATUM_DETAIL_COPY.open}</Text>
+        </TouchableOpacity>
+      ) : null}
+    </>
   );
 }
 
@@ -313,7 +330,10 @@ export default function SiteEventDetailScreen() {
               <Row label="Tenggat" value={event.due_date ? `${event.due_date}${overdue ? ' · terlambat' : ''}` : '—'} />
               <Row label="Dampak lanjutan" value={event.downstream_impact ?? '—'} />
               <Row label="Dilaporkan" value={`${event.reporter_name ?? '—'} · ${formatDateTime(event.captured_at)}`} />
-              {event.confirmed_at ? <Row label="Dikonfirmasi" value={formatDateTime(event.confirmed_at)} /> : null}
+              {event.confirmed_at ? (
+                <Row label="Dikonfirmasi" value={confirmedLine(formatDateTime(event.confirmed_at), event.confirmed_by_name)} />
+              ) : null}
+              <DatumEscalationRows event={event} />
               {event.confirmed_at && !event.ai_used ? <Row label="Sumber" value="Diisi manual" /> : null}
               {vo ? <Text style={s.hint}>{vo}</Text> : null}
               {event.related_event_id ? (

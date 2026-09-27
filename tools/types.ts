@@ -175,6 +175,16 @@ export interface SiteEvent {
   last_error: string | null;
   /** Service role only. Counts failed analysis attempts. */
   analysis_attempts: number;
+  /**
+   * Migration 107, written only by the datum-sync function: the DATUM decision
+   * card this event became. Optional because select('*') returns no such key
+   * before 107 is pasted.
+   */
+  datum_card_id?: string | null;
+  datum_card_url?: string | null;
+  datum_escalated_at?: string | null;
+  /** Migration 107: stamped by a trigger inside confirm_site_event. NULL for events confirmed before 107. */
+  confirmed_by?: string | null;
 }
 
 export interface SiteEventMedia {
