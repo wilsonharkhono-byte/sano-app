@@ -120,6 +120,19 @@ export interface DifferenceGroup {
 export const SCHEDULE_WARNINGS_NOTE =
   'Ruangannya sudah dibuat dan ditautkan di DATUM. Susun jadwalnya dengan "Hitung ulang jadwal" di DATUM.';
 
+/**
+ * supabase/functions/datum-sync/run.ts's CREATE_DEFERRED reason text, exactly
+ * as it words it there. That module is Deno-only and not importable from the
+ * app (the same reason tools/datumSyncPlan.ts keeps plan.ts a byte-identical
+ * copy rather than an import), so this is a deliberate duplicate, matched
+ * verbatim - never by a substring of the copy. A create the run's clock did
+ * not reach before its create deadline is not a failure: DATUM never saw it,
+ * and it is sent again on the next sync, so it is split into its own group
+ * rather than sit under "Gagal dibuat di DATUM" - the card must never claim a
+ * failure that did not happen.
+ */
+export const CREATE_DEFERRED_REASON = 'Belum dikirim ke DATUM: waktu sinkron ini habis. Dikirim pada sinkron berikutnya.';
+
 /** One side of a conflict, quoted; an empty side (a floor left blank) reads "(kosong)", never "". */
 function conflictValue(v: string): string {
   return v.trim() ? `"${v}"` : '(kosong)';
@@ -145,6 +158,10 @@ export function differenceGroups(run: DatumRun | null, syncRun: DatumRun | null 
   const d: RunDifferences = run.differences;
   const s: RunDifferences = syncRun?.differences ?? {};
   const deferred = syncRun?.counts.escalate_deferred ?? 0;
+  // A deadline-deferred create (CREATE_DEFERRED_REASON) is waiting, not failed:
+  // split it out by the exact reason text, never a substring of the copy.
+  const createFailed = (s.create_failed ?? []).filter((x) => x.reason !== CREATE_DEFERRED_REASON);
+  const createDeferred = (s.create_failed ?? []).filter((x) => x.reason === CREATE_DEFERRED_REASON);
   const groups: DifferenceGroup[] = [
     {
       title: 'Hanya di DATUM',
@@ -158,7 +175,8 @@ export function differenceGroups(run: DatumRun | null, syncRun: DatumRun | null 
       }),
     },
     { title: 'Kode ganda di DATUM', lines: (d.datum_duplicates ?? []).map((x) => `${x.key}: ${x.area_codes.join(', ')}`) },
-    { title: 'Gagal dibuat di DATUM', lines: (s.create_failed ?? []).map((x) => `${x.room_code} · ${x.reason}`) },
+    { title: 'Gagal dibuat di DATUM', lines: createFailed.map((x) => `${x.room_code} · ${x.reason}`) },
+    { title: 'Belum dibuat di DATUM (menunggu sinkron berikutnya)', lines: createDeferred.map((x) => `${x.room_code} · ${x.reason}`) },
     {
       title: 'Jadwal DATUM belum tersusun',
       lines: (s.schedule_warnings ?? []).map((x) => `${x.area_code}: ${x.reason || x.code}`),

@@ -140,9 +140,9 @@ describe("differenceGroups: the planner's and the function's reasons", () => {
     expect(groups).toEqual([
       { title: 'Gagal dibuat di DATUM', lines: [
         'LT1-KM · Area DATUM dengan kode LT1-KM sudah tertaut ke ruangan LT1-KM-LAMA. Samakan kodenya di SANO atau DATUM.',
-        `LT2-KM · ${deferred}`,
         'LT3-KM · DATUM menolak nama, lantai atau tipenya.',
       ] },
+      { title: 'Belum dibuat di DATUM (menunggu sinkron berikutnya)', lines: [`LT2-KM · ${deferred}`] },
       { title: 'Tidak diambil dari DATUM', lines: [
         'ZONA-X · Tipe area DATUM "rooftop" untuk ZONA-X tidak dikenal SANO.',
         'TANPA · Area DATUM TANPA tidak punya nama.',
@@ -154,6 +154,46 @@ describe("differenceGroups: the planner's and the function's reasons", () => {
       ] },
     ]);
     expect(JSON.stringify(groups)).not.toMatch(/undefined|null/);
+  });
+});
+
+describe('differenceGroups: creates the deadline deferred vs creates DATUM refused', () => {
+  // run.ts's CREATE_DEFERRED, as run.ts words it (supabase/functions is not importable here).
+  const DEFERRED = 'Belum dikirim ke DATUM: waktu sinkron ini habis. Dikirim pada sinkron berikutnya.';
+
+  it('splits a run with both into two groups: refused stays "Gagal", deferred moves to "Belum dibuat"', () => {
+    const groups = differenceGroups(run({ differences: { create_failed: [
+      { room_code: 'LT1-KM', reason: 'DATUM menolak nama, lantai atau tipenya.' },
+      { room_code: 'LT2-KM', reason: DEFERRED },
+    ] } }));
+    expect(groups).toEqual([
+      { title: 'Gagal dibuat di DATUM', lines: ['LT1-KM · DATUM menolak nama, lantai atau tipenya.'] },
+      { title: 'Belum dibuat di DATUM (menunggu sinkron berikutnya)', lines: [`LT2-KM · ${DEFERRED}`] },
+    ]);
+  });
+
+  it('shows only "Belum dibuat" when every create is merely deferred, never "Gagal"', () => {
+    const groups = differenceGroups(run({ differences: { create_failed: [
+      { room_code: 'LT2-KM', reason: DEFERRED },
+      { room_code: 'LT3-KM', reason: DEFERRED },
+    ] } }));
+    expect(groups).toEqual([
+      { title: 'Belum dibuat di DATUM (menunggu sinkron berikutnya)', lines: [`LT2-KM · ${DEFERRED}`, `LT3-KM · ${DEFERRED}`] },
+    ]);
+  });
+
+  it('shows only "Gagal dibuat di DATUM" when DATUM actually refused every create, never "Belum dibuat"', () => {
+    const groups = differenceGroups(run({ differences: { create_failed: [
+      { room_code: 'LT1-KM', reason: 'DATUM menolak nama, lantai atau tipenya.' },
+    ] } }));
+    expect(groups).toEqual([
+      { title: 'Gagal dibuat di DATUM', lines: ['LT1-KM · DATUM menolak nama, lantai atau tipenya.'] },
+    ]);
+  });
+
+  it('shows neither group when nothing failed or was deferred to create', () => {
+    expect(differenceGroups(run({ differences: { create_failed: [] } }))).toEqual([]);
+    expect(differenceGroups(run())).toEqual([]);
   });
 });
 
