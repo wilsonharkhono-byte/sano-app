@@ -54,7 +54,7 @@ exception-driven (brief §8); SANO never computes a readiness verdict nor writes
 | 12 | SANO profiles link to DATUM staff by normalized full name, set only on a unique exact match; staff matching is global and runs once in every sync. | Owner's decision ("similar staff name"). DATUM's `staff.full_name` is not unique (`20260531000001:23`; only `handle` is, `20260717000001:44`), so a match must be unique on both sides or it is not a match. |
 | 13 | 107 stamps `site_events.confirmed_by` with a trigger, without touching `confirm_site_event`. | Nothing records who confirmed an event: 097 has no such column and `confirm_site_event` sets only `confirmed_at` (100:414). Redefining the RPC would join the 097/100 re-paste hazard; `auth.uid()` still names the caller inside the DEFINER RPC (100:189). |
 | 14 | SANO room types widen to DATUM's thirteen `area_type` values, with DATUM's labels. | DATUM added `facade`, `terrace`, `hall`, `exterior` (`20260909000002:9-12`); an imported area of those types could otherwise only be stored under an invented type. |
-| 15 | Pairing may be set by any office role (admin, principal, estimator), never a supervisor. | Owner's decision. The same roles already write rooms (096:312-313) and update projects. |
+| 15 | Pairing may be set by any office role (admin, principal, estimator), never a supervisor. **As built:** the owner extended this to "Sinkron DATUM" itself during review (§6.1), so sync, import and pairing share one office-role gate; calibration item 9 below is resolved. | Owner's decision. The same roles already write rooms (096:312-313) and update projects. |
 
 **Where this supersedes 2026-09-10.** §2 decision 2 and §17 said DATUM would own room
 definitions after the link and SANO's editor would go read-only ("Kelola di DATUM"): replaced
@@ -63,6 +63,16 @@ replaced by decision 4. §17's "DATUM-only areas are pulled": replaced by "liste
 once on confirmation" (decision 5). §17's "the human's name carried in the payload rather than
 impersonated": kept for the note, while the author becomes the person's own DATUM account when
 linked (decision 8). §17's optional DATUM-to-SANO webhook stays out (§12).
+
+**As built, decision 5's create step.** `POST areas` also builds a new tracked area's gate
+schedule the way DATUM's own add-room does — `ensureGateScheduleForArea` then
+`writePlannedDates` (DATUM `apps/web/lib/integrations/sano/areas.ts`) — so DATUM may recompute
+the project's gate windows off a room SANO created, the same side effect a human adding that room
+in DATUM already causes. The "never update" promise narrows to what §1.1 rule 4 always meant:
+DATUM's own code guarantees "an existing area or card is never updated or deleted"
+(`areas.ts`). A schedule or seed step that fails after the insert does not fail the create; the
+item comes back `created: true` with `warning: { code: 'SCHEDULE_FAILED' | 'SEED_FAILED',
+reason }`, and SANO lists it under "Jadwal DATUM belum tersusun" (§8.1) rather than hiding it.
 
 ## 3. Same words (107, part 1)
 
@@ -138,7 +148,9 @@ the CHECK and index hold whichever path wrote the value.
   it, which is the case. Client: `AreaType` (`tools/types.ts:63`) and `AREA_TYPES` / `AREA_TYPE_LABELS`
   (`tools/constants.ts:226-248`) gain DATUM's own labels "Fasad", "Teras / Balkon", "Hall / Lobi",
   "Area luar lain" (`apps/web/components/area-setup/AreaSetup.tsx:32-35`); `RoomForm.tsx:46` and
-  the paste parser (`tools/rooms.ts:253-266`) read that list and need no other edit.
+  the paste parser (`tools/rooms.ts:253-266`) read that list and need no other edit. **As built,**
+  the paste parser also folds everyday synonyms to DATUM's four newer types: `teras`/`balkon` →
+  `terrace`, `lobi`/`lobby` → `hall`, `luar` → `exterior` (`tools/rooms.ts:266-269`).
 
 ### 4.3 `site_events`: escalation columns and `confirmed_by`
 
@@ -252,13 +264,17 @@ project. The command holds no URL and no secret: delivery is the Database Webhoo
   DATUM's own definer functions trust a JWT-less caller (`20260704000003:17-18`), so
   `seed_area_steps` works from it. Every route file sets `export const runtime = "nodejs"`
   (`timingSafeEqual`). The middleware lets `/api` through without a login redirect
-  (`middleware.ts:28-37`); the bearer is the only gate.
+  (`middleware.ts:28-37`); the bearer is the only gate. **As built:** if
+  `createSupabaseAdminClient()` itself throws — the service-role key unset — that is answered the
+  same way as an unset shared secret, `NOT_CONFIGURED` JSON, never Next's own HTML 500
+  (`lib/integrations/sano/gate.ts` `openSanoRequest`).
 - **Env (Vercel, production):** `SANO_INTEGRATION_SECRET`; `SANO_INTEGRATION_STAFF_ID`, the id
   of a `staff` row "SANO (sistem)" the owner creates once (an auth user that never signs in,
   role `studio_staff`, `active = false`, so `GET staff` never offers it for a name match). A
   missing staff id makes `escalate` answer 503 `NOT_CONFIGURED`.
 - **Replies:** `{ ok: true, ... }` or `{ ok: false, code, error }`: `UNAUTHORIZED` 401, `NOT_CONFIGURED` 503,
-  `BAD_REQUEST` 400, `UNKNOWN_PROJECT`/`UNKNOWN_AREA` 404, `TOPIC_MISSING` 409, `DB_ERROR` 500.
+  `BAD_REQUEST` 400, `UNKNOWN_PROJECT`/`UNKNOWN_AREA` 404, `TOPIC_MISSING`/`EVENT_IN_OTHER_PROJECT`
+  409, `DB_ERROR` 500.
 
 ### 5.2 The routes
 
@@ -266,22 +282,31 @@ project. The command holds no URL and no secret: delivery is the Database Webhoo
 |---|---|---|
 | `GET areas?project_code=` | `areas` of the project: `id, area_code, area_name, floor, area_type, sort_order`, by `sort_order`. | `{ project: { id, project_code, project_name }, areas }` |
 | `GET gate-status?project_code=` | `area_gate_status` of the project: `area_id, gate_code, status, stale, last_recomputed_at, updated_at` (`20260531000001:157-172`, `20260601000013:6-7`); and `gates`: `code, name, description, sort_order`. | `{ gates, statuses, read_at }` |
-| `POST areas` | Body `{ project_code, areas: [{ area_code, area_name, floor, area_type, tracked? }] }`, at most 200. Per item: `area_code` must equal `normalizeAreaCode(area_code)` (`packages/core/src/areas/extract.ts:116-125`) else item error `CODE_NOT_NORMALIZED`; name 1-120 and floor ≤ 40 (`areas/mutations.ts:9-16`) else `INVALID`; `area_type` in `AREA_TYPES` (`extract.ts:29`). Existing codes are returned untouched. Missing ones are inserted one by one in request order, `sort_order` appended after the project's maximum as `createArea` does (`mutations.ts:37-45`), `tracked` default true; a `23505` race re-reads the row. Each new tracked area gets `seed_area_steps`, best effort and logged as `mutations.ts:71-76`. No UPDATE or DELETE statement exists in the route. | `{ areas: [{ area_code, id, created }], errors: [{ area_code, code }] }` |
+| `POST areas` | Body `{ project_code, areas: [{ area_code, area_name, floor, area_type, tracked? }] }`, at most 200 (SANO's own `datum-sync` batches its calls at 25, §6.2). Per item: `area_code` must equal `normalizeAreaCode(area_code)` (`packages/core/src/areas/extract.ts:116-125`) else item error `CODE_NOT_NORMALIZED`; name 1-120 and floor ≤ 40 (`areas/mutations.ts:9-16`) else `INVALID`; `area_type` in `AREA_TYPES` (`extract.ts:29`). Only a malformed envelope is 400; a bad item is its own item error and the rest of the batch still goes through. Existing codes are returned untouched. Missing ones are inserted one by one in request order, `sort_order` appended after the project's maximum as `createArea` does (`mutations.ts:37-45`), `tracked` default true; a `23505` race re-reads the row. Each new tracked area gets `seed_area_steps`, best effort and logged as `mutations.ts:71-76`, then — **as built** — its gate schedule the way DATUM's own add-room gives it: `ensureGateScheduleForArea` then `writePlannedDates` (`lib/projects/area-mutations.ts`, `lib/steps/mutations.ts`), also best effort. Either failure is a per-item `warning` on a `created: true` item (`SCHEDULE_FAILED` or `SEED_FAILED`, the more informative one winning when both would apply), never a reason to fail the create — the area still stands, since SANO still has to link its room to it. No UPDATE or DELETE statement exists in the route. | `{ areas: [{ area_code, id, created, warning?: { code, reason } }], errors: [{ area_code, code, reason }] }` |
 | `GET staff` | Active `staff` rows only: `id, full_name` (`20260531000001:21-31`). The matcher needs nothing else, so no role, email, WhatsApp number or handle leaves DATUM. No `project_code`: staff are not per project. | `{ staff: [{ id, full_name }] }` |
-| `POST escalate` | Body `{ project_code, area_id, sano_event_id, sano_url, title ≤ 80, summary ≤ 300 \| null, room_name, reporter_name, confirmer_name \| null, owner_name, due_date, confirmed_at, author_staff_id \| null }`. Steps in §5.3. | `{ card_id, card_url, created, author: 'linked' \| 'system' }` |
+| `POST escalate` | Body `{ project_code, area_id, sano_event_id (lower-cased by the schema, so a differently-cased repeat is the same event), sano_url (an https link on SANO's own origin `https://sano-app.vercel.app`, checked field by field, never just `.url()`), title ≤ 80, summary ≤ 300 \| null, room_name, reporter_name, confirmer_name \| null, owner_name, due_date, confirmed_at, author_staff_id \| null }`. Steps in §5.3. | `{ card_id, card_url, created, author: 'linked' \| 'system' }` |
 
 ### 5.3 `escalate`, idempotent and self-repairing
 
 1. The area must belong to the project, else 404 `UNKNOWN_AREA`.
-2. Look up `cards` where `project_id` matches and `properties->>'sano_event_id' = sano_event_id`.
+2. Look up `cards` where `project_id` matches and `properties @> {"sano_event_id": ...}`
+   (Supabase `.contains`, served by the GIN index `cards_properties_gin_idx`, `20260601000015`).
+   **As built:** the new partial unique index (§5.4) cannot serve this read — a `->>` equality
+   does not imply its `properties ? 'sano_event_id'` predicate — it only turns two truly
+   simultaneous creates into one `23505`, closed the same way in step 3.
 3. None: the project's `topics` row with `code = 'UMUM'`, else 409 `TOPIC_MISSING`; insert
    `cards` with `topic_id`, `title`, `slug` from core `toSlug` (`packages/core/src/cards/create.ts:25-33`)
    plus the `-2`, `-3` suffix loop of `create.ts:46-57`, `properties: { source: 'sano',
    sano_event_id, sano_url }`, and as author `author_staff_id` when it names an active `staff`
-   row, else `SANO_INTEGRATION_STAFF_ID` (the reply's `author` says which). Core
-   `createCard` cannot be reused: it demands a signed-in user and uses that id as author
-   (`create.ts:40-44, 66`), and it guesses an area from the title (`:72-101`) where the area
-   is known. A `23505` on the new index (§5.4) means a parallel call won: re-read step 2.
+   row, else `SANO_INTEGRATION_STAFF_ID` (the reply's `author` says which). A failed read of
+   `author_staff_id`'s `staff` row is its own `DB_ERROR`, never silently read as "no such staff":
+   falling back to the system row there would be permanent, since a repeat never changes the
+   author. Core `createCard` cannot be reused: it demands a signed-in user and uses that id as
+   author (`create.ts:40-44, 66`), and it guesses an area from the title (`:72-101`) where the
+   area is known. A `23505` on the new index (§5.4) means a parallel call won — re-read step 2 —
+   or, **as built**, that the id it holds belongs to another project: 409
+   `EVENT_IN_OTHER_PROJECT`, since a SANO event id spans every project by construction and that
+   can only be an integration bug, never a real repeat.
 4. Ensure, on a new or found card: `linkCardToArea(admin, { cardId, areaId })`
    (`packages/core/src/cards/area-link.ts:65-100`, already treats `23505` as linked); if the
    card has no `decision` event, `createCardEvent(admin, { eventKind: 'decision', payload: {
@@ -296,17 +321,22 @@ project. The command holds no URL and no secret: delivery is the Database Webhoo
    page `app/(app)/project/[slug]/cards/[cardSlug]/page.tsx` resolves (`:25-32`).
 
 DATUM's own triggers then mark the area's gate rows stale (`20260601000013:10-58`) and alert
-card members (`20260926000001`); the route adds no side effect of its own.
+card members (`20260926000001`); the route adds no side effect of its own. **As built:** the
+route never inserts a `card_members` row, so a card `escalate` creates starts with none — the
+alert trigger has nobody to tell. Calibration item 10 below.
 
 ### 5.4 DATUM migration
 
 `20260927000001_cards_sano_event_unique.sql`, in the `20260601000015` shape (`begin; ...
 commit;`): `create unique index if not exists cards_sano_event_id_key on public.cards
-((properties->>'sano_event_id')) where properties ? 'sano_event_id';`. It serves step 2's
-lookup and closes the race step 3 handles. Applied with `pnpm db:preflight` then `pnpm
+((properties->>'sano_event_id')) where properties ? 'sano_event_id';`. **As built,** it closes
+only the race step 3 handles; step 2's own lookup is served by the GIN index
+(`cards_properties_gin_idx`), since a partial index requiring `properties ? 'sano_event_id'`
+cannot serve a `@>` containment read. Applied with `pnpm db:preflight` then `pnpm
 db:migrate` (`docs/DEPLOY.md:21-35`); an index changes no generated type. Until it is pushed,
 repeats are still caught by step 2 but two truly simultaneous calls could make two cards,
-which cannot happen from SANO: one run per project at a time (§6.2).
+which cannot happen from SANO: one run per project at a time (§6.2). Its shape is pinned by
+`packages/db/tests/sano-event-unique-migration.test.ts`.
 
 ## 6. SANO: edge function `datum-sync`
 
@@ -327,12 +357,19 @@ would refuse it; the function verifies both paths itself before anything else.
   'datum_sync_requests', record: { id, project_id } }`, else 400. Mode sync, source `cron`.
 - **User JWT:** anything else, checked the `site-event-analyze/index.ts:202-237` way: `getUser()`
   through a caller client (401 `AUTH`), `projectId` a UUID the caller can read in `projects`
-  (404). Body `{ projectId }` is a sync: the caller's own `profiles.role` must be `admin` or
-  `principal` (403, "Hanya admin atau prinsipal yang dapat menyinkronkan DATUM."), source
-  `manual`. Body `{ projectId, importDatumOnly: true, areaCodes }` (1-200 codes, the list the
-  user confirmed) is an import: `caller.rpc('is_office_role')` must be true, as rooms are
-  office-written (403, "Hanya peran kantor yang dapat mengambil ruangan dari DATUM."), source
-  `import`. `requested_by` is the caller. Only then the service-role client.
+  (404, or on a read error 500 `UNEXPECTED` naming it), then `caller.rpc('is_office_role')` —
+  admin, principal or estimator (`caller.ts` `makeVerifyCaller`). A role check that itself errors
+  is its own 403 `FORBIDDEN` naming the reason, never read as pass or fail — both `FORBIDDEN` and
+  `UNEXPECTED` show the server's own message, not a fixed sentence. **As built (calibration item 9,
+  resolved):** the design's first cut gated a sync to admin and principal only; the owner widened
+  it to every office role during review, so one check now gates a sync and an import alike. Body
+  `{ projectId }` is a sync (403 "Hanya peran kantor (admin, prinsipal, estimator) yang dapat
+  menyinkronkan DATUM."), source `manual`. Body `{ projectId, importDatumOnly: true, areaCodes }`
+  — **as built** 1-500 codes of 1-200 characters each (`MAX_IMPORT_CODES`,
+  `MAX_IMPORT_CODE_LENGTH`; outside those bounds is 400 `BAD_REQUEST` before the caller is even
+  checked), the list the user confirmed — is an import (403 "Hanya peran kantor yang dapat
+  mengambil ruangan dari DATUM."), source `import`. `requested_by` is the caller. Only then the
+  service-role client.
 
 ### 6.2 A sync run
 
@@ -351,23 +388,29 @@ would refuse it; the function verifies both paths itself before anything else.
 |---|---|---|
 | `areas` | pairing | `GET areas`, keeping DATUM's `project_name` in `counts.datum_project_name`; unknown code is the error "Kode proyek DATUM {code} tidak ditemukan di DATUM." |
 | `link` | `areas` | Plan (§6.4), then `UPDATE rooms SET datum_area_id` for each `link` item. |
-| `create` | `areas` | `POST areas` with the plan's `create` items, then link the returned ids; item errors go to `differences.create_failed`. **Plausibility gate:** only when some room already matches an area by code or DATUM's project has no areas; else `skipped` with "Tidak ada ruangan yang cocok dengan area DATUM proyek {project_name}. Periksa kode proyek DATUM, atau ambil ruangannya dari DATUM." A mistyped code naming another real project must not receive this project's rooms; a project DATUM mapped first is steered to the import (§6.3), after which codes match and the gate opens. |
-| `gate_status` | pairing | `GET gate-status`; upsert `room_datum_gate_status` for every status whose `area_id` is some room's `datum_area_id` (rows for unlinked areas are counted, not stored); compare `gates` with `gate_refs` into `differences.gate_words`. |
+| `create` | `areas` | `POST areas` with the plan's `create` items — **as built**, batched at `CREATE_BATCH = 25` per call (lowered from DATUM's own 200-item ceiling once DATUM started building each new area's gate schedule, so one POST reliably clears the 15 s `DATUM_TIMEOUT_MS`) — then link the returned ids; item errors go to `differences.create_failed`, and a per-item schedule or seed `warning` on a created area goes to `differences.schedule_warnings` without failing the create. **As built:** a batch that would start at or after `CREATE_BATCH_START_BEFORE_MS` (45 s into the run) is not sent — its rooms go to `create_failed` as `CREATE_DEFERRED`, "Belum dikirim ke DATUM: waktu sinkron ini habis. Dikirim pada sinkron berikutnya." — and a reply that says DATUM is unreachable (`datumUnreachable`: no answer, 401 or 503) ends the loop at once, since every later call would fail the same way. **Plausibility gate:** only when some room already matches an area by code or DATUM's project has no areas; else `skipped` with "Tidak ada ruangan yang cocok dengan area DATUM proyek {project_name}. Periksa kode proyek DATUM, atau ambil ruangannya dari DATUM." A mistyped code naming another real project must not receive this project's rooms; a project DATUM mapped first is steered to the import (§6.3), after which codes match and the gate opens. |
+| `gate_status` | pairing | `GET gate-status`; upsert `room_datum_gate_status` for every status whose `area_id` is some room's `datum_area_id` (rows for unlinked areas are counted in `gate_rows_unlinked`, not stored); **as built**, a gate code `gate_refs` does not have, or a status none of DATUM's six words, is also never stored — counted per gate/status pair in `differences.gate_status_unknown` instead; compare `gates` with `gate_refs` into `differences.gate_words`. |
 | `staff` | DATUM reachable | `GET staff` and every `profiles` row; `planStaffLinks` (§6.4); `UPDATE profiles SET datum_staff_id` for its `set` items only. Global, per §4.6. |
-| `escalate` | pairing | Oldest 20 by `confirmed_at` of `status = 'open' AND event_type = 'butuh_keputusan' AND confirmed_at IS NOT NULL AND datum_card_id IS NULL`; a room with no `datum_area_id` is skipped with "Ruangan belum tertaut ke area DATUM."; otherwise `POST escalate` with `author_staff_id` = the reporter's `datum_staff_id`, else the `confirmed_by` profile's, else null, and both SANO names, then `UPDATE site_events SET datum_card_id, datum_card_url, datum_escalated_at = now()`. One failure is recorded and the next event is tried; more than 20 are deferred. Runs after `staff`, so a link made this run already counts. |
+| `escalate` | pairing | **As built:** up to 20 open, confirmed `butuh_keputusan` with no card yet from rooms linked to a DATUM area, and up to 20 more from unlinked ones, queried separately, oldest `confirmed_at` first (`listEscalationDue`, `ESCALATE_BATCH = 20`), so decisions in unlinked rooms never take the linked batch's slot. The unlinked ones are all skipped at once with "Ruangan belum tertaut ke area DATUM." (`ESCALATE_ROOM_UNLINKED`), no DATUM call made. For each linked one, once its area has not already answered `UNKNOWN_AREA` this run (else skipped with "DATUM tidak mengenal area ruangan ini; dicoba lagi pada sinkron berikutnya.", `ESCALATE_AREA_UNKNOWN`) and the run is still before `ESCALATE_START_BEFORE_MS` (100 s): `POST escalate` with `author_staff_id` = the reporter's `datum_staff_id`, else the `confirmed_by` profile's, else null, and both SANO names, then `UPDATE site_events SET datum_card_id, datum_card_url, datum_escalated_at = now()`. A reply that says DATUM is unreachable (`datumUnreachable`) ends the loop at once; any other failure is recorded and the next decision is tried. Linked decisions the loop never reaches are `escalate_deferred`, never `escalate_failed`. Runs after `staff`, so a link made this run already counts. |
 
 5. Finish: `finished_at`, `ok` = every step `ok`, `counts`, `differences`, `error` = the first
    step error; mark the request `handled_at`, `run_id`, `error`. The button gets `{ ok, runId,
    counts, differences, error }` with HTTP 200 whenever the run row was written; a step failure
    is `ok: false` inside it, not a 5xx.
 
-`counts`: `steps`, `datum_project_name`, `rooms_linked` (active rooms with a link after the run),
+`counts`: `steps` (plus, **as built**, `step_errors`: the reason beside each step that was not
+`ok`), `datum_project_name`, `rooms_linked` (active rooms with a link after the run),
 `rooms_linked_now`, `rooms_created`, `rooms_imported`, `datum_only`, `field_conflicts`,
-`gate_rows`, `staff` (`linked`, `linked_now`, `unmatched`, `ambiguous`, `stale`), `escalated`,
+`retired_missing`, `gate_rows`, `gate_rows_unlinked` (status rows read for areas no room links
+to: counted, not stored), `gate_area_ids` (the linked areas the gate read covered), `staff`
+(`linked`, `linked_now`, `unmatched`, `ambiguous`, `stale`), `escalated`,
 `escalated_as_system`, `escalate_failed`, `escalate_skipped`, `escalate_deferred`. `differences`:
-`datum_only [{ area_code, area_name, floor, area_type }]`, `field_conflicts [{ room_code, field,
-sano, datum }]`, `datum_duplicates`, `create_failed`, `import_skipped [{ area_code, reason }]`,
-`staff { unmatched, ambiguous, stale }`, `escalate_skipped`, `gate_words [{ code, field }]`.
+`datum_only [{ area_code, area_name, floor, area_type }]`, `field_conflicts [{ room_code, field
+('code' | 'name' | 'floor' | 'area_type' — **as built**, `code` for a linked area whose code
+DATUM changed), sano, datum }]`, `datum_duplicates`, `create_failed`, **as built**
+`schedule_warnings [{ area_code, code, reason }]`, `import_skipped [{ area_code, reason }]`,
+`staff { unmatched, ambiguous, stale }`, `escalate_skipped`, `gate_words [{ code, field }]`, **as
+built** `gate_status_unknown [{ gate_code, status, unknown: 'gate' | 'status', rows }]`.
 
 ### 6.3 The import: "Ambil {n} ruangan dari DATUM"
 
@@ -379,7 +422,10 @@ source `import`, then `areas`, `import`, `gate_status` and nothing else:
    DATUM.": nothing enters SANO that the user did not see.
 2. The room code is the DATUM code through the same chain and must pass `isValidRoomCode`
    (`tools/roomCodes.ts:47-49`), else skipped with "Kode DATUM {code} tidak bisa menjadi kode
-   ruangan SANO." (a 40th-character dash, 2026-09-10 §4.1).
+   ruangan SANO." (a 40th-character dash, 2026-09-10 §4.1). **As built,** two more per-code
+   guards before the insert: an `area_type` outside DATUM's thirteen (§4.2) is skipped with
+   "Tipe area DATUM "{type}" untuk {code} tidak dikenal SANO." (`importBadType`); an empty
+   `area_name` is skipped with "Area DATUM {code} tidak punya nama." (`importNoName`).
 3. INSERT `rooms` with the service role: `project_id`, `room_code`, `room_name = area_name`,
    `floor`, `area_type` (DATUM's thirteen, §4.2), `sort_order` = DATUM's, `datum_area_id =
    area.id`, `created_by` = the caller. A `23505` on `idx_rooms_project_code` (096:172-173), a
@@ -404,15 +450,24 @@ datumDuplicates, retiredMissing }`:
   `normalizeRoomCode` (`tools/roomCodes.ts:22-34`) on DATUM's fixtures
   (`apps/web/tests/unit/area-extract.test.ts:21-34`). Rooms with a NULL code (035-era) are ignored.
 - **Link:** a room whose code matches exactly one area and whose `datum_area_id` differs, active
-  or retired (decision 6).
+  or retired (decision 6). **As built:** a room already linked to an area keeps that link even
+  once DATUM has changed the area's code — following the new code would create a second area and
+  strand the first, history and all, as "only in DATUM" — so only an *unlinked* room, or one
+  linked to an area DATUM no longer has, is matched by code.
 - **Create:** an active room with no matching area; board order (floor, then `sort_order`);
   `UMUM` with `tracked: false` (decision 7); a name over 120 characters goes to `create_failed`
-  as "Nama ruangan lebih dari 120 karakter; DATUM menolaknya." instead.
+  as "Nama ruangan lebih dari 120 karakter; DATUM menolaknya." instead. **As built,** a room whose
+  code-matched area is already the link of another room also goes to `create_failed` instead of
+  being created — "Area DATUM dengan kode {code} sudah tertaut ke ruangan {holder}. Samakan
+  kodenya di SANO atau DATUM." (`codeHeldElsewhere`) — since `POST areas` would hand back that
+  same area and two rooms would share it.
 - **Differences:** an area matching no room is `datumOnly`; two areas normalizing to one key are
-  `datumDuplicates`, neither links nor imports; for a match, `name` (trim, case fold, whitespace
+  `datumDuplicates`, neither links nor imports; for a match, **as built** `code` (a linked area's
+  code no longer equal to the room's — kept linked anyway), `name` (trim, case fold, whitespace
   collapse), `floor` (the same, NULL as empty) and `area_type` (exact) that differ are one
-  `fieldConflicts` row each, linked anyway and never overwritten on either side; a retired room
-  with no area is `retiredMissing`, counted only.
+  `fieldConflicts` row each (`ConflictField = 'code' | 'name' | 'floor' | 'area_type'`), linked
+  anyway and never overwritten on either side; a retired room with no area is `retiredMissing`,
+  counted only.
 
 `normalizePersonName(s)` is the one name rule: `s.normalize('NFD')`, drop `\p{M}` (diacritics),
 trim, collapse whitespace runs to one space, lower case; empty means "no name".
@@ -439,14 +494,22 @@ unmatched, ambiguous, stale }`:
   The owner creates one Database Webhook, as 034 did for notifications (034:17-21): Dashboard →
   Database → Webhooks, table `public.datum_sync_requests`, event INSERT, POST to the
   `datum-sync` function URL, header `Authorization: Bearer <WEBHOOK_AUTH_SECRET>`, timeout at
-  its maximum. No migration holds a URL or a secret.
+  its maximum. No migration holds a URL or a secret. **As built:** the function marks the
+  request's `handled_at` and `run_id` before it answers the webhook's POST with 202
+  (`handler.ts` `fromWebhook`), so the Rooms tab never reads a delivered request as still waiting
+  even if the runtime stops the run right after; if that happens, the next run's ten-minute sweep
+  (§6.2 step 2) closes the orphaned run and marks its request "Sinkron terputus sebelum selesai."
+  (`RUN_INTERRUPTED`), so the two rows agree.
 
 ## 8. What people see
 
 ### 8.1 Rooms tab: card "DATUM"
 
 New `office/screens/rooms/DatumSyncCard.tsx` in the "Kelola ruangan" sub-screen of
-`RoomsAdminScreen` (`:229-381`), above "Ekspor untuk DATUM" (`:373-381`), which stays.
+`RoomsAdminScreen` (`:229-381`), above "Ekspor untuk DATUM" (`:373-381`), which stays. **As
+built,** the same card also renders in a "DATUM" section on `PrincipalRoomsScreen.tsx`, reloading
+the room board (`onRoomsChanged`) after a sync or import, so a principal reaches it without
+opening "Kelola ruangan."
 
 | Part | Shows |
 |---|---|
@@ -455,7 +518,7 @@ New `office/screens/rooms/DatumSyncCard.tsx` in the "Kelola ruangan" sub-screen 
 | Last run | `Sinkron terakhir: 27 Sep 10.00 · 12 ruangan ditautkan · 2 dibuat · 1 hanya di DATUM` (`formatWibShort(finished_at)`, `tools/timeWindow.ts:165`), zero parts other than "ditautkan" dropped, then "otomatis" or "oleh {name}", and "DATUM: {datum_project_name}". A failed run: `Sinkron terakhir gagal: 27 Sep 10.00 · {error}` in critical colour and each step that was not `ok`. Open run: "Sinkron sedang berjalan sejak 10.00". No run: "Belum pernah disinkronkan." Read failure: "Status sinkron gagal dimuat." with "Coba lagi". |
 | Sinkron otomatis | Only when requests older than 2 h are unhandled: "Sinkron otomatis menunggu: {n} permintaan sejak {time}. Periksa Database Webhook." |
 | Ambil dari DATUM | When the latest finished run lists DATUM-only areas, for office roles: "Ambil {n} ruangan dari DATUM". It opens a confirmation naming DATUM's project and listing every area (code, name, floor, type): "Ambil {n} ruangan dari DATUM proyek {datum_project_name}? Ruangan dibuat di SANO dan ditautkan; setelah itu SANO yang menjadi acuan." "Ambil" sends exactly the listed codes; the button is disabled until the server answers, then the card shows "{k} ruangan diambil" and each skipped code with its reason, and reloads. |
-| Differences | From the latest finished run: "Hanya di DATUM", "Berbeda dengan DATUM" (one line per field: `KM-1 · nama — SANO "Kamar Mandi 1" · DATUM "KM Anak"`, likewise lantai and tipe), "Kode ganda di DATUM", "Gagal dibuat di DATUM", "Keputusan belum terkirim" and "Kata gerbang berbeda dengan DATUM", each under "Tidak diubah otomatis. Samakan di SANO atau DATUM bila perlu." |
+| Differences | From the latest finished run: "Hanya di DATUM", "Berbeda dengan DATUM" (one line per field — **as built** including `kode` alongside nama, lantai and tipe, since a linked area’s code can drift from the room’s without breaking the link: `KM-1 · nama — SANO "Kamar Mandi 1" · DATUM "KM Anak"`), "Kode ganda di DATUM", "Gagal dibuat di DATUM" (**as built** keeping deferred creates apart from real refusals — "Belum dibuat di DATUM (menunggu sinkron berikutnya)" for a room `CREATE_DEFERRED` never reached DATUM with), **as built** "Jadwal DATUM belum tersusun" (an area DATUM created but whose gate schedule or step list it failed to build, `differences.schedule_warnings`: the room is already linked, only its DATUM-side schedule is missing — "Susun jadwalnya dengan 'Hitung ulang jadwal' di DATUM."), "Keputusan belum terkirim", **as built** "Status gerbang DATUM tidak tersimpan" (a gate code or readiness word DATUM sent that SANO does not recognize, `differences.gate_status_unknown`) and "Kata gerbang berbeda dengan DATUM", each under "Tidak diubah otomatis. Samakan di SANO atau DATUM bila perlu." |
 | Staf belum tertaut | From the newest run whose staff step was `ok`, any project (§4.6), headed "Staf (semua proyek), per {time}": "Tidak ada di DATUM" (unmatched), "Nama ganda" (ambiguous, naming which side), "Tautan lama tidak cocok" (stale, with the linked DATUM name if still known), then "{m} staf tertaut". Under it: "Samakan nama di SANO atau DATUM, lalu sinkron lagi. Kartu dari orang yang belum tertaut dibuat atas nama SANO (sistem)." No picker in this build. |
 
 ### 8.2 Papan Ruangan: DATUM readiness per room (all roles)
@@ -488,7 +551,10 @@ arrive; it gains `project:projects(datum_project_code)` and
 (`SiteEventDetailScreen.tsx:311-335`): the "Dikonfirmasi" row (`:316`) adds "oleh {name}" when
 `confirmed_by` is known; with `datum_card_id`, "Dikirim ke DATUM · 27 Sep 10.00" and "Buka kartu
 DATUM" (`Linking.openURL(datum_card_url)`); an open `butuh_keputusan` without a card on a paired
-project reads "Belum dikirim ke DATUM. Terkirim pada sinkron berikutnya."
+project reads "Belum dikirim ke DATUM. Terkirim pada sinkron berikutnya." — **as built**, unless
+its room has no `datum_area_id`, when it reads "Belum dikirim ke DATUM: Ruangan belum tertaut ke
+area DATUM." instead, since the sync sends nothing from an unlinked room
+(`workflows/screens/siteEvent/datumEscalation.ts`).
 
 ## 9. Failure handling
 
@@ -502,7 +568,8 @@ project reads "Belum dikirim ke DATUM. Terkirim pada sinkron berikutnya."
 | An area changes between listing and import | Skipped with its reason; nothing the user did not see is imported. |
 | A DATUM code cannot be a SANO code | Skipped with "Kode DATUM {code} tidak bisa menjadi kode ruangan SANO."; fix the code in DATUM. |
 | DATUM renames, moves or retypes a linked area | A "Berbeda dengan DATUM" line; SANO keeps its own values. |
-| A room cannot be created | `create_failed` with DATUM's item error or the length refusal. |
+| A room cannot be created | `create_failed` with DATUM's item error, the length refusal, or `codeHeldElsewhere`; **as built**, or `CREATE_DEFERRED` when the run's own clock ran out before that batch could start — retried, not refused, on the next run. |
+| DATUM created an area but its schedule failed | **As built:** the area and the room's link still stand; `differences.schedule_warnings` lists it under "Jadwal DATUM belum tersusun", fixed by "Hitung ulang jadwal" in DATUM. |
 | A name matches no one, or several | "Staf belum tertaut"; the card is authored by SANO (sistem) and its note names the SANO people. |
 | A linked name no longer matches | "Tautan lama tidak cocok"; the link stays until the names agree. |
 | Event confirmed before 107 | `confirmed_by` NULL; the note says "dikonfirmasi tidak tercatat"; the author falls to the reporter's link or SANO (sistem). |
@@ -523,9 +590,10 @@ return a decision card; no update, delete or cost read sits behind it. `GET staf
 and full name only. A card's author is a staff id SANO supplies, accepted only if it names an
 active staff row; SANO supplies only ids its own name match set, which app users cannot write
 (§4.4). Each side builds its service-role client only after its own check passed, and DATUM
-scopes every project query to the resolved project. On SANO, sync needs admin or principal,
-import and pairing need an office role (`is_office_role()`: admin, principal, estimator), and
-supervisors can do none of the three. App roles cannot write `rooms.datum_area_id`,
+scopes every project query to the resolved project. On SANO, sync, import and pairing all need
+an office role (`is_office_role()`: admin, principal, estimator) — **as built**, sync was widened
+from admin-and-principal-only to the same office-role gate during review (calibration item 9,
+resolved) — and supervisors can do none of the three. App roles cannot write `rooms.datum_area_id`,
 `site_events.datum_*`, `site_events.confirmed_by` or `profiles.datum_staff_id` (§4.2-§4.4); the
 three new tables have SELECT policies only. Crossing to DATUM: title, summary, room name, the
 reporter's, confirmer's and owner's names, due date and a SANO room link, visible to DATUM
@@ -573,57 +641,101 @@ fixture of two projects, each role, an outsider, rooms and an open `butuh_keputu
 | Tables | Members read their project's cache and runs, an outsider nothing, a supervisor no requests; no insert, update or delete by `authenticated` on the three tables; the cache status CHECK refuses an unknown value; `source = 'import'` accepted; a second open run for a project is a unique violation, a new one after `finished_at` is fine. |
 | Scheduler | Without pg_cron: the NOTICE, no error. With it, pasted twice: one job `datum_sync_hourly`, `0 * * * *`; running its command inserts one request per paired ACTIVE project and none for ON_HOLD or unpaired ones. |
 
+**As built,** review rounds added `rehearse_repaste.sql`, run right after `run.sh` re-pastes 097
+and 096 on top of 107: a supervisor still refused on `datum_card_id` after 097's re-paste; a
+member's confirm still stamps `confirmed_by` as the confirmer, not the reporter who filed the
+event (fooled once, before that check was tightened); an estimator still refused on
+`datum_area_id` after 096's re-paste, a terrace still an accepted room type and the CHECK still
+lists `exterior`; and one more catalog-count equality. `run.sh` also gained its own inline checks
+for both re-paste hazards (a 101-then-107 gate-word round trip) and for the scheduler with
+pg_cron, ending in one more catalog-count equality after every re-paste in the run. `run.sh` now
+tallies 80 checks end to end (`PASS=80 FAIL=0 ERROR=0` on a clean run): 66 in
+`rehearse_107.sql`, 7 in `rehearse_repaste.sql`, 7 written directly in `run.sh`.
+
 ### 11.3 Jest
 
 | File | Covers |
 |---|---|
-| `tools/__tests__/datumSyncPlan.test.ts` | Rooms: link for active and retired rooms; create for active only, board order, `UMUM` untracked, a 121-character name refused; DATUM-only; a case or whitespace difference is no conflict, a real name, floor or type difference is one row each and still links; duplicate DATUM codes neither link nor import; NULL codes ignored; already-linked rooms untouched; the inlined normalizer equals `normalizeRoomCode` on DATUM's fixtures. Names: `normalizePersonName` folds "José  Santoso" and "jose santoso" together, strips combining marks, trims, keeps distinct names distinct, empty stays empty. Staff: a unique match sets; two DATUM staff or two SANO profiles with one name are ambiguous; a staff already linked elsewhere is ambiguous; no match is unmatched; an intact link is unchanged; a link whose staff vanished or was renamed is stale and not changed. |
+| `tools/__tests__/datumSyncPlan.test.ts` | Rooms: link for active and retired rooms, and — **as built** — a linked room keeps its link and reports a `code` conflict once DATUM changes the area's code; create for active only, board order, `UMUM` untracked, a 121-character name refused, and (**as built**) `codeHeldElsewhere` when the matching area is already another room's link; DATUM-only; a case or whitespace difference is no conflict, a real code, name, floor or type difference is one row each and still links; duplicate DATUM codes neither link nor import; NULL codes ignored; already-linked rooms untouched; the inlined normalizer equals `normalizeRoomCode` on DATUM's fixtures. |
+| `tools/__tests__/datumSyncPlanImport.test.ts` | **As built:** `planImport`, including `importBadType` and `importNoName` alongside the unusable-code and gone-from-DATUM skips. |
+| `tools/__tests__/datumSyncPlanWords.test.ts` | **As built:** `diffGateWords` against DATUM's and SANO's gate rows. |
+| `tools/__tests__/datumSyncPlanVerdict.test.ts` | **As built:** `runVerdict` — ok only when every recorded step is ok, the first non-ok step's reason otherwise. |
+| `tools/__tests__/datumSyncPlanPeople.test.ts` | Names: `normalizePersonName` folds "José  Santoso" and "jose santoso" together, strips combining marks, trims, keeps distinct names distinct, empty stays empty. Staff: a unique match sets; two DATUM staff or two SANO profiles with one name are ambiguous; a staff already linked elsewhere is ambiguous; no match is unmatched; an intact link is unchanged; a link whose staff vanished or was renamed is stale and not changed. |
 | `tools/__tests__/datumSyncPlanTwin.test.ts` | `plan.ts` byte-identical to `tools/datumSyncPlan.ts`. |
 | `tools/__tests__/datumGateStatus.test.ts` | Every state of `datumChipsForRoom`; the six labels exactly; the 24 h edge; rows for another area ignored; `HH.mm` versus date across WIB midnight. |
-| `tools/__tests__/datumSync.test.ts` | `syncDatum`, `importFromDatum` and the pairing call map every refusal code to its sentence; `canPairDatum` true for admin, principal and estimator, false for supervisor. |
+| `tools/__tests__/datumSync.test.ts` | `syncDatum`, `importFromDatum` and the pairing call map every refusal code to its sentence; `canPairDatum` and (**as built**) `canSyncDatum` true for admin, principal and estimator, false for supervisor. |
+| `office/screens/rooms/__tests__/datumSyncModel.test.ts` | **As built:** the Rooms-tab card's words pulled into a pure model (`datumSyncModel.ts`) — every Differences group (including `kode` conflicts, "Jadwal DATUM belum tersusun" and "Status gerbang DATUM tidak tersimpan"), the last-run line, and the "Ambil" offer's 500-code/200-character caps — so the rendering component itself stays thin. |
+
+**As built,** the planner's own jest coverage split across six files as it grew (above), rather
+than the one file first planned; together with the gate-status and sync-call tests that reads as
+41 `it`/`test` cases found in the files (not run).
 
 ### 11.4 Deno: `supabase/functions/datum-sync/index.test.ts`
 
 `handle` takes injected clients and `fetch`; a fake DATUM serves the five routes from memory.
 Auth: the webhook secret takes the cron path; a wrong or unset secret falls to the JWT path and
-gets 401; sync accepts admin and principal and refuses estimator and supervisor; import accepts
-admin, principal and estimator and refuses supervisor; missing config is 500. Pairing missing:
-409 and a failed run row. Running: 409, for sync and import alike. Partial failure: areas 500
-marks `areas`, `link`, `create` as `error` or `skipped` while `gate_status`, `staff` and
-`escalate` still run, and the run carries the first error. Import: only confirmed codes still
-DATUM-only become rooms, with code, name, floor, type, sort order and link; a code no longer
-DATUM-only, an unusable code and a meanwhile-created room are skipped with reasons; no `POST`
+gets 401; **as built** (calibration item 9, resolved) sync and import are both open to every
+office role — admin, principal and estimator — and both refuse a supervisor; missing config is
+500. Pairing missing: 409 and a failed run row. Running: 409, for sync and import alike. Partial
+failure: areas 500 marks `areas`, `link`, `create` as `error` or `skipped` while `gate_status`,
+`staff` and `escalate` still run, and the run carries the first error. **As built,** the create
+loop itself: a batch that would start past `CREATE_BATCH_START_BEFORE_MS` is deferred
+(`CREATE_DEFERRED`) rather than sent, and a `datumUnreachable` reply (0, 401 or 503) ends the loop
+at once. Import: only confirmed codes still DATUM-only become rooms, with code, name, floor,
+type, sort order and link; a code no longer DATUM-only, an unusable code, an unrecognized type or
+empty name (**as built**), and a meanwhile-created room are skipped with reasons; no `POST`
 reaches DATUM; the plausibility gate stops creation until the import, then lets it through.
 Staff: links set only for `set` items, stale ones untouched. Escalation: the author is the
 reporter's link, else the confirmer's, else null, and the note names both; the same event twice
-gives one card; a lost SANO write is healed by the next run; an unlinked room is skipped; the
-21st event deferred. The webhook path answers 202 and marks its request. CI runs only tsc and
-jest, so `deno test` in the function folder is a release step.
+gives one card; a lost SANO write is healed by the next run; an unlinked room is skipped without
+a DATUM call; **as built**, a second decision in an area DATUM already answered `UNKNOWN_AREA`
+for this run is skipped without retrying it; the 21st linked event is deferred, never counted as
+failed. The webhook path answers 202 and marks its request before it does (**as built**,
+`handled_at` and `run_id` both). CI runs only tsc and jest, so `deno test` in the function folder
+is a release step. **As built,** the five `*.test.ts` files (`caller`, `datum`, `handler`, `run`,
+`store`) carry 53 `Deno.test` cases in total.
 
 ### 11.5 Screen tests (React Native Testing Library)
 
 | File | Covers |
 |---|---|
-| `office/screens/rooms/__tests__/DatumSyncCard.test.tsx` | Pairing field for office roles, refusals shown; sync button for admin and principal only, disabled unpaired and in flight; nothing shown before the server answers; last run ok, failed, running, never, read error; the automatic-sync line; "Ambil {n}" shown only with DATUM-only areas, its confirmation naming DATUM's project and every area, sending exactly those codes, disabled until the answer, then imported and skipped counts; every Differences group; "Staf belum tertaut" groups and its "semua proyek" time. |
+| `office/screens/rooms/__tests__/DatumSyncCard.test.tsx` | Pairing field for office roles, refusals shown; sync button open to every office role — **as built**, admin, principal and estimator alike (calibration item 9, resolved) — disabled unpaired and in flight; nothing shown before the server answers; last run ok, failed, running, never, read error; the automatic-sync line; "Ambil {n}" shown only with DATUM-only areas, its confirmation naming DATUM's project and every area, sending exactly those codes (**as built**, capped at 500 and excluding any over 200 characters), disabled until the answer, then imported and skipped counts; every Differences group; "Staf belum tertaut" groups and its "semua proyek" time. |
 | `office/screens/rooms/__tests__/RoomBoardView.datum.test.tsx` | While loading no DATUM sentence at all; the read-error line with retry; unpaired shows nothing; never, none and chips with labels and "per DATUM"; stale "lama"; the DATUM-stale sentence; rows for another area ignored. |
-| `workflows/screens/__tests__/SiteEventDetailScreen.datum.test.tsx` | Escalated shows time and link; waiting shows the sentence; unpaired shows neither; "Dikonfirmasi … oleh {name}" only when `confirmed_by` is known. |
+| `office/screens/__tests__/PrincipalRoomsScreen.datum.test.tsx` | **As built:** the "DATUM" section renders `DatumSyncCard` for a principal and reloads the room board (`onRoomsChanged`) after a sync or import. |
+| `workflows/screens/__tests__/SiteEventDetailScreen.datum.test.tsx` | Escalated shows time and link; waiting shows the sentence; **as built**, an open decision in an unlinked room instead reads "Belum dikirim ke DATUM: Ruangan belum tertaut ke area DATUM."; unpaired shows neither; "Dikonfirmasi … oleh {name}" only when `confirmed_by` is known. |
 | `office/screens/rooms/__tests__/RoomForm.types.test.tsx` | The type picker offers the thirteen types with DATUM's labels. |
+
+**As built,** these five files together read as 62 `it`/`test` cases found in the files (not
+run): 22 in `DatumSyncCard.test.tsx`, 23 in `datumSyncModel.test.ts` (§11.3), 7 in
+`RoomBoardView.datum.test.tsx`, 6 in `SiteEventDetailScreen.datum.test.tsx`, 3 in
+`PrincipalRoomsScreen.datum.test.tsx` and 1 in `RoomForm.types.test.tsx`; `tools/siteEvents.ts`'s
+`PGRST200` retry (a read that drops the `confirmer` embed when 107 is not yet applied) is proven
+alongside them.
 
 ### 11.6 DATUM: `apps/web/tests/unit/sano-integration-routes.test.ts` (vitest)
 
 In the `push-notify-route.test.ts` pattern, with the admin client mocked by an in-memory fake
 that records every mutation. Bearer missing, wrong, wrong length (no throw) give 401, right gives
-200, unset secret 503, on all five routes; unknown project 404 on the four project routes; reads
-scoped to the project. `GET staff`: active rows only, each with exactly `id` and `full_name` (no
-role, email, WhatsApp number or handle), the inactive SANO (sistem) row absent. `POST areas`:
-creates the missing, a second identical call creates nothing and returns the same ids, an
-existing area with another name comes back untouched, `CODE_NOT_NORMALIZED`, `tracked: false`
-stored, `seed_area_steps` only for new tracked areas. `escalate`: first call makes card, link,
+200, unset secret 503, **as built** a missing service-role key also 503 `NOT_CONFIGURED` as JSON
+(never Next's own HTML 500), on all five routes; unknown project 404 on the four project routes;
+reads scoped to the project. `GET staff`: active rows only, each with exactly `id` and
+`full_name` (no role, email, WhatsApp number or handle), the inactive SANO (sistem) row absent.
+`POST areas`: creates the missing, a second identical call creates nothing and returns the same
+ids, an existing area with another name comes back untouched, `CODE_NOT_NORMALIZED`, `tracked:
+false` stored, `seed_area_steps` and (**as built**) the gate schedule (`ensureGateScheduleForArea`
++ `writePlannedDates`) only for new tracked areas, either failure a per-item `warning` rather than
+an error, item errors carrying a `reason` string. `escalate`: first call makes card, link,
 decision and note; `author_staff_id` of an active row authors card and events (`author:
 'linked'`), an unknown or inactive one falls back to the system row (`'system'`); a repeat
 returns the same `card_id` with `created: false`, inserts nothing and keeps the author; a
-half-made card is completed; a `23505` race returns the winner; `UNKNOWN_AREA`; `TOPIC_MISSING`;
-missing staff id 503. Across all five: the fake records no update and no delete, ever.
+half-made card is completed; a `23505` race returns the winner, or — **as built** — 409
+`EVENT_IN_OTHER_PROJECT` when it names a card in a different project; `UNKNOWN_AREA`;
+`TOPIC_MISSING`; missing staff id 503; the lookup itself is `.contains` against the GIN index,
+never the new partial unique index. Across all five: the fake records no update and no delete,
+ever. The new index's own shape is pinned separately by
+`packages/db/tests/sano-event-unique-migration.test.ts`. **As built,** this suite currently reads
+as 6 `it` blocks, four of them run once per route via `describe.each` over the five routes (about
+22 executions) plus 2 more standalone cases — read from the file, not run.
 
 ## 12. Scope
 
@@ -637,13 +749,17 @@ libraries; an event URL.
 ## 13. Release order
 
 1. **DATUM PR** merged; Vercel production deploy; env `SANO_INTEGRATION_SECRET` and
-   `SANO_INTEGRATION_STAFF_ID` (after creating the "SANO (sistem)" auth user and `staff` row);
-   `pnpm db:preflight`, `pnpm db:migrate` for the index.
-2. **SANO PR** merged.
-3. Paste **107** after 106 and run its self-check; if it printed the pg_cron NOTICE, enable Cron
-   and paste again. The new words reach every phone at once: every surface reads `gate_refs`.
-   Re-pasting 101 later restores the old words (re-paste 107); a 107 re-paste overwrites
-   "Kelola gerbang" edits.
+   `SANO_INTEGRATION_STAFF_ID` (after creating the "SANO (sistem)" auth user and `staff` row —
+   the author row `escalate` falls back to); `pnpm db:preflight`, `pnpm db:migrate` for the
+   index.
+2. **As built,** paste **107** after 106 next, before the SANO PR merges, and run its
+   self-check; if it printed the pg_cron NOTICE, enable Cron and paste again. Pasting it first
+   means the `datum_*` columns and `rooms.datum_area_id` exist before the SANO PR's app code —
+   which reads and writes them — reaches production; Expo web auto-deploys from `main` on merge,
+   so merging first would ship code against a schema that is not there yet. The new gate words
+   reach every phone at once: every surface reads `gate_refs`. Re-pasting 101 later restores the
+   old words (re-paste 107); a 107 re-paste overwrites "Kelola gerbang" edits.
+3. **SANO PR** merged.
 4. Set `DATUM_API_BASE_URL` and `DATUM_SANO_SECRET`; `deno test` in the function folder; deploy
    `datum-sync --no-verify-jwt` from a main worktree.
 5. Create the Database Webhook once (§7).
@@ -677,4 +793,5 @@ static, twin and route tests that fail when either side drifts.
 | 6 | 20 escalations per run. | Implementer | `escalate_deferred > 0` on two runs in a row. |
 | 7 | Exact names miss titles and short forms ("Ir. Budi" vs "Budi", "Selvi" vs "Selvia"). | User | "Staf belum tertaut" stays long after one round of renaming: consider a picker. |
 | 8 | Only events confirmed after 107 know their confirmer. | PM | Old open decisions escalate as SANO (sistem). |
-| 9 | Sync is admin and principal, import and pairing are any office role. | User | An estimator pairs a project and cannot press "Sinkron DATUM". |
+| 9 | Sync is admin and principal, import and pairing are any office role. **Resolved as built:** the owner widened sync to every office role during review, so this no longer applies (§6.1, §10). | User | An estimator pairs a project and cannot press "Sinkron DATUM". |
+| 10 | **As built:** a card `escalate` creates has no `card_members` row, so DATUM's new-event alert (`20260926000001_card_event_member_alerts.sql`) notifies no one until someone is added to the card. | User (DATUM) | A decision card sits unread with no notification trail. |
