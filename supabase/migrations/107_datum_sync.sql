@@ -42,7 +42,10 @@
 --
 -- WHAT A RE-PASTE OF AN EARLIER FILE UNDOES. Re-pasting 101 after 107
 -- restores SANO's old gate words: re-paste 107 after it. Re-pasting 096 keeps
--- the wide area_type CHECK (096 adds its own only when the name is absent).
+-- the wide area_type CHECK (096 adds its own only when the name is absent),
+-- but restores 096's own, now-stale COMMENT text on rooms.area_type ("nine
+-- values") and projects.datum_project_code ("reserved for the release-2
+-- DATUM link"): re-paste 107 after it to bring both comments back too.
 -- Re-pasting 097, 099, 100 or 105 reverts nothing here: 107 redefines none of
 -- their functions and adds its guards as separate triggers.
 --
@@ -169,6 +172,12 @@ $$;
 REVOKE ALL ON FUNCTION set_datum_project_code(UUID, TEXT) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION set_datum_project_code(UUID, TEXT) TO authenticated;
 
+COMMENT ON COLUMN projects.datum_project_code IS
+  'The DATUM pairing: DATUM''s project code, upper case, unique, set only '
+  'through set_datum_project_code(). projects.code (001:49, unique) stays '
+  'the SANO-side join key. Supersedes 096''s "reserved for the release-2 '
+  'DATUM link" text, which a re-paste of 096 restores: re-paste 107 after it.';
+
 -- ───────────────────────────────────────────────────────────────────────────
 -- 3. rooms: DATUM's thirteen area types, and a link only the sync writes
 --    (rooms_office_all, 096, lets every office role write any column).
@@ -192,6 +201,11 @@ BEGIN
       ));
   END IF;
 END $$;
+
+COMMENT ON COLUMN rooms.area_type IS
+  'DATUM area_type, thirteen values (packages/core/src/areas/extract.ts:29-43). '
+  'Supersedes 096''s "nine values" text, which a re-paste of 096 restores: '
+  're-paste 107 after it.';
 
 CREATE OR REPLACE FUNCTION rooms_datum_area_id_sync_only()
 RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public
