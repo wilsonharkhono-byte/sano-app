@@ -125,6 +125,11 @@ type CardDifferences = RunDifferences & { schedule_warnings?: ScheduleWarningIte
 export const SCHEDULE_WARNINGS_NOTE =
   'Ruangannya sudah dibuat dan ditautkan di DATUM. Susun jadwalnya dengan "Hitung ulang jadwal" di DATUM.';
 
+/** One side of a conflict, quoted; an empty side (a floor left blank) reads "(kosong)", never "". */
+function conflictValue(v: string): string {
+  return v.trim() ? `"${v}"` : '(kosong)';
+}
+
 /** A gate SANO has no gate_refs row for, or a status that is none of DATUM's six words: counted, never stored. */
 function gateStatusUnknownLine(x: GateStatusUnknownItem): string {
   const areas = `${x.rows} area`;
@@ -152,10 +157,10 @@ export function differenceGroups(run: DatumRun | null, syncRun: DatumRun | null 
     },
     {
       title: 'Berbeda dengan DATUM',
-      lines: (d.field_conflicts ?? []).map((f) =>
-        f.field === 'area_type'
-          ? `${f.room_code} · ${FIELD_WORDS[f.field]} — SANO "${areaTypeLabel(f.sano)}" · DATUM "${areaTypeLabel(f.datum)}"`
-          : `${f.room_code} · ${FIELD_WORDS[f.field]} — SANO "${f.sano}" · DATUM "${f.datum}"`),
+      lines: (d.field_conflicts ?? []).map((f) => {
+        const word = (v: string) => (f.field === 'area_type' ? areaTypeLabel(v) : v);
+        return `${f.room_code} · ${FIELD_WORDS[f.field]} — SANO ${conflictValue(word(f.sano))} · DATUM ${conflictValue(word(f.datum))}`;
+      }),
     },
     { title: 'Kode ganda di DATUM', lines: (d.datum_duplicates ?? []).map((x) => `${x.key}: ${x.area_codes.join(', ')}`) },
     { title: 'Gagal dibuat di DATUM', lines: (s.create_failed ?? []).map((x) => `${x.room_code} · ${x.reason}`) },

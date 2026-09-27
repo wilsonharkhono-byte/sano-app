@@ -157,6 +157,20 @@ describe("differenceGroups: the planner's and the function's reasons", () => {
   });
 });
 
+describe('differenceGroups: an empty side', () => {
+  it('says "(kosong)" for a floor one side left empty, never SANO ""', () => {
+    expect(differenceGroups(run({ differences: { field_conflicts: [
+      { room_code: 'UMUM', field: 'floor', sano: '', datum: 'Lt. 1' },
+      { room_code: 'KM-2', field: 'floor', sano: 'Lt. 2', datum: '' },
+    ] } }))).toEqual([
+      { title: 'Berbeda dengan DATUM', lines: [
+        'UMUM · lantai — SANO (kosong) · DATUM "Lt. 1"',
+        'KM-2 · lantai — SANO "Lt. 2" · DATUM (kosong)',
+      ] },
+    ]);
+  });
+});
+
 describe('differenceGroups after an import', () => {
   it('keeps the create, schedule and decision groups of the newest sync, which an import run never writes', () => {
     const sync = run({
