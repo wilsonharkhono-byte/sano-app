@@ -800,6 +800,20 @@ describe('getSiteEventResult and DATUM (migration 107)', () => {
     const select = calls.find((c) => c.startsWith('select:')) ?? '';
     expect(select).toContain('confirmer:profiles!site_events_confirmed_by_fkey(full_name)');
     expect(select).toContain('project:projects(datum_project_code)');
+    expect(select).toContain('rooms(room_name, floor, datum_area_id)');
+  });
+
+  it("carries the room's DATUM link, and null when the room is unlinked or unread", async () => {
+    mocked.from.mockImplementationOnce(() =>
+      makeChain({ data: { id: EVENT, project_id: PROJECT, site_event_media: [], rooms: { room_name: 'Dapur', floor: 'Lt 1', datum_area_id: 'area-1' } }, error: null }),
+    );
+    expect((await getSiteEventResult(EVENT)).event?.room_datum_area_id).toBe('area-1');
+    mocked.from.mockImplementationOnce(() =>
+      makeChain({ data: { id: EVENT, project_id: PROJECT, site_event_media: [], rooms: { room_name: 'Dapur', floor: 'Lt 1', datum_area_id: null } }, error: null }),
+    );
+    expect((await getSiteEventResult(EVENT)).event?.room_datum_area_id).toBeNull();
+    mocked.from.mockImplementationOnce(() => makeChain({ data: { id: EVENT, project_id: PROJECT, site_event_media: [], rooms: null }, error: null }));
+    expect((await getSiteEventResult(EVENT)).event?.room_datum_area_id).toBeNull();
   });
 
   it('names the confirmer, carries the pairing and the card, and drops the embeds', async () => {

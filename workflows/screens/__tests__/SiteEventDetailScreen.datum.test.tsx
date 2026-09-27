@@ -49,7 +49,7 @@ const baseEvent = {
   confirmed_at: '2026-09-26T03:00:00.000Z', closed_at: null, closed_by: null, closure_note: null, last_error: null,
   analysis_attempts: 0, room_name: 'Kamar Mandi 1', room_floor: 'Lt. 1', owner_name: 'Budi', reporter_name: 'Budi',
   closed_by_name: null, media: [], datum_card_id: null, datum_card_url: null, datum_escalated_at: null, confirmed_by: null,
-  confirmed_by_name: null, project_datum_code: 'K2-7',
+  confirmed_by_name: null, project_datum_code: 'K2-7', room_datum_area_id: 'area-1',
 };
 
 const show = (over: Record<string, unknown>) => {
@@ -74,10 +74,16 @@ describe('SiteEventDetailScreen and DATUM', () => {
     open.mockRestore();
   });
 
-  it('says an open decision on a paired project goes on the next sync', async () => {
+  it('says an open decision on a paired project goes on the next sync, when its room is linked', async () => {
     const utils = show({});
     await waitFor(() => expect(utils.getByText('Belum dikirim ke DATUM. Terkirim pada sinkron berikutnya.')).toBeTruthy());
     expect(utils.queryByText('Dikirim ke DATUM')).toBeNull();
+  });
+
+  it('never promises the next sync for a room with no DATUM area: the sync does not send those', async () => {
+    const utils = show({ room_datum_area_id: null });
+    await waitFor(() => expect(utils.getByText('Belum dikirim ke DATUM: Ruangan belum tertaut ke area DATUM.')).toBeTruthy());
+    expect(utils.queryByText(/Terkirim pada sinkron berikutnya/)).toBeNull();
   });
 
   it('says nothing about DATUM on an unpaired project, or for a closed or other event', async () => {

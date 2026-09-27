@@ -370,6 +370,12 @@ export interface SiteEventWithMedia extends SiteEvent {
   confirmed_by_name: string | null;
   /** The project's DATUM pairing, so the detail can say an escalation is still to come. */
   project_datum_code: string | null;
+  /**
+   * The room's DATUM area (rooms.datum_area_id, 096). The sync sends a
+   * decision only from a linked room, so the detail promises "the next
+   * sync" only then. Null when unlinked or the room was not read.
+   */
+  room_datum_area_id: string | null;
 }
 
 // One string literal on purpose (the ROOM_COLUMNS / readBackUpdate.ts rule):
@@ -378,7 +384,7 @@ export interface SiteEventWithMedia extends SiteEvent {
 // The confirmer embed names 107's site_events_confirmed_by_fkey: paste 107
 // before this code ships (Release step 2), or every detail read fails.
 const EVENT_SELECT =
-  '*, site_event_media(*), rooms(room_name, floor), owner:profiles!site_events_owner_id_fkey(full_name), reporter:profiles!site_events_reporter_id_fkey(full_name), closer:profiles!site_events_closed_by_fkey(full_name), confirmer:profiles!site_events_confirmed_by_fkey(full_name), project:projects(datum_project_code)';
+  '*, site_event_media(*), rooms(room_name, floor, datum_area_id), owner:profiles!site_events_owner_id_fkey(full_name), reporter:profiles!site_events_reporter_id_fkey(full_name), closer:profiles!site_events_closed_by_fkey(full_name), confirmer:profiles!site_events_confirmed_by_fkey(full_name), project:projects(datum_project_code)';
 
 /**
  * Either the event, "no such row" (`notFound: true`), or a read failure
@@ -403,7 +409,7 @@ export async function getSiteEventResult(eventId: string): Promise<SiteEventResu
   if (!data) return { event: null, notFound: true };
   const row = data as SiteEvent & {
     site_event_media?: SiteEventMedia[] | null;
-    rooms?: { room_name?: string; floor?: string | null } | null;
+    rooms?: { room_name?: string; floor?: string | null; datum_area_id?: string | null } | null;
     owner?: { full_name?: string } | null;
     reporter?: { full_name?: string } | null;
     closer?: { full_name?: string } | null;
@@ -422,6 +428,7 @@ export async function getSiteEventResult(eventId: string): Promise<SiteEventResu
       closed_by_name: closer?.full_name ?? null,
       confirmed_by_name: confirmer?.full_name ?? null,
       project_datum_code: project?.datum_project_code ?? null,
+      room_datum_area_id: rooms?.datum_area_id ?? null,
     },
   };
 }
