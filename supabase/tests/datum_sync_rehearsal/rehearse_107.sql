@@ -54,13 +54,16 @@ ROLLBACK;
 SELECT rehearsal_ds.expect('107 the card columns landed as the service role wrote them', (
   SELECT datum_card_id = '00000000-0000-4000-8000-00000000f701' AND datum_escalated_at IS NOT NULL FROM site_events WHERE id = rehearsal_ds.ev('open')));
 
--- C. The confirmer stamp
-BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal_ds.as_user('sup') IS NOT NULL AS ok \gset
+-- C. The confirmer stamp. c1 is reported and owned by sup (fixture.sql /
+-- owner_id below) but confirmed by est and closed by adm: a guard that
+-- stamped reporter_id or owner_id instead of auth.uid() would still pass a
+-- check that used sup throughout, so every actor here is a different person.
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal_ds.as_user('est') IS NOT NULL AS ok \gset
 SELECT rehearsal_ds.expect('107 a member confirms (setup)', (confirm_site_event(
   rehearsal_ds.ev('c1'), 'butuh_keputusan', NULL, NULL, 'Pilih keramik', NULL, rehearsal_ds.u('sup'),
   rehearsal_ds.today() + 7, NULL, false, false, NULL, NULL) ->> 'status') = 'open');
 COMMIT;
-SELECT rehearsal_ds.expect('107 confirm_site_event as a member stamps that member', (SELECT confirmed_by = rehearsal_ds.u('sup') FROM site_events WHERE id = rehearsal_ds.ev('c1')));
+SELECT rehearsal_ds.expect('107 confirm_site_event stamps the confirmer, not the reporter or owner', (SELECT confirmed_by = rehearsal_ds.u('est') FROM site_events WHERE id = rehearsal_ds.ev('c1')));
 
 BEGIN; SET LOCAL ROLE service_role; SELECT rehearsal_ds.as_service() IS NOT NULL AS ok \gset
 SELECT rehearsal_ds.expect('107 service_role confirms (setup)', (confirm_site_event(
@@ -68,10 +71,10 @@ SELECT rehearsal_ds.expect('107 service_role confirms (setup)', (confirm_site_ev
 COMMIT;
 SELECT rehearsal_ds.expect('107 confirm_site_event as service_role stamps NULL: unknown, never guessed', (SELECT confirmed_by IS NULL AND confirmed_at IS NOT NULL FROM site_events WHERE id = rehearsal_ds.ev('c2')));
 
-BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal_ds.as_user('est') IS NOT NULL AS ok \gset
-SELECT rehearsal_ds.expect('107 another member closes the decision (setup)', (close_site_event(rehearsal_ds.ev('c1'), 'Keramik putih dipilih pemilik') ->> 'status') = 'done');
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal_ds.as_user('adm') IS NOT NULL AS ok \gset
+SELECT rehearsal_ds.expect('107 a third member closes the decision (setup)', (close_site_event(rehearsal_ds.ev('c1'), 'Keramik putih dipilih pemilik') ->> 'status') = 'done');
 COMMIT;
-SELECT rehearsal_ds.expect('107 a later update never moves the stamp', (SELECT confirmed_by = rehearsal_ds.u('sup') AND closed_by = rehearsal_ds.u('est') FROM site_events WHERE id = rehearsal_ds.ev('c1')));
+SELECT rehearsal_ds.expect('107 a later update never moves the stamp, and confirmer and closer stay distinct people', (SELECT confirmed_by = rehearsal_ds.u('est') AND closed_by = rehearsal_ds.u('adm') FROM site_events WHERE id = rehearsal_ds.ev('c1')));
 
 -- D. Room link and types
 BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal_ds.as_user('est') IS NOT NULL AS ok \gset
