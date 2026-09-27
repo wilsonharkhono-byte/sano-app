@@ -34,8 +34,10 @@ export interface DatumPostAreaItem {
   area_type: string;
   tracked: boolean;
 }
+/** Additive: a created area may carry a warning that a DATUM-side follow-up (its gate schedule, or its seed) did not run. */
+export interface DatumPostAreaWarning { code: 'SCHEDULE_FAILED' | 'SEED_FAILED'; reason: string }
 export interface DatumPostAreasReply {
-  areas: Array<{ area_code: string; id: string; created: boolean }>;
+  areas: Array<{ area_code: string; id: string; created: boolean; warning?: DatumPostAreaWarning }>;
   errors: Array<{ area_code: string; code: string }>;
 }
 export interface DatumStaffReply { staff: Array<{ id: string; full_name: string }> }

@@ -9,7 +9,7 @@
 // shapes, UUIDs, dates, lengths, codes, types, an area of another project),
 // and makes one card per SANO event.
 
-import { makeDatumApi } from './datum.ts';
+import { makeDatumApi, type DatumPostAreaWarning } from './datum.ts';
 import { PLAN_AREA_TYPES, normalizeCode, type PlanProfile, type PlanRoom, type RunCounts, type RunDifferences, type SanoGateWord } from './plan.ts';
 import type {
   EscalationDue,
@@ -243,6 +243,8 @@ export interface FakeDatumState {
   statuses: Array<{ project_id: string; area_id: string; gate_code: string; status: string; stale: boolean; last_recomputed_at: string | null; updated_at: string | null }>;
   staff: Array<{ id: string; full_name: string; active: boolean }>;
   cards: Array<{ id: string; sano_event_id: string; area_id: string; author: string; slug: string }>;
+  /** area_code -> the warning POST areas should attach when it CREATES that area (never on an already-known one). */
+  scheduleWarnings: Record<string, DatumPostAreaWarning>;
   /** DATUM's SANO_INTEGRATION_STAFF_ID; empty makes escalate answer 503 NOT_CONFIGURED, as the real route does. */
   systemStaffId: string;
   /** Route path (e.g. 'areas', 'staff') to answer with this status instead. */
@@ -316,7 +318,7 @@ function areaItemError(i: { area_code: string; area_name: string; floor?: string
 export function fakeDatum(seed: Partial<FakeDatumState> = {}): { state: FakeDatumState; fetch: typeof fetch } {
   const state: FakeDatumState = {
     secret: 'datum-secret', projects: [], areas: [], gates: [], statuses: [], staff: [], cards: [],
-    systemStaffId: STAFF_SYSTEM, failRoute: {}, calls: [], ...seed,
+    systemStaffId: STAFF_SYSTEM, failRoute: {}, calls: [], scheduleWarnings: {}, ...seed,
   };
   let areaSeq = 0;
   let cardSeq = 0;
@@ -370,7 +372,7 @@ export function fakeDatum(seed: Partial<FakeDatumState> = {}): { state: FakeDatu
       const found = resolve(body.project_code);
       if ('response' in found) return found.response;
       const { project } = found;
-      const out: Array<{ area_code: string; id: string; created: boolean }> = [];
+      const out: Array<{ area_code: string; id: string; created: boolean; warning?: DatumPostAreaWarning }> = [];
       const errors: Array<{ area_code: string; code: string }> = [];
       for (const item of body.areas as Array<{ area_code: string; area_name: string; floor?: string | null; area_type: string; tracked?: boolean }>) {
         const bad = areaItemError(item);
@@ -390,7 +392,8 @@ export function fakeDatum(seed: Partial<FakeDatumState> = {}): { state: FakeDatu
           id, project_id: project.id, area_code: item.area_code, area_name: item.area_name.trim(), floor: item.floor ?? null,
           area_type: item.area_type, sort_order: sort, tracked: item.tracked ?? true,
         });
-        out.push({ area_code: item.area_code, id, created: true });
+        const warning = state.scheduleWarnings[item.area_code];
+        out.push(warning ? { area_code: item.area_code, id, created: true, warning } : { area_code: item.area_code, id, created: true });
       }
       return reply(200, { ok: true, areas: out, errors });
     }

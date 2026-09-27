@@ -115,6 +115,31 @@ Deno.test('a DATUM project with no areas opens the gate: every active room is cr
   assertEquals(report.counts.rooms_created, 3);
 });
 
+Deno.test("a warning DATUM attaches to a newly created area lands in differences.schedule_warnings, and never fails the room", async () => {
+  const w = world();
+  w.datum.state.scheduleWarnings['LT1-DAPUR'] = { code: 'SCHEDULE_FAILED', reason: 'Jadwal gerbang gagal dibuat.' };
+  const report = await sync(w);
+
+  assertEquals(report.counts.steps.create, 'ok');
+  assertEquals(report.ok, true);
+  assertEquals(report.differences.schedule_warnings, [
+    { area_code: 'LT1-DAPUR', code: 'SCHEDULE_FAILED', reason: 'Jadwal gerbang gagal dibuat.' },
+  ]);
+  assertEquals(report.differences.create_failed, undefined);
+  // The room is still linked and counted as created despite the warning.
+  const dapur = w.store.rooms.find((r) => r.room_code === 'LT1-DAPUR')!;
+  assertEquals(dapur.datum_area_id !== null, true);
+  assertEquals(report.counts.rooms_created, 2);
+});
+
+Deno.test('an area DATUM already had (created: false) carries no warning even if one is configured for its code', async () => {
+  const w = world();
+  w.store.rooms[0].datum_area_id = null; // LT1-KM-1 matches AREA_KM1 by code: linked, not created.
+  w.datum.state.scheduleWarnings['LT1-KM-1'] = { code: 'SEED_FAILED', reason: 'Seed gagal dibuat.' };
+  const report = await sync(w);
+  assertEquals(report.differences.schedule_warnings, undefined);
+});
+
 Deno.test('areas failing marks link and create, while gate_status, staff and escalate still run', async () => {
   const w = world();
   w.store.rooms[0].datum_area_id = AREA_KM1;

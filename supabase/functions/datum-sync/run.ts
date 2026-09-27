@@ -37,6 +37,7 @@ import {
   type RunDifferences,
   type RunReport,
   type SanoGateWord,
+  type ScheduleWarningItem,
   type SyncSource,
   type SyncStep,
 } from './plan.ts';
@@ -292,6 +293,7 @@ async function linkAndCreate(
   else rec.ok('link');
 
   const createFailed: CreateFailedItem[] = [...plan.createFailed];
+  const scheduleWarnings: ScheduleWarningItem[] = [];
   let created = 0;
   if (!createGateOpen(plan, areas.length)) {
     rec.skip('create', createGateSentence(rec.counts.datum_project_name ?? project.datum_project_code));
@@ -318,6 +320,9 @@ async function linkAndCreate(
       for (const area of posted.data.areas) {
         const item = byCode.get(area.area_code);
         if (!item) continue;
+        if (area.created && area.warning) {
+          scheduleWarnings.push({ area_code: area.area_code, code: area.warning.code, reason: area.warning.reason });
+        }
         try {
           await ctx.store.setRoomLink(item.room_id, area.id);
           linkLocally(rooms, item.room_id, area.id);
@@ -337,6 +342,7 @@ async function linkAndCreate(
   rec.counts.rooms_linked_now = linkedNow;
   rec.counts.rooms_created = created;
   if (createFailed.length) rec.differences.create_failed = createFailed;
+  if (scheduleWarnings.length) rec.differences.schedule_warnings = scheduleWarnings;
 }
 
 async function gateStatusStep(

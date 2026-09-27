@@ -148,12 +148,21 @@ export interface EscalateSkipItem { event_id: string; room_code: string; title: 
  */
 export interface GateStatusUnknownItem { gate_code: string; status: string; unknown: 'gate' | 'status'; rows: number }
 
+/**
+ * DATUM's per-item warning on a POST areas item that came back created: true
+ * (e.g. its gate schedule, or its seed, did not run). Additive on DATUM's
+ * side: never a reason to treat the create as failed, the area is still
+ * created and the room still linked.
+ */
+export interface ScheduleWarningItem { area_code: string; code: string; reason: string }
+
 /** datum_sync_runs.differences (spec §6.2). */
 export interface RunDifferences {
   datum_only?: Array<{ area_code: string; area_name: string; floor: string | null; area_type: string }>;
   field_conflicts?: FieldConflict[];
   datum_duplicates?: DuplicateItem[];
   create_failed?: CreateFailedItem[];
+  schedule_warnings?: ScheduleWarningItem[];
   import_skipped?: ImportSkip[];
   staff?: { unmatched: StaffNameItem[]; ambiguous: StaffAmbiguousItem[]; stale: StaffStaleItem[] };
   escalate_skipped?: EscalateSkipItem[];
