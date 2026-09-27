@@ -131,6 +131,31 @@ export const STALE_RUN_MS = 10 * 60 * 1000;
 /** DATUM's POST areas takes 1-200 items per call. */
 export const CREATE_BATCH = 200;
 
+/*
+ * Wall time. A run must end well inside the platform's 150 s limit, however
+ * DATUM behaves. Every DATUM call gives up after 15 s (datum.ts). The fixed
+ * calls are areas, the first create batch, gate-status and staff; the loops
+ * are bounded by the run's own clock, and a failure that says DATUM is gone
+ * (no answer, 401, 503) ends a loop at once, because every later call would
+ * fail the same way:
+ *   areas                          ends by  15 s
+ *   create batch 1                 ends by  30 s
+ *   create batches 2..n            start before 45 s, so end by 60 s
+ *   gate-status, staff             end by  90 s
+ *   escalations                    start before 100 s, so end by 115 s
+ * then a handful of database writes (the card link, the run row, the
+ * request). What a loop does not reach is deferred and said so: rooms under
+ * create_failed with CREATE_DEFERRED, decisions in escalate_deferred.
+ */
+export const CREATE_BATCH_START_BEFORE_MS = 45_000;
+export const ESCALATE_START_BEFORE_MS = 100_000;
+export const CREATE_DEFERRED = 'Belum dikirim ke DATUM: waktu sinkron ini habis. Dikirim pada sinkron berikutnya.';
+
+/** No answer (timeout, network), a refused key, or DATUM not configured: the next call would fail the same way. */
+export function datumUnreachable(status: number): boolean {
+  return status === 0 || status === 401 || status === 503;
+}
+
 const READINESS = new Set(['not_started', 'in_progress', 'ready_for_handoff', 'blocked', 'passed', 'not_applicable']);
 
 const CREATE_ITEM_ERRORS: Record<string, string> = {
@@ -223,6 +248,7 @@ async function linkAndCreate(
   rooms: PlanRoom[] | null,
   roomsError: string | null,
   areas: PlanArea[] | null,
+  startedMs: number,
 ): Promise<void> {
   if (!areas) {
     rec.skip('link', AREAS_UNREAD);
@@ -262,12 +288,17 @@ async function linkAndCreate(
     const byCode = new Map(plan.create.map((c) => [c.area_code, c]));
     for (let start = 0; start < plan.create.length; start += CREATE_BATCH) {
       const batch = plan.create.slice(start, start + CREATE_BATCH);
+      if (start > 0 && ctx.now().getTime() - startedMs >= CREATE_BATCH_START_BEFORE_MS) {
+        for (const item of plan.create.slice(start)) createFailed.push({ room_code: item.area_code, reason: CREATE_DEFERRED });
+        break;
+      }
       const posted = await ctx.datum.postAreas(
         project.datum_project_code,
         batch.map(({ area_code, area_name, floor, area_type, tracked }) => ({ area_code, area_name, floor, area_type, tracked })),
       );
       if (!posted.ok) {
         createError ??= posted.error;
+        if (datumUnreachable(posted.status)) break;
         continue;
       }
       for (const area of posted.data.areas) {
@@ -378,7 +409,7 @@ async function staffStep(ctx: RunContext, rec: Recorder): Promise<void> {
   else rec.ok('staff');
 }
 
-async function escalateStep(ctx: RunContext, rec: Recorder, project: PairedProject): Promise<void> {
+async function escalateStep(ctx: RunContext, rec: Recorder, project: PairedProject, startedMs: number): Promise<void> {
   let linked: { rows: EscalationDue[]; total: number };
   let unlinked: { rows: EscalationDue[]; total: number };
   try {
@@ -399,13 +430,18 @@ async function escalateStep(ctx: RunContext, rec: Recorder, project: PairedProje
   let firstError: string | null = null;
   /** Areas DATUM answered UNKNOWN_AREA for in this run: their other decisions would get the same answer. */
   const unknownAreas = new Set<string>();
+  /** Linked decisions this run dealt with (sent, failed or skipped); the rest of the total is deferred. */
+  let handled = 0;
   for (const ev of linked.rows) {
     const areaId = ev.room_datum_area_id as string;
     if (unknownAreas.has(areaId)) {
+      handled += 1;
       areaUnknown += 1;
       skipped.push(skip(ev, ESCALATE_AREA_UNKNOWN));
       continue;
     }
+    if (ctx.now().getTime() - startedMs >= ESCALATE_START_BEFORE_MS) break;
+    handled += 1;
     const body: DatumEscalateBody = {
       project_code: project.datum_project_code,
       area_id: areaId,
@@ -427,6 +463,7 @@ async function escalateStep(ctx: RunContext, rec: Recorder, project: PairedProje
       firstError ??= reply.error;
       if (reply.code === 'UNKNOWN_AREA') unknownAreas.add(areaId);
       skipped.push(skip(ev, `Gagal dikirim: ${reply.error}`));
+      if (datumUnreachable(reply.status)) break;
       continue;
     }
     try {
@@ -444,7 +481,7 @@ async function escalateStep(ctx: RunContext, rec: Recorder, project: PairedProje
   rec.counts.escalated_as_system = asSystem;
   rec.counts.escalate_failed = failed;
   rec.counts.escalate_skipped = unlinked.total + areaUnknown;
-  rec.counts.escalate_deferred = Math.max(0, linked.total - linked.rows.length);
+  rec.counts.escalate_deferred = Math.max(0, linked.total - handled);
   if (skipped.length) rec.differences.escalate_skipped = skipped;
   if (firstError) rec.fail('escalate', firstError);
   else rec.ok('escalate');
@@ -492,15 +529,16 @@ async function guarded(
 /** §6.2: a sync. */
 export function executeSync(ctx: RunContext, runId: string, project: PairedProject, req: RunRequest): Promise<RunReport> {
   const rec = new Recorder();
+  const startedMs = ctx.now().getTime();
   return guarded(ctx, runId, req, rec, SYNC_STEPS, async () => {
     const areas = await readAreas(ctx, rec, project.datum_project_code);
     const read = await readRooms(ctx, project.id);
     const rooms = 'rooms' in read ? read.rooms : null;
     const roomsError = 'error' in read ? read.error : null;
-    await linkAndCreate(ctx, rec, project, rooms, roomsError, areas);
+    await linkAndCreate(ctx, rec, project, rooms, roomsError, areas, startedMs);
     await gateStatusStep(ctx, rec, runId, project, rooms, roomsError);
     await staffStep(ctx, rec);
-    await escalateStep(ctx, rec, project);
+    await escalateStep(ctx, rec, project, startedMs);
     return rooms;
   });
 }

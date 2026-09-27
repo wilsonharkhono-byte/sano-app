@@ -334,7 +334,6 @@ export function fakeDatum(seed: Partial<FakeDatumState> = {}): { state: FakeDatu
         bodyIsJson = false;
       }
     }
-    state.calls.push({ method, path, body });
     const auth = new Headers(init?.headers).get('Authorization');
     if (auth !== `Bearer ${state.secret}`) return refuse(401, 'UNAUTHORIZED', 'Kunci integrasi SANO tidak cocok.');
     if (state.failRoute[path]) return refuse(state.failRoute[path], 'DB_ERROR', 'fake failure');
@@ -423,7 +422,17 @@ export function fakeDatum(seed: Partial<FakeDatumState> = {}): { state: FakeDatu
   };
   const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
-    await state.beforeReply?.(url.pathname.replace(/^\/api\/integrations\/sano\//, ''), init?.method ?? 'GET');
+    const path = url.pathname.replace(/^\/api\/integrations\/sano\//, '');
+    const method = init?.method ?? 'GET';
+    let body: unknown;
+    try {
+      body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    } catch {
+      body = String(init?.body);
+    }
+    // Recorded before the hook, so a call the network then loses still counts as made.
+    state.calls.push({ method, path, body });
+    await state.beforeReply?.(path, method);
     return route(input, init);
   };
   return { state, fetch: fetchImpl as typeof fetch };

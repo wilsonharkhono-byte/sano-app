@@ -1,7 +1,7 @@
 import { assert, assertEquals } from 'std/assert';
 import { ESCALATE_AREA_UNKNOWN, ESCALATE_ROOM_UNLINKED, createGateSentence, IMPORT_GONE, importBadCode, importRaced } from './plan.ts';
-import { AREAS_UNREAD, PAIRING_MISSING, RUN_INTERRUPTED, executeImport, executeSync, startRun, type RunRequest } from './run.ts';
-import { AREA_KM1, DATUM_PROJECT_ID, PROJECT_ID, STAFF_BUDI, STAFF_SITI, decision, fakeUuid, newAreaId, world } from './testing.ts';
+import { AREAS_UNREAD, CREATE_DEFERRED, PAIRING_MISSING, RUN_INTERRUPTED, executeImport, executeSync, startRun, type RunRequest } from './run.ts';
+import { AREA_KM1, DATUM_PROJECT_ID, NOW, PROJECT_ID, STAFF_BUDI, STAFF_SITI, decision, fakeUuid, newAreaId, world } from './testing.ts';
 
 const STAFF_ANDI = fakeUuid('5', 3);
 const STAFF_GONE = fakeUuid('5', 50);
@@ -246,6 +246,76 @@ Deno.test('an area DATUM answers UNKNOWN_AREA for is not sent again in the same 
     [third.id, ESCALATE_AREA_UNKNOWN],
   ]);
   assertEquals(inDapur.datum_card_id !== null, true);
+});
+
+Deno.test('escalation stops at the first network failure, 401 or 503, and defers the rest; any other failure moves on', async () => {
+  const cases: Array<[string, (w: ReturnType<typeof world>) => void, number, string]> = [
+    ['503', (w) => (w.datum.state.systemStaffId = ''), 1, 'DATUM belum siap untuk SANO (503): SANO_INTEGRATION_STAFF_ID belum diisi: kartu dari SANO butuh penulis sistem.'],
+    ['401', (w) => (w.datum.state.failRoute = { escalate: 401 }), 1, 'DATUM menolak kunci integrasi (401).'],
+    ['network', (w) => {
+      w.datum.state.beforeReply = (path) => {
+        if (path === 'escalate') throw new TypeError('connection reset');
+      };
+    }, 1, 'DATUM tidak dapat dihubungi: connection reset'],
+    ['500', (w) => (w.datum.state.failRoute = { escalate: 500 }), 5, 'DATUM menjawab 500 DB_ERROR: fake failure'],
+  ];
+  for (const [name, breakIt, calls, sentence] of cases) {
+    const w = world();
+    w.store.rooms[0].datum_area_id = AREA_KM1;
+    for (let i = 0; i < 5; i++) decision(w.store);
+    breakIt(w);
+    const report = await sync(w);
+    assertEquals(w.datum.state.calls.filter((c) => c.path === 'escalate').length, calls, name);
+    assertEquals([report.counts.escalate_failed, report.counts.escalate_deferred], [calls, 5 - calls], name);
+    assertEquals([report.counts.steps.escalate, report.counts.step_errors?.escalate], ['error', sentence], name);
+  }
+});
+
+Deno.test('no escalation starts once the run is 100 s old: worst case ends by 115 s, the rest deferred', async () => {
+  const w = world();
+  w.store.rooms[0].datum_area_id = AREA_KM1;
+  for (let i = 0; i < 10; i++) decision(w.store);
+  w.datum.state.beforeReply = () => {
+    w.clock.now = new Date(w.clock.now.getTime() + 14_000);
+  };
+  const report = await sync(w);
+  // areas, POST areas, gate-status, staff: 56 s; escalations start at 56, 70, 84, 98 s; the fifth would start at 112 s.
+  assertEquals(report.counts.escalated, 4);
+  assertEquals(report.counts.escalate_deferred, 6);
+  assertEquals(report.counts.steps.escalate, 'ok');
+  assertEquals(w.clock.now.getTime() - Date.parse(NOW), 112_000);
+});
+
+Deno.test('create batches stop at the first network failure, 401 or 503; a later batch starts only before 45 s', async () => {
+  const addRooms = (w: ReturnType<typeof world>, n: number) => {
+    for (let i = 0; i < n; i++) {
+      w.store.rooms.push({
+        id: `room-x${i}`, project_id: PROJECT_ID, room_code: `LT2-R-${String(i).padStart(3, '0')}`, room_name: `Ruang ${i}`,
+        floor: 'Lt. 2', area_type: 'general', sort_order: i, active: true, datum_area_id: null,
+      });
+    }
+  };
+  const down = world();
+  addRooms(down, 250);
+  down.datum.state.beforeReply = (path, method) => {
+    if (path === 'areas' && method === 'POST') throw new TypeError('connection reset');
+  };
+  const failed = await sync(down);
+  assertEquals(down.datum.state.calls.filter((c) => c.method === 'POST' && c.path === 'areas').length, 1);
+  assertEquals([failed.counts.steps.create, failed.counts.step_errors?.create], ['error', 'DATUM tidak dapat dihubungi: connection reset']);
+
+  const slow = world();
+  addRooms(slow, 450);
+  slow.datum.state.beforeReply = () => {
+    slow.clock.now = new Date(slow.clock.now.getTime() + 20_000);
+  };
+  const late = await sync(slow);
+  // areas ends at 20 s, batch 1 at 40 s, batch 2 starts at 40 s; batch 3 would start at 60 s.
+  assertEquals(slow.datum.state.calls.filter((c) => c.method === 'POST' && c.path === 'areas').length, 2);
+  assertEquals(late.counts.rooms_created, 400);
+  assertEquals(late.counts.steps.create, 'ok');
+  const deferred = (late.differences.create_failed ?? []).filter((x) => x.reason === CREATE_DEFERRED);
+  assertEquals(deferred.length, 52);
 });
 
 Deno.test('staff links are set only for unique matches; a stale link is reported and left alone', async () => {
