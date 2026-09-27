@@ -117,14 +117,26 @@ describe('migration 101 - exactly eight UPDATEs, one per code, touching only thr
   });
 });
 
+/**
+ * 107 replaces these words with DATUM's on purpose (DATUM sync spec
+ * 2026-09-27 §3: "SANO follows DATUM"). It is the one later file allowed to
+ * write them, and only because its header names the hazard both ways.
+ */
+const SUPERSEDED_BY = '107_datum_sync.sql';
+
 describe('migration 101 - nothing later reverts it', () => {
-  it('no later migration writes gate_refs.short_label/name_id/description', () => {
+  it('no later migration writes gate_refs.short_label/name_id/description, except 107 by design', () => {
     const later = fs.readdirSync(MIGRATIONS)
-      .filter((f) => /^\d{3}_.*\.sql$/.test(f) && Number(f.slice(0, 3)) > 101);
+      .filter((f) => /^\d{3}_.*\.sql$/.test(f) && Number(f.slice(0, 3)) > 101 && f !== SUPERSEDED_BY);
     const touching = later.filter((f) =>
       /UPDATE\s+gate_refs\s+SET[\s\S]*?(name_id|short_label|description)/i
         .test(stripComments(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'))),
     );
     expect(touching).toEqual([]);
+  });
+
+  it('107, which does write them, says that re-pasting 101 restores the old words', () => {
+    const sql = fs.readFileSync(path.join(MIGRATIONS, SUPERSEDED_BY), 'utf8');
+    expect(sql).toMatch(/Re-pasting 101 after 107\s+-- restores SANO's old gate words: re-paste 107 after it\./);
   });
 });
