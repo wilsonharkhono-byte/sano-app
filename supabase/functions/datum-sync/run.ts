@@ -130,8 +130,13 @@ export const PAIRING_MISSING = 'Proyek ini belum ditautkan ke DATUM.';
 export const SYNC_RUNNING = 'Sinkron DATUM untuk proyek ini sedang berjalan.';
 export const AREAS_UNREAD = 'Area DATUM tidak terbaca pada sinkron ini.';
 export const STALE_RUN_MS = 10 * 60 * 1000;
-/** DATUM's POST areas takes 1-200 items per call. */
-export const CREATE_BATCH = 200;
+/**
+ * DATUM's POST areas takes 1-200 items per call, but DATUM now builds a gate
+ * schedule for every new tracked area (DATUM commit 0a52e1f), so a call
+ * creating many areas can run long. Lowered from 200 so one batch's POST
+ * comfortably finishes inside the 15 s DATUM_TIMEOUT_MS (datum.ts).
+ */
+export const CREATE_BATCH = 25;
 
 /*
  * Wall time. A run must end well inside the platform's 150 s limit, however

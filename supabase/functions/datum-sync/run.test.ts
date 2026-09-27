@@ -90,9 +90,10 @@ Deno.test('a code edited in DATUM keeps the link: no second area, a code conflic
   assertEquals(report.counts.steps.create, 'ok');
 });
 
-Deno.test('rooms are created in batches of at most 200, as DATUM takes them, and every batch is linked', async () => {
+Deno.test('rooms are created in batches of at most 25, as DATUM takes them, and every batch is linked', async () => {
   const w = world();
-  for (let i = 0; i < 250; i++) {
+  // 58 new rooms plus the 2 the base world() already needs to create (LT1-DAPUR, UMUM) = 60.
+  for (let i = 0; i < 58; i++) {
     w.store.rooms.push({
       id: `room-x${i}`, project_id: PROJECT_ID, room_code: `LT2-R-${String(i).padStart(3, '0')}`, room_name: `Ruang ${i}`,
       floor: 'Lt. 2', area_type: 'general', sort_order: i, active: true, datum_area_id: null,
@@ -100,9 +101,9 @@ Deno.test('rooms are created in batches of at most 200, as DATUM takes them, and
   }
   const report = await sync(w);
   const posts = w.datum.state.calls.filter((c) => c.method === 'POST' && c.path === 'areas');
-  assertEquals(posts.map((c) => (c.body as { areas: unknown[] }).areas.length), [200, 52]);
+  assertEquals(posts.map((c) => (c.body as { areas: unknown[] }).areas.length), [25, 25, 10]);
   assertEquals(report.counts.steps.create, 'ok');
-  assertEquals(report.counts.rooms_created, 252);
+  assertEquals(report.counts.rooms_created, 60);
   assertEquals(w.store.rooms.every((r) => r.datum_area_id !== null), true);
 });
 
@@ -310,12 +311,13 @@ Deno.test('create batches stop at the first network failure, 401 or 503; a later
     slow.clock.now = new Date(slow.clock.now.getTime() + 20_000);
   };
   const late = await sync(slow);
-  // areas ends at 20 s, batch 1 at 40 s, batch 2 starts at 40 s; batch 3 would start at 60 s.
+  // areas ends at 20 s, batch 1 (25 items) ends at 40 s, batch 2 (25 items) starts at 40 s and
+  // ends at 60 s; batch 3 would start at 60 s, past the 45 s deadline, so the rest is deferred.
   assertEquals(slow.datum.state.calls.filter((c) => c.method === 'POST' && c.path === 'areas').length, 2);
-  assertEquals(late.counts.rooms_created, 400);
+  assertEquals(late.counts.rooms_created, 50);
   assertEquals(late.counts.steps.create, 'ok');
   const deferred = (late.differences.create_failed ?? []).filter((x) => x.reason === CREATE_DEFERRED);
-  assertEquals(deferred.length, 52);
+  assertEquals(deferred.length, 402);
 });
 
 Deno.test('staff links are set only for unique matches; a stale link is reported and left alone', async () => {
