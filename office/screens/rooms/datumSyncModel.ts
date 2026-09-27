@@ -138,9 +138,18 @@ function gateStatusUnknownLine(x: GateStatusUnknownItem): string {
     : `Gerbang ${x.gate_code} · status "${x.status}" tidak dikenal SANO · ${areas}`;
 }
 
-export function differenceGroups(run: DatumRun | null): DifferenceGroup[] {
+/**
+ * `run` is the newest finished run; `syncRun` the newest finished run that is
+ * not an import (DatumSyncState.latestSync). What only a sync writes - rooms
+ * it could not create, schedules DATUM did not build, decisions not sent -
+ * comes from syncRun, so an import run (which writes none of it) does not
+ * make it vanish. Everything else is the newest run's.
+ */
+export function differenceGroups(run: DatumRun | null, syncRun: DatumRun | null = run): DifferenceGroup[] {
   if (!run) return [];
   const d: CardDifferences = run.differences;
+  const s: CardDifferences = syncRun?.differences ?? {};
+  const deferred = syncRun?.counts.escalate_deferred ?? 0;
   const groups: DifferenceGroup[] = [
     {
       title: 'Hanya di DATUM',
@@ -154,19 +163,19 @@ export function differenceGroups(run: DatumRun | null): DifferenceGroup[] {
           : `${f.room_code} · ${FIELD_WORDS[f.field]} — SANO "${f.sano}" · DATUM "${f.datum}"`),
     },
     { title: 'Kode ganda di DATUM', lines: (d.datum_duplicates ?? []).map((x) => `${x.key}: ${x.area_codes.join(', ')}`) },
-    { title: 'Gagal dibuat di DATUM', lines: (d.create_failed ?? []).map((x) => `${x.room_code} · ${x.reason}`) },
+    { title: 'Gagal dibuat di DATUM', lines: (s.create_failed ?? []).map((x) => `${x.room_code} · ${x.reason}`) },
     {
       title: 'Jadwal DATUM belum tersusun',
-      lines: (d.schedule_warnings ?? []).map((x) => `${x.area_code}: ${x.reason || x.code}`),
+      lines: (s.schedule_warnings ?? []).map((x) => `${x.area_code}: ${x.reason || x.code}`),
       note: SCHEDULE_WARNINGS_NOTE,
     },
     { title: 'Tidak diambil dari DATUM', lines: (d.import_skipped ?? []).map((x) => `${x.area_code} · ${x.reason}`) },
     {
       title: 'Keputusan belum terkirim',
       lines: [
-        ...(d.escalate_skipped ?? []).map((x) => `${x.room_code} · ${x.title} · ${x.reason}`),
+        ...(s.escalate_skipped ?? []).map((x) => `${x.room_code} · ${x.title} · ${x.reason}`),
         // Linked decisions the run's time did not reach (counts.escalate_deferred): not sent, not failed.
-        ...(run.counts.escalate_deferred ? [`${run.counts.escalate_deferred} keputusan menunggu sinkron berikutnya`] : []),
+        ...(deferred > 0 ? [`${deferred} keputusan menunggu sinkron berikutnya`] : []),
       ],
     },
     { title: 'Kata gerbang berbeda dengan DATUM', lines: (d.gate_words ?? []).map((g) => `Gerbang ${g.code} · ${GATE_FIELD_WORDS[g.field]}`) },

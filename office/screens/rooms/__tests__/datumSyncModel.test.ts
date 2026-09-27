@@ -29,7 +29,7 @@ const run = (over: Partial<DatumRun> = {}): DatumRun => ({
   counts: { steps: { areas: 'ok', link: 'ok', create: 'ok', gate_status: 'ok', staff: 'ok', escalate: 'ok' }, datum_project_name: 'Citraland K2-7 Sonny', rooms_linked: 12, rooms_created: 2, datum_only: 1 },
   differences: {}, error: null, ...over,
 });
-const state = (over: Partial<DatumSyncState> = {}): DatumSyncState => ({ latest: run(), latestFinished: run(), staffRun: run(), waiting: null, ...over });
+const state = (over: Partial<DatumSyncState> = {}): DatumSyncState => ({ latest: run(), latestFinished: run(), latestSync: run(), staffRun: run(), waiting: null, ...over });
 
 describe('lastRunView', () => {
   it("reads a good run with its non-zero parts, who started it, and DATUM's project name", () => {
@@ -153,6 +153,36 @@ describe("differenceGroups: the planner's and the function's reasons", () => {
       ] },
     ]);
     expect(JSON.stringify(groups)).not.toMatch(/undefined|null/);
+  });
+});
+
+describe('differenceGroups after an import', () => {
+  it('keeps the create, schedule and decision groups of the newest sync, which an import run never writes', () => {
+    const sync = run({
+      id: 'run-1',
+      counts: { ...run().counts, escalate_deferred: 3 },
+      differences: {
+        datum_only: [{ area_code: 'OLD', area_name: 'Lama', floor: null, area_type: 'general' }],
+        create_failed: [{ room_code: 'LT3-PANJANG', reason: 'Nama ruangan lebih dari 120 karakter; DATUM menolaknya.' }],
+        escalate_skipped: [{ event_id: 'e1', room_code: 'LT1-DAPUR', title: 'Pilih kran', reason: 'Ruangan belum tertaut ke area DATUM.' }],
+        schedule_warnings: [{ area_code: 'LT2-TERAS', code: 'SCHEDULE_FAILED', reason: 'Jadwal area gagal disusun.' }],
+      } as DatumRun['differences'],
+    });
+    const imported = run({
+      id: 'run-2', source: 'import',
+      counts: { steps: { import: 'ok' }, rooms_imported: 1 },
+      differences: { import_skipped: [{ area_code: 'GONE-1', reason: 'Sudah ada di SANO atau tidak lagi ada di DATUM.' }] },
+    });
+    expect(differenceGroups(imported, sync).map((g) => [g.title, g.lines])).toEqual([
+      ['Gagal dibuat di DATUM', ['LT3-PANJANG · Nama ruangan lebih dari 120 karakter; DATUM menolaknya.']],
+      ['Jadwal DATUM belum tersusun', ['LT2-TERAS: Jadwal area gagal disusun.']],
+      ['Tidak diambil dari DATUM', ['GONE-1 · Sudah ada di SANO atau tidak lagi ada di DATUM.']],
+      ['Keputusan belum terkirim', ['LT1-DAPUR · Pilih kran · Ruangan belum tertaut ke area DATUM.', '3 keputusan menunggu sinkron berikutnya']],
+    ]);
+    // Everything else is the newest finished run's: the import's DATUM-only list, not the older sync's.
+    expect(differenceGroups(imported, sync).some((g) => g.title === 'Hanya di DATUM')).toBe(false);
+    // No finished sync yet: those groups say nothing rather than borrow the import's silence.
+    expect(differenceGroups(imported, null).map((g) => g.title)).toEqual(['Tidak diambil dari DATUM']);
   });
 });
 

@@ -40,7 +40,7 @@ const run = (over: Partial<DatumRun> = {}): DatumRun => ({
   differences: { staff: { unmatched: [{ profile_id: 'u9', full_name: 'Ir. Budi' }], ambiguous: [], stale: [] } },
   error: null, ...over,
 });
-const state = (over: Partial<DatumSyncState> = {}): DatumSyncState => ({ latest: run(), latestFinished: run(), staffRun: run(), waiting: null, ...over });
+const state = (over: Partial<DatumSyncState> = {}): DatumSyncState => ({ latest: run(), latestFinished: run(), latestSync: run(), staffRun: run(), waiting: null, ...over });
 const deferred = <T,>() => {
   let resolve!: (v: T) => void;
   const promise = new Promise<T>((r) => { resolve = r; });
@@ -254,11 +254,30 @@ describe('the rooms behind the card', () => {
   });
 });
 
+describe('the differences after an import', () => {
+  it('still shows what the newest sync could not create or send', async () => {
+    const imported = run({ id: 'run-2', source: 'import', counts: { steps: { import: 'ok' }, rooms_imported: 1 }, differences: {} });
+    getState.mockResolvedValueOnce(state({
+      latest: imported,
+      latestFinished: imported,
+      latestSync: run({ differences: {
+        create_failed: [{ room_code: 'LT3-PANJANG', reason: 'Nama ruangan lebih dari 120 karakter; DATUM menolaknya.' }],
+        escalate_skipped: [{ event_id: 'e1', room_code: 'LT1-DAPUR', title: 'Pilih kran', reason: 'Ruangan belum tertaut ke area DATUM.' }],
+      } }),
+    }));
+    const utils = renderCard('admin');
+    await waitFor(() => expect(utils.getByText('Gagal dibuat di DATUM')).toBeTruthy());
+    expect(utils.getByText('Keputusan belum terkirim')).toBeTruthy();
+    expect(utils.getByText('LT1-DAPUR · Pilih kran · Ruangan belum tertaut ke area DATUM.')).toBeTruthy();
+  });
+});
+
 describe('schedules DATUM could not build', () => {
   it('shows the group, one line per area, with its note', async () => {
-    getState.mockResolvedValueOnce(state({ latestFinished: run({ differences: { schedule_warnings: [
+    const synced = run({ differences: { schedule_warnings: [
       { area_code: 'LT2-TERAS', code: 'SCHEDULE_FAILED', reason: 'Jadwal area gagal disusun.' },
-    ] } as DatumRun['differences'] }) }));
+    ] } as DatumRun['differences'] });
+    getState.mockResolvedValueOnce(state({ latestFinished: synced, latestSync: synced }));
     const utils = renderCard('admin');
     await waitFor(() => expect(utils.getByText('Jadwal DATUM belum tersusun')).toBeTruthy());
     expect(utils.getByText('LT2-TERAS: Jadwal area gagal disusun.')).toBeTruthy();
@@ -268,11 +287,12 @@ describe('schedules DATUM could not build', () => {
 
 describe('differences and staff', () => {
   it('lists each difference group with the note, and the staff picture for every project', async () => {
-    getState.mockResolvedValueOnce(state({ latestFinished: run({ differences: {
+    const synced = run({ differences: {
       field_conflicts: [{ room_code: 'KM-1', field: 'name', sano: 'Kamar Mandi 1', datum: 'KM Anak' }],
       gate_words: [{ code: 'B', field: 'description' }],
       escalate_skipped: [{ event_id: 'e1', room_code: 'LT1-DAPUR', title: 'Pilih kran', reason: 'Ruangan belum tertaut ke area DATUM.' }],
-    } }) }));
+    } });
+    getState.mockResolvedValueOnce(state({ latestFinished: synced, latestSync: synced }));
     const utils = renderCard('admin');
     await waitFor(() => expect(utils.getByText('Berbeda dengan DATUM')).toBeTruthy());
     expect(utils.getByText('KM-1 · nama — SANO "Kamar Mandi 1" · DATUM "KM Anak"')).toBeTruthy();

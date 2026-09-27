@@ -261,7 +261,7 @@ function Groups({ groups }: { groups: DifferenceGroup[] }) {
 }
 
 function Differences({ state }: { state: DatumSyncState }) {
-  const groups = differenceGroups(state.latestFinished);
+  const groups = differenceGroups(state.latestFinished, state.latestSync);
   const staff = staffView(state.staffRun);
   return (
     <>

@@ -145,8 +145,15 @@ export interface DatumRun {
 export interface DatumSyncState {
   /** The newest run of this project, open or finished. */
   latest: DatumRun | null;
-  /** The newest finished run of this project: the differences come from here. */
+  /** The newest finished run of this project: the differences come from here, except those below. */
   latestFinished: DatumRun | null;
+  /**
+   * The newest finished run of this project that is not an import. An
+   * import run never creates in DATUM or sends decisions, so it writes no
+   * create_failed, schedule_warnings or escalate_skipped: those come from
+   * here, or an import would make them vanish.
+   */
+  latestSync: DatumRun | null;
   /** The newest run, of any project, whose staff step was ok: staff matching is global. */
   staffRun: DatumRun | null;
   /** Hourly requests for this project unhandled for more than 2 hours. */
@@ -178,15 +185,17 @@ export async function getDatumSyncState(
 ): Promise<DatumSyncState | { error: string }> {
   try {
     const waitingSince = new Date(Date.parse(nowIso) - DATUM_WAITING_AFTER_MS).toISOString();
-    const [recent, staff, waiting] = await Promise.all([
+    const [recent, staff, waiting, sync] = await Promise.all([
       supabase.from('datum_sync_runs').select(RUN_COLUMNS).eq('project_id', projectId)
         .order('started_at', { ascending: false }).limit(2),
       supabase.from('datum_sync_runs').select(RUN_COLUMNS).eq('counts->steps->>staff', 'ok').not('finished_at', 'is', null)
         .order('finished_at', { ascending: false }).limit(1).maybeSingle(),
       supabase.from('datum_sync_requests').select('requested_at', { count: 'exact' }).eq('project_id', projectId)
         .is('handled_at', null).lt('requested_at', waitingSince).order('requested_at', { ascending: true }).limit(1),
+      supabase.from('datum_sync_runs').select(RUN_COLUMNS).eq('project_id', projectId).neq('source', 'import')
+        .not('finished_at', 'is', null).order('finished_at', { ascending: false }).limit(1).maybeSingle(),
     ]);
-    const failed = recent.error ?? staff.error ?? waiting.error;
+    const failed = recent.error ?? staff.error ?? waiting.error ?? sync.error;
     if (failed) return { error: failed.message };
 
     const runs = ((recent.data ?? []) as unknown as RunRow[]).map((r) => toRun(r) as DatumRun);
@@ -194,6 +203,7 @@ export async function getDatumSyncState(
     return {
       latest: runs[0] ?? null,
       latestFinished: runs.find((r) => r.finished_at !== null) ?? null,
+      latestSync: toRun(sync.data as unknown as RunRow | null),
       staffRun: toRun(staff.data as unknown as RunRow | null),
       waiting: oldest && (waiting.count ?? 0) > 0 ? { count: waiting.count ?? 0, oldestAt: oldest.requested_at } : null,
     };

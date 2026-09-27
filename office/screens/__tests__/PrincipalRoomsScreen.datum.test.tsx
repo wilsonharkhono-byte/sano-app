@@ -66,7 +66,7 @@ const latest = {
 beforeEach(() => {
   jest.clearAllMocks();
   mockBoardProps.length = 0;
-  getState.mockResolvedValue({ latest, latestFinished: latest, staffRun: null, waiting: null });
+  getState.mockResolvedValue({ latest, latestFinished: latest, latestSync: latest, staffRun: null, waiting: null });
 });
 
 describe('PrincipalRoomsScreen and DATUM', () => {

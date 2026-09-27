@@ -26,7 +26,7 @@ const calls: string[] = [];
 
 function chain(table: string, result: { data: unknown; error: unknown; count?: number }) {
   const c: Record<string, unknown> = {};
-  for (const name of ['select', 'eq', 'not', 'is', 'lt', 'order', 'limit', 'maybeSingle']) {
+  for (const name of ['select', 'eq', 'neq', 'not', 'is', 'lt', 'order', 'limit', 'maybeSingle']) {
     c[name] = (...args: unknown[]) => {
       calls.push(`${table}.${name}:${args.map((a) => JSON.stringify(a)).join(':')}`);
       return c;
@@ -129,16 +129,18 @@ describe('getDatumSyncState', () => {
     requester: { full_name: 'Siti' }, ...over,
   });
 
-  it('reads the newest two runs of the project, the newest staff run of any project, and old waiting requests', async () => {
+  it('reads the newest two runs of the project, the newest staff run of any project, old waiting requests and the newest finished sync', async () => {
     const open = run({ id: 'run-2', finished_at: null, ok: null, requester: null });
     mocked.from
       .mockReturnValueOnce(chain('runs', { data: [open, run()], error: null }))
       .mockReturnValueOnce(chain('staffRun', { data: run({ id: 'run-0', project_id: 'p9' }), error: null }))
-      .mockReturnValueOnce(chain('requests', { data: [{ requested_at: '2026-09-27T00:00:00.000Z' }], error: null, count: 3 }));
+      .mockReturnValueOnce(chain('requests', { data: [{ requested_at: '2026-09-27T00:00:00.000Z' }], error: null, count: 3 }))
+      .mockReturnValueOnce(chain('syncRun', { data: run({ id: 'run-1' }), error: null }));
     const state = await getDatumSyncState('p1', '2026-09-27T03:00:10.000Z');
     expect(state).toMatchObject({
       latest: { id: 'run-2', requester_name: null },
       latestFinished: { id: 'run-1', requester_name: 'Siti' },
+      latestSync: { id: 'run-1' },
       staffRun: { id: 'run-0' },
       waiting: { count: 3, oldestAt: '2026-09-27T00:00:00.000Z' },
     });
@@ -147,19 +149,41 @@ describe('getDatumSyncState', () => {
     expect(calls).toContain('requests.is:"handled_at":null');
   });
 
+  it('takes the newest finished run that is not an import as the sync the create and escalate differences come from', async () => {
+    const imported = run({ id: 'run-3', source: 'import' });
+    mocked.from
+      .mockReturnValueOnce(chain('runs', { data: [imported, run({ id: 'run-2', source: 'import' })], error: null }))
+      .mockReturnValueOnce(chain('staffRun', { data: null, error: null }))
+      .mockReturnValueOnce(chain('requests', { data: [], error: null, count: 0 }))
+      .mockReturnValueOnce(chain('syncRun', { data: run({ id: 'run-1', source: 'cron' }), error: null }));
+    expect(await getDatumSyncState('p1')).toMatchObject({ latestFinished: { id: 'run-3' }, latestSync: { id: 'run-1', source: 'cron' } });
+    expect(calls).toContain('syncRun.eq:"project_id":"p1"');
+    expect(calls).toContain('syncRun.neq:"source":"import"');
+    expect(calls).toContain('syncRun.not:"finished_at":"is":null');
+    expect(calls).toContain('syncRun.order:"finished_at":{"ascending":false}');
+  });
+
   it('says never run, and no wait, with empty answers', async () => {
     mocked.from
       .mockReturnValueOnce(chain('runs', { data: [], error: null }))
       .mockReturnValueOnce(chain('staffRun', { data: null, error: null }))
-      .mockReturnValueOnce(chain('requests', { data: [], error: null, count: 0 }));
-    expect(await getDatumSyncState('p1')).toEqual({ latest: null, latestFinished: null, staffRun: null, waiting: null });
+      .mockReturnValueOnce(chain('requests', { data: [], error: null, count: 0 }))
+      .mockReturnValueOnce(chain('syncRun', { data: null, error: null }));
+    expect(await getDatumSyncState('p1')).toEqual({ latest: null, latestFinished: null, latestSync: null, staffRun: null, waiting: null });
   });
 
   it('returns the error, never "belum pernah", when a read fails', async () => {
     mocked.from
       .mockReturnValueOnce(chain('runs', { data: null, error: { message: 'offline' } }))
       .mockReturnValueOnce(chain('staffRun', { data: null, error: null }))
-      .mockReturnValueOnce(chain('requests', { data: [], error: null, count: 0 }));
+      .mockReturnValueOnce(chain('requests', { data: [], error: null, count: 0 }))
+      .mockReturnValueOnce(chain('syncRun', { data: null, error: null }));
     expect(await getDatumSyncState('p1')).toEqual({ error: 'offline' });
+    mocked.from
+      .mockReturnValueOnce(chain('runs', { data: [], error: null }))
+      .mockReturnValueOnce(chain('staffRun', { data: null, error: null }))
+      .mockReturnValueOnce(chain('requests', { data: [], error: null, count: 0 }))
+      .mockReturnValueOnce(chain('syncRun', { data: null, error: { message: 'timeout' } }));
+    expect(await getDatumSyncState('p1')).toEqual({ error: 'timeout' });
   });
 });
