@@ -5,6 +5,7 @@
  */
 import {
   NAME_TOO_LONG,
+  codeHeldElsewhere,
   createGateOpen,
   createGateSentence,
   foldText,
@@ -152,6 +153,82 @@ describe('planRoomSync', () => {
     expect(plan.link).toEqual([]);
     expect(plan.create).toEqual([]);
     expect(plan.datumOnly.map((a) => a.area_code)).toEqual(['LT1-KM-1']);
+  });
+
+  it('keeps the link of a room whose area DATUM re-coded: no create, a code conflict, not DATUM-only', () => {
+    const plan = planRoomSync(
+      [room({ id: 'r1', room_code: 'LT1-KM-1', room_name: 'Kamar Mandi 1', datum_area_id: 'a1' })],
+      [area({ id: 'a1', area_code: 'LT1-KM-UTAMA', area_name: 'KM Utama' })],
+    );
+    expect(plan.link).toEqual([]);
+    expect(plan.create).toEqual([]);
+    expect(plan.createFailed).toEqual([]);
+    expect(plan.datumOnly).toEqual([]);
+    expect(plan.fieldConflicts).toEqual([
+      { room_code: 'LT1-KM-1', field: 'code', sano: 'LT1-KM-1', datum: 'LT1-KM-UTAMA' },
+      { room_code: 'LT1-KM-1', field: 'name', sano: 'Kamar Mandi 1', datum: 'KM Utama' },
+    ]);
+    expect(plan.matchedCount).toBe(1);
+    expect(createGateOpen(plan, 1)).toBe(true);
+  });
+
+  it('reads a linked area whose code differs only in form as no code conflict', () => {
+    const plan = planRoomSync(
+      [room({ id: 'r1', room_code: 'LT1-KM-1', datum_area_id: 'a1' })],
+      [area({ id: 'a1', area_code: 'lt1 km 1' })],
+    );
+    expect(plan.fieldConflicts).toEqual([]);
+    expect(plan.link).toEqual([]);
+    expect(plan.matchedCount).toBe(1);
+  });
+
+  it('falls back to the code when the linked area is gone from DATUM: relinks to the area with that code, or creates it', () => {
+    const plan = planRoomSync(
+      [
+        room({ id: 'r1', room_code: 'LT1-KM-1', datum_area_id: 'gone-1' }),
+        room({ id: 'r2', room_code: 'LT1-DAPUR', room_name: 'Dapur', datum_area_id: 'gone-2' }),
+        room({ id: 'r3', room_code: 'LT1-GUDANG', datum_area_id: 'gone-3', active: false }),
+      ],
+      [area({ id: 'a1', area_code: 'LT1-KM-1' })],
+    );
+    expect(plan.link).toEqual([{ room_id: 'r1', room_code: 'LT1-KM-1', area_id: 'a1' }]);
+    expect(plan.create).toEqual([
+      { room_id: 'r2', area_code: 'LT1-DAPUR', area_name: 'Dapur', floor: 'Lt. 1', area_type: 'general', tracked: true },
+    ]);
+    expect(plan.retiredMissing).toEqual(['LT1-GUDANG']);
+    expect(plan.datumOnly).toEqual([]);
+    expect(plan.matchedCount).toBe(1);
+  });
+
+  it('neither links nor creates a room whose code names an area another room holds by link, and says why', () => {
+    const plan = planRoomSync(
+      [
+        room({ id: 'rA', room_code: 'LT1-KM-1', datum_area_id: 'a1' }),
+        room({ id: 'rB', room_code: 'LT1-KM-2' }),
+        room({ id: 'rC', room_code: 'LT1-KM-3', datum_area_id: 'gone', active: false }),
+      ],
+      [area({ id: 'a1', area_code: 'LT1-KM-2' }), area({ id: 'a3', area_code: 'LT1-KM-3-OLD' })],
+    );
+    expect(plan.link).toEqual([]);
+    expect(plan.create).toEqual([]);
+    expect(plan.createFailed).toEqual([{ room_code: 'LT1-KM-2', reason: codeHeldElsewhere('LT1-KM-2', 'LT1-KM-1') }]);
+    expect(plan.fieldConflicts).toEqual([{ room_code: 'LT1-KM-1', field: 'code', sano: 'LT1-KM-1', datum: 'LT1-KM-2' }]);
+    expect(plan.datumOnly.map((a) => a.area_id)).toEqual(['a3']);
+    expect(plan.retiredMissing).toEqual(['LT1-KM-3']);
+    expect(codeHeldElsewhere('LT1-KM-2', 'LT1-KM-1')).toBe(
+      'Area DATUM dengan kode LT1-KM-2 sudah tertaut ke ruangan LT1-KM-1. Samakan kodenya di SANO atau DATUM.',
+    );
+  });
+
+  it('keeps a link into a duplicated DATUM key and still lists the duplicate', () => {
+    const plan = planRoomSync(
+      [room({ id: 'r1', room_code: 'LT1-KM-1', datum_area_id: 'a2' })],
+      [area({ id: 'a1', area_code: 'LT1-KM-1' }), area({ id: 'a2', area_code: 'lt1 km 1' })],
+    );
+    expect(plan.datumDuplicates).toEqual([{ key: 'LT1-KM-1', area_codes: ['LT1-KM-1', 'lt1 km 1'] }]);
+    expect(plan.link).toEqual([]);
+    expect(plan.matchedCount).toBe(1);
+    expect(plan.datumOnly).toEqual([]);
   });
 });
 

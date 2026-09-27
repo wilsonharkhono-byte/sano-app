@@ -70,6 +70,19 @@ Deno.test('the plausibility gate refuses to create when no room matches a DATUM 
   assertEquals(report.differences.datum_only, [{ area_code: 'LT9-LAIN', area_name: 'Kamar Mandi 1', floor: 'Lt. 1', area_type: 'bathroom' }]);
 });
 
+Deno.test('a code edited in DATUM keeps the link: no second area, a code conflict, nothing listed as DATUM-only', async () => {
+  const w = world();
+  w.store.rooms[0].datum_area_id = 'area-km1';
+  w.datum.state.areas[0].area_code = 'LT1-KM-UTAMA';
+  const report = await sync(w);
+  const post = w.datum.state.calls.find((c) => c.method === 'POST' && c.path === 'areas');
+  assertEquals((post?.body as { areas: Array<{ area_code: string }> }).areas.map((a) => a.area_code), ['LT1-DAPUR', 'UMUM']);
+  assertEquals(w.store.rooms[0].datum_area_id, 'area-km1');
+  assertEquals(report.differences.field_conflicts, [{ room_code: 'LT1-KM-1', field: 'code', sano: 'LT1-KM-1', datum: 'LT1-KM-UTAMA' }]);
+  assertEquals(report.differences.datum_only, undefined);
+  assertEquals(report.counts.steps.create, 'ok');
+});
+
 Deno.test('a DATUM project with no areas opens the gate: every active room is created', async () => {
   const w = world();
   w.datum.state.areas = [];

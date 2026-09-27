@@ -60,7 +60,8 @@ export interface DatumOnlyItem {
   area_type: string;
   sort_order: number;
 }
-export type ConflictField = 'name' | 'floor' | 'area_type';
+/** 'code': a linked area whose code DATUM changed; the link is kept by id. */
+export type ConflictField = 'code' | 'name' | 'floor' | 'area_type';
 export interface FieldConflict { room_code: string; field: ConflictField; sano: string; datum: string }
 export interface DuplicateItem { key: string; area_codes: string[] }
 
@@ -73,7 +74,7 @@ export interface RoomSyncPlan {
   datumDuplicates: DuplicateItem[];
   /** Codes of retired rooms DATUM has no area for: counted, never created. */
   retiredMissing: string[];
-  /** Rooms (active or retired) whose code matches exactly one DATUM area. */
+  /** Rooms (active or retired) linked to one of DATUM's areas, or whose code matches exactly one. */
   matchedCount: number;
 }
 
@@ -202,6 +203,8 @@ export function isPlanValidRoomCode(code: string): boolean {
 
 export const UMUM_CODE = 'UMUM';
 export const NAME_TOO_LONG = 'Nama ruangan lebih dari 120 karakter; DATUM menolaknya.';
+export const codeHeldElsewhere = (code: string, holder: string): string =>
+  `Area DATUM dengan kode ${code} sudah tertaut ke ruangan ${holder}. Samakan kodenya di SANO atau DATUM.`;
 
 /** Trim, collapse whitespace, case fold: "Kamar  Mandi 1" and "kamar mandi 1" are one name. */
 export function foldText(s: string | null | undefined): string {
@@ -219,6 +222,14 @@ function boardOrder(a: PlanRoom, b: PlanRoom): number {
   return a.room_name < b.room_name ? -1 : a.room_name > b.room_name ? 1 : 0;
 }
 
+/**
+ * A room linked to an area DATUM still has keeps that link, whatever the two
+ * codes say now: DATUM staff may edit an area's code (updateArea), and
+ * following the code would create a second area and leave the first, with its
+ * history, as "only in DATUM". A different code is a `code` conflict. Only a
+ * room with no link, or a link to an area DATUM no longer has, is matched by
+ * code, and never to an area another room holds by link.
+ */
 export function planRoomSync(rooms: ReadonlyArray<PlanRoom>, areas: ReadonlyArray<PlanArea>): RoomSyncPlan {
   const byKey = new Map<string, PlanArea[]>();
   for (const a of areas) {
@@ -229,27 +240,26 @@ export function planRoomSync(rooms: ReadonlyArray<PlanRoom>, areas: ReadonlyArra
   for (const [key, list] of byKey) {
     if (list.length > 1) datumDuplicates.push({ key, area_codes: list.map((a) => a.area_code) });
   }
+  const byId = new Map(areas.map((a) => [a.id, a]));
 
   const coded = rooms.filter((r): r is PlanRoom & { room_code: string } => r.room_code !== null);
   const roomKeys = new Set(coded.map((r) => normalizeCode(r.room_code)));
+  /** Area id -> the code of the first room whose link names it. */
+  const holderOf = new Map<string, string>();
+  for (const r of coded) {
+    if (r.datum_area_id && byId.has(r.datum_area_id) && !holderOf.has(r.datum_area_id)) holderOf.set(r.datum_area_id, r.room_code);
+  }
 
   const link: LinkItem[] = [];
-  const createCandidates: PlanRoom[] = [];
+  const createCandidates: Array<{ room: PlanRoom & { room_code: string }; refused: string | null }> = [];
   const fieldConflicts: FieldConflict[] = [];
   const retiredMissing: string[] = [];
   let matchedCount = 0;
 
-  for (const room of coded) {
-    const list = byKey.get(normalizeCode(room.room_code)) ?? [];
-    if (list.length > 1) continue; // listed under datumDuplicates; neither linked nor created
-    const area = list[0];
-    if (!area) {
-      if (room.active) createCandidates.push(room);
-      else retiredMissing.push(room.room_code);
-      continue;
+  const compare = (room: PlanRoom & { room_code: string }, area: PlanArea): void => {
+    if (normalizeCode(room.room_code) !== normalizeCode(area.area_code)) {
+      fieldConflicts.push({ room_code: room.room_code, field: 'code', sano: room.room_code, datum: area.area_code });
     }
-    matchedCount += 1;
-    if (room.datum_area_id !== area.id) link.push({ room_id: room.id, room_code: room.room_code, area_id: area.id });
     if (foldText(room.room_name) !== foldText(area.area_name)) {
       fieldConflicts.push({ room_code: room.room_code, field: 'name', sano: room.room_name, datum: area.area_name });
     }
@@ -259,12 +269,42 @@ export function planRoomSync(rooms: ReadonlyArray<PlanRoom>, areas: ReadonlyArra
     if (room.area_type !== area.area_type) {
       fieldConflicts.push({ room_code: room.room_code, field: 'area_type', sano: room.area_type, datum: area.area_type });
     }
+  };
+
+  for (const room of coded) {
+    const linked = room.datum_area_id ? byId.get(room.datum_area_id) : undefined;
+    if (linked) {
+      matchedCount += 1;
+      compare(room, linked);
+      continue;
+    }
+    const list = byKey.get(normalizeCode(room.room_code)) ?? [];
+    if (list.length > 1) continue; // listed under datumDuplicates; neither linked nor created
+    const area = list[0];
+    if (!area) {
+      if (room.active) createCandidates.push({ room, refused: null });
+      else retiredMissing.push(room.room_code);
+      continue;
+    }
+    const holder = holderOf.get(area.id);
+    if (holder !== undefined) {
+      // POST areas would hand back that same area, and two rooms would share it.
+      if (room.active) createCandidates.push({ room, refused: codeHeldElsewhere(room.room_code, holder) });
+      continue;
+    }
+    matchedCount += 1;
+    link.push({ room_id: room.id, room_code: room.room_code, area_id: area.id });
+    compare(room, area);
   }
 
   const create: CreateItem[] = [];
   const createFailed: CreateFailedItem[] = [];
-  for (const room of [...createCandidates].sort(boardOrder)) {
-    const code = room.room_code as string;
+  for (const { room, refused } of [...createCandidates].sort((a, b) => boardOrder(a.room, b.room))) {
+    const code = room.room_code;
+    if (refused) {
+      createFailed.push({ room_code: code, reason: refused });
+      continue;
+    }
     if (room.room_name.trim().length > 120) {
       createFailed.push({ room_code: code, reason: NAME_TOO_LONG });
       continue;
@@ -283,6 +323,7 @@ export function planRoomSync(rooms: ReadonlyArray<PlanRoom>, areas: ReadonlyArra
   for (const [key, list] of byKey) {
     if (list.length !== 1 || roomKeys.has(key)) continue;
     const a = list[0] as PlanArea;
+    if (holderOf.has(a.id)) continue;
     datumOnly.push({
       area_id: a.id, area_code: a.area_code, area_name: a.area_name, floor: a.floor, area_type: a.area_type, sort_order: a.sort_order,
     });
