@@ -2,9 +2,12 @@ import { assertEquals } from 'std/assert';
 import { FORBIDDEN_IMPORT, FORBIDDEN_SYNC, bearerMatches, createHandler, type CallerCheck, type HandlerDeps } from './handler.ts';
 import { importBadCode } from './plan.ts';
 import { PAIRING_MISSING, SYNC_RUNNING } from './run.ts';
-import { PROJECT_ID, world } from './testing.ts';
+import { DATUM_PROJECT_ID, PROJECT_ID, fakeUuid, world } from './testing.ts';
 
 const WEBHOOK_SECRET = 'webhook-secret';
+const AREA_TERAS = fakeUuid('a', 2);
+const AREA_LONG = fakeUuid('a', 3);
+const AREA_BAD = fakeUuid('a', 4);
 const REQUEST_ID = '22222222-2222-4222-8222-222222222222';
 
 /** Callers by token, as verifyCaller would find them through getUser() and is_office_role(). */
@@ -100,7 +103,7 @@ Deno.test('Sinkron DATUM is open to every office role and refused to a superviso
 
 Deno.test('the import is open to every office role, refused to a supervisor, and checks its codes', async () => {
   const s = setup();
-  s.w.datum.state.areas.push({ id: 'area-teras', project_id: 'dp-1', area_code: 'LT2-TERAS', area_name: 'Teras', floor: 'Lt. 2', area_type: 'terrace', sort_order: 3, tracked: true });
+  s.w.datum.state.areas.push({ id: AREA_TERAS, project_id: DATUM_PROJECT_ID, area_code: 'LT2-TERAS', area_name: 'Teras', floor: 'Lt. 2', area_type: 'terrace', sort_order: 3, tracked: true });
   const ok = await s.call('Bearer jwt-estimator', { projectId: PROJECT_ID, importDatumOnly: true, areaCodes: ['LT2-TERAS'] });
   assertEquals(ok.status, 200);
   assertEquals((await ok.json()).counts.rooms_imported, 1);
@@ -120,9 +123,9 @@ Deno.test('one long or unusable DATUM code no longer refuses the import: up to 5
   const long = `LT2 ${'kamar tidur utama dengan walk in closet '.repeat(4)}`.slice(0, 200);
   const unusable = '/'.repeat(150);
   s.w.datum.state.areas.push(
-    { id: 'area-teras', project_id: 'dp-1', area_code: 'LT2-TERAS', area_name: 'Teras', floor: 'Lt. 2', area_type: 'terrace', sort_order: 3, tracked: true },
-    { id: 'area-long', project_id: 'dp-1', area_code: long, area_name: 'Kamar utama', floor: 'Lt. 2', area_type: 'bedroom', sort_order: 4, tracked: true },
-    { id: 'area-bad', project_id: 'dp-1', area_code: unusable, area_name: 'Tanpa kode', floor: null, area_type: 'general', sort_order: 5, tracked: true },
+    { id: AREA_TERAS, project_id: DATUM_PROJECT_ID, area_code: 'LT2-TERAS', area_name: 'Teras', floor: 'Lt. 2', area_type: 'terrace', sort_order: 3, tracked: true },
+    { id: AREA_LONG, project_id: DATUM_PROJECT_ID, area_code: long, area_name: 'Kamar utama', floor: 'Lt. 2', area_type: 'bedroom', sort_order: 4, tracked: true },
+    { id: AREA_BAD, project_id: DATUM_PROJECT_ID, area_code: unusable, area_name: 'Tanpa kode', floor: null, area_type: 'general', sort_order: 5, tracked: true },
   );
   const filler = Array.from({ length: 497 }, (_, i) => `GONE-${i}`);
   const res = await s.call('Bearer jwt-estimator', {
@@ -132,7 +135,7 @@ Deno.test('one long or unusable DATUM code no longer refuses the import: up to 5
   const report = await res.json();
   assertEquals(report.counts.steps.import, 'ok');
   assertEquals(report.counts.rooms_imported, 2);
-  assertEquals(s.w.store.rooms.find((r) => r.datum_area_id === 'area-long')?.room_code, 'LT2-KAMAR-TIDUR-UTAMA-DENGAN-WALK-IN-CLO');
+  assertEquals(s.w.store.rooms.find((r) => r.datum_area_id === AREA_LONG)?.room_code, 'LT2-KAMAR-TIDUR-UTAMA-DENGAN-WALK-IN-CLO');
   assertEquals(report.differences.import_skipped[0], { area_code: unusable, reason: importBadCode(unusable) });
   assertEquals(report.differences.import_skipped.length, 1 + filler.length);
 });

@@ -5,10 +5,12 @@
 // where a run depends on them: one open run per project (the partial unique
 // index of migration 107), a 23505 on a duplicate room code, the
 // datum_staff_id unique index. fakeDatum() serves DATUM's five routes from
-// memory, behind the same bearer, and makes one card per SANO event.
+// memory, behind the same bearer, refuses what the real routes refuse (body
+// shapes, UUIDs, dates, lengths, codes, types, an area of another project),
+// and makes one card per SANO event.
 
 import { makeDatumApi } from './datum.ts';
-import type { PlanProfile, PlanRoom, RunCounts, RunDifferences, SanoGateWord } from './plan.ts';
+import { PLAN_AREA_TYPES, normalizeCode, type PlanProfile, type PlanRoom, type RunCounts, type RunDifferences, type SanoGateWord } from './plan.ts';
 import type {
   EscalationDue,
   GateStatusCacheRow,
@@ -226,6 +228,11 @@ export class FakeStore implements SyncStore {
 
 // ─── A DATUM that answers the five routes from memory ────────────────────────
 
+/** A version-4-shaped UUID a reader can still tell apart: fakeUuid('a', 1) = 'aaaaaaaa-0000-4000-8000-000000000001'. */
+export function fakeUuid(hex: string, n: number): string {
+  return `${hex.repeat(8).slice(0, 8)}-0000-4000-8000-${String(n).padStart(12, '0')}`;
+}
+
 export interface FakeDatumState {
   secret: string;
   projects: Array<{ id: string; project_code: string; project_name: string }>;
@@ -234,80 +241,181 @@ export interface FakeDatumState {
   statuses: Array<{ project_id: string; area_id: string; gate_code: string; status: string; stale: boolean; last_recomputed_at: string | null; updated_at: string | null }>;
   staff: Array<{ id: string; full_name: string; active: boolean }>;
   cards: Array<{ id: string; sano_event_id: string; area_id: string; author: string; slug: string }>;
+  /** DATUM's SANO_INTEGRATION_STAFF_ID; empty makes escalate answer 503 NOT_CONFIGURED, as the real route does. */
   systemStaffId: string;
   /** Route path (e.g. 'areas', 'staff') to answer with this status instead. */
   failRoute: Record<string, number>;
   calls: Array<{ method: string; path: string; body: unknown }>;
 }
 
+// The real routes' rules (DATUM apps/web/lib/integrations/sano/areas.ts PostAreasBody and
+// areaItemError, escalate.ts EscalateBody under zod 3, project.ts resolveProject, reply.ts
+// statuses), so a body the real DATUM would refuse is refused here too.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isStr = (v: unknown, min: number, max: number): v is string => typeof v === 'string' && v.length >= min && v.length <= max;
+const isUuid = (v: unknown): boolean => typeof v === 'string' && UUID_RE.test(v);
+const isUrl = (v: unknown): boolean => {
+  if (!isStr(v, 1, 500)) return false;
+  try {
+    new URL(v);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** The first field EscalateBody refuses, or null. */
+function escalateFieldError(b: Record<string, unknown>): string | null {
+  const checks: Array<[string, boolean]> = [
+    ['project_code', isStr(b.project_code, 1, 40)],
+    ['area_id', isUuid(b.area_id)],
+    ['sano_event_id', isUuid(b.sano_event_id)],
+    ['sano_url', isUrl(b.sano_url)],
+    ['title', typeof b.title === 'string' && isStr(b.title.trim(), 1, 80)],
+    ['summary', b.summary === null || isStr(b.summary, 0, 300)],
+    ['room_name', isStr(b.room_name, 1, 200)],
+    ['reporter_name', isStr(b.reporter_name, 0, 200)],
+    ['confirmer_name', b.confirmer_name === null || isStr(b.confirmer_name, 0, 200)],
+    ['owner_name', isStr(b.owner_name, 0, 200)],
+    ['due_date', typeof b.due_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.due_date)],
+    ['confirmed_at', typeof b.confirmed_at === 'string' && !Number.isNaN(Date.parse(b.confirmed_at))],
+    ['author_staff_id', b.author_staff_id === null || isUuid(b.author_staff_id)],
+  ];
+  return checks.find(([, ok]) => !ok)?.[0] ?? null;
+}
+
+/** PostAreasBody: project_code 1-40 and 1-200 loosely typed items; anything else is a 400 for the batch. */
+function postAreasBodyOk(b: Record<string, unknown>): boolean {
+  if (!isStr(b.project_code, 1, 40) || !Array.isArray(b.areas) || b.areas.length < 1 || b.areas.length > 200) return false;
+  return b.areas.every((raw) => {
+    if (!raw || typeof raw !== 'object') return false;
+    const i = raw as Record<string, unknown>;
+    return isStr(i.area_code, 0, 1000) && isStr(i.area_name, 0, 1000) && isStr(i.area_type, 0, 1000) &&
+      (i.floor === undefined || i.floor === null || isStr(i.floor, 0, 1000)) &&
+      (i.tracked === undefined || typeof i.tracked === 'boolean');
+  });
+}
+
+/** areaItemError: a bad item is an item error, never a 400. */
+function areaItemError(i: { area_code: string; area_name: string; floor?: string | null; area_type: string }): string | null {
+  if (!i.area_code || i.area_code !== normalizeCode(i.area_code)) return 'CODE_NOT_NORMALIZED';
+  const name = i.area_name.trim();
+  if (name.length < 1 || name.length > 120) return 'INVALID';
+  if ((i.floor ?? '').length > 40) return 'INVALID';
+  if (!PLAN_AREA_TYPES.includes(i.area_type)) return 'INVALID';
+  return null;
+}
+
 export function fakeDatum(seed: Partial<FakeDatumState> = {}): { state: FakeDatumState; fetch: typeof fetch } {
   const state: FakeDatumState = {
     secret: 'datum-secret', projects: [], areas: [], gates: [], statuses: [], staff: [], cards: [],
-    systemStaffId: 'staff-system', failRoute: {}, calls: [], ...seed,
+    systemStaffId: STAFF_SYSTEM, failRoute: {}, calls: [], ...seed,
   };
-  let seq = 0;
+  let areaSeq = 0;
+  let cardSeq = 0;
   const reply = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const refuse = (status: number, code: string, error: string) => reply(status, { ok: false, code, error });
 
   const route = (input: string | URL | Request, init?: RequestInit): Response => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
     const path = url.pathname.replace(/^\/api\/integrations\/sano\//, '');
     const method = init?.method ?? 'GET';
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+    let body: Record<string, unknown> | undefined;
+    let bodyIsJson = true;
+    if (init?.body) {
+      try {
+        body = JSON.parse(String(init.body));
+      } catch {
+        bodyIsJson = false;
+      }
+    }
     state.calls.push({ method, path, body });
     const auth = new Headers(init?.headers).get('Authorization');
-    if (auth !== `Bearer ${state.secret}`) return reply(401, { ok: false, code: 'UNAUTHORIZED', error: 'Kunci integrasi SANO tidak cocok.' });
-    if (state.failRoute[path]) return reply(state.failRoute[path], { ok: false, code: 'DB_ERROR', error: 'fake failure' });
+    if (auth !== `Bearer ${state.secret}`) return refuse(401, 'UNAUTHORIZED', 'Kunci integrasi SANO tidak cocok.');
+    if (state.failRoute[path]) return refuse(state.failRoute[path], 'DB_ERROR', 'fake failure');
 
-    const projectCode = (method === 'GET' ? url.searchParams.get('project_code') : body?.project_code) ?? '';
-    const project = state.projects.find((p) => p.project_code === String(projectCode).trim().toUpperCase());
-    const unknown = () => reply(404, { ok: false, code: 'UNKNOWN_PROJECT', error: `Proyek DATUM dengan kode ${projectCode} tidak ada.` });
+    const resolve = (raw: unknown): { project: FakeDatumState['projects'][number] } | { response: Response } => {
+      const code = (typeof raw === 'string' ? raw : '').trim().toUpperCase();
+      if (!code) return { response: refuse(400, 'BAD_REQUEST', 'project_code wajib diisi.') };
+      const project = state.projects.find((p) => p.project_code === code);
+      if (!project) return { response: refuse(404, 'UNKNOWN_PROJECT', `Proyek DATUM dengan kode ${code} tidak ada.`) };
+      return { project };
+    };
 
     if (path === 'staff' && method === 'GET') {
       return reply(200, { ok: true, staff: state.staff.filter((s) => s.active).map(({ id, full_name }) => ({ id, full_name })) });
     }
-    if (path === 'areas' && method === 'GET') {
-      if (!project) return unknown();
+    if ((path === 'areas' || path === 'gate-status') && method === 'GET') {
+      const found = resolve(url.searchParams.get('project_code'));
+      if ('response' in found) return found.response;
+      const { project } = found;
+      if (path === 'gate-status') {
+        const statuses = state.statuses.filter((s) => s.project_id === project.id).map(({ project_id: _p, ...s }) => s);
+        return reply(200, { ok: true, gates: state.gates, statuses, read_at: new Date().toISOString() });
+      }
       const areas = state.areas.filter((a) => a.project_id === project.id).sort((a, b) => a.sort_order - b.sort_order)
         .map(({ id, area_code, area_name, floor, area_type, sort_order }) => ({ id, area_code, area_name, floor, area_type, sort_order }));
       return reply(200, { ok: true, project, areas });
     }
-    if (path === 'gate-status' && method === 'GET') {
-      if (!project) return unknown();
-      const statuses = state.statuses.filter((s) => s.project_id === project.id).map(({ project_id: _p, ...s }) => s);
-      return reply(200, { ok: true, gates: state.gates, statuses, read_at: new Date().toISOString() });
-    }
     if (path === 'areas' && method === 'POST') {
-      if (!project) return unknown();
+      if (!bodyIsJson || !body) return refuse(400, 'BAD_REQUEST', 'Body harus JSON.');
+      if (!postAreasBodyOk(body)) return refuse(400, 'BAD_REQUEST', 'Body tidak sesuai: project_code dan 1-200 areas wajib.');
+      const found = resolve(body.project_code);
+      if ('response' in found) return found.response;
+      const { project } = found;
       const out: Array<{ area_code: string; id: string; created: boolean }> = [];
-      for (const item of body.areas as Array<{ area_code: string; area_name: string; floor: string | null; area_type: string; tracked: boolean }>) {
+      const errors: Array<{ area_code: string; code: string }> = [];
+      for (const item of body.areas as Array<{ area_code: string; area_name: string; floor?: string | null; area_type: string; tracked?: boolean }>) {
+        const bad = areaItemError(item);
+        if (bad) {
+          errors.push({ area_code: item.area_code, code: bad });
+          continue;
+        }
         const known = state.areas.find((a) => a.project_id === project.id && a.area_code === item.area_code);
         if (known) {
           out.push({ area_code: item.area_code, id: known.id, created: false });
           continue;
         }
-        seq += 1;
-        const id = `area-new-${seq}`;
+        areaSeq += 1;
+        const id = fakeUuid('b', areaSeq);
         const sort = Math.max(-1, ...state.areas.filter((a) => a.project_id === project.id).map((a) => a.sort_order)) + 1;
-        state.areas.push({ id, project_id: project.id, ...item, sort_order: sort });
+        state.areas.push({
+          id, project_id: project.id, area_code: item.area_code, area_name: item.area_name.trim(), floor: item.floor ?? null,
+          area_type: item.area_type, sort_order: sort, tracked: item.tracked ?? true,
+        });
         out.push({ area_code: item.area_code, id, created: true });
       }
-      return reply(200, { ok: true, areas: out, errors: [] });
+      return reply(200, { ok: true, areas: out, errors });
     }
     if (path === 'escalate' && method === 'POST') {
-      if (!project) return unknown();
-      const found = state.cards.find((c) => c.sano_event_id === body.sano_event_id);
-      const author = (id: string) => (id === state.systemStaffId ? 'system' : 'linked');
-      if (found) {
-        return reply(200, { ok: true, card_id: found.id, card_url: `https://datum.test/project/x/cards/${found.slug}`, created: false, author: author(found.author) });
+      if (!state.systemStaffId) {
+        return refuse(503, 'NOT_CONFIGURED', 'SANO_INTEGRATION_STAFF_ID belum diisi: kartu dari SANO butuh penulis sistem.');
       }
-      seq += 1;
+      if (!bodyIsJson || !body) return refuse(400, 'BAD_REQUEST', 'Body harus JSON.');
+      const field = escalateFieldError(body);
+      if (field) return refuse(400, 'BAD_REQUEST', `Isian tidak valid: ${field}.`);
+      const found = resolve(body.project_code);
+      if ('response' in found) return found.response;
+      const { project } = found;
+      if (!state.areas.some((a) => a.id === body.area_id && a.project_id === project.id)) {
+        return refuse(404, 'UNKNOWN_AREA', 'Area ini bukan milik proyek DATUM tersebut.');
+      }
+      const author = (id: string) => (id === state.systemStaffId ? 'system' : 'linked');
+      const cardReply = (card: FakeDatumState['cards'][number], created: boolean) =>
+        reply(200, { ok: true, card_id: card.id, card_url: `https://datum.test/project/x/cards/${card.slug}`, created, author: author(card.author) });
+      const found2 = state.cards.find((c) => c.sano_event_id === body.sano_event_id);
+      if (found2) return cardReply(found2, false);
+      cardSeq += 1;
       const staffOk = state.staff.some((s) => s.id === body.author_staff_id && s.active);
-      const card = { id: `card-${seq}`, sano_event_id: body.sano_event_id, area_id: body.area_id, author: staffOk ? body.author_staff_id : state.systemStaffId, slug: `kartu-${seq}` };
+      const card = {
+        id: fakeUuid('c', cardSeq), sano_event_id: String(body.sano_event_id), area_id: String(body.area_id),
+        author: staffOk ? String(body.author_staff_id) : state.systemStaffId, slug: `kartu-${cardSeq}`,
+      };
       state.cards.push(card);
-      return reply(200, { ok: true, card_id: card.id, card_url: `https://datum.test/project/x/cards/${card.slug}`, created: true, author: author(card.author) });
+      return cardReply(card, true);
     }
-    return reply(404, { ok: false, code: 'NOT_FOUND', error: 'no route' });
+    return refuse(404, 'NOT_FOUND', 'no route');
   };
   const fetchImpl = (input: string | URL | Request, init?: RequestInit): Promise<Response> => Promise.resolve(route(input, init));
   return { state, fetch: fetchImpl as typeof fetch };
@@ -315,9 +423,16 @@ export function fakeDatum(seed: Partial<FakeDatumState> = {}): { state: FakeDatu
 
 // ─── One project, as the run and handler tests share it ──────────────────────
 
-
 export const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 export const NOW = '2026-09-27T03:00:00.000Z';
+/** DATUM-side ids: DATUM's routes take only UUIDs, so the fixtures are UUIDs too. */
+export const DATUM_PROJECT_ID = fakeUuid('d', 1);
+export const AREA_KM1 = fakeUuid('a', 1);
+export const STAFF_BUDI = fakeUuid('5', 1);
+export const STAFF_SITI = fakeUuid('5', 2);
+export const STAFF_SYSTEM = fakeUuid('5', 99);
+/** The id fakeDatum gives the n-th area it creates. */
+export const newAreaId = (n: number): string => fakeUuid('b', n);
 
 export const DATUM_GATES = [
   { code: 'A', name: 'MEP Rough-in + Persiapan Struktural', description: 'Penarikan seluruh sistem MEP dan persiapan struktural untuk menerima finishing.', sort_order: 1 },
@@ -344,16 +459,16 @@ export function world() {
     { id: 'u-x', full_name: 'Tak Dikenal', datum_staff_id: null },
   ];
   const datum = fakeDatum({
-    projects: [{ id: 'dp-1', project_code: 'K2-7', project_name: 'Citraland K2-7 Sonny' }],
-    areas: [{ id: 'area-km1', project_id: 'dp-1', area_code: 'LT1-KM-1', area_name: 'Kamar Mandi 1', floor: 'Lt. 1', area_type: 'bathroom', sort_order: 0, tracked: true }],
+    projects: [{ id: DATUM_PROJECT_ID, project_code: 'K2-7', project_name: 'Citraland K2-7 Sonny' }],
+    areas: [{ id: AREA_KM1, project_id: DATUM_PROJECT_ID, area_code: 'LT1-KM-1', area_name: 'Kamar Mandi 1', floor: 'Lt. 1', area_type: 'bathroom', sort_order: 0, tracked: true }],
     gates: DATUM_GATES,
     statuses: [
-      { project_id: 'dp-1', area_id: 'area-km1', gate_code: 'A', status: 'passed', stale: false, last_recomputed_at: '2026-09-26T03:00:00.000Z', updated_at: '2026-09-26T03:00:00.000Z' },
-      { project_id: 'dp-1', area_id: 'area-km1', gate_code: 'B', status: 'blocked', stale: true, last_recomputed_at: null, updated_at: '2026-09-26T04:00:00.000Z' },
+      { project_id: DATUM_PROJECT_ID, area_id: AREA_KM1, gate_code: 'A', status: 'passed', stale: false, last_recomputed_at: '2026-09-26T03:00:00.000Z', updated_at: '2026-09-26T03:00:00.000Z' },
+      { project_id: DATUM_PROJECT_ID, area_id: AREA_KM1, gate_code: 'B', status: 'blocked', stale: true, last_recomputed_at: null, updated_at: '2026-09-26T04:00:00.000Z' },
     ],
     staff: [
-      { id: 'staff-budi', full_name: 'budi  santoso', active: true },
-      { id: 'staff-siti', full_name: 'Siti Aminah', active: true },
+      { id: STAFF_BUDI, full_name: 'budi  santoso', active: true },
+      { id: STAFF_SITI, full_name: 'Siti Aminah', active: true },
     ],
   });
   const clock = { now: new Date(NOW) };
@@ -370,7 +485,7 @@ let eventSeq = 0;
 export function decision(store: FakeStore, over: Partial<FakeEvent> = {}): FakeEvent {
   eventSeq += 1;
   const ev: FakeEvent = {
-    id: `ev-${String(eventSeq).padStart(3, '0')}`, project_id: PROJECT_ID, room_id: 'room-km1', status: 'open',
+    id: fakeUuid('e', eventSeq), project_id: PROJECT_ID, room_id: 'room-km1', status: 'open',
     event_type: 'butuh_keputusan', title: `Keputusan ${eventSeq}`, summary: null, due_date: '2026-10-01',
     confirmed_at: new Date(Date.parse('2026-09-20T00:00:00.000Z') + eventSeq * 60_000).toISOString(), reporter_id: 'u-budi',
     confirmed_by: 'u-siti', owner_id: 'u-budi', datum_card_id: null, datum_card_url: null, datum_escalated_at: null, ...over,

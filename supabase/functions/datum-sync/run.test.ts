@@ -1,7 +1,13 @@
 import { assert, assertEquals } from 'std/assert';
 import { createGateSentence, IMPORT_GONE, importBadCode, importRaced } from './plan.ts';
 import { AREAS_UNREAD, PAIRING_MISSING, RUN_INTERRUPTED, executeImport, executeSync, startRun, type RunRequest } from './run.ts';
-import { PROJECT_ID, decision, world } from './testing.ts';
+import { AREA_KM1, DATUM_PROJECT_ID, PROJECT_ID, STAFF_BUDI, STAFF_SITI, decision, fakeUuid, newAreaId, world } from './testing.ts';
+
+const STAFF_ANDI = fakeUuid('5', 3);
+const STAFF_GONE = fakeUuid('5', 50);
+const AREA_TERAS = fakeUuid('a', 2);
+const AREA_LONG = fakeUuid('a', 3);
+const AREA_RACE = fakeUuid('a', 4);
 
 const manual: RunRequest = { projectId: PROJECT_ID, source: 'manual', requestedBy: 'u-siti', requestId: null };
 
@@ -27,7 +33,7 @@ Deno.test('a first sync links, creates, caches gate status, links staff, and rec
   assertEquals(report.counts.steps, { areas: 'ok', link: 'ok', create: 'ok', gate_status: 'ok', staff: 'ok', escalate: 'ok' });
   assertEquals(report.counts.datum_project_name, 'Citraland K2-7 Sonny');
   assertEquals(w.store.rooms.map((r) => [r.room_code, r.datum_area_id !== null]), [['LT1-KM-1', true], ['LT1-DAPUR', true], ['UMUM', true]]);
-  assertEquals(w.store.rooms[0].datum_area_id, 'area-km1');
+  assertEquals(w.store.rooms[0].datum_area_id, AREA_KM1);
   assertEquals(report.counts.rooms_linked, 3);
   assertEquals(report.counts.rooms_linked_now, 3);
   assertEquals(report.counts.rooms_created, 2);
@@ -42,15 +48,15 @@ Deno.test('a first sync links, creates, caches gate status, links staff, and rec
   });
 
   assertEquals(w.store.cache.map((c) => [c.room_id, c.gate_code, c.status, c.datum_stale, c.datum_area_id]), [
-    ['room-km1', 'A', 'passed', false, 'area-km1'],
-    ['room-km1', 'B', 'blocked', true, 'area-km1'],
+    ['room-km1', 'A', 'passed', false, AREA_KM1],
+    ['room-km1', 'B', 'blocked', true, AREA_KM1],
   ]);
   assertEquals(w.store.cache[0].run_id, report.runId);
   assertEquals(report.counts.gate_rows, 2);
   // Every linked room's area was covered by this read, including the two just created.
-  assertEquals(report.counts.gate_area_ids, ['area-km1', 'area-new-1', 'area-new-2']);
+  assertEquals(report.counts.gate_area_ids, [AREA_KM1, newAreaId(1), newAreaId(2)]);
 
-  assertEquals(w.store.profiles.map((p) => [p.id, p.datum_staff_id]), [['u-budi', 'staff-budi'], ['u-siti', 'staff-siti'], ['u-x', null]]);
+  assertEquals(w.store.profiles.map((p) => [p.id, p.datum_staff_id]), [['u-budi', STAFF_BUDI], ['u-siti', STAFF_SITI], ['u-x', null]]);
   assertEquals(report.counts.staff, { linked: 2, linked_now: 2, unmatched: 1, ambiguous: 0, stale: 0 });
   assertEquals(report.differences.staff?.unmatched, [{ profile_id: 'u-x', full_name: 'Tak Dikenal' }]);
 
@@ -72,12 +78,12 @@ Deno.test('the plausibility gate refuses to create when no room matches a DATUM 
 
 Deno.test('a code edited in DATUM keeps the link: no second area, a code conflict, nothing listed as DATUM-only', async () => {
   const w = world();
-  w.store.rooms[0].datum_area_id = 'area-km1';
+  w.store.rooms[0].datum_area_id = AREA_KM1;
   w.datum.state.areas[0].area_code = 'LT1-KM-UTAMA';
   const report = await sync(w);
   const post = w.datum.state.calls.find((c) => c.method === 'POST' && c.path === 'areas');
   assertEquals((post?.body as { areas: Array<{ area_code: string }> }).areas.map((a) => a.area_code), ['LT1-DAPUR', 'UMUM']);
-  assertEquals(w.store.rooms[0].datum_area_id, 'area-km1');
+  assertEquals(w.store.rooms[0].datum_area_id, AREA_KM1);
   assertEquals(report.differences.field_conflicts, [{ room_code: 'LT1-KM-1', field: 'code', sano: 'LT1-KM-1', datum: 'LT1-KM-UTAMA' }]);
   assertEquals(report.differences.datum_only, undefined);
   assertEquals(report.counts.steps.create, 'ok');
@@ -93,7 +99,7 @@ Deno.test('a DATUM project with no areas opens the gate: every active room is cr
 
 Deno.test('areas failing marks link and create, while gate_status, staff and escalate still run', async () => {
   const w = world();
-  w.store.rooms[0].datum_area_id = 'area-km1';
+  w.store.rooms[0].datum_area_id = AREA_KM1;
   decision(w.store);
   w.datum.state.failRoute = { areas: 500 };
   const report = await sync(w);
@@ -128,8 +134,8 @@ Deno.test('an unknown DATUM code is named in the run', async () => {
 
 Deno.test("escalation authors by the reporter's link, else the confirmer's, else none, and sends both SANO names", async () => {
   const w = world();
-  w.store.rooms[0].datum_area_id = 'area-km1';
-  w.datum.state.staff.push({ id: 'staff-andi', full_name: 'Andi', active: true });
+  w.store.rooms[0].datum_area_id = AREA_KM1;
+  w.datum.state.staff.push({ id: STAFF_ANDI, full_name: 'Andi', active: true });
   w.store.profiles.push({ id: 'u-andi', full_name: 'Andi', datum_staff_id: null });
   w.store.profiles.push({ id: 'u-nolink', full_name: 'Orang Tanpa Tautan', datum_staff_id: null });
   const byReporter = decision(w.store, { reporter_id: 'u-budi', confirmed_by: 'u-andi' });
@@ -139,13 +145,13 @@ Deno.test("escalation authors by the reporter's link, else the confirmer's, else
 
   const sent = w.datum.state.calls.filter((c) => c.path === 'escalate').map((c) => c.body as Record<string, unknown>);
   const bodyOf = (id: string) => sent.find((b) => b.sano_event_id === id)!;
-  assertEquals(bodyOf(byReporter.id).author_staff_id, 'staff-budi');
-  assertEquals(bodyOf(byConfirmer.id).author_staff_id, 'staff-andi');
+  assertEquals(bodyOf(byReporter.id).author_staff_id, STAFF_BUDI);
+  assertEquals(bodyOf(byConfirmer.id).author_staff_id, STAFF_ANDI);
   assertEquals(bodyOf(bySystem.id).author_staff_id, null);
   assertEquals([bodyOf(byConfirmer.id).reporter_name, bodyOf(byConfirmer.id).confirmer_name], ['Orang Tanpa Tautan', 'Andi']);
   assertEquals(bodyOf(bySystem.id).confirmer_name, null);
   assertEquals(bodyOf(byReporter.id).sano_url, 'https://sano-app.vercel.app/r/SANO-K27/LT1-KM-1');
-  assertEquals(bodyOf(byReporter.id).area_id, 'area-km1');
+  assertEquals(bodyOf(byReporter.id).area_id, AREA_KM1);
   assertEquals(report.counts.escalated, 3);
   assertEquals(report.counts.escalated_as_system, 1);
   assert(w.store.events.every((e) => e.datum_card_id !== null && e.datum_escalated_at === '2026-09-27T03:00:00.000Z'));
@@ -153,7 +159,7 @@ Deno.test("escalation authors by the reporter's link, else the confirmer's, else
 
 Deno.test('the same event is sent once; a lost SANO write is healed by the next run with the same card', async () => {
   const w = world();
-  w.store.rooms[0].datum_area_id = 'area-km1';
+  w.store.rooms[0].datum_area_id = AREA_KM1;
   const ev = decision(w.store);
   w.store.failNext.setEventCard = 'network blip';
   const first = await sync(w);
@@ -173,11 +179,10 @@ Deno.test('the same event is sent once; a lost SANO write is healed by the next 
 
 Deno.test('a decision in an unlinked room is skipped with its reason; the 21st is deferred', async () => {
   const w = world();
-  w.datum.state.areas = [];
   w.datum.state.failRoute = { areas: 500 };
   decision(w.store, { room_id: 'room-dapur', title: 'Di dapur' });
   for (let i = 0; i < 20; i++) decision(w.store);
-  w.store.rooms[0].datum_area_id = 'area-km1';
+  w.store.rooms[0].datum_area_id = AREA_KM1;
   const report = await sync(w);
   assertEquals(report.counts.escalate_skipped, 1);
   assertEquals(report.differences.escalate_skipped?.[0], {
@@ -189,11 +194,11 @@ Deno.test('a decision in an unlinked room is skipped with its reason; the 21st i
 
 Deno.test('staff links are set only for unique matches; a stale link is reported and left alone', async () => {
   const w = world();
-  w.store.profiles[1].datum_staff_id = 'staff-gone';
+  w.store.profiles[1].datum_staff_id = STAFF_GONE;
   const report = await sync(w);
-  assertEquals(w.store.profiles[1].datum_staff_id, 'staff-gone');
+  assertEquals(w.store.profiles[1].datum_staff_id, STAFF_GONE);
   assertEquals(report.differences.staff?.stale, [
-    { profile_id: 'u-siti', full_name: 'Siti Aminah', staff_id: 'staff-gone', staff_name: null, reason: 'staff_gone' },
+    { profile_id: 'u-siti', full_name: 'Siti Aminah', staff_id: STAFF_GONE, staff_name: null, reason: 'staff_gone' },
   ]);
   assertEquals(report.counts.staff, { linked: 2, linked_now: 1, unmatched: 1, ambiguous: 0, stale: 1 });
 });
@@ -211,9 +216,9 @@ Deno.test('the import brings only confirmed, still DATUM-only areas, links them,
   const w = world();
   w.store.rooms = [];
   w.datum.state.areas.push(
-    { id: 'area-teras', project_id: 'dp-1', area_code: 'LT2-TERAS', area_name: 'Teras Atas', floor: 'Lt. 2', area_type: 'terrace', sort_order: 4, tracked: true },
-    { id: 'area-long', project_id: 'dp-1', area_code: `${'A'.repeat(39)} B`, area_name: 'Kode panjang', floor: null, area_type: 'general', sort_order: 5, tracked: true },
-    { id: 'area-race', project_id: 'dp-1', area_code: 'LT3-RACE', area_name: 'Balapan', floor: 'Lt. 3', area_type: 'hall', sort_order: 6, tracked: true },
+    { id: AREA_TERAS, project_id: DATUM_PROJECT_ID, area_code: 'LT2-TERAS', area_name: 'Teras Atas', floor: 'Lt. 2', area_type: 'terrace', sort_order: 4, tracked: true },
+    { id: AREA_LONG, project_id: DATUM_PROJECT_ID, area_code: `${'A'.repeat(39)} B`, area_name: 'Kode panjang', floor: null, area_type: 'general', sort_order: 5, tracked: true },
+    { id: AREA_RACE, project_id: DATUM_PROJECT_ID, area_code: 'LT3-RACE', area_name: 'Balapan', floor: 'Lt. 3', area_type: 'hall', sort_order: 6, tracked: true },
   );
   w.store.beforeRoomInsert = (row) => {
     if (row.room_code !== 'LT3-RACE') return;
@@ -226,7 +231,7 @@ Deno.test('the import brings only confirmed, still DATUM-only areas, links them,
   const km1 = w.store.rooms.find((r) => r.room_code === 'LT1-KM-1')!;
   assertEquals(
     { ...km1, id: 'x' },
-    { id: 'x', project_id: PROJECT_ID, room_code: 'LT1-KM-1', room_name: 'Kamar Mandi 1', floor: 'Lt. 1', area_type: 'bathroom', sort_order: 0, active: true, datum_area_id: 'area-km1', created_by: 'u-siti' },
+    { id: 'x', project_id: PROJECT_ID, room_code: 'LT1-KM-1', room_name: 'Kamar Mandi 1', floor: 'Lt. 1', area_type: 'bathroom', sort_order: 0, active: true, datum_area_id: AREA_KM1, created_by: 'u-siti' },
   );
   assertEquals(w.store.rooms.find((r) => r.room_code === 'LT2-TERAS')?.area_type, 'terrace');
   assertEquals(w.store.rooms.find((r) => r.room_code === 'LT3-RACE')?.room_name, 'Dibuat duluan');
