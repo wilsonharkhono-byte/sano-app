@@ -5,6 +5,7 @@
 jest.mock('../../../../tools/supabase', () => ({ supabase: {} }));
 
 import type { DatumRun, DatumSyncState } from '../../../../tools/datumSync';
+import { DATUM_SYNC_REFUSALS, DATUM_UNPAIRED } from '../../../../tools/datumSync';
 import {
   ESCALATE_AREA_UNKNOWN,
   codeHeldElsewhere,
@@ -12,13 +13,13 @@ import {
   importNoName,
 } from '../../../../tools/datumSyncPlan';
 import {
+  DATUM_CARD_COPY,
   differenceGroups,
   importOffer,
   importResultLines,
   lastRunView,
   staffView,
   waitingLine,
-  whenLabel,
 } from '../datumSyncModel';
 
 const NOW = '2026-09-27T03:30:00.000Z'; // 10.30 WIB
@@ -317,9 +318,16 @@ describe('importOffer and importResultLines', () => {
   });
 });
 
-describe('whenLabel', () => {
-  it('drops the date only for today in WIB', () => {
-    expect(whenLabel('2026-09-27T03:00:00.000Z', NOW)).toBe('10.00');
-    expect(whenLabel('2026-09-26T03:00:00.000Z', NOW)).toBe('26 Sep 10.00');
+describe('one sentence, one label', () => {
+  it('says "not paired" in the words the function uses for PAIRING_MISSING', () => {
+    expect(DATUM_CARD_COPY.syncNeedsPairing).toBe(DATUM_UNPAIRED);
+    expect(DATUM_SYNC_REFUSALS.PAIRING_MISSING).toBe(DATUM_UNPAIRED);
+    expect(DATUM_UNPAIRED).toBe('Proyek ini belum ditautkan ke DATUM.');
+  });
+
+  it("dates a running sync as the board dates DATUM's chips: the time alone today, in WIB", () => {
+    // datumAsOfLabel (tools/datumGateStatus.ts) is the one label; its own edges are tested there.
+    expect(lastRunView(state({ latest: run({ started_at: '2026-09-26T03:00:00.000Z', finished_at: null, ok: null }) }), NOW).line)
+      .toBe('Sinkron sedang berjalan sejak 26 Sep 10.00');
   });
 });

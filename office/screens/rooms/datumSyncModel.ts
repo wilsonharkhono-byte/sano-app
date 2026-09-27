@@ -7,10 +7,11 @@
 import { AREA_TYPE_LABELS } from '../../../tools/constants';
 import type { AreaType } from '../../../tools/types';
 import type { DatumRun, DatumSyncState } from '../../../tools/datumSync';
-import { DATUM_IMPORT_MAX_CODE_LENGTH, DATUM_IMPORT_MAX_CODES } from '../../../tools/datumSync';
+import { DATUM_IMPORT_MAX_CODE_LENGTH, DATUM_IMPORT_MAX_CODES, DATUM_UNPAIRED } from '../../../tools/datumSync';
+import { datumAsOfLabel } from '../../../tools/datumGateStatus';
 import type { ConflictField, GateStatusUnknownItem, GateWordDiff, RunDifferences, RunReport, SyncStep } from '../../../tools/datumSyncPlan';
 import { STEP_ORDER } from '../../../tools/datumSyncPlan';
-import { formatWibShort, todayIsoWIB } from '../../../tools/timeWindow';
+import { formatWibShort } from '../../../tools/timeWindow';
 
 export const DATUM_CARD_COPY = {
   title: 'DATUM',
@@ -21,7 +22,7 @@ export const DATUM_CARD_COPY = {
   unpaired: 'Belum ditautkan',
   sync: 'Sinkron DATUM',
   syncing: 'Menyinkronkan…',
-  syncNeedsPairing: 'Proyek ini belum ditautkan ke DATUM.',
+  syncNeedsPairing: DATUM_UNPAIRED,
   never: 'Belum pernah disinkronkan.',
   readError: 'Status sinkron gagal dimuat.',
   retry: 'Coba lagi',
@@ -57,12 +58,6 @@ const SIDE_WORDS = {
   linked_elsewhere: 'staf DATUM ini sudah tertaut ke orang lain',
 } as const;
 
-/** "10.00" today (WIB), "27 Sep 10.00" otherwise. */
-export function whenLabel(iso: string, nowIso: string): string {
-  const full = formatWibShort(iso);
-  return todayIsoWIB(new Date(iso)) === todayIsoWIB(new Date(nowIso)) ? full.slice(full.lastIndexOf(' ') + 1) : full;
-}
-
 export function areaTypeLabel(t: string): string {
   return AREA_TYPE_LABELS[t as AreaType] ?? t;
 }
@@ -84,7 +79,7 @@ export function lastRunView(state: DatumSyncState, nowIso: string): LastRunView 
   const latest = state.latest;
   if (!latest) return { tone: 'muted', line: DATUM_CARD_COPY.never, details: [], steps: [] };
   if (latest.finished_at === null) {
-    return { tone: 'muted', line: `Sinkron sedang berjalan sejak ${whenLabel(latest.started_at, nowIso)}`, details: [whoLine(latest)], steps: [] };
+    return { tone: 'muted', line: `Sinkron sedang berjalan sejak ${datumAsOfLabel(latest.started_at, nowIso)}`, details: [whoLine(latest)], steps: [] };
   }
   const when = formatWibShort(latest.finished_at);
   const details = [whoLine(latest)];

@@ -64,10 +64,13 @@ export type DatumCallResult = { run: RunReport; error?: undefined } | { error: s
  * "Proyek gagal dibaca: ..."), so the server's own sentence is shown and
  * never covered by a fixed one.
  */
+/** The one sentence for "this project has no DATUM code": the card's hint and PAIRING_MISSING alike. */
+export const DATUM_UNPAIRED = 'Proyek ini belum ditautkan ke DATUM.';
+
 export const DATUM_SYNC_REFUSALS: Record<string, string> = {
   AUTH: 'Sesi Anda berakhir. Masuk lagi, lalu coba sinkron lagi.',
   NOT_FOUND: 'Proyek tidak ditemukan atau Anda tidak punya akses.',
-  PAIRING_MISSING: 'Proyek ini belum ditautkan ke DATUM.',
+  PAIRING_MISSING: DATUM_UNPAIRED,
   SYNC_RUNNING: 'Sinkron DATUM untuk proyek ini sedang berjalan.',
   CONFIG: 'Sinkron DATUM belum dikonfigurasi di server.',
 };
