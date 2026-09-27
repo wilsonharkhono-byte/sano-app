@@ -1,7 +1,7 @@
 import { assertEquals } from 'std/assert';
 import { FORBIDDEN_IMPORT, FORBIDDEN_SYNC, bearerMatches, createHandler, type CallerCheck, type HandlerDeps } from './handler.ts';
 import { importBadCode } from './plan.ts';
-import { PAIRING_MISSING, SYNC_RUNNING } from './run.ts';
+import { PAIRING_MISSING, RUN_INTERRUPTED, SYNC_RUNNING } from './run.ts';
 import { DATUM_PROJECT_ID, NOW, PROJECT_ID, fakeUuid, world } from './testing.ts';
 
 const WEBHOOK_SECRET = 'webhook-secret';
@@ -68,11 +68,56 @@ Deno.test('the webhook secret takes the cron path: 202 while the run is still go
   const run = s.w.store.runs.find((r) => r.id === body.runId)!;
   assertEquals([run.finished_at, run.started_at], [null, NOW]);
   assertEquals(s.pending.length, 1);
+  // Marked before the 202: the webhook delivered, whatever happens to the run.
+  assertEquals(s.w.store.requests[0], { id: REQUEST_ID, handled_at: NOW, run_id: body.runId, error: null });
 
   release();
   await Promise.all(s.pending);
   assertEquals([run.source, run.requested_by, run.request_id, run.ok, run.finished_at], ['cron', null, REQUEST_ID, true, NOW]);
   assertEquals(s.w.store.requests[0], { id: REQUEST_ID, handled_at: NOW, run_id: body.runId, error: null });
+});
+
+Deno.test('a throw on the webhook path marks the request with its error instead of leaving it waiting', async () => {
+  const s = setup();
+  s.w.store.requests.push({ id: REQUEST_ID, handled_at: null, run_id: null, error: null });
+  s.w.store.failNext.getProject = 'koneksi database putus';
+  const res = await s.call(`Bearer ${WEBHOOK_SECRET}`, webhookBody);
+  assertEquals(res.status, 500);
+  assertEquals((await res.json()).code, 'UNEXPECTED');
+  assertEquals(s.w.store.requests[0], { id: REQUEST_ID, handled_at: NOW, run_id: null, error: 'Kesalahan tak terduga: koneksi database putus' });
+  assertEquals(s.w.store.runs, []);
+});
+
+Deno.test('when the request cannot be marked before the 202, the run it opened is closed at once and nothing runs', async () => {
+  const s = setup();
+  s.w.store.requests.push({ id: REQUEST_ID, handled_at: null, run_id: null, error: null });
+  s.w.store.failNext.markRequest = 'tulis gagal';
+  const res = await s.call(`Bearer ${WEBHOOK_SECRET}`, webhookBody);
+  assertEquals(res.status, 500);
+  const run = s.w.store.runs[0];
+  assertEquals([run.finished_at, run.ok, run.error], [NOW, false, 'Kesalahan tak terduga: tulis gagal']);
+  assertEquals(s.w.store.requests[0], { id: REQUEST_ID, handled_at: NOW, run_id: run.id, error: 'Kesalahan tak terduga: tulis gagal' });
+  assertEquals(s.pending, []);
+  assertEquals(s.w.datum.state.calls, []);
+});
+
+Deno.test("the sweep that closes a dead run also marks that run's request", async () => {
+  const s = setup();
+  const OLD_REQUEST = '33333333-3333-4333-8333-333333333333';
+  s.w.store.runs.push({
+    id: 'run-dead', project_id: PROJECT_ID, source: 'cron', requested_by: null, request_id: OLD_REQUEST,
+    started_at: '2026-09-27T02:40:00.000Z', finished_at: null, ok: null, counts: { steps: {} }, differences: {}, error: null,
+  });
+  s.w.store.requests.push(
+    { id: OLD_REQUEST, handled_at: null, run_id: null, error: null },
+    { id: REQUEST_ID, handled_at: null, run_id: null, error: null },
+  );
+  const res = await s.call(`Bearer ${WEBHOOK_SECRET}`, webhookBody);
+  assertEquals(res.status, 202);
+  await Promise.all(s.pending);
+  assertEquals(s.w.store.runs[0].error, RUN_INTERRUPTED);
+  assertEquals(s.w.store.requests[0], { id: OLD_REQUEST, handled_at: NOW, run_id: 'run-dead', error: RUN_INTERRUPTED });
+  assertEquals(s.w.store.requests[1].run_id, (await res.json()).runId);
 });
 
 Deno.test('a webhook body that is not a datum_sync_requests INSERT is 400', async () => {

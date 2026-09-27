@@ -49,12 +49,14 @@ export function makeSupabaseStore(admin: SupabaseClient): SyncStore {
     },
 
     async closeStaleRuns(projectId, olderThanIso, nowIso) {
-      const { error } = await admin.from('datum_sync_runs')
+      const { data, error } = await admin.from('datum_sync_runs')
         .update({ finished_at: nowIso, ok: false, error: RUN_INTERRUPTED })
         .eq('project_id', projectId)
         .is('finished_at', null)
-        .lt('started_at', olderThanIso);
+        .lt('started_at', olderThanIso)
+        .select('id, request_id');
       check('datum_sync_runs', error);
+      return ((data ?? []) as Array<{ id: string; request_id: string | null }>).map((r) => ({ runId: r.id, requestId: r.request_id }));
     },
 
     async openRun(req) {

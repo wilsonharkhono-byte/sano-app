@@ -95,7 +95,8 @@ export interface RunRequest {
 /** Every method throws an Error naming the table on a database error. */
 export interface SyncStore {
   getProject(projectId: string): Promise<ProjectRow | null>;
-  closeStaleRuns(projectId: string, olderThanIso: string, nowIso: string): Promise<void>;
+  /** Closes this project's runs still open since before olderThanIso; returns each with its request. */
+  closeStaleRuns(projectId: string, olderThanIso: string, nowIso: string): Promise<Array<{ runId: string; requestId: string | null }>>;
   openRun(req: RunRequest): Promise<{ runId: string } | { running: true }>;
   insertFinishedRun(req: RunRequest, fields: { finishedAt: string; error: string }): Promise<string>;
   finishRun(
@@ -172,7 +173,11 @@ export type StartOutcome =
   | { kind: 'running' }
   | { kind: 'not_found' };
 
-/** §6.2 steps 1-2: the pairing, the stale-run sweep, then the lock (one open run per project). */
+/**
+ * §6.2 steps 1-2: the pairing, the stale-run sweep, then the lock (one open
+ * run per project). A swept run's request is marked with the same sentence,
+ * so the hourly queue never shows a request the runtime cut short as waiting.
+ */
 export async function startRun(ctx: RunContext, req: RunRequest): Promise<StartOutcome> {
   const project = await ctx.store.getProject(req.projectId);
   if (!project) return { kind: 'not_found' };
@@ -181,7 +186,10 @@ export async function startRun(ctx: RunContext, req: RunRequest): Promise<StartO
     const runId = await ctx.store.insertFinishedRun(req, { finishedAt: now.toISOString(), error: PAIRING_MISSING });
     return { kind: 'pairing_missing', runId };
   }
-  await ctx.store.closeStaleRuns(req.projectId, new Date(now.getTime() - STALE_RUN_MS).toISOString(), now.toISOString());
+  const swept = await ctx.store.closeStaleRuns(req.projectId, new Date(now.getTime() - STALE_RUN_MS).toISOString(), now.toISOString());
+  for (const s of swept) {
+    if (s.requestId) await ctx.store.markRequest(s.requestId, { handledAt: now.toISOString(), runId: s.runId, error: RUN_INTERRUPTED });
+  }
   const opened = await ctx.store.openRun(req);
   if ('running' in opened) return { kind: 'running' };
   return { kind: 'started', runId: opened.runId, project: project as PairedProject };
@@ -487,6 +495,11 @@ async function escalateStep(ctx: RunContext, rec: Recorder, project: PairedProje
   else rec.ok('escalate');
 }
 
+/**
+ * The run row takes the verdict and its first error. A webhook request was
+ * already marked (handled_at, run_id) before the 202; it is marked again here
+ * so its error mirrors the run's.
+ */
 async function finish(ctx: RunContext, runId: string, req: RunRequest, rec: Recorder, rooms: PlanRoom[] | null): Promise<RunReport> {
   if (rooms) rec.counts.rooms_linked = rooms.filter((r) => r.active && r.datum_area_id).length;
   const verdict = runVerdict(rec.counts);
@@ -496,6 +509,11 @@ async function finish(ctx: RunContext, runId: string, req: RunRequest, rec: Reco
   });
   if (req.requestId) await ctx.store.markRequest(req.requestId, { handledAt: at, runId, error: verdict.error });
   return { ok: verdict.ok, runId, counts: rec.counts, differences: rec.differences, error: verdict.error };
+}
+
+/** A run opened but never executed (its start could not be completed): closed at once, so the lock frees now. */
+export async function closeRunUnstarted(ctx: RunContext, runId: string, reason: string): Promise<void> {
+  await ctx.store.finishRun(runId, { finishedAt: ctx.now().toISOString(), ok: false, counts: { steps: {} }, differences: {}, error: reason });
 }
 
 const SYNC_STEPS: ReadonlyArray<SyncStep> = ['areas', 'link', 'create', 'gate_status', 'staff', 'escalate'];

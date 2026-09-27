@@ -53,3 +53,15 @@ Deno.test('listEscalationDue filters on the room link in the query itself, and r
   await store.listEscalationDue('p1', 'unlinked', 20);
   assertEquals(seen[1].url.searchParams.get('rooms.datum_area_id'), 'is.null');
 });
+
+Deno.test('closeStaleRuns closes only this project\'s old open runs and hands back each with its request', async () => {
+  const { store, seen } = capturingStore(() => ({ body: [{ id: 'run-dead', request_id: 'req-1' }, { id: 'run-manual', request_id: null }] }));
+  const swept = await store.closeStaleRuns('p1', '2026-09-27T02:50:00.000Z', '2026-09-27T03:00:00.000Z');
+  assertEquals(swept, [{ runId: 'run-dead', requestId: 'req-1' }, { runId: 'run-manual', requestId: null }]);
+  const q = seen[0].url.searchParams;
+  assertEquals([seen[0].method, seen[0].url.pathname], ['PATCH', '/rest/v1/datum_sync_runs']);
+  assertEquals([q.get('project_id'), q.get('finished_at'), q.get('started_at'), q.get('select')], [
+    'eq.p1', 'is.null', 'lt.2026-09-27T02:50:00.000Z', 'id,request_id',
+  ]);
+  assertEquals(seen[0].body, { finished_at: '2026-09-27T03:00:00.000Z', ok: false, error: 'Sinkron terputus sebelum selesai.' });
+});

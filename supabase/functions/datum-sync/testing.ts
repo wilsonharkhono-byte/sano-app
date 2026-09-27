@@ -88,14 +88,16 @@ export class FakeStore implements SyncStore {
     return Promise.resolve(this.projects.find((p) => p.id === projectId) ?? null);
   }
 
-  closeStaleRuns(projectId: string, olderThanIso: string, nowIso: string): Promise<void> {
+  closeStaleRuns(projectId: string, olderThanIso: string, nowIso: string): Promise<Array<{ runId: string; requestId: string | null }>> {
     this.maybeFail('closeStaleRuns');
+    const swept: Array<{ runId: string; requestId: string | null }> = [];
     for (const r of this.runs) {
       if (r.project_id === projectId && r.finished_at === null && r.started_at < olderThanIso) {
         Object.assign(r, { finished_at: nowIso, ok: false, error: 'Sinkron terputus sebelum selesai.' });
+        swept.push({ runId: r.id, requestId: r.request_id });
       }
     }
-    return Promise.resolve();
+    return Promise.resolve(swept);
   }
 
   openRun(req: RunRequest): Promise<{ runId: string } | { running: true }> {
@@ -130,6 +132,7 @@ export class FakeStore implements SyncStore {
   }
 
   markRequest(requestId: string, fields: { handledAt: string; runId: string | null; error: string | null }): Promise<void> {
+    this.maybeFail('markRequest');
     const req = this.requests.find((r) => r.id === requestId);
     if (req) Object.assign(req, { handled_at: fields.handledAt, run_id: fields.runId, error: fields.error });
     return Promise.resolve();

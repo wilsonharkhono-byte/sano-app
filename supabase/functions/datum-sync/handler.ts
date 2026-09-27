@@ -19,6 +19,7 @@
 import {
   PAIRING_MISSING,
   SYNC_RUNNING,
+  closeRunUnstarted,
   executeImport,
   executeSync,
   startRun,
@@ -88,33 +89,68 @@ function parseCodes(raw: unknown): string[] | null {
   return raw as string[];
 }
 
+const unexpected = (err: unknown): string => {
+  const message = err instanceof Error ? err.message : String(err);
+  return `Kesalahan tak terduga: ${message.slice(0, 280)}`;
+};
+
+/**
+ * The request is marked before the 202 (handled_at, run_id): the webhook
+ * delivered, so the Rooms tab must never read it as waiting, even if the
+ * runtime later stops the run (the next run's sweep then writes "terputus"
+ * on both). Any throw on this path marks the request with its error, and a
+ * run it had opened is closed at once.
+ */
 async function fromWebhook(deps: HandlerDeps, body: Record<string, unknown>): Promise<Response> {
   const record = body.record as { id?: unknown; project_id?: unknown } | undefined;
   if (body.type !== 'INSERT' || body.table !== 'datum_sync_requests' || !isUuid(record?.id) || !isUuid(record?.project_id)) {
     return refuse(400, 'BAD_REQUEST', 'Bukan kiriman Database Webhook untuk datum_sync_requests.');
   }
+  const requestId = record.id;
   const ctx = deps.openContext();
-  const req: RunRequest = { projectId: record.project_id, source: 'cron', requestedBy: null, requestId: record.id };
-  const handledAt = () => ctx.now().toISOString();
-  const started = await startRun(ctx, req);
-  if (started.kind === 'not_found') {
-    await ctx.store.markRequest(record.id, { handledAt: handledAt(), runId: null, error: 'Proyek tidak ditemukan.' });
-    return refuse(404, 'NOT_FOUND', 'Proyek tidak ditemukan.');
+  const req: RunRequest = { projectId: record.project_id, source: 'cron', requestedBy: null, requestId };
+  const mark = (runId: string | null, error: string | null) =>
+    ctx.store.markRequest(requestId, { handledAt: ctx.now().toISOString(), runId, error });
+  let openedRunId: string | null = null;
+  try {
+    const started = await startRun(ctx, req);
+    if (started.kind === 'not_found') {
+      await mark(null, 'Proyek tidak ditemukan.');
+      return refuse(404, 'NOT_FOUND', 'Proyek tidak ditemukan.');
+    }
+    if (started.kind === 'pairing_missing') {
+      await mark(started.runId, PAIRING_MISSING);
+      return json({ ok: false, code: 'PAIRING_MISSING', error: PAIRING_MISSING, runId: started.runId }, 409);
+    }
+    if (started.kind === 'running') {
+      await mark(null, SYNC_RUNNING);
+      return refuse(409, 'SYNC_RUNNING', SYNC_RUNNING);
+    }
+    openedRunId = started.runId;
+    await mark(started.runId, null);
+    deps.waitUntil(
+      executeSync(ctx, started.runId, started.project, req).catch((err) => {
+        console.error(`datum-sync: run ${started.runId} failed after 202:`, err);
+      }),
+    );
+    return json({ ok: true, code: 'ACCEPTED', runId: started.runId }, 202);
+  } catch (err) {
+    const reason = unexpected(err);
+    console.error('datum-sync: webhook request failed', err);
+    try {
+      await mark(openedRunId, reason);
+    } catch (markErr) {
+      console.error(`datum-sync: request ${requestId} could not be marked:`, markErr);
+    }
+    if (openedRunId) {
+      try {
+        await closeRunUnstarted(ctx, openedRunId, reason);
+      } catch (closeErr) {
+        console.error(`datum-sync: run ${openedRunId} stays open for the sweep:`, closeErr);
+      }
+    }
+    return refuse(500, 'UNEXPECTED', reason);
   }
-  if (started.kind === 'pairing_missing') {
-    await ctx.store.markRequest(record.id, { handledAt: handledAt(), runId: started.runId, error: PAIRING_MISSING });
-    return json({ ok: false, code: 'PAIRING_MISSING', error: PAIRING_MISSING, runId: started.runId }, 409);
-  }
-  if (started.kind === 'running') {
-    await ctx.store.markRequest(record.id, { handledAt: handledAt(), runId: null, error: SYNC_RUNNING });
-    return refuse(409, 'SYNC_RUNNING', SYNC_RUNNING);
-  }
-  deps.waitUntil(
-    executeSync(ctx, started.runId, started.project, req).catch((err) => {
-      console.error(`datum-sync: run ${started.runId} failed after 202:`, err);
-    }),
-  );
-  return json({ ok: true, code: 'ACCEPTED', runId: started.runId }, 202);
 }
 
 async function fromUser(deps: HandlerDeps, authHeader: string, body: Record<string, unknown>): Promise<Response> {
@@ -175,8 +211,7 @@ export function createHandler(deps: HandlerDeps): (req: Request) => Promise<Resp
       return await fromUser(deps, authHeader, body);
     } catch (err) {
       console.error('datum-sync: unexpected error', err);
-      const message = err instanceof Error ? err.message : String(err);
-      return refuse(500, 'UNEXPECTED', `Kesalahan tak terduga: ${message.slice(0, 280)}`);
+      return refuse(500, 'UNEXPECTED', unexpected(err));
     }
   };
 }
