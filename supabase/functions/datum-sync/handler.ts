@@ -44,7 +44,14 @@ export interface HandlerDeps {
 
 export const FORBIDDEN_SYNC = 'Hanya peran kantor (admin, prinsipal, estimator) yang dapat menyinkronkan DATUM.';
 export const FORBIDDEN_IMPORT = 'Hanya peran kantor yang dapat mengambil ruangan dari DATUM.';
-export const MAX_IMPORT_CODES = 200;
+/**
+ * DATUM's area_code has no length limit and the card sends every DATUM-only
+ * code, so the request limits are generous; planImport then judges each code
+ * alone, and one it cannot use is skipped with its reason while the rest
+ * import.
+ */
+export const MAX_IMPORT_CODES = 500;
+export const MAX_IMPORT_CODE_LENGTH = 200;
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -77,7 +84,7 @@ export async function bearerMatches(header: string, secret: string): Promise<boo
 
 function parseCodes(raw: unknown): string[] | null {
   if (!Array.isArray(raw) || raw.length < 1 || raw.length > MAX_IMPORT_CODES) return null;
-  if (!raw.every((c) => typeof c === 'string' && c.length >= 1 && c.length <= 40)) return null;
+  if (!raw.every((c) => typeof c === 'string' && c.length >= 1 && c.length <= MAX_IMPORT_CODE_LENGTH)) return null;
   return raw as string[];
 }
 
@@ -117,7 +124,9 @@ async function fromUser(deps: HandlerDeps, authHeader: string, body: Record<stri
   let codes: string[] = [];
   if (importing) {
     const parsed = parseCodes(body.areaCodes);
-    if (!parsed) return refuse(400, 'BAD_REQUEST', `areaCodes harus 1-${MAX_IMPORT_CODES} kode DATUM.`);
+    if (!parsed) {
+      return refuse(400, 'BAD_REQUEST', `areaCodes harus 1-${MAX_IMPORT_CODES} kode DATUM, masing-masing 1-${MAX_IMPORT_CODE_LENGTH} karakter.`);
+    }
     codes = parsed;
   }
 

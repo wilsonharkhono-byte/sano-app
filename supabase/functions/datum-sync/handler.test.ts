@@ -1,5 +1,6 @@
 import { assertEquals } from 'std/assert';
 import { FORBIDDEN_IMPORT, FORBIDDEN_SYNC, bearerMatches, createHandler, type CallerCheck, type HandlerDeps } from './handler.ts';
+import { importBadCode } from './plan.ts';
 import { PAIRING_MISSING, SYNC_RUNNING } from './run.ts';
 import { PROJECT_ID, world } from './testing.ts';
 
@@ -109,9 +110,31 @@ Deno.test('the import is open to every office role, refused to a supervisor, and
   assertEquals(sup.status, 403);
   assertEquals((await sup.json()).error, FORBIDDEN_IMPORT);
 
-  for (const areaCodes of [[], Array.from({ length: 201 }, (_, i) => `A-${i}`), ['x'.repeat(41)], 'LT2-TERAS']) {
+  for (const areaCodes of [[], Array.from({ length: 501 }, (_, i) => `A-${i}`), ['x'.repeat(201)], [''], [7], 'LT2-TERAS']) {
     assertEquals((await s.call('Bearer jwt-admin', { projectId: PROJECT_ID, importDatumOnly: true, areaCodes })).status, 400);
   }
+});
+
+Deno.test('one long or unusable DATUM code no longer refuses the import: up to 500 codes of up to 200 characters, each judged alone', async () => {
+  const s = setup();
+  const long = `LT2 ${'kamar tidur utama dengan walk in closet '.repeat(4)}`.slice(0, 200);
+  const unusable = '/'.repeat(150);
+  s.w.datum.state.areas.push(
+    { id: 'area-teras', project_id: 'dp-1', area_code: 'LT2-TERAS', area_name: 'Teras', floor: 'Lt. 2', area_type: 'terrace', sort_order: 3, tracked: true },
+    { id: 'area-long', project_id: 'dp-1', area_code: long, area_name: 'Kamar utama', floor: 'Lt. 2', area_type: 'bedroom', sort_order: 4, tracked: true },
+    { id: 'area-bad', project_id: 'dp-1', area_code: unusable, area_name: 'Tanpa kode', floor: null, area_type: 'general', sort_order: 5, tracked: true },
+  );
+  const filler = Array.from({ length: 497 }, (_, i) => `GONE-${i}`);
+  const res = await s.call('Bearer jwt-estimator', {
+    projectId: PROJECT_ID, importDatumOnly: true, areaCodes: ['LT2-TERAS', long, unusable, ...filler],
+  });
+  assertEquals(res.status, 200);
+  const report = await res.json();
+  assertEquals(report.counts.steps.import, 'ok');
+  assertEquals(report.counts.rooms_imported, 2);
+  assertEquals(s.w.store.rooms.find((r) => r.datum_area_id === 'area-long')?.room_code, 'LT2-KAMAR-TIDUR-UTAMA-DENGAN-WALK-IN-CLO');
+  assertEquals(report.differences.import_skipped[0], { area_code: unusable, reason: importBadCode(unusable) });
+  assertEquals(report.differences.import_skipped.length, 1 + filler.length);
 });
 
 Deno.test('missing configuration is 500 CONFIG before anything else', async () => {
