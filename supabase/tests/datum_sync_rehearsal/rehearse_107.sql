@@ -97,6 +97,16 @@ SELECT rehearsal_ds.expect('107 service_role links a room', rehearsal_ds.touched
   'UPDATE rooms SET datum_area_id = %L WHERE id = %L', '00000000-0000-4000-8000-00000000f601', rehearsal_ds.room(1))) = 1);
 COMMIT;
 
+-- The guard compares NEW.datum_area_id IS DISTINCT FROM OLD.datum_area_id,
+-- not merely "IS NOT NULL": room(1) is linked now, and a rename that leaves
+-- the link untouched must still be allowed, not just a rename of an
+-- unlinked room (which the earlier check above cannot tell apart from a
+-- buggy "any non-null value on UPDATE is refused" guard).
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal_ds.as_user('est') IS NOT NULL AS ok \gset
+SELECT rehearsal_ds.expect('107 an estimator renames a linked room', rehearsal_ds.touched(format(
+  'UPDATE rooms SET room_name = %L WHERE id = %L', 'Kamar Mandi Utama', rehearsal_ds.room(1))) = 1);
+COMMIT;
+
 -- E. Staff link
 BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal_ds.as_user('sup') IS NOT NULL AS ok \gset
 SELECT rehearsal_ds.expect_error('107 a user cannot set their own datum_staff_id', format('UPDATE profiles SET datum_staff_id = gen_random_uuid() WHERE id = %L', rehearsal_ds.u('sup')), 'PROFILE_DATUM_LINK_SYNC_ONLY:');
@@ -114,6 +124,14 @@ SELECT rehearsal_ds.expect('107 service_role links a profile to a DATUM staff id
 SELECT rehearsal_ds.expect_error('107 a second profile with the same staff id is a unique violation', format(
   'UPDATE profiles SET datum_staff_id = %L WHERE id = %L', '00000000-0000-4000-8000-00000000f801', rehearsal_ds.u('est')),
   'duplicate key value violates unique constraint "idx_profiles_datum_staff_id"');
+COMMIT;
+
+-- The guard compares NEW.datum_staff_id IS DISTINCT FROM OLD.datum_staff_id,
+-- not merely "IS NOT NULL": sup is linked now, and a self-rename that leaves
+-- the link untouched must still be allowed.
+BEGIN; SET LOCAL ROLE authenticated; SELECT rehearsal_ds.as_user('sup') IS NOT NULL AS ok \gset
+SELECT rehearsal_ds.expect('107 a linked user renames themself', rehearsal_ds.touched(format(
+  'UPDATE profiles SET full_name = %L WHERE id = %L', 'Rehearsal DS Supervisor Tertaut', rehearsal_ds.u('sup'))) = 1);
 COMMIT;
 
 -- F. Pairing

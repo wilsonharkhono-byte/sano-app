@@ -209,6 +209,16 @@ describe('migration 107 - sync-only columns', () => {
     }
   });
 
+  it("the room guard's UPDATE branch compares NEW.datum_area_id IS DISTINCT FROM OLD.datum_area_id, not just non-null: a rename of an already-linked room must stay allowed", () => {
+    const body = fnBody('rooms_datum_area_id_sync_only');
+    expect(body).toContain('NEW.datum_area_id IS DISTINCT FROM OLD.datum_area_id');
+  });
+
+  it("the profile guard's UPDATE branch compares NEW.datum_staff_id IS DISTINCT FROM OLD.datum_staff_id, not just non-null: a self-rename of an already-linked person must stay allowed", () => {
+    const body = fnBody('profiles_datum_staff_id_sync_only');
+    expect(body).toContain('NEW.datum_staff_id IS DISTINCT FROM OLD.datum_staff_id');
+  });
+
   it('stamps confirmed_by from auth.uid() before the bypass, only when confirmed_at first turns non-null', () => {
     const body = fnBody('site_events_system_columns_guard');
     const stamp = body.indexOf(
