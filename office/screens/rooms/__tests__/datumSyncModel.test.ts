@@ -124,6 +124,22 @@ describe('differenceGroups: decisions a run did not reach', () => {
   });
 });
 
+describe('differenceGroups: DATUM schedules not built', () => {
+  it("lists each area DATUM created but could not schedule, in DATUM's own words, and says the room exists", () => {
+    const groups = differenceGroups(run({ differences: { schedule_warnings: [
+      { area_code: 'LT2-TERAS', code: 'SCHEDULE_FAILED', reason: 'Jadwal area gagal disusun.' },
+      { area_code: 'LT2-KM', code: 'SEED_FAILED', reason: '' },
+    ] } as DatumRun['differences'] }));
+    expect(groups).toEqual([
+      {
+        title: 'Jadwal DATUM belum tersusun',
+        lines: ['LT2-TERAS: Jadwal area gagal disusun.', 'LT2-KM: SEED_FAILED'],
+        note: 'Ruangannya sudah dibuat dan ditautkan di DATUM. Susun jadwalnya dengan "Hitung ulang jadwal" di DATUM.',
+      },
+    ]);
+  });
+});
+
 describe('differenceGroups: status rows SANO could not store', () => {
   it('lists one line per gate and status, saying which side SANO does not know and for how many areas', () => {
     expect(differenceGroups(run({ differences: { gate_status_unknown: [

@@ -8,7 +8,7 @@ import { AREA_TYPE_LABELS } from '../../../tools/constants';
 import type { AreaType } from '../../../tools/types';
 import type { DatumRun, DatumSyncState } from '../../../tools/datumSync';
 import { DATUM_IMPORT_MAX_CODE_LENGTH, DATUM_IMPORT_MAX_CODES } from '../../../tools/datumSync';
-import type { ConflictField, GateStatusUnknownItem, GateWordDiff, RunReport, SyncStep } from '../../../tools/datumSyncPlan';
+import type { ConflictField, GateStatusUnknownItem, GateWordDiff, RunDifferences, RunReport, SyncStep } from '../../../tools/datumSyncPlan';
 import { STEP_ORDER } from '../../../tools/datumSyncPlan';
 import { formatWibShort, todayIsoWIB } from '../../../tools/timeWindow';
 
@@ -110,7 +110,25 @@ export function waitingLine(state: DatumSyncState): string | null {
   return `Sinkron otomatis menunggu: ${state.waiting.count} permintaan sejak ${formatWibShort(state.waiting.oldestAt)}. Periksa Database Webhook.`;
 }
 
-export interface DifferenceGroup { title: string; lines: string[] }
+export interface DifferenceGroup {
+  title: string;
+  lines: string[];
+  /** A sentence under the lines, where the title alone could be misread. */
+  note?: string;
+}
+
+/**
+ * DATUM's non-fatal warning on POST areas (SCHEDULE_FAILED, SEED_FAILED):
+ * the area was created and linked, only its schedule was not built. The
+ * planner's RunDifferences gains `schedule_warnings` with this shape; it is
+ * declared here as well so the card reads it whether or not that type has
+ * landed, and a run row written before it reads as none.
+ */
+export interface ScheduleWarningItem { area_code: string; code: string; reason: string }
+type CardDifferences = RunDifferences & { schedule_warnings?: ScheduleWarningItem[] };
+
+export const SCHEDULE_WARNINGS_NOTE =
+  'Ruangannya sudah dibuat dan ditautkan di DATUM. Susun jadwalnya dengan "Hitung ulang jadwal" di DATUM.';
 
 /** A gate SANO has no gate_refs row for, or a status that is none of DATUM's six words: counted, never stored. */
 function gateStatusUnknownLine(x: GateStatusUnknownItem): string {
@@ -122,7 +140,7 @@ function gateStatusUnknownLine(x: GateStatusUnknownItem): string {
 
 export function differenceGroups(run: DatumRun | null): DifferenceGroup[] {
   if (!run) return [];
-  const d = run.differences;
+  const d: CardDifferences = run.differences;
   const groups: DifferenceGroup[] = [
     {
       title: 'Hanya di DATUM',
@@ -137,6 +155,11 @@ export function differenceGroups(run: DatumRun | null): DifferenceGroup[] {
     },
     { title: 'Kode ganda di DATUM', lines: (d.datum_duplicates ?? []).map((x) => `${x.key}: ${x.area_codes.join(', ')}`) },
     { title: 'Gagal dibuat di DATUM', lines: (d.create_failed ?? []).map((x) => `${x.room_code} · ${x.reason}`) },
+    {
+      title: 'Jadwal DATUM belum tersusun',
+      lines: (d.schedule_warnings ?? []).map((x) => `${x.area_code}: ${x.reason || x.code}`),
+      note: SCHEDULE_WARNINGS_NOTE,
+    },
     { title: 'Tidak diambil dari DATUM', lines: (d.import_skipped ?? []).map((x) => `${x.area_code} · ${x.reason}`) },
     {
       title: 'Keputusan belum terkirim',

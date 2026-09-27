@@ -244,6 +244,7 @@ function Groups({ groups }: { groups: DifferenceGroup[] }) {
         <View key={g.title} style={styles.group}>
           <Text style={styles.groupTitle}>{g.title}</Text>
           {g.lines.map((line) => <Text key={line} style={styles.listLine}>{line}</Text>)}
+          {g.note ? <Text style={styles.hint}>{g.note}</Text> : null}
         </View>
       ))}
     </>

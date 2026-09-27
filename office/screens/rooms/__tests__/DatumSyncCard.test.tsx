@@ -220,6 +220,18 @@ describe('Ambil dari DATUM: what one request can carry', () => {
   });
 });
 
+describe('schedules DATUM could not build', () => {
+  it('shows the group, one line per area, with its note', async () => {
+    getState.mockResolvedValueOnce(state({ latestFinished: run({ differences: { schedule_warnings: [
+      { area_code: 'LT2-TERAS', code: 'SCHEDULE_FAILED', reason: 'Jadwal area gagal disusun.' },
+    ] } as DatumRun['differences'] }) }));
+    const utils = renderCard('admin');
+    await waitFor(() => expect(utils.getByText('Jadwal DATUM belum tersusun')).toBeTruthy());
+    expect(utils.getByText('LT2-TERAS: Jadwal area gagal disusun.')).toBeTruthy();
+    expect(utils.getByText('Ruangannya sudah dibuat dan ditautkan di DATUM. Susun jadwalnya dengan "Hitung ulang jadwal" di DATUM.')).toBeTruthy();
+  });
+});
+
 describe('differences and staff', () => {
   it('lists each difference group with the note, and the staff picture for every project', async () => {
     getState.mockResolvedValueOnce(state({ latestFinished: run({ differences: {
