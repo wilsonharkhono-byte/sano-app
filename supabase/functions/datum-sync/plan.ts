@@ -351,7 +351,18 @@ export function createGateSentence(datumProjectName: string): string {
 
 export const IMPORT_GONE = 'Sudah ada di SANO atau tidak lagi ada di DATUM.';
 export const importBadCode = (code: string): string => `Kode DATUM ${code} tidak bisa menjadi kode ruangan SANO.`;
+export const importBadType = (code: string, type: string): string => `Tipe area DATUM "${type}" untuk ${code} tidak dikenal SANO.`;
+export const importNoName = (code: string): string => `Area DATUM ${code} tidak punya nama.`;
 export const importRaced = (code: string): string => `Ruangan ${code} sudah dibuat di SANO sebelum impor selesai.`;
+
+/**
+ * DATUM's thirteen area types, the only values 107's rooms_area_type_check
+ * accepts. tools/constants.ts AREA_TYPES, inlined: jest proves they agree.
+ */
+export const PLAN_AREA_TYPES: ReadonlyArray<string> = [
+  'bathroom', 'kitchen', 'bedroom', 'living', 'dining', 'garden', 'circulation',
+  'utility', 'general', 'facade', 'terrace', 'hall', 'exterior',
+];
 
 /**
  * Only codes the user confirmed AND still DATUM-only in a fresh plan become
@@ -374,11 +385,20 @@ export function planImport(plan: RoomSyncPlan, confirmedCodes: ReadonlyArray<str
       skipped.push({ area_code: code, reason: importBadCode(area.area_code) });
       continue;
     }
+    if (!PLAN_AREA_TYPES.includes(area.area_type)) {
+      skipped.push({ area_code: code, reason: importBadType(area.area_code, area.area_type) });
+      continue;
+    }
+    const roomName = area.area_name.trim();
+    if (!roomName) {
+      skipped.push({ area_code: code, reason: importNoName(area.area_code) });
+      continue;
+    }
     insert.push({
       area_id: area.area_id,
       area_code: area.area_code,
       room_code: roomCode,
-      room_name: area.area_name,
+      room_name: roomName,
       floor: area.floor,
       area_type: area.area_type,
       sort_order: area.sort_order,

@@ -4,13 +4,17 @@
  */
 import {
   IMPORT_GONE,
+  PLAN_AREA_TYPES,
   importBadCode,
+  importBadType,
+  importNoName,
   importRaced,
   planImport,
   planRoomSync,
   type PlanArea,
   type PlanRoom,
 } from '../datumSyncPlan';
+import { AREA_TYPES } from '../constants';
 
 const room = (over: Partial<PlanRoom> & { id: string }): PlanRoom => ({
   room_code: over.id.toUpperCase(), room_name: 'Ruang', floor: 'Lt. 1', area_type: 'general', sort_order: 0,
@@ -54,5 +58,25 @@ describe('planImport', () => {
 
   it('names the room made in SANO meanwhile', () => {
     expect(importRaced('LT3-RACE')).toBe('Ruangan LT3-RACE sudah dibuat di SANO sebelum impor selesai.');
+  });
+
+  it('skips an area whose type is not one of the thirteen, or whose name is blank, and trims the name it keeps', () => {
+    const odd = planRoomSync([], [
+      area({ id: 'b1', area_code: 'LT2-BALKON', area_name: 'Balkon', area_type: 'balcony', sort_order: 1 }),
+      area({ id: 'b2', area_code: 'LT2-KOSONG', area_name: '   ', sort_order: 2 }),
+      area({ id: 'b3', area_code: 'LT2-TERAS', area_name: '  Teras   Atas ', area_type: 'terrace', sort_order: 3 }),
+    ]);
+    const result = planImport(odd, ['LT2-BALKON', 'LT2-KOSONG', 'LT2-TERAS']);
+    expect(result.insert.map((i) => [i.room_code, i.room_name, i.area_type])).toEqual([['LT2-TERAS', 'Teras   Atas', 'terrace']]);
+    expect(result.skipped).toEqual([
+      { area_code: 'LT2-BALKON', reason: importBadType('LT2-BALKON', 'balcony') },
+      { area_code: 'LT2-KOSONG', reason: importNoName('LT2-KOSONG') },
+    ]);
+    expect(importBadType('LT2-BALKON', 'balcony')).toBe('Tipe area DATUM "balcony" untuk LT2-BALKON tidak dikenal SANO.');
+    expect(importNoName('LT2-KOSONG')).toBe('Area DATUM LT2-KOSONG tidak punya nama.');
+  });
+
+  it("holds exactly SANO's thirteen area types, the list 107 lets rooms take", () => {
+    expect([...PLAN_AREA_TYPES]).toEqual(AREA_TYPES.map((t) => t.value));
   });
 });
