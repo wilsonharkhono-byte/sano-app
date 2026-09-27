@@ -7,7 +7,7 @@
 import { AREA_TYPE_LABELS } from '../../../tools/constants';
 import type { AreaType } from '../../../tools/types';
 import type { DatumRun, DatumSyncState } from '../../../tools/datumSync';
-import type { GateWordDiff, RunReport, SyncStep } from '../../../tools/datumSyncPlan';
+import type { ConflictField, GateWordDiff, RunReport, SyncStep } from '../../../tools/datumSyncPlan';
 import { STEP_ORDER } from '../../../tools/datumSyncPlan';
 import { formatWibShort, todayIsoWIB } from '../../../tools/timeWindow';
 
@@ -43,7 +43,7 @@ export const STEP_LABELS: Record<SyncStep, string> = {
 };
 
 const OUTCOME_WORDS = { ok: 'berhasil', error: 'gagal', skipped: 'dilewati' } as const;
-const FIELD_WORDS = { name: 'nama', floor: 'lantai', area_type: 'tipe' } as const;
+const FIELD_WORDS: Record<ConflictField, string> = { code: 'kode', name: 'nama', floor: 'lantai', area_type: 'tipe' };
 const GATE_FIELD_WORDS: Record<GateWordDiff['field'], string> = {
   name: 'nama',
   description: 'deskripsi',

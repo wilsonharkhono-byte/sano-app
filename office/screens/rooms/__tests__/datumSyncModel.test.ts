@@ -76,6 +76,7 @@ describe('differenceGroups', () => {
       differences: {
         datum_only: [{ area_code: 'LT2-TERAS', area_name: 'Teras', floor: 'Lt. 2', area_type: 'terrace' }],
         field_conflicts: [
+          { room_code: 'KM-1', field: 'code', sano: 'KM-1', datum: 'KM-01' },
           { room_code: 'KM-1', field: 'name', sano: 'Kamar Mandi 1', datum: 'KM Anak' },
           { room_code: 'KM-1', field: 'floor', sano: 'Lt. 1', datum: 'Lt. 2' },
           { room_code: 'KM-1', field: 'area_type', sano: 'bathroom', datum: 'general' },
@@ -90,6 +91,7 @@ describe('differenceGroups', () => {
     expect(groups).toEqual([
       { title: 'Hanya di DATUM', lines: ['LT2-TERAS · Teras · Lt. 2 · Teras / Balkon'] },
       { title: 'Berbeda dengan DATUM', lines: [
+        'KM-1 · kode — SANO "KM-1" · DATUM "KM-01"',
         'KM-1 · nama — SANO "Kamar Mandi 1" · DATUM "KM Anak"',
         'KM-1 · lantai — SANO "Lt. 1" · DATUM "Lt. 2"',
         'KM-1 · tipe — SANO "Kamar mandi" · DATUM "Umum"',
