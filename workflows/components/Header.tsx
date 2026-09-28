@@ -5,6 +5,7 @@ import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useProject } from '../hooks/useProject';
 import { useUnreadCount } from '../screens/hooks/useUnreadCount';
+import { useBadgeSync } from '../screens/hooks/useBadgeSync';
 import { COLORS, FONTS, TYPE, SPACE, RADIUS } from '../theme';
 import SanoBrand from './SanoBrand';
 
@@ -21,6 +22,7 @@ export default function Header() {
   const insets = useSafeAreaInsets();
   const [showPicker, setShowPicker] = useState(false);
   const unread = useUnreadCount(profile?.id);
+  useBadgeSync(unread);
 
   const hasMultipleProjects = projects.length > 1;
   const roleLabel = profile?.role ? ROLE_LABELS[profile.role] ?? profile.role : '';
