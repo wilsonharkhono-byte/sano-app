@@ -1359,21 +1359,41 @@ The key belongs to the app (package), so `production` builds use it too.
 Steps 3–4 come before step 5 so there is no window where the webhook sends no
 header but the function demands one.
 
+6. **Migration 108.** SQL Editor → paste all of
+   `supabase/migrations/108_register_device_token.sql` → Run. The result grid
+   must show one row with `prosecdef = true` and `anon_exec = false`. The app
+   registers phones through this function, so paste it **before** anyone
+   installs the new APK.
+
 ## Part D — Deploy the functions (Claude or developer)
 
 Requires `supabase login` once (Personal Access Token). From a worktree on `main`:
 
 ```bash
-supabase functions deploy send-push-notification --project-ref ufntlqvacjhmddwltcxf --use-api
-supabase functions deploy retry-push-notifications --project-ref ufntlqvacjhmddwltcxf --use-api
+supabase functions deploy send-push-notification --project-ref ufntlqvacjhmddwltcxf --use-api --no-verify-jwt
+supabase functions deploy retry-push-notifications --project-ref ufntlqvacjhmddwltcxf --use-api --no-verify-jwt
 ```
 
-Verify both refuse anonymous calls (expected `401`):
+`--no-verify-jwt` is required: the webhook and cron send the random
+`WEBHOOK_AUTH_SECRET` bearer, not a JWT, so the gateway's JWT check would
+reject every call before the function's own check runs.
+
+Verify both refuse anonymous calls (expected `401`, from the function itself):
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' -X POST https://ufntlqvacjhmddwltcxf.supabase.co/functions/v1/send-push-notification -d '{}'
-curl -s -o /dev/null -w '%{http_code}\n' -X POST https://ufntlqvacjhmddwltcxf.supabase.co/functions/v1/retry-push-notifications -d '{}'
+curl -s -w ' %{http_code}\n' -X POST https://ufntlqvacjhmddwltcxf.supabase.co/functions/v1/send-push-notification -d '{}'
+curl -s -w ' %{http_code}\n' -X POST https://ufntlqvacjhmddwltcxf.supabase.co/functions/v1/retry-push-notifications -d '{}'
 ```
+
+Expected body `unauthorized 401` for both (a gateway rejection would say
+something about a JWT instead). Then prove the right bearer gets through — the
+person holding the secret runs:
+
+```bash
+curl -s -w ' %{http_code}\n' -X POST https://ufntlqvacjhmddwltcxf.supabase.co/functions/v1/send-push-notification -H "Authorization: Bearer $WEBHOOK_AUTH_SECRET" -H 'Content-Type: application/json' -d '{"record":{"id":"00000000-0000-0000-0000-000000000000"}}'
+```
+
+Expected: `not found 200`.
 ````
 
 - [ ] **Step 2: Generate the notification icon**
@@ -1515,11 +1535,11 @@ Then bind the PR with the ccd_pr tools (`get_status`, `bind_pr`).
 
 - [ ] **Step 1: USER GATE — Dashboard**
 
-The user completes `docs/deploy/android-push-setup.md` Part C (webhook, cron, secret).
+The user completes `docs/deploy/android-push-setup.md` Part C (webhook, cron, secret, migration 108).
 
 - [ ] **Step 2: Deploy the functions from main after merge**
 
-After the user merges the PR, from a detached worktree on `origin/main` (e.g. `.claude/worktrees/deploy-main`, `git fetch && git checkout --detach origin/main`), run Part D's two deploy commands and the two curl checks. Expected: `401` and `401`. If the CLI says not logged in, ask the user to run `supabase login`.
+After the user merges the PR, from a detached worktree on `origin/main` (e.g. `.claude/worktrees/deploy-main`, `git fetch && git checkout --detach origin/main`), run Part D's two deploy commands (with `--no-verify-jwt`) and the anonymous curl checks. Expected: `unauthorized 401` twice; then ask the user to run the correct-bearer check (expected `not found 200`). If the CLI says not logged in, ask the user to run `supabase login`.
 
 - [ ] **Step 3: Build the APK from main**
 
