@@ -3,7 +3,7 @@ import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 import { supabase } from './supabase';
-import { setPushStatus, type PushStatus } from './pushStatus';
+import { getPushStatus, setPushStatus, type PushStatus } from './pushStatus';
 
 // Must match the channelId the send-push-notification edge function sends and
 // the expo-notifications plugin's defaultChannel in app.json.
@@ -111,6 +111,24 @@ async function tryRegister(userId: string): Promise<PushStatus> {
     console.warn('[push] registration failed', e);
     return 'error';
   }
+}
+
+// Called when the app returns to the foreground. If this phone was denied or
+// failed to register, and permission is granted now (e.g. the user just
+// enabled it in system settings), register. Never requests permission itself:
+// on Android a request pauses the activity, which would re-fire this
+// foreground event and loop.
+export async function retryPushRegistrationIfGranted(userId: string): Promise<void> {
+  const status = getPushStatus();
+  if (status !== 'denied' && status !== 'error') return;
+  if (inFlightRegistration) return;
+  try {
+    const { status: permission } = await Notifications.getPermissionsAsync();
+    if (permission !== 'granted') return;
+  } catch {
+    return;
+  }
+  await registerForPushNotifications(userId);
 }
 
 // Called on logout BEFORE the session ends: device_tokens RLS only lets the

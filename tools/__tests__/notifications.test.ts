@@ -42,6 +42,7 @@ import {
   ANDROID_CHANNEL_ID,
   attachNotificationTapListener,
   registerForPushNotifications,
+  retryPushRegistrationIfGranted,
   unregisterPushToken,
 } from '../notifications';
 import { getPushStatus } from '../pushStatus';
@@ -158,6 +159,61 @@ describe('registerForPushNotifications', () => {
 
     await expect(registerForPushNotifications('user-1')).resolves.toBe('error');
     expect(getPushStatus()).toBe('error');
+    warn.mockRestore();
+  });
+});
+
+describe('retryPushRegistrationIfGranted', () => {
+  it('registers and becomes active when permission was denied but is now granted', async () => {
+    N.getPermissionsAsync.mockResolvedValue({ status: 'denied', canAskAgain: false });
+    await registerForPushNotifications('user-1');
+    expect(getPushStatus()).toBe('denied');
+
+    grant('ExponentPushToken[retry]');
+    await retryPushRegistrationIfGranted('user-1');
+
+    expect(N.requestPermissionsAsync).not.toHaveBeenCalled();
+    expect(mockRpc).toHaveBeenCalledWith('register_device_token', {
+      p_token: 'ExponentPushToken[retry]',
+      p_platform: 'android',
+    });
+    expect(getPushStatus()).toBe('active');
+  });
+
+  it('does nothing while still denied', async () => {
+    N.getPermissionsAsync.mockResolvedValue({ status: 'denied', canAskAgain: false });
+    await registerForPushNotifications('user-1');
+    expect(getPushStatus()).toBe('denied');
+
+    await retryPushRegistrationIfGranted('user-1');
+
+    expect(N.requestPermissionsAsync).not.toHaveBeenCalled();
+    expect(mockRpc).not.toHaveBeenCalled();
+    expect(getPushStatus()).toBe('denied');
+  });
+
+  it('does not even check permission when already active', async () => {
+    grant('ExponentPushToken[already]');
+    await registerForPushNotifications('user-1');
+    expect(getPushStatus()).toBe('active');
+    N.getPermissionsAsync.mockClear();
+
+    await retryPushRegistrationIfGranted('user-1');
+
+    expect(N.getPermissionsAsync).not.toHaveBeenCalled();
+  });
+
+  it('retries and becomes active from an error status once permission is granted', async () => {
+    N.getPermissionsAsync.mockResolvedValue({ status: 'granted' });
+    N.getExpoPushTokenAsync.mockRejectedValue(new Error('Default FirebaseApp is not initialized'));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    await registerForPushNotifications('user-1');
+    expect(getPushStatus()).toBe('error');
+
+    grant('ExponentPushToken[recovered]');
+    await retryPushRegistrationIfGranted('user-1');
+
+    expect(getPushStatus()).toBe('active');
     warn.mockRestore();
   });
 });
