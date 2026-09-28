@@ -60,15 +60,16 @@ async function tryRegister(userId: string): Promise<PushStatus> {
     const projectId = Constants.expoConfig?.extra?.eas?.projectId as string | undefined;
     const { data: token } = await Notifications.getExpoPushTokenAsync({ projectId });
 
-    const { error } = await supabase.from('device_tokens').upsert(
-      {
-        user_id: userId,
-        expo_push_token: token,
-        platform: Platform.OS as 'ios' | 'android' | 'web',
-        last_seen_at: new Date().toISOString(),
-      },
-      { onConflict: 'expo_push_token' },
-    );
+    // A plain client upsert would only ever be seen as an UPDATE of a row
+    // this device already owns (device_tokens_update_own filters by
+    // auth.uid() = user_id, 034) — so a previous, still-signed-out user's
+    // stale row on this phone would refuse the update instead of being
+    // reassigned. register_device_token (108) is SECURITY DEFINER and claims
+    // the token for whoever is signed in on the phone right now.
+    const { error } = await supabase.rpc('register_device_token', {
+      p_token: token,
+      p_platform: Platform.OS,
+    });
     if (error) throw new Error(error.message);
 
     registeredToken = token;

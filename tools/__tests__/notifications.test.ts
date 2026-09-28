@@ -24,14 +24,14 @@ jest.mock('react-native', () => ({
   Platform: { OS: 'android' },
 }));
 
-const mockUpsert = jest.fn();
+const mockRpc = jest.fn();
 const mockDeleteEq = jest.fn();
 jest.mock('../supabase', () => ({
   supabase: {
     from: jest.fn(() => ({
-      upsert: mockUpsert,
       delete: () => ({ eq: mockDeleteEq }),
     })),
+    rpc: mockRpc,
   },
 }));
 
@@ -58,7 +58,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   (Platform as { OS: string }).OS = 'android';
   (Device as { isDevice: boolean }).isDevice = true;
-  mockUpsert.mockResolvedValue({ error: null });
+  mockRpc.mockResolvedValue({ error: null });
   mockDeleteEq.mockResolvedValue({ error: null });
   N.setNotificationChannelAsync.mockResolvedValue(null);
 });
@@ -106,15 +106,10 @@ describe('registerForPushNotifications', () => {
 
     expect(N.requestPermissionsAsync).not.toHaveBeenCalled();
     expect(N.getExpoPushTokenAsync).toHaveBeenCalledWith({ projectId: 'proj-123' });
-    expect(supabase.from).toHaveBeenCalledWith('device_tokens');
-    expect(mockUpsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        user_id: 'user-1',
-        expo_push_token: 'ExponentPushToken[xxx]',
-        platform: 'android',
-      }),
-      { onConflict: 'expo_push_token' },
-    );
+    expect(mockRpc).toHaveBeenCalledWith('register_device_token', {
+      p_token: 'ExponentPushToken[xxx]',
+      p_platform: 'android',
+    });
     expect(getPushStatus()).toBe('active');
   });
 
@@ -125,7 +120,7 @@ describe('registerForPushNotifications', () => {
 
     await expect(registerForPushNotifications('user-1')).resolves.toBe('active');
     expect(N.requestPermissionsAsync).toHaveBeenCalled();
-    expect(mockUpsert).toHaveBeenCalled();
+    expect(mockRpc).toHaveBeenCalled();
   });
 
   it('reports denied without asking for a token', async () => {
@@ -150,7 +145,7 @@ describe('registerForPushNotifications', () => {
 
   it('reports error when saving the token is refused', async () => {
     grant();
-    mockUpsert.mockResolvedValue({ error: { message: 'new row violates row-level security policy' } });
+    mockRpc.mockResolvedValue({ error: { message: 'new row violates row-level security policy' } });
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
     await expect(registerForPushNotifications('user-1')).resolves.toBe('error');
