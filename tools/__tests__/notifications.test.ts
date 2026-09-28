@@ -213,4 +213,25 @@ describe('unregisterPushToken', () => {
     await expect(unregisterPushToken()).resolves.toBeUndefined();
     warn.mockRestore();
   });
+
+  it('waits for a registration that is still in flight, so a token that lands mid-logout is still removed', async () => {
+    N.getPermissionsAsync.mockResolvedValue({ status: 'granted' });
+    let resolveToken!: (value: { data: string }) => void;
+    N.getExpoPushTokenAsync.mockReturnValue(
+      new Promise(resolve => {
+        resolveToken = resolve;
+      }),
+    );
+
+    const registerPromise = registerForPushNotifications('user-1');
+    const unregisterPromise = unregisterPushToken();
+
+    resolveToken({ data: 'ExponentPushToken[midflight]' });
+
+    await registerPromise;
+    await unregisterPromise;
+
+    expect(mockDeleteEq).toHaveBeenCalledWith('expo_push_token', 'ExponentPushToken[midflight]');
+    expect(getPushStatus()).toBe('unknown');
+  });
 });

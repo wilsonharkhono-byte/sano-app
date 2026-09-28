@@ -13,6 +13,32 @@ export const ANDROID_CHANNEL_ID = 'default';
 // deletes exactly this row on logout.
 let registeredToken: string | null = null;
 
+// Set while registerForPushNotifications is running; unregisterPushToken
+// waits for it (capped below) so a Logout tap that lands mid-registration
+// still removes the token once it arrives, instead of racing it and leaving
+// a freshly re-attached row behind for the account that just signed out.
+let inFlightRegistration: Promise<PushStatus> | null = null;
+
+// A stalled network call must never hang a caller (registration is
+// fire-and-forget on launch; logout's onPress handlers have no spinner), so
+// both the in-flight-registration wait and the delete below are capped at
+// this budget.
+const REMOTE_CALL_TIMEOUT_MS = 3000;
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: number | NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>(resolve => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -24,9 +50,16 @@ Notifications.setNotificationHandler({
 });
 
 export async function registerForPushNotifications(userId: string): Promise<PushStatus> {
-  const status = await tryRegister(userId);
-  setPushStatus(status);
-  return status;
+  const promise = tryRegister(userId).then(status => {
+    setPushStatus(status);
+    return status;
+  });
+  inFlightRegistration = promise;
+  try {
+    return await promise;
+  } finally {
+    if (inFlightRegistration === promise) inFlightRegistration = null;
+  }
 }
 
 async function tryRegister(userId: string): Promise<PushStatus> {
@@ -85,6 +118,10 @@ async function tryRegister(userId: string): Promise<PushStatus> {
 // device from receiving the previous user's notifications. Never throws —
 // logout must not be blocked by a flaky connection.
 export async function unregisterPushToken(): Promise<void> {
+  if (inFlightRegistration) {
+    await withTimeout(inFlightRegistration, REMOTE_CALL_TIMEOUT_MS);
+  }
+
   const token = registeredToken;
   registeredToken = null;
   setPushStatus('unknown');
