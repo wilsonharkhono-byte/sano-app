@@ -75,6 +75,7 @@ describe('registerForPushNotifications', () => {
     (Platform as { OS: string }).OS = 'web';
     await expect(registerForPushNotifications('user-1')).resolves.toBe('unsupported');
     expect(N.getPermissionsAsync).not.toHaveBeenCalled();
+    expect(getPushStatus()).toBe('unsupported');
   });
 
   it('creates the high-importance Android channel before permission and token', async () => {
@@ -156,6 +157,7 @@ describe('registerForPushNotifications', () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
 
     await expect(registerForPushNotifications('user-1')).resolves.toBe('error');
+    expect(getPushStatus()).toBe('error');
     warn.mockRestore();
   });
 });

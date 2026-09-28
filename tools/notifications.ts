@@ -66,9 +66,9 @@ async function tryRegister(userId: string): Promise<PushStatus> {
   if (Platform.OS === 'web' || !Device.isDevice) return 'unsupported';
 
   try {
-    // Android 13+ shows the notification permission prompt only once a
-    // channel exists, and the channel's importance decides heads-up banners
-    // and lock-screen visibility — so it is created first.
+    // Created before asking for permission: the channel's importance decides
+    // heads-up banners and lock-screen visibility, and older Android targets
+    // only show the permission prompt once a channel exists.
     if (Platform.OS === 'android') {
       await Notifications.setNotificationChannelAsync(ANDROID_CHANNEL_ID, {
         name: 'Notifikasi SANO',
