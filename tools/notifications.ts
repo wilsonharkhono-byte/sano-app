@@ -127,8 +127,11 @@ export async function unregisterPushToken(): Promise<void> {
   setPushStatus('unknown');
   if (!token) return;
   try {
-    const { error } = await supabase.from('device_tokens').delete().eq('expo_push_token', token);
-    if (error) console.warn('[push] token removal failed', error.message);
+    const result = await withTimeout(
+      Promise.resolve(supabase.from('device_tokens').delete().eq('expo_push_token', token)),
+      REMOTE_CALL_TIMEOUT_MS,
+    );
+    if (result?.error) console.warn('[push] token removal failed', result.error.message);
   } catch (e) {
     console.warn('[push] token removal failed', e);
   }

@@ -234,4 +234,20 @@ describe('unregisterPushToken', () => {
     expect(mockDeleteEq).toHaveBeenCalledWith('expo_push_token', 'ExponentPushToken[midflight]');
     expect(getPushStatus()).toBe('unknown');
   });
+
+  it('never blocks logout when the delete never resolves (a stalled connection)', async () => {
+    jest.useFakeTimers();
+    try {
+      grant('ExponentPushToken[stuck]');
+      await registerForPushNotifications('user-1');
+      mockDeleteEq.mockReturnValue(new Promise(() => {})); // never settles
+
+      const promise = unregisterPushToken();
+      await jest.advanceTimersByTimeAsync(3000);
+
+      await expect(promise).resolves.toBeUndefined();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
