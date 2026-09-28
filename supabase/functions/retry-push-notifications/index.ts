@@ -1,3 +1,9 @@
+// Deploy with --no-verify-jwt: the Dashboard cron calls this every 15 minutes
+// with `Authorization: Bearer <WEBHOOK_AUTH_SECRET>`, a random hex secret, not
+// a Supabase JWT - the gateway's own JWT check would refuse it before this
+// file ever runs. checkAuth() (imported below) is the only gate (see
+// datum-sync/index.ts:10 for the same pattern).
+
 import { checkAuth, handleNotification, makeDeps, serviceClient } from '../send-push-notification/index.ts';
 
 export interface RetryDeps {

@@ -1,3 +1,10 @@
+// Deploy with --no-verify-jwt: both callers (the Database Webhook on
+// notifications INSERT, and retry-push-notifications' cron) present
+// `Authorization: Bearer <WEBHOOK_AUTH_SECRET>`, a random hex secret, not a
+// Supabase JWT - the gateway's own JWT check would refuse it before this
+// file ever runs. checkAuth() below is the only gate (see datum-sync/index.ts:10
+// for the same pattern).
+
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 export interface NotificationRow {
