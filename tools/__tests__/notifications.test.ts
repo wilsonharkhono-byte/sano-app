@@ -132,6 +132,13 @@ describe('registerForPushNotifications', () => {
     expect(getPushStatus()).toBe('denied');
   });
 
+  it('does not re-prompt when the OS says asking again is not allowed', async () => {
+    N.getPermissionsAsync.mockResolvedValue({ status: 'denied', canAskAgain: false });
+
+    await expect(registerForPushNotifications('user-1')).resolves.toBe('denied');
+    expect(N.requestPermissionsAsync).not.toHaveBeenCalled();
+  });
+
   it('reports error, never throws, when the token call fails (e.g. FCM missing)', async () => {
     N.getPermissionsAsync.mockResolvedValue({ status: 'granted' });
     N.getExpoPushTokenAsync.mockRejectedValue(new Error('Default FirebaseApp is not initialized'));

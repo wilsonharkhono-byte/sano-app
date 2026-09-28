@@ -84,7 +84,7 @@ async function tryRegister(userId: string): Promise<PushStatus> {
     // permission still pauses the activity (AppState -> background).
     const existing = await Notifications.getPermissionsAsync();
     let granted = existing.status === 'granted';
-    if (!granted) {
+    if (!granted && existing.canAskAgain !== false) {
       const requested = await Notifications.requestPermissionsAsync();
       granted = requested.status === 'granted';
     }
