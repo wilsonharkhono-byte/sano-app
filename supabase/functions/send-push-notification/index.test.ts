@@ -1,75 +1,93 @@
 import { assertEquals } from 'std/assert';
-import { handleNotification, type Deps } from './index.ts';
+import { checkAuth, handleNotification, type Deps, type ExpoMessage, type NotificationRow } from './index.ts';
 
-function makeMockDeps(overrides: Partial<Deps> = {}): {
-  deps: Deps;
-  calls: {
-    selectNotification: number;
-    selectTokens: number;
-    expoFetch: Array<unknown>;
-    updateSent: number;
-    deleteToken: string[];
-  };
-} {
+const ROW: NotificationRow = {
+  id: '00000000-0000-0000-0000-000000000001',
+  recipient_user_id: '00000000-0000-0000-0000-000000000002',
+  title: 'Permintaan disetujui',
+  body: 'MR-12 disetujui estimator',
+  deeplink_screen: 'ApprovalsScreen',
+  deeplink_params: { headerId: 'h1' },
+  push_sent_at: null,
+};
+
+function makeMockDeps(overrides: Partial<Deps> = {}) {
   const calls = {
-    selectNotification: 0,
-    selectTokens: 0,
-    expoFetch: [] as unknown[],
-    updateSent: 0,
-    deleteToken: [] as string[],
+    pushed: [] as ExpoMessage[][],
+    markSent: 0,
+    deleted: [] as string[],
   };
   const deps: Deps = {
-    fetchNotificationSentAt: async () => { calls.selectNotification++; return null; },
-    fetchTokens: async () => { calls.selectTokens++; return [{ expo_push_token: 'ExponentPushToken[abc]' }]; },
-    expoPush: async (messages) => { calls.expoFetch.push(messages); return { data: messages.map(() => ({})) }; },
-    markSent: async () => { calls.updateSent++; },
-    deleteToken: async (t) => { calls.deleteToken.push(t); },
+    fetchNotification: async () => ({ ...ROW }),
+    fetchTokens: async () => [{ expo_push_token: 'ExponentPushToken[abc]' }],
+    countUnread: async () => 4,
+    expoPush: async (messages) => { calls.pushed.push(messages); return { data: messages.map(() => ({ status: 'ok' })) }; },
+    markSent: async () => { calls.markSent++; },
+    deleteToken: async (t) => { calls.deleted.push(t); },
     ...overrides,
   };
   return { deps, calls };
 }
 
-const baseRecord = {
-  id: '00000000-0000-0000-0000-000000000001',
-  recipient_user_id: '00000000-0000-0000-0000-000000000002',
-  title: 'Test',
-  body: 'Body',
-  deeplink_screen: 'ApprovalsScreen',
-  deeplink_params: { headerId: 'h1' },
-};
+Deno.test('checkAuth fails closed when the secret is not configured', () => {
+  assertEquals(checkAuth('Bearer x', undefined), 'misconfigured');
+  assertEquals(checkAuth(null, ''), 'misconfigured');
+});
 
-Deno.test('skips when no tokens registered', async () => {
-  const { deps, calls } = makeMockDeps({
-    fetchTokens: async () => [],
-  });
-  const resp = await handleNotification(baseRecord, deps);
-  assertEquals(resp, 'no tokens');
-  assertEquals(calls.expoFetch.length, 0);
-  assertEquals(calls.updateSent, 0);
+Deno.test('checkAuth requires the exact bearer', () => {
+  assertEquals(checkAuth('Bearer s3cret', 's3cret'), 'ok');
+  assertEquals(checkAuth('Bearer wrong', 's3cret'), 'unauthorized');
+  assertEquals(checkAuth(null, 's3cret'), 'unauthorized');
+});
+
+Deno.test('unknown notification id is not pushed', async () => {
+  const { deps, calls } = makeMockDeps({ fetchNotification: async () => null });
+  assertEquals(await handleNotification(ROW.id, deps), 'not found');
+  assertEquals(calls.pushed.length, 0);
 });
 
 Deno.test('skips when push_sent_at already set (idempotency)', async () => {
   const { deps, calls } = makeMockDeps({
-    fetchNotificationSentAt: async () => '2026-05-09T00:00:00Z',
+    fetchNotification: async () => ({ ...ROW, push_sent_at: '2026-09-28T00:00:00Z' }),
   });
-  const resp = await handleNotification(baseRecord, deps);
-  assertEquals(resp, 'already sent');
-  assertEquals(calls.expoFetch.length, 0);
+  assertEquals(await handleNotification(ROW.id, deps), 'already sent');
+  assertEquals(calls.pushed.length, 0);
 });
 
-Deno.test('dispatches one Expo message per token, marks sent', async () => {
+Deno.test('skips without marking sent when no tokens are registered', async () => {
+  const { deps, calls } = makeMockDeps({ fetchTokens: async () => [] });
+  assertEquals(await handleNotification(ROW.id, deps), 'no tokens');
+  assertEquals(calls.pushed.length, 0);
+  assertEquals(calls.markSent, 0);
+});
+
+Deno.test('message content comes from the DB row, with badge, channel and priority', async () => {
+  const { deps, calls } = makeMockDeps();
+  assertEquals(await handleNotification(ROW.id, deps), 'ok');
+  const [msg] = calls.pushed[0];
+  assertEquals(msg.to, 'ExponentPushToken[abc]');
+  assertEquals(msg.title, 'Permintaan disetujui');
+  assertEquals(msg.body, 'MR-12 disetujui estimator');
+  assertEquals(msg.badge, 4);
+  assertEquals(msg.channelId, 'default');
+  assertEquals(msg.priority, 'high');
+  assertEquals(msg.data, {
+    notificationId: ROW.id,
+    deeplinkScreen: ROW.deeplink_screen,
+    deeplinkParams: { headerId: 'h1' },
+  });
+  assertEquals(calls.markSent, 1);
+});
+
+Deno.test('one message per token', async () => {
   const { deps, calls } = makeMockDeps({
     fetchTokens: async () => [
       { expo_push_token: 'ExponentPushToken[a]' },
       { expo_push_token: 'ExponentPushToken[b]' },
     ],
   });
-  const resp = await handleNotification(baseRecord, deps);
-  assertEquals(resp, 'ok');
-  assertEquals(calls.expoFetch.length, 1);
-  assertEquals((calls.expoFetch[0] as Array<{ to: string }>).length, 2);
-  assertEquals(calls.updateSent, 1);
-  assertEquals(calls.deleteToken.length, 0);
+  await handleNotification(ROW.id, deps);
+  assertEquals(calls.pushed[0].map(m => m.to), ['ExponentPushToken[a]', 'ExponentPushToken[b]']);
 });
 
 Deno.test('deletes stale tokens on DeviceNotRegistered', async () => {
@@ -85,6 +103,6 @@ Deno.test('deletes stale tokens on DeviceNotRegistered', async () => {
       ],
     }),
   });
-  await handleNotification(baseRecord, deps);
-  assertEquals(calls.deleteToken, ['ExponentPushToken[stale]']);
+  await handleNotification(ROW.id, deps);
+  assertEquals(calls.deleted, ['ExponentPushToken[stale]']);
 });

@@ -1,58 +1,76 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-export interface NotificationRecord {
+export interface NotificationRow {
   id: string;
   recipient_user_id: string;
   title: string;
   body: string;
   deeplink_screen: string;
   deeplink_params: unknown;
+  push_sent_at: string | null;
 }
 
-export interface Deps {
-  fetchNotificationSentAt: (id: string) => Promise<string | null>;
-  fetchTokens: (userId: string) => Promise<{ expo_push_token: string }[]>;
-  expoPush: (messages: ExpoMessage[]) => Promise<ExpoResponse>;
-  markSent: (id: string) => Promise<void>;
-  deleteToken: (token: string) => Promise<void>;
-}
-
-interface ExpoMessage {
+export interface ExpoMessage {
   to: string;
   title: string;
   body: string;
   data: unknown;
   sound: 'default';
+  badge: number;
+  channelId: 'default';
+  priority: 'high';
 }
 
 interface ExpoResponse {
   data?: { status?: string; details?: { error?: string } }[];
 }
 
-export async function handleNotification(
-  record: NotificationRecord,
-  deps: Deps,
-): Promise<string> {
-  const sentAt = await deps.fetchNotificationSentAt(record.id);
-  if (sentAt) return 'already sent';
+export interface Deps {
+  fetchNotification: (id: string) => Promise<NotificationRow | null>;
+  fetchTokens: (userId: string) => Promise<{ expo_push_token: string }[]>;
+  countUnread: (userId: string) => Promise<number>;
+  expoPush: (messages: ExpoMessage[]) => Promise<ExpoResponse>;
+  markSent: (id: string) => Promise<void>;
+  deleteToken: (token: string) => Promise<void>;
+}
 
-  const tokens = await deps.fetchTokens(record.recipient_user_id);
+// Fail closed: without a configured secret nobody may trigger pushes.
+export function checkAuth(
+  authorization: string | null,
+  expected: string | undefined,
+): 'ok' | 'unauthorized' | 'misconfigured' {
+  if (!expected) return 'misconfigured';
+  return authorization === `Bearer ${expected}` ? 'ok' : 'unauthorized';
+}
+
+// Only the id is trusted from the caller; title/body/recipient are re-read from
+// the DB so a caller cannot push arbitrary text to a user.
+export async function handleNotification(id: string, deps: Deps): Promise<string> {
+  const row = await deps.fetchNotification(id);
+  if (!row) return 'not found';
+  if (row.push_sent_at) return 'already sent';
+
+  const tokens = await deps.fetchTokens(row.recipient_user_id);
   if (!tokens.length) return 'no tokens';
 
+  const badge = await deps.countUnread(row.recipient_user_id);
   const messages: ExpoMessage[] = tokens.map(t => ({
     to: t.expo_push_token,
-    title: record.title,
-    body: record.body,
+    title: row.title,
+    body: row.body,
     data: {
-      notificationId: record.id,
-      deeplinkScreen: record.deeplink_screen,
-      deeplinkParams: record.deeplink_params,
+      notificationId: row.id,
+      deeplinkScreen: row.deeplink_screen,
+      deeplinkParams: row.deeplink_params,
     },
     sound: 'default',
+    badge,
+    channelId: 'default',
+    priority: 'high',
   }));
 
   const result = await deps.expoPush(messages);
-  await deps.markSent(record.id);
+  await deps.markSent(row.id);
 
   for (let i = 0; i < (result.data ?? []).length; i++) {
     if (result.data![i]?.details?.error === 'DeviceNotRegistered') {
@@ -63,35 +81,28 @@ export async function handleNotification(
   return 'ok';
 }
 
-// Real Deno.serve entry — wires Deps to the Supabase client + Expo fetch.
-// Validates a shared-secret bearer if WEBHOOK_AUTH_SECRET env var is set
-// (configured during Task 9 dashboard setup).
-// Guarded by import.meta.main so transitive imports (e.g. retry-push-notifications
-// reusing handleNotification) don't double-bind the port during tests.
-if (import.meta.main) {
-  Deno.serve(async (req) => {
-  const expected = Deno.env.get('WEBHOOK_AUTH_SECRET');
-  if (expected) {
-    const auth = req.headers.get('authorization');
-    if (auth !== `Bearer ${expected}`) {
-      return new Response('unauthorized', { status: 401 });
-    }
-  }
-
-  const { record } = await req.json();
-  const supa = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-  );
-
-  const deps: Deps = {
-    fetchNotificationSentAt: async (id) => {
-      const { data } = await supa.from('notifications').select('push_sent_at').eq('id', id).single();
-      return (data?.push_sent_at as string | null) ?? null;
+// Shared by send-push-notification and retry-push-notifications.
+export function makeDeps(supa: SupabaseClient): Deps {
+  return {
+    fetchNotification: async (id) => {
+      const { data } = await supa
+        .from('notifications')
+        .select('id, recipient_user_id, title, body, deeplink_screen, deeplink_params, push_sent_at')
+        .eq('id', id)
+        .maybeSingle();
+      return (data as NotificationRow | null) ?? null;
     },
     fetchTokens: async (userId) => {
       const { data } = await supa.from('device_tokens').select('expo_push_token').eq('user_id', userId);
       return (data as { expo_push_token: string }[] | null) ?? [];
+    },
+    countUnread: async (userId) => {
+      const { count } = await supa
+        .from('notifications')
+        .select('id', { count: 'exact', head: true })
+        .eq('recipient_user_id', userId)
+        .is('read_at', null);
+      return count ?? 0;
     },
     expoPush: async (messages) => {
       const resp = await fetch('https://exp.host/--/api/v2/push/send', {
@@ -108,8 +119,25 @@ if (import.meta.main) {
       await supa.from('device_tokens').delete().eq('expo_push_token', token);
     },
   };
+}
 
-  const result = await handleNotification(record, deps);
-  return new Response(result, { status: 200 });
+export function serviceClient(): SupabaseClient {
+  return createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+}
+
+// Guarded by import.meta.main so retry-push-notifications and the tests can
+// import this module without binding the HTTP port.
+if (import.meta.main) {
+  Deno.serve(async (req) => {
+    const auth = checkAuth(req.headers.get('authorization'), Deno.env.get('WEBHOOK_AUTH_SECRET'));
+    if (auth === 'misconfigured') return new Response('WEBHOOK_AUTH_SECRET not set', { status: 500 });
+    if (auth === 'unauthorized') return new Response('unauthorized', { status: 401 });
+
+    const payload = await req.json().catch(() => null) as { record?: { id?: unknown } } | null;
+    const id = payload?.record?.id;
+    if (typeof id !== 'string') return new Response('missing record.id', { status: 400 });
+
+    const result = await handleNotification(id, makeDeps(serviceClient()));
+    return new Response(result, { status: 200 });
   });
 }
