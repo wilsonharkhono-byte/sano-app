@@ -37,17 +37,38 @@ if (import.meta.main) {
     const pushDeps = makeDeps(supa);
 
     const result = await runRetry({
+      // Not extracted into its own testable function: doing so would only be
+      // worth it if the result stayed simple, and mocking the raw chained
+      // Supabase query builder for two dependent queries (device_tokens,
+      // then notifications) is exactly the complexity the rest of this file
+      // avoids by mocking plain Deps/RetryDeps functions instead. Left here,
+      // untested directly - runRetry's own tests cover the dispatch loop.
       fetchPendingIds: async () => {
         const now = Date.now();
+
+        // A row for a recipient with no device token yet can never send;
+        // querying and dispatching it every 15 minutes is pure waste. Once
+        // they register a phone their next retry pass will pick it up,
+        // because this list is read fresh on every run.
+        const { data: deviceRows } = await supa.from('device_tokens').select('user_id');
+        const recipientIds = [...new Set(((deviceRows as { user_id: string }[] | null) ?? []).map(r => r.user_id))];
+        if (!recipientIds.length) return [];
+
         const { data } = await supa
           .from('notifications')
           .select('id')
           .is('push_sent_at', null)
+          .is('read_at', null) // already read in-app: don't push what they've seen
+          .in('recipient_user_id', recipientIds)
           .gt('created_at', new Date(now - RETRY_MAX_AGE_MS).toISOString())
           .lt('created_at', new Date(now - RETRY_MIN_AGE_MS).toISOString())
           .order('created_at', { ascending: true })
           .limit(1000);
-        return ((data as { id: string }[] | null) ?? []).map(r => r.id);
+        const ids = ((data as { id: string }[] | null) ?? []).map(r => r.id);
+        if (ids.length >= 1000) {
+          console.warn('[retry-push-notifications] fetchPendingIds hit the 1000-row limit; some pending rows may be deferred to the next run');
+        }
+        return ids;
       },
       dispatch: (id) => handleNotification(id, pushDeps),
     });
