@@ -58,7 +58,7 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.register_device_token(text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.register_device_token(text, text) FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.register_device_token(text, text) TO authenticated;
 
 -- Close-out: every statement that changes anything is above this line. Hand a
