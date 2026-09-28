@@ -79,6 +79,23 @@ async function tryRegister(userId: string): Promise<PushStatus> {
   }
 }
 
+// Called on logout BEFORE the session ends: device_tokens RLS only lets the
+// owner delete their row. On a shared phone this stops the next user's
+// device from receiving the previous user's notifications. Never throws —
+// logout must not be blocked by a flaky connection.
+export async function unregisterPushToken(): Promise<void> {
+  const token = registeredToken;
+  registeredToken = null;
+  setPushStatus('unknown');
+  if (!token) return;
+  try {
+    const { error } = await supabase.from('device_tokens').delete().eq('expo_push_token', token);
+    if (error) console.warn('[push] token removal failed', error.message);
+  } catch (e) {
+    console.warn('[push] token removal failed', e);
+  }
+}
+
 export type NotificationTapHandler = (
   deeplinkScreen: string,
   deeplinkParams: Record<string, unknown> | null,

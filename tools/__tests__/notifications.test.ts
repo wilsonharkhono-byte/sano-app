@@ -42,6 +42,7 @@ import {
   ANDROID_CHANNEL_ID,
   attachNotificationTapListener,
   registerForPushNotifications,
+  unregisterPushToken,
 } from '../notifications';
 import { getPushStatus } from '../pushStatus';
 import { supabase } from '../supabase';
@@ -183,5 +184,38 @@ describe('attachNotificationTapListener', () => {
 
     cleanup();
     expect(unsubscribe).toHaveBeenCalled();
+  });
+});
+
+describe('unregisterPushToken', () => {
+  it('deletes the token this device registered and resets the status', async () => {
+    grant('ExponentPushToken[mine]');
+    await registerForPushNotifications('user-1');
+
+    await unregisterPushToken();
+
+    expect(mockDeleteEq).toHaveBeenCalledWith('expo_push_token', 'ExponentPushToken[mine]');
+    expect(getPushStatus()).toBe('unknown');
+  });
+
+  it('does nothing when this device registered nothing', async () => {
+    grant('ExponentPushToken[once]');
+    await registerForPushNotifications('user-1');
+    await unregisterPushToken();
+    mockDeleteEq.mockClear();
+
+    await unregisterPushToken();
+
+    expect(mockDeleteEq).not.toHaveBeenCalled();
+  });
+
+  it('never blocks logout when the delete fails', async () => {
+    grant('ExponentPushToken[offline]');
+    await registerForPushNotifications('user-1');
+    mockDeleteEq.mockRejectedValue(new Error('Network request failed'));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(unregisterPushToken()).resolves.toBeUndefined();
+    warn.mockRestore();
   });
 });

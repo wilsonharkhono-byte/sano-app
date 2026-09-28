@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import type { Profile } from './types';
+import { unregisterPushToken } from './notifications';
 
 export async function signIn(email: string, password: string) {
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
@@ -18,6 +19,7 @@ export async function signUp(email: string, password: string, fullName: string) 
 }
 
 export async function signOut() {
+  await unregisterPushToken();
   const { error } = await supabase.auth.signOut();
   if (error) throw error;
 }
