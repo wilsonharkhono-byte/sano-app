@@ -23,7 +23,9 @@ export interface ExpoMessage {
   body: string;
   data: unknown;
   sound: 'default';
-  badge: number;
+  // Omitted (not sent as null/undefined) when countUnread couldn't tell us
+  // the recipient's unread count - an inaccurate badge is worse than none.
+  badge?: number;
   channelId: 'default';
   priority: 'high';
 }
@@ -41,7 +43,7 @@ interface ExpoResponse {
 export interface Deps {
   fetchNotification: (id: string) => Promise<NotificationRow | null>;
   fetchTokens: (userId: string) => Promise<{ expo_push_token: string }[]>;
-  countUnread: (userId: string) => Promise<number>;
+  countUnread: (userId: string) => Promise<number | null>;
   expoPush: (messages: ExpoMessage[]) => Promise<ExpoResponse>;
   markSent: (id: string) => Promise<void>;
   deleteToken: (token: string) => Promise<void>;
@@ -89,7 +91,7 @@ export async function handleNotification(id: string, deps: Deps): Promise<string
       deeplinkParams: row.deeplink_params,
     },
     sound: 'default',
-    badge,
+    ...(badge !== null ? { badge } : {}),
     channelId: 'default',
     priority: 'high',
   }));
@@ -137,11 +139,12 @@ export function makeDeps(supa: SupabaseClient): Deps {
       return (data as { expo_push_token: string }[] | null) ?? [];
     },
     countUnread: async (userId) => {
-      const { count } = await supa
+      const { count, error } = await supa
         .from('notifications')
         .select('id', { count: 'exact', head: true })
         .eq('recipient_user_id', userId)
         .is('read_at', null);
+      if (error) return null;
       return count ?? 0;
     },
     expoPush: async (messages) => {

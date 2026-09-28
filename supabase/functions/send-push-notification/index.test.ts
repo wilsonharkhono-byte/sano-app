@@ -82,6 +82,13 @@ Deno.test('message content comes from the DB row, with badge, channel and priori
   assertEquals(calls.markSent, 1);
 });
 
+Deno.test('omits badge when countUnread cannot be determined', async () => {
+  const { deps, calls } = makeMockDeps({ countUnread: async () => null });
+  assertEquals(await handleNotification(ROW.id, deps), 'ok');
+  const [msg] = calls.pushed[0];
+  assertEquals('badge' in msg, false);
+});
+
 Deno.test('one message per token', async () => {
   const { deps, calls } = makeMockDeps({
     fetchTokens: async () => [
