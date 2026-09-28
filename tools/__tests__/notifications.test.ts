@@ -6,6 +6,7 @@ jest.mock('expo-notifications', () => ({
   requestPermissionsAsync: jest.fn(),
   getExpoPushTokenAsync: jest.fn(),
   addNotificationResponseReceivedListener: jest.fn(),
+  setBadgeCountAsync: jest.fn(() => Promise.resolve(true)),
   AndroidImportance: { MAX: 5 },
   AndroidNotificationVisibility: { PUBLIC: 1 },
 }));
@@ -256,6 +257,7 @@ describe('unregisterPushToken', () => {
 
     expect(mockDeleteEq).toHaveBeenCalledWith('expo_push_token', 'ExponentPushToken[mine]');
     expect(getPushStatus()).toBe('unknown');
+    expect(N.setBadgeCountAsync).toHaveBeenCalledWith(0);
   });
 
   it('does nothing when this device registered nothing', async () => {
