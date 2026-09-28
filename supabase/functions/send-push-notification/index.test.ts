@@ -1,4 +1,4 @@
-import { assertEquals } from 'std/assert';
+import { assertEquals, assertRejects } from 'std/assert';
 import { checkAuth, handleNotification, type Deps, type ExpoMessage, type NotificationRow } from './index.ts';
 
 const ROW: NotificationRow = {
@@ -103,6 +103,25 @@ Deno.test('deletes stale tokens on DeviceNotRegistered', async () => {
       ],
     }),
   });
-  await handleNotification(ROW.id, deps);
+  assertEquals(await handleNotification(ROW.id, deps), 'ok');
   assertEquals(calls.deleted, ['ExponentPushToken[stale]']);
+  assertEquals(calls.markSent, 1);
+});
+
+Deno.test('does not mark sent when expoPush rejects', async () => {
+  const { deps, calls } = makeMockDeps({
+    expoPush: async () => { throw new Error('expo push 500: boom'); },
+  });
+  await assertRejects(() => handleNotification(ROW.id, deps));
+  assertEquals(calls.markSent, 0);
+});
+
+Deno.test('marks nothing sent and returns failed when every ticket errors', async () => {
+  const { deps, calls } = makeMockDeps({
+    expoPush: async () => ({
+      data: [{ status: 'error', details: { error: 'InvalidCredentials' } }],
+    }),
+  });
+  assertEquals(await handleNotification(ROW.id, deps), 'failed');
+  assertEquals(calls.markSent, 0);
 });

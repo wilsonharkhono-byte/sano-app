@@ -21,8 +21,14 @@ export interface ExpoMessage {
   priority: 'high';
 }
 
+interface ExpoTicket {
+  status?: string;
+  message?: string;
+  details?: { error?: string };
+}
+
 interface ExpoResponse {
-  data?: { status?: string; details?: { error?: string } }[];
+  data?: ExpoTicket[];
 }
 
 export interface Deps {
@@ -70,14 +76,29 @@ export async function handleNotification(id: string, deps: Deps): Promise<string
   }));
 
   const result = await deps.expoPush(messages);
-  await deps.markSent(row.id);
 
-  for (let i = 0; i < (result.data ?? []).length; i++) {
-    if (result.data![i]?.details?.error === 'DeviceNotRegistered') {
-      await deps.deleteToken(tokens[i].expo_push_token);
+  // A ticket per token: delete the ones Expo says are gone, log anything
+  // else that failed (never the full token), and only mark the row sent
+  // once at least one recipient actually got it.
+  const tickets = result.data ?? [];
+  let anyOk = false;
+  for (let i = 0; i < tickets.length; i++) {
+    const ticket = tickets[i];
+    if (ticket?.status === 'ok') {
+      anyOk = true;
+      continue;
     }
+    if (ticket?.details?.error === 'DeviceNotRegistered') {
+      await deps.deleteToken(tokens[i].expo_push_token);
+      continue;
+    }
+    const suffix = tokens[i]?.expo_push_token.slice(-6) ?? `#${i}`;
+    console.error(`[push] ticket error ${suffix}: ${ticket?.details?.error ?? ticket?.message ?? 'unknown'}`);
   }
 
+  if (!anyOk) return 'failed';
+
+  await deps.markSent(row.id);
   return 'ok';
 }
 
@@ -110,6 +131,7 @@ export function makeDeps(supa: SupabaseClient): Deps {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(messages),
       });
+      if (!resp.ok) throw new Error(`expo push ${resp.status}: ${await resp.text()}`);
       return resp.json();
     },
     markSent: async (id) => {
