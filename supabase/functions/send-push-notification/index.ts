@@ -48,12 +48,24 @@ export interface Deps {
 }
 
 // Fail closed: without a configured secret nobody may trigger pushes.
-export function checkAuth(
+// Constant time: both sides SHA-256 digested, then compared byte by byte,
+// mirroring datum-sync/handler.ts's bearerMatches - a naive string ===
+// would let a timing attack learn the secret one byte at a time.
+export async function checkAuth(
   authorization: string | null,
   expected: string | undefined,
-): 'ok' | 'unauthorized' | 'misconfigured' {
+): Promise<'ok' | 'unauthorized' | 'misconfigured'> {
   if (!expected) return 'misconfigured';
-  return authorization === `Bearer ${expected}` ? 'ok' : 'unauthorized';
+  const enc = new TextEncoder();
+  const [given, wanted] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(authorization ?? '')),
+    crypto.subtle.digest('SHA-256', enc.encode(`Bearer ${expected}`)),
+  ]);
+  const a = new Uint8Array(given);
+  const b = new Uint8Array(wanted);
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0 ? 'ok' : 'unauthorized';
 }
 
 // Only the id is trusted from the caller; title/body/recipient are re-read from
@@ -158,7 +170,7 @@ export function serviceClient(): SupabaseClient {
 // import this module without binding the HTTP port.
 if (import.meta.main) {
   Deno.serve(async (req) => {
-    const auth = checkAuth(req.headers.get('authorization'), Deno.env.get('WEBHOOK_AUTH_SECRET'));
+    const auth = await checkAuth(req.headers.get('authorization'), Deno.env.get('WEBHOOK_AUTH_SECRET'));
     if (auth === 'misconfigured') return new Response('WEBHOOK_AUTH_SECRET not set', { status: 500 });
     if (auth === 'unauthorized') return new Response('unauthorized', { status: 401 });
 

@@ -35,7 +35,7 @@ const RETRY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // notification was created ('no tokens' rows are never marked sent).
 if (import.meta.main) {
   Deno.serve(async (req) => {
-    const auth = checkAuth(req.headers.get('authorization'), Deno.env.get('WEBHOOK_AUTH_SECRET'));
+    const auth = await checkAuth(req.headers.get('authorization'), Deno.env.get('WEBHOOK_AUTH_SECRET'));
     if (auth === 'misconfigured') return new Response('WEBHOOK_AUTH_SECRET not set', { status: 500 });
     if (auth === 'unauthorized') return new Response('unauthorized', { status: 401 });
 

@@ -29,15 +29,18 @@ function makeMockDeps(overrides: Partial<Deps> = {}) {
   return { deps, calls };
 }
 
-Deno.test('checkAuth fails closed when the secret is not configured', () => {
-  assertEquals(checkAuth('Bearer x', undefined), 'misconfigured');
-  assertEquals(checkAuth(null, ''), 'misconfigured');
+Deno.test('checkAuth fails closed when the secret is not configured', async () => {
+  assertEquals(await checkAuth('Bearer x', undefined), 'misconfigured');
+  assertEquals(await checkAuth(null, ''), 'misconfigured');
 });
 
-Deno.test('checkAuth requires the exact bearer', () => {
-  assertEquals(checkAuth('Bearer s3cret', 's3cret'), 'ok');
-  assertEquals(checkAuth('Bearer wrong', 's3cret'), 'unauthorized');
-  assertEquals(checkAuth(null, 's3cret'), 'unauthorized');
+Deno.test('checkAuth requires the exact bearer', async () => {
+  assertEquals(await checkAuth('Bearer s3cret', 's3cret'), 'ok');
+  assertEquals(await checkAuth('Bearer wrong', 's3cret'), 'unauthorized');
+  assertEquals(await checkAuth(null, 's3cret'), 'unauthorized');
+  // Same length as the real secret: exercises the byte-by-byte compare path,
+  // not an early length mismatch.
+  assertEquals(await checkAuth('Bearer s3cre7', 's3cret'), 'unauthorized');
 });
 
 Deno.test('unknown notification id is not pushed', async () => {
