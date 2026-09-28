@@ -127,15 +127,17 @@ export async function handleNotification(id: string, deps: Deps): Promise<string
 export function makeDeps(supa: SupabaseClient): Deps {
   return {
     fetchNotification: async (id) => {
-      const { data } = await supa
+      const { data, error } = await supa
         .from('notifications')
         .select('id, recipient_user_id, title, body, deeplink_screen, deeplink_params, push_sent_at')
         .eq('id', id)
         .maybeSingle();
+      if (error) console.error('[push] fetchNotification error', { error });
       return (data as NotificationRow | null) ?? null;
     },
     fetchTokens: async (userId) => {
-      const { data } = await supa.from('device_tokens').select('expo_push_token').eq('user_id', userId);
+      const { data, error } = await supa.from('device_tokens').select('expo_push_token').eq('user_id', userId);
+      if (error) console.error('[push] fetchTokens error', { error });
       return (data as { expo_push_token: string }[] | null) ?? [];
     },
     countUnread: async (userId) => {
@@ -144,7 +146,10 @@ export function makeDeps(supa: SupabaseClient): Deps {
         .select('id', { count: 'exact', head: true })
         .eq('recipient_user_id', userId)
         .is('read_at', null);
-      if (error) return null;
+      if (error) {
+        console.error('[push] countUnread error', { error });
+        return null;
+      }
       return count ?? 0;
     },
     expoPush: async (messages) => {
@@ -157,10 +162,12 @@ export function makeDeps(supa: SupabaseClient): Deps {
       return resp.json();
     },
     markSent: async (id) => {
-      await supa.from('notifications').update({ push_sent_at: new Date().toISOString() }).eq('id', id);
+      const { error } = await supa.from('notifications').update({ push_sent_at: new Date().toISOString() }).eq('id', id);
+      if (error) console.error('[push] markSent error', { error });
     },
     deleteToken: async (token) => {
-      await supa.from('device_tokens').delete().eq('expo_push_token', token);
+      const { error } = await supa.from('device_tokens').delete().eq('expo_push_token', token);
+      if (error) console.error('[push] deleteToken error', { error });
     },
   };
 }
