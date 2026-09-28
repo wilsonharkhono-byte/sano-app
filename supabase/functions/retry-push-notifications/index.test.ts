@@ -37,3 +37,12 @@ Deno.test('continues past per-row failures', async () => {
   assertEquals(result, { processed: 3, failed: 1 });
   assertEquals(seen, ['1', '2', '3']);
 });
+
+Deno.test("counts a 'failed' dispatch result as a failure", async () => {
+  const deps: RetryDeps = {
+    fetchPendingIds: async () => ['1', '2'],
+    dispatch: async (id) => (id === '2' ? 'failed' : 'ok'),
+  };
+  const result = await runRetry(deps);
+  assertEquals(result, { processed: 2, failed: 1 });
+});

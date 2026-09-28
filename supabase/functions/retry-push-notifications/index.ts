@@ -16,7 +16,7 @@ export async function runRetry(deps: RetryDeps): Promise<{ processed: number; fa
   let failed = 0;
   for (const id of ids) {
     try {
-      await deps.dispatch(id);
+      if ((await deps.dispatch(id)) === 'failed') failed++;
     } catch {
       failed++;
     }
@@ -56,11 +56,12 @@ if (import.meta.main) {
         // querying and dispatching it every 15 minutes is pure waste. Once
         // they register a phone their next retry pass will pick it up,
         // because this list is read fresh on every run.
-        const { data: deviceRows } = await supa.from('device_tokens').select('user_id');
+        const { data: deviceRows, error: tokenError } = await supa.from('device_tokens').select('user_id');
+        if (tokenError) console.error('[retry-push-notifications] device_tokens lookup failed:', tokenError.message);
         const recipientIds = [...new Set(((deviceRows as { user_id: string }[] | null) ?? []).map(r => r.user_id))];
         if (!recipientIds.length) return [];
 
-        const { data } = await supa
+        const { data, error } = await supa
           .from('notifications')
           .select('id')
           .is('push_sent_at', null)
@@ -70,6 +71,7 @@ if (import.meta.main) {
           .lt('created_at', new Date(now - RETRY_MIN_AGE_MS).toISOString())
           .order('created_at', { ascending: true })
           .limit(1000);
+        if (error) console.error('[retry-push-notifications] pending notifications lookup failed:', error.message);
         const ids = ((data as { id: string }[] | null) ?? []).map(r => r.id);
         if (ids.length >= 1000) {
           console.warn('[retry-push-notifications] fetchPendingIds hit the 1000-row limit; some pending rows may be deferred to the next run');
