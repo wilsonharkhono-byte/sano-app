@@ -35,13 +35,20 @@ describe('useBadgeSync', () => {
   it('is a no-op on web', () => {
     const original = Platform.OS;
     (Platform as { OS: string }).OS = 'web';
-    renderHook(() => useBadgeSync(5));
-    expect(setBadge).not.toHaveBeenCalled();
-    (Platform as { OS: string }).OS = original;
+    try {
+      renderHook(() => useBadgeSync(5));
+      expect(setBadge).not.toHaveBeenCalled();
+    } finally {
+      (Platform as { OS: string }).OS = original;
+    }
   });
 
   it('swallows launcher errors', () => {
-    setBadge.mockImplementationOnce(() => Promise.reject(new Error('unsupported launcher')));
+    const rejection = Promise.reject(new Error('unsupported launcher'));
+    const catchSpy = jest.spyOn(rejection, 'catch');
+    setBadge.mockReturnValueOnce(rejection);
+
     expect(() => renderHook(() => useBadgeSync(1))).not.toThrow();
+    expect(catchSpy).toHaveBeenCalled();
   });
 });
