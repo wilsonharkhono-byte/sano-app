@@ -32,48 +32,37 @@ The key belongs to the app (package), so `production` builds use it too.
 
 ## Part C — Supabase Dashboard
 
-1. Create a secret — run in a terminal and copy the output:
+**Already done on 2026-09-28 — do not redo:** `WEBHOOK_AUTH_SECRET` exists
+(rotated that day) and the Database Webhook `notify-on-notification-insert`
+(notifications INSERT → send-push-notification) sends
+`Authorization: Bearer <that secret>`. The same secret is used by the DATUM
+sync webhook, so **never generate a new one** here — it would break DATUM sync.
+When you need the secret value below, copy it from the existing
+`notify-on-notification-insert` webhook's Authorization header (the part after
+`Bearer `). Watch for the Dashboard's auto-filled service-role header: the
+value must be exactly `Bearer <64 hex characters>`, nothing else.
 
-   ```bash
-   openssl rand -hex 32
-   ```
-
-2. **Check what already exists.** SQL Editor → run:
-
-   ```sql
-   SELECT tgname, pg_get_triggerdef(t.oid)
-   FROM pg_trigger t
-   WHERE tgrelid = 'public.notifications'::regclass AND NOT tgisinternal;
-
-   SELECT jobid, jobname, schedule FROM cron.job;
-   ```
-
-   If the second query errors with `schema "cron" does not exist`, enable
-   **Integrations → Cron** first.
-
-3. **Webhook.** Database → Webhooks → create (or edit the existing one that
-   calls `send-push-notification`):
-   - Name `push_on_notification_insert`, table `public.notifications`, event **Insert**
-   - Type **Supabase Edge Functions**, function `send-push-notification`, method POST, timeout 5000 ms
-   - HTTP headers: `Content-Type: application/json` and
-     `Authorization: Bearer <secret from step 1>`
-
-4. **Retry cron.** Integrations → Cron → Jobs → create job:
-   - Name `retry-push-notifications`, schedule `*/15 * * * *`
-   - Type **Supabase Edge Function**, POST, function `retry-push-notifications`
-   - Header `Authorization: Bearer <secret>`, body `{}`
-   - Delete any older daily retry job found in step 2.
-
-5. **Secret.** Edge Functions → Secrets → add `WEBHOOK_AUTH_SECRET` = the secret.
-
-Steps 3–4 come before step 5 so there is no window where the webhook sends no
-header but the function demands one.
-
-6. **Migration 108.** SQL Editor → paste all of
+1. **Migration 108.** SQL Editor → paste all of
    `supabase/migrations/108_register_device_token.sql` → Run. The result grid
    must show one row with `prosecdef = true` and `anon_exec = false`. The app
    registers phones through this function, so paste it **before** anyone
    installs the new APK.
+
+2. **Check the retry job.** SQL Editor → run:
+
+   ```sql
+   SELECT jobid, jobname, schedule, command FROM cron.job;
+   ```
+
+   Look for a job whose command mentions `retry-push-notifications`.
+
+3. **Retry job — create or fix it.** Integrations → Cron → Jobs:
+   - If one exists: edit it. If none: **Create job**.
+   - Name `retry-push-notifications`, schedule `*/15 * * * *` (every 15 minutes)
+   - Type **Supabase Edge Function**, method POST, function `retry-push-notifications`
+   - Header `Authorization: Bearer <the existing secret>`, body `{}`
+   - The old job (if any) was daily and may still carry the pre-rotation
+     secret — replacing its schedule and header fixes both.
 
 ## Part D — Deploy the functions (Claude or developer)
 
