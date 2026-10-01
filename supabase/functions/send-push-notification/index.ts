@@ -1,97 +1,156 @@
-import { createClient } from '@supabase/supabase-js';
+// Deploy with --no-verify-jwt: both callers (the Database Webhook on
+// notifications INSERT, and retry-push-notifications' cron) present
+// `Authorization: Bearer <WEBHOOK_AUTH_SECRET>`, a random hex secret, not a
+// Supabase JWT - the gateway's own JWT check would refuse it before this
+// file ever runs. checkAuth() below is the only gate (see datum-sync/index.ts:10
+// for the same pattern).
 
-export interface NotificationRecord {
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+
+export interface NotificationRow {
   id: string;
   recipient_user_id: string;
   title: string;
   body: string;
   deeplink_screen: string;
   deeplink_params: unknown;
+  push_sent_at: string | null;
 }
 
-export interface Deps {
-  fetchNotificationSentAt: (id: string) => Promise<string | null>;
-  fetchTokens: (userId: string) => Promise<{ expo_push_token: string }[]>;
-  expoPush: (messages: ExpoMessage[]) => Promise<ExpoResponse>;
-  markSent: (id: string) => Promise<void>;
-  deleteToken: (token: string) => Promise<void>;
-}
-
-interface ExpoMessage {
+export interface ExpoMessage {
   to: string;
   title: string;
   body: string;
   data: unknown;
   sound: 'default';
+  // Omitted (not sent as null/undefined) when countUnread couldn't tell us
+  // the recipient's unread count - an inaccurate badge is worse than none.
+  badge?: number;
+  channelId: 'default';
+  priority: 'high';
+}
+
+interface ExpoTicket {
+  status?: string;
+  message?: string;
+  details?: { error?: string };
 }
 
 interface ExpoResponse {
-  data?: { status?: string; details?: { error?: string } }[];
+  data?: ExpoTicket[];
 }
 
-export async function handleNotification(
-  record: NotificationRecord,
-  deps: Deps,
-): Promise<string> {
-  const sentAt = await deps.fetchNotificationSentAt(record.id);
-  if (sentAt) return 'already sent';
+export interface Deps {
+  fetchNotification: (id: string) => Promise<NotificationRow | null>;
+  fetchTokens: (userId: string) => Promise<{ expo_push_token: string }[]>;
+  countUnread: (userId: string) => Promise<number | null>;
+  expoPush: (messages: ExpoMessage[]) => Promise<ExpoResponse>;
+  markSent: (id: string) => Promise<void>;
+  deleteToken: (token: string) => Promise<void>;
+}
 
-  const tokens = await deps.fetchTokens(record.recipient_user_id);
+// Fail closed: without a configured secret nobody may trigger pushes.
+// Constant time: both sides SHA-256 digested, then compared byte by byte,
+// mirroring datum-sync/handler.ts's bearerMatches - a naive string ===
+// would let a timing attack learn the secret one byte at a time.
+export async function checkAuth(
+  authorization: string | null,
+  expected: string | undefined,
+): Promise<'ok' | 'unauthorized' | 'misconfigured'> {
+  if (!expected) return 'misconfigured';
+  const enc = new TextEncoder();
+  const [given, wanted] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(authorization ?? '')),
+    crypto.subtle.digest('SHA-256', enc.encode(`Bearer ${expected}`)),
+  ]);
+  const a = new Uint8Array(given);
+  const b = new Uint8Array(wanted);
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0 ? 'ok' : 'unauthorized';
+}
+
+// Only the id is trusted from the caller; title/body/recipient are re-read from
+// the DB so a caller cannot push arbitrary text to a user.
+export async function handleNotification(id: string, deps: Deps): Promise<string> {
+  const row = await deps.fetchNotification(id);
+  if (!row) return 'not found';
+  if (row.push_sent_at) return 'already sent';
+
+  const tokens = await deps.fetchTokens(row.recipient_user_id);
   if (!tokens.length) return 'no tokens';
 
+  const badge = await deps.countUnread(row.recipient_user_id);
   const messages: ExpoMessage[] = tokens.map(t => ({
     to: t.expo_push_token,
-    title: record.title,
-    body: record.body,
+    title: row.title,
+    body: row.body,
     data: {
-      notificationId: record.id,
-      deeplinkScreen: record.deeplink_screen,
-      deeplinkParams: record.deeplink_params,
+      notificationId: row.id,
+      deeplinkScreen: row.deeplink_screen,
+      deeplinkParams: row.deeplink_params,
     },
     sound: 'default',
+    ...(badge !== null ? { badge } : {}),
+    channelId: 'default',
+    priority: 'high',
   }));
 
   const result = await deps.expoPush(messages);
-  await deps.markSent(record.id);
 
-  for (let i = 0; i < (result.data ?? []).length; i++) {
-    if (result.data![i]?.details?.error === 'DeviceNotRegistered') {
-      await deps.deleteToken(tokens[i].expo_push_token);
+  // A ticket per token: delete the ones Expo says are gone, log anything
+  // else that failed (never the full token), and only mark the row sent
+  // once at least one recipient actually got it.
+  const tickets = result.data ?? [];
+  let anyOk = false;
+  for (let i = 0; i < tickets.length; i++) {
+    const ticket = tickets[i];
+    if (ticket?.status === 'ok') {
+      anyOk = true;
+      continue;
     }
+    if (ticket?.details?.error === 'DeviceNotRegistered') {
+      await deps.deleteToken(tokens[i].expo_push_token);
+      continue;
+    }
+    const suffix = tokens[i]?.expo_push_token.slice(-6) ?? `#${i}`;
+    console.error(`[push] ticket error ${suffix}: ${ticket?.details?.error ?? ticket?.message ?? 'unknown'}`);
   }
 
+  if (!anyOk) return 'failed';
+
+  await deps.markSent(row.id);
   return 'ok';
 }
 
-// Real Deno.serve entry — wires Deps to the Supabase client + Expo fetch.
-// Validates a shared-secret bearer if WEBHOOK_AUTH_SECRET env var is set
-// (configured during Task 9 dashboard setup).
-// Guarded by import.meta.main so transitive imports (e.g. retry-push-notifications
-// reusing handleNotification) don't double-bind the port during tests.
-if (import.meta.main) {
-  Deno.serve(async (req) => {
-  const expected = Deno.env.get('WEBHOOK_AUTH_SECRET');
-  if (expected) {
-    const auth = req.headers.get('authorization');
-    if (auth !== `Bearer ${expected}`) {
-      return new Response('unauthorized', { status: 401 });
-    }
-  }
-
-  const { record } = await req.json();
-  const supa = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-  );
-
-  const deps: Deps = {
-    fetchNotificationSentAt: async (id) => {
-      const { data } = await supa.from('notifications').select('push_sent_at').eq('id', id).single();
-      return (data?.push_sent_at as string | null) ?? null;
+// Shared by send-push-notification and retry-push-notifications.
+export function makeDeps(supa: SupabaseClient): Deps {
+  return {
+    fetchNotification: async (id) => {
+      const { data, error } = await supa
+        .from('notifications')
+        .select('id, recipient_user_id, title, body, deeplink_screen, deeplink_params, push_sent_at')
+        .eq('id', id)
+        .maybeSingle();
+      if (error) console.error('[push] fetchNotification error', { error });
+      return (data as NotificationRow | null) ?? null;
     },
     fetchTokens: async (userId) => {
-      const { data } = await supa.from('device_tokens').select('expo_push_token').eq('user_id', userId);
+      const { data, error } = await supa.from('device_tokens').select('expo_push_token').eq('user_id', userId);
+      if (error) console.error('[push] fetchTokens error', { error });
       return (data as { expo_push_token: string }[] | null) ?? [];
+    },
+    countUnread: async (userId) => {
+      const { count, error } = await supa
+        .from('notifications')
+        .select('id', { count: 'exact', head: true })
+        .eq('recipient_user_id', userId)
+        .is('read_at', null);
+      if (error) {
+        console.error('[push] countUnread error', { error });
+        return null;
+      }
+      return count ?? 0;
     },
     expoPush: async (messages) => {
       const resp = await fetch('https://exp.host/--/api/v2/push/send', {
@@ -99,17 +158,37 @@ if (import.meta.main) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(messages),
       });
+      if (!resp.ok) throw new Error(`expo push ${resp.status}: ${await resp.text()}`);
       return resp.json();
     },
     markSent: async (id) => {
-      await supa.from('notifications').update({ push_sent_at: new Date().toISOString() }).eq('id', id);
+      const { error } = await supa.from('notifications').update({ push_sent_at: new Date().toISOString() }).eq('id', id);
+      if (error) console.error('[push] markSent error', { error });
     },
     deleteToken: async (token) => {
-      await supa.from('device_tokens').delete().eq('expo_push_token', token);
+      const { error } = await supa.from('device_tokens').delete().eq('expo_push_token', token);
+      if (error) console.error('[push] deleteToken error', { error });
     },
   };
+}
 
-  const result = await handleNotification(record, deps);
-  return new Response(result, { status: 200 });
+export function serviceClient(): SupabaseClient {
+  return createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+}
+
+// Guarded by import.meta.main so retry-push-notifications and the tests can
+// import this module without binding the HTTP port.
+if (import.meta.main) {
+  Deno.serve(async (req) => {
+    const auth = await checkAuth(req.headers.get('authorization'), Deno.env.get('WEBHOOK_AUTH_SECRET'));
+    if (auth === 'misconfigured') return new Response('WEBHOOK_AUTH_SECRET not set', { status: 500 });
+    if (auth === 'unauthorized') return new Response('unauthorized', { status: 401 });
+
+    const payload = await req.json().catch(() => null) as { record?: { id?: unknown } } | null;
+    const id = payload?.record?.id;
+    if (typeof id !== 'string') return new Response('missing record.id', { status: 400 });
+
+    const result = await handleNotification(id, makeDeps(serviceClient()));
+    return new Response(result, { status: 200 });
   });
 }

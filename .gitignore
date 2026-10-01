@@ -20,3 +20,7 @@ coverage/
 
 # Excel lock files (created while a workbook is open)
 ~$*
+
+# Firebase service-account keys (Android push): upload to EAS, never commit
+*firebase-adminsdk*.json
+*service-account*.json

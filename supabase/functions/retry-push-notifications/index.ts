@@ -1,83 +1,86 @@
-import { createClient } from '@supabase/supabase-js';
-import { handleNotification, type NotificationRecord, type Deps } from '../send-push-notification/index.ts';
+// Deploy with --no-verify-jwt: the Dashboard cron calls this every 15 minutes
+// with `Authorization: Bearer <WEBHOOK_AUTH_SECRET>`, a random hex secret, not
+// a Supabase JWT - the gateway's own JWT check would refuse it before this
+// file ever runs. checkAuth() (imported below) is the only gate (see
+// datum-sync/index.ts:10 for the same pattern).
+
+import { checkAuth, handleNotification, makeDeps, serviceClient } from '../send-push-notification/index.ts';
 
 export interface RetryDeps {
-  fetchPending: () => Promise<NotificationRecord[]>;
-  dispatch: (record: NotificationRecord) => Promise<string>;
+  fetchPendingIds: () => Promise<string[]>;
+  dispatch: (id: string) => Promise<string>;
 }
 
 export async function runRetry(deps: RetryDeps): Promise<{ processed: number; failed: number }> {
-  const pending = await deps.fetchPending();
+  const ids = await deps.fetchPendingIds();
   let failed = 0;
-  for (const rec of pending) {
+  for (const id of ids) {
     try {
-      await deps.dispatch(rec);
+      if ((await deps.dispatch(id)) === 'failed') failed++;
     } catch {
       failed++;
     }
   }
-  return { processed: pending.length, failed };
+  return { processed: ids.length, failed };
 }
 
-// Guarded by import.meta.main so this module can be imported by tests
-// without binding the HTTP port.
+// The webhook's own call for a brand-new row may still be in flight, and
+// push_sent_at is a check-then-write (not atomic) - retrying anything
+// younger than RETRY_MIN_AGE_MS risks a double send racing that delivery.
+const RETRY_MIN_AGE_MS = 2 * 60_000;
+const RETRY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+// Runs every 15 minutes (Dashboard cron). Re-sends anything from the last 24 h
+// the webhook missed, and delivers to users who registered a phone after the
+// notification was created ('no tokens' rows are never marked sent).
 if (import.meta.main) {
   Deno.serve(async (req) => {
-  const expected = Deno.env.get('WEBHOOK_AUTH_SECRET');
-  if (expected) {
-    const auth = req.headers.get('authorization');
-    if (auth !== `Bearer ${expected}`) {
-      return new Response('unauthorized', { status: 401 });
-    }
-  }
+    const auth = await checkAuth(req.headers.get('authorization'), Deno.env.get('WEBHOOK_AUTH_SECRET'));
+    if (auth === 'misconfigured') return new Response('WEBHOOK_AUTH_SECRET not set', { status: 500 });
+    if (auth === 'unauthorized') return new Response('unauthorized', { status: 401 });
 
-  const supa = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-  );
+    const supa = serviceClient();
+    const pushDeps = makeDeps(supa);
 
-  const deps: RetryDeps = {
-    fetchPending: async () => {
-      const sinceIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const { data } = await supa
-        .from('notifications')
-        .select('id, recipient_user_id, title, body, deeplink_screen, deeplink_params')
-        .is('push_sent_at', null)
-        .gt('created_at', sinceIso)
-        .order('created_at', { ascending: true })
-        .limit(1000);
-      return (data as NotificationRecord[] | null) ?? [];
-    },
-    dispatch: async (record) => {
-      const innerDeps: Deps = {
-        fetchNotificationSentAt: async (id) => {
-          const { data } = await supa.from('notifications').select('push_sent_at').eq('id', id).single();
-          return (data?.push_sent_at as string | null) ?? null;
-        },
-        fetchTokens: async (userId) => {
-          const { data } = await supa.from('device_tokens').select('expo_push_token').eq('user_id', userId);
-          return (data as { expo_push_token: string }[] | null) ?? [];
-        },
-        expoPush: async (messages) => {
-          const resp = await fetch('https://exp.host/--/api/v2/push/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(messages),
-          });
-          return resp.json();
-        },
-        markSent: async (id) => {
-          await supa.from('notifications').update({ push_sent_at: new Date().toISOString() }).eq('id', id);
-        },
-        deleteToken: async (token) => {
-          await supa.from('device_tokens').delete().eq('expo_push_token', token);
-        },
-      };
-      return handleNotification(record, innerDeps);
-    },
-  };
+    const result = await runRetry({
+      // Not extracted into its own testable function: doing so would only be
+      // worth it if the result stayed simple, and mocking the raw chained
+      // Supabase query builder for two dependent queries (device_tokens,
+      // then notifications) is exactly the complexity the rest of this file
+      // avoids by mocking plain Deps/RetryDeps functions instead. Left here,
+      // untested directly - runRetry's own tests cover the dispatch loop.
+      fetchPendingIds: async () => {
+        const now = Date.now();
 
-  const result = await runRetry(deps);
-  return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        // A row for a recipient with no device token yet can never send;
+        // querying and dispatching it every 15 minutes is pure waste. Once
+        // they register a phone their next retry pass will pick it up,
+        // because this list is read fresh on every run.
+        const { data: deviceRows, error: tokenError } = await supa.from('device_tokens').select('user_id');
+        if (tokenError) console.error('[retry-push-notifications] device_tokens lookup failed:', tokenError.message);
+        const recipientIds = [...new Set(((deviceRows as { user_id: string }[] | null) ?? []).map(r => r.user_id))];
+        if (!recipientIds.length) return [];
+
+        const { data, error } = await supa
+          .from('notifications')
+          .select('id')
+          .is('push_sent_at', null)
+          .is('read_at', null) // already read in-app: don't push what they've seen
+          .in('recipient_user_id', recipientIds)
+          .gt('created_at', new Date(now - RETRY_MAX_AGE_MS).toISOString())
+          .lt('created_at', new Date(now - RETRY_MIN_AGE_MS).toISOString())
+          .order('created_at', { ascending: true })
+          .limit(1000);
+        if (error) console.error('[retry-push-notifications] pending notifications lookup failed:', error.message);
+        const ids = ((data as { id: string }[] | null) ?? []).map(r => r.id);
+        if (ids.length >= 1000) {
+          console.warn('[retry-push-notifications] fetchPendingIds hit the 1000-row limit; some pending rows may be deferred to the next run');
+        }
+        return ids;
+      },
+      dispatch: (id) => handleNotification(id, pushDeps),
+    });
+
+    return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
   });
 }

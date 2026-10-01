@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "936575601442",
+    "project_id": "sano-318b9",
+    "storage_bucket": "sano-318b9.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:936575601442:android:9d9c324ca9fccca988337b",
+        "android_client_info": {
+          "package_name": "com.sancontractor.supervisor"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD9SkXNeA_uBJxi7E9uP7rHv4FTPCwj6eU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
