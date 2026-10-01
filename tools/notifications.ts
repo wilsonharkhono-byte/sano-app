@@ -143,7 +143,7 @@ export async function unregisterPushToken(): Promise<void> {
   const token = registeredToken;
   registeredToken = null;
   setPushStatus('unknown');
-  Notifications.setBadgeCountAsync(0).catch(() => {});
+  if (Platform.OS !== 'web') Notifications.setBadgeCountAsync(0).catch(() => {});
   if (!token) return;
   try {
     const result = await withTimeout(

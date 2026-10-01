@@ -47,6 +47,10 @@ BEGIN
   IF p_platform NOT IN ('ios', 'android', 'web') THEN
     RAISE EXCEPTION 'register_device_token: invalid platform %', p_platform;
   END IF;
+  -- One malformed token makes Expo reject the whole batch for that user.
+  IF p_token IS NULL OR p_token !~ '^Expo(nent)?PushToken\[[^]]+\]$' THEN
+    RAISE EXCEPTION 'register_device_token: not an Expo push token';
+  END IF;
   -- The token identifies the phone install, not the person: whoever is signed
   -- in on the phone now owns it, so a previous user's row is taken over.
   INSERT INTO device_tokens (user_id, expo_push_token, platform, last_seen_at)

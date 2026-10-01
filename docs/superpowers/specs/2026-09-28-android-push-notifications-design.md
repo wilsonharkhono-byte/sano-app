@@ -159,6 +159,14 @@ supervisor's phone isn't registered during rollout.
 - A user's *other* devices update their badge only on the next push or app open.
 - Notifications older than 24 h at first registration are never pushed.
 - iOS and browser push remain unsupported.
+- A ticket `ok` from Expo counts as sent; delivery receipts (`/getReceipts`) are
+  not polled, so FCM-side failures (e.g. a wrong FCM key) only show up as
+  missing pushes. Follow-up: poll receipts from the retry cron.
+- The refresh-token local sign-out (`App.tsx`, `scope: 'local'`) cannot remove
+  the token (no session), so that phone keeps the previous user's pushes until
+  someone signs in again (migration 108 then reassigns it).
+- On first registration the next retry pass pushes each unread notification
+  from the last 24 h separately.
 
 ## 6. Out of scope
 

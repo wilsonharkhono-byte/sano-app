@@ -1,8 +1,14 @@
 # Android push notifications — one-time setup
 
-Everything here is done once. Order matters in Part C.
+Everything here is done once. **The hard rule:** migration 108 (Part C),
+the FCM key (Part B) and the function deploy (Part D) must all be done before
+the new APK (Part E) reaches anyone.
 
 ## Part A — Firebase (≈10 min, free)
+
+**Done 2026-10-02:** project `sano-318b9`; its `google-services.json` is
+committed. Do NOT create a second Firebase project — its key would not match
+the committed file and pushes would fail silently.
 
 1. Open https://console.firebase.google.com → **Create a project** → name `SANO` →
    turn **Google Analytics off** → Create.
@@ -15,8 +21,20 @@ Everything here is done once. Order matters in Part C.
 4. Gear icon → **Project settings** → **Service accounts** →
    **Generate new private key** → Generate. A JSON file downloads.
    **Keep it private — never commit it or paste it in chat.**
+5. **Restrict the Android API key** (the repo is public, so the key in
+   `google-services.json` is visible). https://console.cloud.google.com →
+   select project `sano-318b9` → **APIs & Services → Credentials** →
+   **Android key (auto created by Firebase)**:
+   - Application restrictions → **Android apps** → add package
+     `com.sancontractor.supervisor` with the SHA-1 fingerprint shown by
+     `npx eas-cli credentials -p android` (Keystore section).
+   - API restrictions → **Restrict key** → tick **Firebase Installations API**,
+     **FCM Registration API** and **Firebase Cloud Messaging API** → Save.
 
 ## Part B — Give the key to EAS
+
+**Done 2026-10-02.** If it ever has to be redone, the uploaded key must come
+from project `sano-318b9`.
 
 In a terminal in the repo:
 
@@ -93,3 +111,33 @@ curl -s -w ' %{http_code}\n' -X POST https://ufntlqvacjhmddwltcxf.supabase.co/fu
 ```
 
 Expected: `not found 200`.
+
+## Part E — Build and roll out the APK
+
+1. Only after Parts B, C (108 pasted) and D (deployed + verified). Before the
+   first install, check for stale tokens (the retry now targets every token
+   holder at once):
+
+   ```sql
+   SELECT platform, count(*), max(last_seen_at) FROM device_tokens GROUP BY 1;
+   ```
+
+2. From a worktree on `origin/main` (with `npm ci` done):
+
+   ```bash
+   npx eas-cli build -p android --profile preview --non-interactive --no-wait
+   ```
+
+   When finished, `npx eas-cli build:view <id> --json` must show version and
+   runtime `3.2.0`, channel `preview`, and a commit that is on `main`.
+3. Install on ONE phone first; Lainnya → Notifikasi HP must say **Aktif**.
+   Send a test push with the app closed and the phone locked; check the lock
+   screen, the icon badge, and that tapping it opens the app on the right
+   screen. A ticket `ok` from Expo does not prove FCM works — only this does.
+4. Then share the APK. Tell supervisors to install over the old app (login is
+   kept) and tap **Allow**. Right after their first registration they may get
+   several notifications at once (unread ones from the last 24 h).
+5. **OTA warning:** from this merge on, `eas update` from `main` reaches only
+   3.2.0 phones. Supervisors still on 3.1.0 get nothing until they install
+   this APK. An urgent fix for 3.1.0 phones must be published from commit
+   `e431140` (runtime 3.1.0).
