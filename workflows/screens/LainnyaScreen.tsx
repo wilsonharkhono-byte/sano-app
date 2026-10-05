@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ScrollView, View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import Header from '../components/Header';
+import PushStatusLine from '../components/PushStatusLine';
 import Card from '../components/Card';
 import Badge from '../components/Badge';
 import PhotoSlot from '../components/PhotoSlot';
@@ -238,6 +239,8 @@ export default function LainnyaScreen() {
           <Text style={styles.label}>Proyek Aktif</Text>
           <TextInput style={[styles.input, styles.disabled]} value={project?.name ?? '—'} editable={false} />
           <Text style={styles.fieldHint}>Proyek diassign oleh Estimator</Text>
+          <Text style={styles.label}>Notifikasi HP</Text>
+          <PushStatusLine />
           <Text style={styles.label}>No. WhatsApp</Text>
           <TextInput placeholderTextColor={COLORS.textMuted} style={styles.input} value={settingsPhone} onChangeText={setSettingsPhone} placeholder="+62 812 ..." keyboardType="phone-pad" />
           <TouchableOpacity style={[styles.btn, { marginTop: 12 }]} onPress={handleSaveSettings}>

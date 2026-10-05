@@ -1,6 +1,6 @@
 import React, { Suspense, useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, Platform, View } from 'react-native';
+import { ActivityIndicator, AppState, Platform, View } from 'react-native';
 import * as Font from 'expo-font';
 import { createNavigationContainerRef } from '@react-navigation/native';
 import { supabase } from '../tools/supabase';
@@ -8,7 +8,7 @@ import { Session } from '@supabase/supabase-js';
 import { ProjectProvider, useProject } from './hooks/useProject';
 import { COLORS } from './theme';
 import { lazyScreen } from './components/LazyScreen';
-import { registerForPushNotifications, attachNotificationTapListener } from '../tools/notifications';
+import { registerForPushNotifications, retryPushRegistrationIfGranted, attachNotificationTapListener } from '../tools/notifications';
 // Role-aware deeplink→route resolution (fixes the supervisor Approvals
 // dead-end — see tools/notificationRouting.ts for the role×route matrix).
 import { resolveNotificationRoute } from '../tools/notificationRouting';
@@ -79,11 +79,18 @@ function RoleRouter() {
     setActiveProjectRef.current = setActiveProject;
   }, [project?.id, projects, setActiveProject]);
 
-  // Register the Expo push token once the profile is known.
+  // Register the Expo push token once the profile is known, and retry on
+  // every foreground return: a supervisor who enables notifications in
+  // system settings (after a prior denial or a failed registration) would
+  // otherwise stay unregistered until a cold start.
   useEffect(() => {
-    if (profile?.id) {
-      void registerForPushNotifications(profile.id);
-    }
+    if (!profile?.id) return undefined;
+    const userId = profile.id;
+    void registerForPushNotifications(userId);
+    const sub = AppState.addEventListener('change', next => {
+      if (next === 'active') void retryPushRegistrationIfGranted(userId);
+    });
+    return () => sub.remove();
   }, [profile?.id]);
 
   // Wire the global tap listener exactly once. Cross-stack deeplink navigation
