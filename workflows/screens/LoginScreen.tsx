@@ -4,7 +4,7 @@ import {
   KeyboardAvoidingView, Platform, Alert, ActivityIndicator,
   Animated, Dimensions, StatusBar, ScrollView, Easing,
 } from 'react-native';
-import { signIn, signUp } from '../../tools/auth';
+import { signIn } from '../../tools/auth';
 import { SanoLogo } from '../components/SanoBrand';
 import { COLORS, FONTS, TYPE, SPACE } from '../theme';
 
@@ -17,8 +17,6 @@ const PANEL_H = Math.max(280, Math.min(SH * 0.44, 350));
 export default function LoginScreen() {
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
-  const [fullName, setFullName] = useState('');
-  const [isSignUp, setIsSignUp] = useState(false);
   const [loading,  setLoading]  = useState(false);
   const [focused,  setFocused]  = useState<string | null>(null);
 
@@ -69,15 +67,6 @@ export default function LoginScreen() {
     ]).start();
   }, []);
 
-  // ── Sign-up name field slide-in ───────────────────────────────────────────
-  const nameH = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    Animated.timing(nameH, {
-      toValue: isSignUp ? 1 : 0,
-      duration: 260,
-      useNativeDriver: false, // animates layout (maxHeight)
-    }).start();
-  }, [isSignUp]);
 
   // ── Auth handlers ─────────────────────────────────────────────────────────
   const handleSubmit = async () => {
@@ -85,18 +74,9 @@ export default function LoginScreen() {
       Alert.alert('Kolom wajib', 'Email dan password wajib diisi.');
       return;
     }
-    if (isSignUp && !fullName.trim()) {
-      Alert.alert('Kolom wajib', 'Nama lengkap wajib diisi.');
-      return;
-    }
     setLoading(true);
     try {
-      if (isSignUp) {
-        await signUp(email.trim(), password, fullName.trim());
-        Alert.alert('Akun dibuat', 'Silakan cek email untuk verifikasi.');
-      } else {
-        await signIn(email.trim(), password);
-      }
+      await signIn(email.trim(), password);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Terjadi kesalahan. Coba lagi.';
       Alert.alert('Gagal masuk', msg);
@@ -104,8 +84,6 @@ export default function LoginScreen() {
       setLoading(false);
     }
   };
-
-  const toggleMode = () => setIsSignUp(v => !v);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -175,34 +153,6 @@ export default function LoginScreen() {
                 { opacity: formOp, transform: [{ translateY: formY }] },
               ]}
             >
-              {/* Name field — slides in for sign-up */}
-              <Animated.View
-                style={{
-                  maxHeight: nameH.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0, 92],
-                  }),
-                  opacity: nameH,
-                  overflow: 'hidden',
-                }}
-              >
-                <View style={styles.fieldGroup}>
-                  <Text style={styles.fieldLabel}>NAMA LENGKAP</Text>
-                  <TextInput
-                    style={[styles.input, focused === 'name' && styles.inputFocused]}
-                    placeholder="Nama lengkap Anda"
-                    value={fullName}
-                    onChangeText={setFullName}
-                    autoCapitalize="words"
-                    placeholderTextColor={COLORS.textMuted}
-                    onFocus={() => setFocused('name')}
-                    onBlur={() => setFocused(null)}
-                    accessibilityLabel="Nama lengkap"
-                    accessibilityHint="Masukkan nama lengkap Anda"
-                  />
-                </View>
-              </Animated.View>
-
               {/* Email */}
               <View style={styles.fieldGroup}>
                 <Text style={styles.fieldLabel}>EMAIL</Text>
@@ -231,7 +181,7 @@ export default function LoginScreen() {
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry
-                  autoComplete={isSignUp ? 'new-password' : 'current-password'}
+                  autoComplete="current-password"
                   placeholderTextColor={COLORS.textMuted}
                   onFocus={() => setFocused('pw')}
                   onBlur={() => setFocused(null)}
@@ -245,37 +195,21 @@ export default function LoginScreen() {
                 style={[styles.btn, loading && styles.btnBusy]}
                 onPress={handleSubmit}
                 disabled={loading}
-                accessibilityLabel={isSignUp ? 'Buat akun baru' : 'Masuk ke akun'}
+                accessibilityLabel="Masuk ke akun"
                 accessibilityRole="button"
                 accessibilityState={{ disabled: loading, busy: loading }}
               >
                 {loading ? (
                   <ActivityIndicator size="small" color={COLORS.accent} />
                 ) : (
-                  <Text style={styles.btnText}>
-                    {isSignUp ? 'DAFTAR' : 'MASUK'}
-                  </Text>
+                  <Text style={styles.btnText}>MASUK</Text>
                 )}
               </TouchableOpacity>
 
-              {/* Toggle sign-in / sign-up — only in dev; production is invite-only */}
-              {__DEV__ && (
-                <TouchableOpacity
-                  onPress={toggleMode}
-                  style={styles.toggle}
-                  accessibilityLabel={
-                    isSignUp ? 'Sudah punya akun? Masuk' : 'Belum punya akun? Daftar'
-                  }
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.toggleText}>
-                    {isSignUp ? 'Sudah punya akun?  ' : 'Belum punya akun?  '}
-                    <Text style={styles.toggleLink}>
-                      {isSignUp ? 'Masuk' : 'Daftar'}
-                    </Text>
-                  </Text>
-                </TouchableOpacity>
-              )}
+              {/* Accounts are created by admins; there is no self sign-up. */}
+              <Text style={styles.hint}>
+                Akun dibuat oleh admin. Hubungi admin jika belum punya akun.
+              </Text>
             </Animated.View>
           </ScrollView>
         </KeyboardAvoidingView>
@@ -434,19 +368,11 @@ const styles = StyleSheet.create({
 
   // ── Toggle ─────────────────────────────────────────────────────────────
 
-  toggle: {
-    alignItems: 'center',
-    paddingVertical: SPACE.sm + 2,     // bigger touch target
-    marginTop: SPACE.xs,
-  },
-  toggleText: {
-    fontSize: 15,                      // was 13 — comfortable mobile size
+  hint: {
+    textAlign: 'center',
+    fontSize: 14,
     fontFamily: FONTS.regular,
     color: COLORS.textSec,
-  },
-  toggleLink: {
-    fontFamily: FONTS.semibold,
-    color: COLORS.text,
-    textDecorationLine: 'underline',
+    marginTop: SPACE.md,
   },
 });
