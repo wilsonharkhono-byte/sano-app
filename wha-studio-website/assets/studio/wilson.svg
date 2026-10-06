@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1250" role="img" aria-labelledby="studiowilsonsvg-t">
+<title id="studiowilsonsvg-t">Wilson Harkhono — placeholder artwork, awaiting WHA Studio photography</title>
+<desc>Abstract architectural placeholder. Replace with real project photography.</desc>
+
+<defs>
+  <linearGradient id="studiowilsonsvg-g" x1="0" y1="0" x2="0.85" y2="1">
+    <stop offset="0" stop-color="#26251F"/>
+    <stop offset="1" stop-color="#383731"/>
+  </linearGradient>
+  <linearGradient id="shaftGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F4F1EA" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#F4F1EA" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+<rect width="1000" height="1250" fill="url(#studiowilsonsvg-g)"/>
+
+<circle cx="500" cy="525" r="200" fill="none" stroke="#A8875A" stroke-width="3"/>
+<line x1="200" y1="975" x2="800" y2="975" stroke="#C9C2B4" stroke-width="2" opacity="0.7"/>
+<g stroke="#C9C2B4" stroke-width="1" opacity="0.1"><line x1="0" y1="104" x2="1000" y2="104"/><line x1="0" y1="208" x2="1000" y2="208"/><line x1="0" y1="313" x2="1000" y2="313"/><line x1="0" y1="417" x2="1000" y2="417"/><line x1="0" y1="521" x2="1000" y2="521"/><line x1="0" y1="625" x2="1000" y2="625"/><line x1="0" y1="729" x2="1000" y2="729"/><line x1="0" y1="833" x2="1000" y2="833"/><line x1="0" y1="938" x2="1000" y2="938"/><line x1="0" y1="1042" x2="1000" y2="1042"/><line x1="0" y1="1146" x2="1000" y2="1146"/></g>
+<filter id="studiowilsonsvg-n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<rect width="1000" height="1250" filter="url(#studiowilsonsvg-n)" opacity="0.05"/>
+<text x="30" y="1228" font-family="Helvetica, Arial, sans-serif" font-size="14" letter-spacing="2.0" fill="rgba(244,241,234,0.5)">PLACEHOLDER · PORTRAIT, WILSON HARKHONO</text>
+</svg>

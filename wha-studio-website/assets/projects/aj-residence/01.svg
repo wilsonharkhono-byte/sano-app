@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2000 1250" role="img" aria-labelledby="projectsajresidence01svg-t">
+<title id="projectsajresidence01svg-t">aj-residence — placeholder artwork, awaiting WHA Studio photography</title>
+<desc>Abstract architectural placeholder. Replace with real project photography.</desc>
+
+<defs>
+  <linearGradient id="projectsajresidence01svg-g" x1="0" y1="0" x2="0.85" y2="1">
+    <stop offset="0" stop-color="#2B2723"/>
+    <stop offset="1" stop-color="#3d3935"/>
+  </linearGradient>
+  <linearGradient id="shaftGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F4F1EA" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#F4F1EA" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+<rect width="2000" height="1250" fill="url(#projectsajresidence01svg-g)"/>
+
+<rect x="280" y="175.00000000000003" width="1440" height="900" fill="none" stroke="#B0906A" stroke-width="4"/>
+<rect x="600" y="375" width="800" height="500" fill="#C4B49A" opacity="0.85"/>
+<line x1="280" y1="175.00000000000003" x2="600" y2="375" stroke="#C4B49A" stroke-width="2" opacity="0.6"/>
+<line x1="1720" y1="1075" x2="1400" y2="875" stroke="#C4B49A" stroke-width="2" opacity="0.6"/>
+<g stroke="#C4B49A" stroke-width="1" opacity="0.1"><line x1="0" y1="69" x2="2000" y2="69"/><line x1="0" y1="139" x2="2000" y2="139"/><line x1="0" y1="208" x2="2000" y2="208"/><line x1="0" y1="278" x2="2000" y2="278"/><line x1="0" y1="347" x2="2000" y2="347"/><line x1="0" y1="417" x2="2000" y2="417"/><line x1="0" y1="486" x2="2000" y2="486"/><line x1="0" y1="556" x2="2000" y2="556"/><line x1="0" y1="625" x2="2000" y2="625"/><line x1="0" y1="694" x2="2000" y2="694"/><line x1="0" y1="764" x2="2000" y2="764"/><line x1="0" y1="833" x2="2000" y2="833"/><line x1="0" y1="903" x2="2000" y2="903"/><line x1="0" y1="972" x2="2000" y2="972"/><line x1="0" y1="1042" x2="2000" y2="1042"/><line x1="0" y1="1111" x2="2000" y2="1111"/><line x1="0" y1="1181" x2="2000" y2="1181"/></g>
+<filter id="projectsajresidence01svg-n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<rect width="2000" height="1250" filter="url(#projectsajresidence01svg-n)" opacity="0.05"/>
+<text x="60" y="1206" font-family="Helvetica, Arial, sans-serif" font-size="17" letter-spacing="2.4" fill="rgba(244,241,234,0.5)">PLACEHOLDER · AJ RESIDENCE PHOTOGRAPHY</text>
+</svg>

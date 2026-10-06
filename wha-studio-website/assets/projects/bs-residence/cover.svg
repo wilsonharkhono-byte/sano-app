@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1500" role="img" aria-labelledby="projectsbsresidencecoversvg-t">
+<title id="projectsbsresidencecoversvg-t">bs-residence — placeholder artwork, awaiting WHA Studio photography</title>
+<desc>Abstract architectural placeholder. Replace with real project photography.</desc>
+
+<defs>
+  <linearGradient id="projectsbsresidencecoversvg-g" x1="0" y1="0" x2="0.85" y2="1">
+    <stop offset="0" stop-color="#23261F"/>
+    <stop offset="1" stop-color="#353831"/>
+  </linearGradient>
+  <linearGradient id="shaftGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#F4F1EA" stop-opacity="0.55"/>
+    <stop offset="1" stop-color="#F4F1EA" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+<rect width="1200" height="1500" fill="url(#projectsbsresidencecoversvg-g)"/>
+
+<rect x="96" y="300" width="264" height="900" fill="#A9AC96" opacity="0.85"/>
+<rect x="456" y="180" width="288" height="1140" fill="#7A7E6A" opacity="0.8"/>
+<rect x="840" y="300" width="264" height="900" fill="#A9AC96" opacity="0.6"/>
+<rect x="456" y="930" width="288" height="150" fill="#23261F" opacity="0.55"/>
+<g stroke="#A9AC96" stroke-width="1" opacity="0.12"><line x1="75" y1="0" x2="75" y2="1500"/><line x1="150" y1="0" x2="150" y2="1500"/><line x1="225" y1="0" x2="225" y2="1500"/><line x1="300" y1="0" x2="300" y2="1500"/><line x1="375" y1="0" x2="375" y2="1500"/><line x1="450" y1="0" x2="450" y2="1500"/><line x1="525" y1="0" x2="525" y2="1500"/><line x1="600" y1="0" x2="600" y2="1500"/><line x1="675" y1="0" x2="675" y2="1500"/><line x1="750" y1="0" x2="750" y2="1500"/><line x1="825" y1="0" x2="825" y2="1500"/><line x1="900" y1="0" x2="900" y2="1500"/><line x1="975" y1="0" x2="975" y2="1500"/><line x1="1050" y1="0" x2="1050" y2="1500"/><line x1="1125" y1="0" x2="1125" y2="1500"/></g>
+<filter id="projectsbsresidencecoversvg-n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix type="saturate" values="0"/></filter>
+<rect width="1200" height="1500" filter="url(#projectsbsresidencecoversvg-n)" opacity="0.05"/>
+<text x="36" y="1474" font-family="Helvetica, Arial, sans-serif" font-size="14" letter-spacing="2.0" fill="rgba(244,241,234,0.5)">PLACEHOLDER · BS RESIDENCE PHOTOGRAPHY</text>
+</svg>
